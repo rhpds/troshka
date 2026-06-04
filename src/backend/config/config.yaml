@@ -1,0 +1,37 @@
+app:
+  name: troshka
+  port: 8000
+  host: "0.0.0.0"
+  log_level: info
+  root_path: ""
+
+database:
+  url: "postgresql+psycopg2://troshka:troshka@localhost:5432/troshka"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+auth:
+  jwt_secret: "CHANGE-ME-IN-LOCAL-CONFIG"
+  jwt_algorithm: "HS256"
+  jwt_expiry_hours: 24
+  oauth_enabled: false
+  allowed_groups: ""
+  admin_groups: ""
+  operator_groups: ""
+
+s3:
+  bucket: "troshka-images"
+  region: "us-east-1"
+  endpoint_url: ""
+
+aws:
+  default_region: "us-east-1"
+  default_instance_type: "r8i.4xlarge"
+
+defaults:
+  run_timer_hours: 8
+  lifetime_days: 30
+  max_vms_per_project: 20
+  max_projects_per_user: 10
+  user_library_quota_gb: 500

@@ -1,0 +1,8 @@
+# Copy to config.local.yaml and fill in real values.
+# This file is gitignored.
+
+database:
+  url: "postgresql+psycopg2://troshka:troshka@localhost:5432/troshka"
+
+auth:
+  jwt_secret: "replace-with-a-real-secret"
