@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.eggs/
+*.egg
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+*.local.yaml
+config.local.yaml
+
+# Database
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Build
+*.pyc
+build/
+
+# Logs
+*.log
+/tmp/
+
+# Secrets
+secrets/
+*.pem
+*.key
