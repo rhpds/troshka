@@ -13,7 +13,7 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, generate_reconfigure_script, diff_topologies, generate_incremental_script, _resolve_boot_devs, _extract_vms
+from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, diff_topologies, generate_incremental_script, _extract_vms
 from app.services.vxlan import generate_setup_script
 from app.services import libvirt_mgr
 from app.services.console_proxy import get_or_create_proxy
@@ -342,7 +342,7 @@ def reconfigure_project(
             if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
                 continue
             vm_name = f"{prefix}-{vm['name']}"
-            boot_devs = _resolve_boot_devs(vm, current)
+            boot_devs = libvirt_mgr.resolve_boot_devs(vm.get("boot_devices", ["hd"]), current)
             if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024):
                 errors.append(f"Failed to reconfigure {vm_name}")
 

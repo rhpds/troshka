@@ -809,11 +809,15 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
 
 // Debounced auto-save to API — only save in draft mode
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
+let _lastSavedNodeCount = 0;
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
+  // Never save an empty topology if we previously had nodes (prevents wipe on crash/reload)
+  if (state.nodes.length === 0 && _lastSavedNodeCount > 0) return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
+    _lastSavedNodeCount = state.nodes.length;
     _saveTopologyToApi(state.currentProjectId!, state);
   }, 1000);
 });
