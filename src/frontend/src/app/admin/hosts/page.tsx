@@ -43,7 +43,7 @@ export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [providers, setProviders] = useState<Array<{id: string; name: string; default_region: string}>>([]);
+  const [providers, setProviders] = useState<Array<{id: string; name: string; default_region: string; default_ami: string | null}>>([]);
   const [provisioning, setProvisioning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProviderId, setNewProviderId] = useState("");
@@ -65,7 +65,11 @@ export default function AdminHostsPage() {
     }).catch(() => setLoading(false));
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   const addHost = async () => {
     if (!newProviderId) { setError("Select a provider"); return; }
@@ -124,8 +128,11 @@ export default function AdminHostsPage() {
     { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
   ];
 
+  const [removing, setRemoving] = useState<string | null>(null);
+
   const removeHost = async (hostId: string, instanceId: string | null) => {
     if (!window.confirm(`Remove host ${instanceId || hostId}? This will terminate the EC2 instance.`)) return;
+    setRemoving(hostId);
     const resp = await fetch(`/api/v1/hosts/${hostId}`, { method: "DELETE" });
     if (resp.ok) {
       loadData();
@@ -133,20 +140,80 @@ export default function AdminHostsPage() {
       const data = await resp.json();
       alert(data.detail || "Failed to remove host");
     }
+    setRemoving(null);
   };
 
+  const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, unknown> | undefined;
+  const selectedProviderHasAmi = selectedProvider ? !!selectedProvider.default_ami : false;
+  const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
+  const selectedProviderReady = selectedProviderHasAmi && selectedProviderHasVpc;
   const filteredHosts = filterRegion ? hosts.filter((h) => (h.region || "unknown") === filterRegion) : hosts;
 
   const stateColors: Record<string, string> = {
     active: "#4ade80",
     provisioning: "#fbbf24",
     draining: "#fbbf24",
+    shutting_down: "#fb923c",
+    terminating: "#f87171",
     terminated: "#94a3b8",
   };
 
   const agentColors: Record<string, string> = {
     connected: "#4ade80",
+    installed: "#22d3ee",
+    installing: "#fbbf24",
+    waiting_ssh: "#fbbf24",
+    install_failed: "#f87171",
     disconnected: "#f87171",
+  };
+
+  const agentLabels: Record<string, string> = {
+    connected: "agent: connected",
+    installed: "agent: installed",
+    installing: "installing agent...",
+    waiting_ssh: "waiting for SSH...",
+    install_failed: "install failed",
+    disconnected: "agent: disconnected",
+  };
+
+  const [showKeyFor, setShowKeyFor] = useState<string | null>(null);
+  const [keyData, setKeyData] = useState<Record<string, { key_pair_name: string; private_key: string; ssh_command: string | null; public_key?: string }>>({});
+
+  const showKeyPair = async (hostId: string) => {
+    if (showKeyFor === hostId) { setShowKeyFor(null); return; }
+    if (!keyData[hostId]) {
+      const resp = await fetch(`/api/v1/hosts/${hostId}/ssh-key`);
+      if (!resp.ok) { alert("No SSH key available for this host"); return; }
+      const data = await resp.json();
+      setKeyData((prev) => ({ ...prev, [hostId]: data }));
+    }
+    setShowKeyFor(hostId);
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    alert(`${label} copied to clipboard`);
+  };
+
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
+
+  const installAgent = async (hostId: string) => {
+    setInstalling(hostId);
+    setInstallOutput((prev) => ({ ...prev, [hostId]: "Installing..." }));
+    try {
+      const resp = await fetch(`/api/v1/hosts/${hostId}/install-agent`, { method: "POST" });
+      const data = await resp.json();
+      if (data.success) {
+        setInstallOutput((prev) => ({ ...prev, [hostId]: "Agent installed successfully" }));
+        loadData();
+      } else {
+        setInstallOutput((prev) => ({ ...prev, [hostId]: `Failed (exit ${data.exit_code}): ${data.output?.slice(-200) || "unknown error"}` }));
+      }
+    } catch {
+      setInstallOutput((prev) => ({ ...prev, [hostId]: "Connection failed" }));
+    }
+    setInstalling(null);
   };
 
   if (loading) {
@@ -203,6 +270,15 @@ export default function AdminHostsPage() {
                     ))}
                   </select>
                 </div>
+                {newProviderId && !selectedProviderReady && (
+                  <Alert variant="warning" title={
+                    !selectedProviderHasAmi && !selectedProviderHasVpc
+                      ? "Provider needs setup. Go to Providers and run Discover AMI and Setup VPC."
+                      : !selectedProviderHasAmi
+                        ? "No AMI set. Go to Providers and click Discover AMI."
+                        : "No VPC set. Go to Providers and click Setup VPC."
+                  } style={{ width: "100%", flexBasis: "100%" }} />
+                )}
                 <div style={{ minWidth: 280 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
                   <select
@@ -227,7 +303,7 @@ export default function AdminHostsPage() {
                     ))}
                   </select>
                 </div>
-                <Button variant="primary" onClick={addHost} isLoading={provisioning} isDisabled={provisioning || !newProviderId}>
+                <Button variant="primary" onClick={addHost} isLoading={provisioning} isDisabled={provisioning || !newProviderId || !selectedProviderReady}>
                   {provisioning ? "Provisioning..." : "Provision Host"}
                 </Button>
               </div>
@@ -294,7 +370,8 @@ export default function AdminHostsPage() {
                     {h.state}
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${agentColors[h.agent_status] || "#94a3b8"}22`, color: agentColors[h.agent_status] || "#94a3b8" }}>
-                    agent: {h.agent_status}
+                    {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
+                    {agentLabels[h.agent_status] || h.agent_status}
                   </span>
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
@@ -309,10 +386,59 @@ export default function AdminHostsPage() {
                   RAM: <strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb / 1024)} GB
                 </div>
               </div>
-              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={h.used_vcpus > 0}>
-                {h.used_vcpus > 0 ? "In Use" : "Remove"}
+              <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
+                {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
+              </Button>
+              {(h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
+                <Button variant="secondary" onClick={() => installAgent(h.id)} isLoading={installing === h.id} isDisabled={installing === h.id}>
+                  {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
+                </Button>
+              )}
+              {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && (
+                <Button variant="secondary" isDisabled isLoading>
+                  Installing...
+                </Button>
+              )}
+              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={h.used_vcpus > 0 || removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
+                {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : h.used_vcpus > 0 ? "In Use" : "Remove"}
               </Button>
             </CardBody>
+            {showKeyFor === h.id && keyData[h.id] && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {keyData[h.id].ssh_command && (
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600 }}>SSH Command</label>
+                        <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].ssh_command!, "SSH command")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
+                      </div>
+                      <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4 }}>{keyData[h.id].ssh_command}</code>
+                    </div>
+                  )}
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <label style={{ fontSize: 11, fontWeight: 600 }}>Private Key ({keyData[h.id].key_pair_name})</label>
+                      <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].private_key, "Private key")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
+                    </div>
+                    <pre style={{ fontSize: 10, padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4, maxHeight: 120, overflowY: "auto", margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{keyData[h.id].private_key}</pre>
+                  </div>
+                  {keyData[h.id].public_key && (
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600 }}>Public Key</label>
+                        <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].public_key!, "Public key")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
+                      </div>
+                      <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4, wordBreak: "break-all" }}>{keyData[h.id].public_key}</code>
+                    </div>
+                  )}
+                </div>
+              </CardBody>
+            )}
+            {installOutput[h.id] && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", fontSize: 12, fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: 150, overflowY: "auto" }}>
+                {installOutput[h.id]}
+              </CardBody>
+            )}
           </Card>
         ))}
       </PageSection>

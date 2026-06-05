@@ -18,6 +18,8 @@ class ProviderCreate(BaseModel):
     type: str
     default_region: str
     default_ami: str = ""
+    vpc_id: str = ""
+    subnet_id: str = ""
     access_key_id: str
     secret_access_key: str
 
@@ -26,6 +28,9 @@ class ProviderUpdate(BaseModel):
     name: str | None = None
     default_region: str | None = None
     default_ami: str | None = None
+    vpc_id: str | None = None
+    subnet_id: str | None = None
+    security_group_id: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
     state: str | None = None
@@ -37,6 +42,9 @@ class ProviderResponse(BaseModel):
     type: str
     default_region: str | None
     default_ami: str | None
+    vpc_id: str | None
+    subnet_id: str | None
+    security_group_id: str | None
     state: str
     has_credentials: bool
     host_count: int
@@ -55,6 +63,9 @@ def list_providers(user: User = Depends(require_role("admin")), db: Session = De
             type=p.type,
             default_region=p.default_region,
             default_ami=p.default_ami,
+            vpc_id=p.vpc_id,
+            subnet_id=p.subnet_id,
+            security_group_id=p.security_group_id,
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -75,6 +86,8 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
         type=body.type,
         default_region=body.default_region,
         default_ami=body.default_ami or None,
+        vpc_id=body.vpc_id or None,
+        subnet_id=body.subnet_id or None,
         created_by=user.email,
     )
     provider.set_credentials({
@@ -91,6 +104,9 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
         type=provider.type,
         default_region=provider.default_region,
         default_ami=provider.default_ami,
+        vpc_id=provider.vpc_id,
+        subnet_id=provider.subnet_id,
+        security_group_id=provider.security_group_id,
         state=provider.state,
         has_credentials=True,
         host_count=0,
@@ -110,6 +126,12 @@ def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends
         provider.default_region = body.default_region
     if body.default_ami is not None:
         provider.default_ami = body.default_ami
+    if body.vpc_id is not None:
+        provider.vpc_id = body.vpc_id
+    if body.subnet_id is not None:
+        provider.subnet_id = body.subnet_id
+    if body.security_group_id is not None:
+        provider.security_group_id = body.security_group_id
     if body.state is not None:
         provider.state = body.state
 
@@ -130,6 +152,9 @@ def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends
         type=provider.type,
         default_region=provider.default_region,
         default_ami=provider.default_ami,
+        vpc_id=provider.vpc_id,
+        subnet_id=provider.subnet_id,
+        security_group_id=provider.security_group_id,
         state=provider.state,
         has_credentials=bool(provider.credentials),
         host_count=len(provider.hosts),
@@ -209,6 +234,154 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
     except Exception:
         logger.exception("AMI discovery failed for %s", provider.name)
         raise HTTPException(status_code=500, detail="AMI discovery failed. Check server logs.")
+
+
+@router.get("/{provider_id}/discover-vpcs")
+def discover_vpcs(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """List available VPCs and subnets in the provider's region."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    creds = provider.get_credentials()
+    try:
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+
+        vpcs_resp = ec2.describe_vpcs()
+        vpcs = []
+        for vpc in vpcs_resp["Vpcs"]:
+            vpc_id = vpc["VpcId"]
+            name = ""
+            for tag in vpc.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+
+            subnets_resp = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+            subnets = [{
+                "subnet_id": s["SubnetId"],
+                "az": s["AvailabilityZone"],
+                "cidr": s["CidrBlock"],
+                "public": s.get("MapPublicIpOnLaunch", False),
+            } for s in subnets_resp["Subnets"]]
+
+            vpcs.append({
+                "vpc_id": vpc_id,
+                "name": name or vpc_id,
+                "cidr": vpc["CidrBlock"],
+                "is_default": vpc.get("IsDefault", False),
+                "subnets": subnets,
+            })
+
+        return {"region": provider.default_region, "vpcs": vpcs}
+    except Exception:
+        logger.exception("VPC discovery failed for %s", provider.name)
+        raise HTTPException(status_code=500, detail="VPC discovery failed. Check server logs.")
+
+
+@router.post("/{provider_id}/create-vpc")
+def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Create a new VPC with a public subnet for troshka hosts."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    creds = provider.get_credentials()
+    try:
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+
+        vpc = ec2.create_vpc(CidrBlock="10.100.0.0/16")
+        vpc_id = vpc["Vpc"]["VpcId"]
+        ec2.create_tags(Resources=[vpc_id], Tags=[
+            {"Key": "Name", "Value": "troshka-vpc"},
+            {"Key": "Project", "Value": "troshka"},
+            {"Key": "ManagedBy", "Value": "troshka"},
+        ])
+        ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
+        ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
+
+        igw = ec2.create_internet_gateway()
+        igw_id = igw["InternetGateway"]["InternetGatewayId"]
+        ec2.attach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+        ec2.create_tags(Resources=[igw_id], Tags=[
+            {"Key": "Name", "Value": "troshka-igw"},
+            {"Key": "ManagedBy", "Value": "troshka"},
+        ])
+
+        subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.100.1.0/24")
+        subnet_id = subnet["Subnet"]["SubnetId"]
+        ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
+        ec2.create_tags(Resources=[subnet_id], Tags=[
+            {"Key": "Name", "Value": "troshka-public"},
+            {"Key": "ManagedBy", "Value": "troshka"},
+        ])
+
+        route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        rt_id = route_tables["RouteTables"][0]["RouteTableId"]
+        ec2.create_route(RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
+
+        from app.services.provisioner import ensure_security_group
+        sg_id = ensure_security_group(vpc_id, credentials=creds)
+
+        provider.vpc_id = vpc_id
+        provider.subnet_id = subnet_id
+        provider.security_group_id = sg_id
+        db.commit()
+
+        return {
+            "vpc_id": vpc_id,
+            "subnet_id": subnet_id,
+            "security_group_id": sg_id,
+            "internet_gateway_id": igw_id,
+            "cidr": "10.100.0.0/16",
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("VPC creation failed for %s", provider.name)
+        raise HTTPException(status_code=500, detail="VPC creation failed. Check server logs.")
+
+
+@router.post("/{provider_id}/setup-infra")
+def setup_infrastructure(provider_id: str, vpc_id: str, subnet_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Set VPC/subnet on the provider and ensure security group exists."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    creds = provider.get_credentials()
+    try:
+        from app.services.provisioner import ensure_security_group
+        sg_id = ensure_security_group(vpc_id, credentials=creds)
+
+        provider.vpc_id = vpc_id
+        provider.subnet_id = subnet_id
+        provider.security_group_id = sg_id
+        db.commit()
+
+        return {
+            "vpc_id": vpc_id,
+            "subnet_id": subnet_id,
+            "security_group_id": sg_id,
+        }
+    except Exception:
+        logger.exception("Infrastructure setup failed for %s", provider.name)
+        raise HTTPException(status_code=500, detail="Infrastructure setup failed. Check server logs.")
 
 
 @router.post("/{provider_id}/set-ami")

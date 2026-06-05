@@ -96,7 +96,7 @@ packages:
   - nftables
 
 runcmd:
-  - systemctl enable --now libvirtd
+  - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
   - systemctl enable --now nftables
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /etc/troshka-agent
   - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
@@ -109,6 +109,7 @@ def provision_host(
     host_id: str | None = None,
     region: str | None = None,
     credentials: dict | None = None,
+    **kwargs,
 ) -> dict:
     """Provision a new EC2 host and add it to the pool. Admin operation."""
     client = _get_ec2_client(region=region, credentials=credentials)
@@ -120,12 +121,12 @@ def provision_host(
     if not ami_id:
         ami_id = getattr(config.aws, "default_ami", None) or find_rhel_ami()
 
-    vpc_id = getattr(config.aws, "vpc_id", None)
-    subnet_id = getattr(config.aws, "subnet_id", None)
+    vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
+    subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
     if not vpc_id or not subnet_id:
         vpc_id, subnet_id = get_default_vpc_and_subnet(credentials=credentials)
 
-    sg_id = getattr(config.aws, "security_group_id", None)
+    sg_id = kwargs.get("security_group_id") or getattr(config.aws, "security_group_id", None)
     if not sg_id:
         sg_id = ensure_security_group(vpc_id, credentials=credentials)
 
@@ -195,16 +196,16 @@ def provision_host(
     }
 
 
-def terminate_host(instance_id: str):
+def terminate_host(instance_id: str, credentials: dict | None = None):
     """Remove a host from the pool and terminate the EC2 instance."""
-    client = _get_ec2_client()
+    client = _get_ec2_client(credentials=credentials)
     client.terminate_instances(InstanceIds=[instance_id])
     logger.info("Terminated %s", instance_id)
 
 
-def get_host_status(instance_id: str) -> dict | None:
+def get_host_status(instance_id: str, credentials: dict | None = None) -> dict | None:
     """Get current status of a host instance."""
-    client = _get_ec2_client()
+    client = _get_ec2_client(credentials=credentials)
     try:
         desc = client.describe_instances(InstanceIds=[instance_id])
         inst = desc["Reservations"][0]["Instances"][0]

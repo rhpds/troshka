@@ -63,6 +63,10 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.state != "active":
         raise HTTPException(status_code=400, detail="Provider is not active")
+    if not provider.default_ami and not body.ami_id:
+        raise HTTPException(status_code=400, detail="No AMI configured — run Discover AMI on the provider first")
+    if not provider.vpc_id or not provider.subnet_id:
+        raise HTTPException(status_code=400, detail="No VPC configured — run Setup VPC on the provider first")
 
     region = body.region or provider.default_region
     creds = provider.get_credentials()
@@ -70,9 +74,12 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
     try:
         result = provision_host(
             instance_type=body.instance_type,
-            ami_id=body.ami_id,
+            ami_id=body.ami_id or provider.default_ami,
             region=region,
             credentials=creds,
+            vpc_id=provider.vpc_id,
+            subnet_id=provider.subnet_id,
+            security_group_id=provider.security_group_id,
         )
     except Exception as e:
         logger.exception("Failed to provision host: %s", e)
@@ -96,6 +103,35 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
     db.add(host)
     db.commit()
     db.refresh(host)
+
+    # Auto-install agent in background
+    import threading
+    def _auto_install():
+        from app.core.database import SessionLocal
+        from app.services.agent_deployer import wait_for_ssh, deploy_agent
+        s = SessionLocal()
+        try:
+            h = s.query(Host).filter_by(id=host.id).first()
+            if not h or not h.private_key or not h.ip_address:
+                return
+            h.agent_status = "waiting_ssh"
+            s.commit()
+            if not wait_for_ssh(h.ip_address, h.private_key):
+                h.agent_status = "install_failed"
+                s.commit()
+                return
+            h.agent_status = "installing"
+            s.commit()
+            result = deploy_agent(h.ip_address, h.private_key, h.id)
+            h.agent_status = "installed" if result["success"] else "install_failed"
+            s.commit()
+        except Exception:
+            logger.exception("Auto-install failed for host %s", host.id)
+        finally:
+            s.close()
+
+    threading.Thread(target=_auto_install, daemon=True).start()
+
     return host
 
 
@@ -105,6 +141,48 @@ def get_host(host_id: str, user: User = Depends(require_role("operator")), db: S
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
     return host
+
+
+@router.post("/{host_id}/install-agent")
+def install_agent(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """SSH into the host and install the troshka agent."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.ip_address:
+        raise HTTPException(status_code=400, detail="Host has no IP address")
+    if not host.private_key:
+        raise HTTPException(status_code=400, detail="No SSH key stored for this host")
+
+    from app.services.agent_deployer import wait_for_ssh, deploy_agent
+
+    # Stage 1: Wait for SSH
+    host.agent_status = "waiting_ssh"
+    db.commit()
+
+    ssh_ok = wait_for_ssh(host.ip_address, host.private_key)
+    if not ssh_ok:
+        host.agent_status = "disconnected"
+        db.commit()
+        return {"success": False, "stage": "ssh", "output": "SSH connection timed out"}
+
+    # Stage 2: Install agent
+    host.agent_status = "installing"
+    db.commit()
+
+    result = deploy_agent(
+        host_ip=host.ip_address,
+        private_key=host.private_key,
+        host_id=host.id,
+    )
+
+    if result["success"]:
+        host.agent_status = "installed"
+    else:
+        host.agent_status = "install_failed"
+    db.commit()
+
+    return result
 
 
 @router.get("/{host_id}/ssh-key")
@@ -139,6 +217,25 @@ def get_ssh_key(host_id: str, user: User = Depends(require_role("admin")), db: S
     return result
 
 
+@router.get("/{host_id}/ssh-key/download")
+def download_ssh_key(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Download the SSH private key as a file."""
+    from fastapi.responses import Response
+
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.private_key:
+        raise HTTPException(status_code=404, detail="No SSH key stored for this host")
+
+    filename = f"{host.key_pair_name or host_id}.txt"
+    return Response(
+        content=host.private_key,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.delete("/{host_id}", status_code=204)
 def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Terminate the EC2 instance and remove the host from the pool."""
@@ -148,12 +245,68 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
     if host.used_vcpus > 0:
         raise HTTPException(status_code=409, detail="Host has active projects — drain first")
 
+    # Get provider credentials for termination
+    creds = None
+    if host.provider_id:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            creds = provider.get_credentials()
+
+    # Mark as terminating first
+    host.state = "terminating"
+    db.commit()
+
     if host.instance_id:
         try:
-            terminate_host(host.instance_id)
+            terminate_host(host.instance_id, credentials=creds)
         except Exception as e:
             logger.exception("Failed to terminate host %s: %s", host_id, e)
+            host.state = "active"
+            db.commit()
             raise HTTPException(status_code=500, detail="Failed to terminate host. Check server logs.")
 
-    db.delete(host)
+    host.state = "shutting_down"
+    host.agent_status = "disconnected"
     db.commit()
+
+    # Capture values before spawning thread (avoid DetachedInstanceError)
+    instance_id = host.instance_id
+
+    import threading
+    def _wait_terminated():
+        from app.core.database import SessionLocal
+        from app.services.provisioner import get_host_status, _get_ec2_client
+        import time
+        s = SessionLocal()
+        try:
+            for _ in range(60):
+                time.sleep(5)
+                status = get_host_status(instance_id, credentials=creds)
+                h = s.query(Host).filter_by(id=host_id).first()
+                if not h:
+                    return
+                if not status or status["state"] == "terminated":
+                    # Clean up key pair
+                    if h.key_pair_name:
+                        try:
+                            client = _get_ec2_client(credentials=creds)
+                            client.delete_key_pair(KeyName=h.key_pair_name)
+                        except Exception:
+                            pass
+                    h.state = "terminated"
+                    s.commit()
+                    time.sleep(10)
+                    s.delete(h)
+                    s.commit()
+                    logger.info("Host %s terminated and removed", host_id)
+                    return
+                elif status["state"] == "shutting-down":
+                    h.state = "shutting_down"
+                    s.commit()
+            logger.warning("Timeout waiting for host %s to terminate", host_id)
+        except Exception:
+            logger.exception("Error tracking termination for %s", host_id)
+        finally:
+            s.close()
+
+    threading.Thread(target=_wait_terminated, daemon=True).start()

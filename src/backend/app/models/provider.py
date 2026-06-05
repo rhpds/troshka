@@ -18,6 +18,9 @@ class Provider(Base):
     credentials: Mapped[str | None] = mapped_column(Text)
     default_region: Mapped[str | None] = mapped_column(String(100))
     default_ami: Mapped[str | None] = mapped_column(String(100))
+    vpc_id: Mapped[str | None] = mapped_column(String(50))
+    subnet_id: Mapped[str | None] = mapped_column(String(50))
+    security_group_id: Mapped[str | None] = mapped_column(String(50))
     state: Mapped[str] = mapped_column(String(20), default="active")
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime.datetime] = mapped_column(

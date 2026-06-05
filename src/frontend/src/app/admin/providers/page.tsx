@@ -141,6 +141,46 @@ export default function AdminProvidersPage() {
     }
   };
 
+  const [vpcOptions, setVpcOptions] = useState<Record<string, Array<{vpc_id: string; name: string; cidr: string; is_default: boolean; subnets: Array<{subnet_id: string; az: string; cidr: string; public: boolean}>}>>>({});
+
+  const discoverVpcs = async (id: string) => {
+    setAmiResult((prev) => ({ ...prev, [id]: "Discovering VPCs..." }));
+    const resp = await fetch(`/api/v1/providers/${id}/discover-vpcs`);
+    if (resp.ok) {
+      const data = await resp.json();
+      setVpcOptions((prev) => ({ ...prev, [id]: data.vpcs || [] }));
+      setAmiResult((prev) => ({ ...prev, [id]: `Found ${data.vpcs?.length || 0} VPC(s)` }));
+    } else {
+      setAmiResult((prev) => ({ ...prev, [id]: "VPC discovery failed" }));
+    }
+  };
+
+  const setupInfra = async (providerId: string, vpcId: string, subnetId: string) => {
+    const resp = await fetch(`/api/v1/providers/${providerId}/setup-infra?vpc_id=${vpcId}&subnet_id=${subnetId}`, { method: "POST" });
+    if (resp.ok) {
+      setVpcOptions((prev) => ({ ...prev, [providerId]: [] }));
+      loadProviders();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Setup failed");
+    }
+  };
+
+  const createVpc = async (id: string) => {
+    if (!window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
+    setAmiResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
+    const resp = await fetch(`/api/v1/providers/${id}/create-vpc`, { method: "POST" });
+    if (resp.ok) {
+      const data = await resp.json();
+      setVpcOptions((prev) => ({ ...prev, [id]: [] }));
+      setAmiResult((prev) => ({ ...prev, [id]: `VPC created: ${data.vpc_id}` }));
+      loadProviders();
+    } else {
+      const data = await resp.json();
+      setAmiResult((prev) => ({ ...prev, [id]: `Failed: ${data.detail || "unknown error"}` }));
+    }
+  };
+
   const deleteProvider = async (id: string) => {
     if (!window.confirm("Delete this provider?")) return;
     const resp = await fetch(`/api/v1/providers/${id}`, { method: "DELETE" });
@@ -272,12 +312,14 @@ export default function AdminProvidersPage() {
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                       {p.default_region} · {p.host_count} host{p.host_count !== 1 ? "s" : ""}
-                      {(p as Record<string, unknown>).default_ami && (
-                        <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
-                      )}
-                      {!(p as Record<string, unknown>).default_ami && (
-                        <span style={{ color: "#fbbf24" }}> · ⚠ No AMI set</span>
-                      )}
+                      {(p as Record<string, unknown>).default_ami
+                        ? <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
+                        : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
+                      }
+                      {(p as Record<string, unknown>).vpc_id
+                        ? <span> · VPC: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).vpc_id as string}</code></span>
+                        : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
+                      }
                     </div>
                     {testResult[p.id] && (
                       <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].startsWith("OK") ? "#4ade80" : "#f87171" }}>
@@ -305,10 +347,39 @@ export default function AdminProvidersPage() {
                         ))}
                       </div>
                     )}
+                    {vpcOptions[p.id] && vpcOptions[p.id].length > 0 && (
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600 }}>Select VPC and Subnet</div>
+                          <Button variant="secondary" onClick={() => createVpc(p.id)}>+ Create New VPC</Button>
+                        </div>
+                        {vpcOptions[p.id].map((vpc) => (
+                          <div key={vpc.vpc_id} style={{ background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>
+                              {vpc.name} {vpc.is_default && <span style={{ fontSize: 10, color: "#4ade80" }}>(default)</span>}
+                            </div>
+                            <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{vpc.vpc_id} · {vpc.cidr}</div>
+                            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                              {vpc.subnets.map((s) => (
+                                <div key={s.subnet_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px", background: "rgba(0,0,0,0.15)", borderRadius: 4 }}>
+                                  <div style={{ fontSize: 11 }}>
+                                    <code>{s.subnet_id}</code> · {s.az} · {s.cidr} {s.public && <span style={{ color: "#4ade80" }}>public</span>}
+                                  </div>
+                                  <Button variant="secondary" onClick={() => setupInfra(p.id, vpc.vpc_id, s.subnet_id)} style={{ padding: "2px 8px", fontSize: 11 }}>
+                                    Use
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
                     <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>
+                    <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}
