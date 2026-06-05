@@ -109,21 +109,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const masthead = (
     <Masthead>
-      {isAuthenticated && (
-        <MastheadToggle>
-          <PageToggleButton variant="plain" aria-label="Global navigation">
-            <BarsIcon />
-          </PageToggleButton>
-        </MastheadToggle>
-      )}
       <MastheadMain>
         <MastheadBrand>
-          <img
-            src={isDark ? "/images/troshka-logo-dark-200.png" : "/images/troshka-logo-light-200.png"}
-            alt="Troshka"
-            style={{ height: "80px", cursor: "pointer" }}
-            onClick={() => router.push("/")}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {isAuthenticated && (
+              <PageToggleButton variant="plain" aria-label="Global navigation">
+                <BarsIcon style={{ fontSize: "1.5rem" }} />
+              </PageToggleButton>
+            )}
+            <img
+              src={isDark ? "/images/troshka-logo-dark-200.png" : "/images/troshka-logo-light-200.png"}
+              alt="Troshka"
+              style={{ height: "80px", cursor: "pointer" }}
+              onClick={() => router.push("/")}
+            />
+          </div>
         </MastheadBrand>
       </MastheadMain>
       <MastheadContent>

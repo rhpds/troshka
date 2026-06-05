@@ -185,7 +185,10 @@ export default function ConsolePage() {
         alignItems: "center",
         borderBottom: "1px solid #333",
       }}>
-        <span>{vmName}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <img src="/images/troshka-logo-dark-200.png" alt="" style={{ height: 20 }} />
+          <span>{vmName}</span>
+        </div>
         <span style={{ color: statusColor }}>{status}</span>
         <div style={{ display: "flex", gap: 8 }}>
           <button
