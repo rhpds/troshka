@@ -31,8 +31,8 @@ def generate_userdata(vm_data: dict) -> str:
 
     root_pw = vm_data.get("ciRootPassword", "")
     if root_pw:
-        import crypt
-        pw_hash = crypt.crypt(root_pw, crypt.mksalt(crypt.METHOD_SHA512))
+        from passlib.hash import sha512_crypt
+        pw_hash = sha512_crypt.using(rounds=5000).hash(root_pw)
         lines.append("chpasswd:")
         lines.append("  expire: false")
         lines.append("  users:")
