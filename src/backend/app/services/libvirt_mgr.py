@@ -285,14 +285,14 @@ def reconfigure_vm(
 def resolve_boot_devs(boot_devices: list, topology: dict) -> list[str]:
     """Resolve canvas boot device entries to libvirt boot device names."""
     boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
-    storage_node_ids = {n["id"] for n in topology.get("nodes", []) if n.get("type") == "storageNode"}
+    storage_nodes = {n["id"]: n for n in topology.get("nodes", []) if n.get("type") == "storageNode"}
     boot_devs = []
     seen = set()
     for d in boot_devices:
         if d in boot_type_map:
             dev = boot_type_map[d]
-        elif d in storage_node_ids:
-            dev = "hd"
+        elif d in storage_nodes:
+            dev = "cdrom" if storage_nodes[d].get("data", {}).get("format") == "iso" else "hd"
         else:
             continue
         if dev not in seen:

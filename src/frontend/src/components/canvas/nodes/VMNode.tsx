@@ -121,6 +121,10 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     .filter((nid) => nodes.some((n) => n.id === nid && n.type === "storageNode"));
 
   const hasStorage = connectedStorageIds.length > 0;
+  const hasWritableDisk = connectedStorageIds.some((sid) => {
+    const sn = nodes.find((n) => n.id === sid);
+    return sn && (sn.data as Record<string, unknown>).format !== "iso";
+  });
   const hasNetwork = edges.some(
     (e) =>
       (e.source === id || e.target === id) &&
@@ -178,10 +182,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
         {/* Boot order badge */}
         {/* Warnings */}
-        {(!hasStorage || !hasNetwork || hasSharedDisk) && (
+        {(!hasStorage || !hasWritableDisk || !hasNetwork || hasSharedDisk) && (
           <div className="vm-node-warnings">
             {!hasStorage && (
               <span className="vm-node-warning" title="No storage attached">⚠ No disk</span>
+            )}
+            {hasStorage && !hasWritableDisk && (
+              <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No install disk</span>
             )}
             {!hasNetwork && (
               <span className="vm-node-warning" title="No network connected">⚠ No network</span>

@@ -190,42 +190,52 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             for disk in vm_disks:
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
                 if disk["format"] == "iso":
-                    # ISO from library: download to cache if not present
                     if disk.get("library_item_id"):
                         cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
                         lines.append(f'echo "Caching ISO {disk["name"]}..."')
-                        lines.append(f"PRESIGNED_ISO_{disk['name']}=$(cat /tmp/troshka-presigned-{disk['library_item_id']} 2>/dev/null || echo '')")
-                        lines.append(f'test -f {cache_path} || curl -sL -o {cache_path} "$PRESIGNED_ISO_{disk["name"]}"')
+                        lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     continue
                 if disk.get("source") == "library" and disk.get("library_item_id"):
-                    # Library base image: download to cache, create COW overlay
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
                     lines.append(f'echo "Caching base image {disk["name"]}..."')
-                    lines.append(f"PRESIGNED_{disk['name']}=$(cat /tmp/troshka-presigned-{disk['library_item_id']} 2>/dev/null || echo '')")
-                    lines.append(f'test -f {cache_path} || curl -sL -o {cache_path} "$PRESIGNED_{disk["name"]}"')
+                    lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
                 else:
-                    # Blank disk
                     lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
 
         # Boot devices can be type strings or node IDs (for storage nodes)
         boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
         all_nodes = topology.get("nodes", [])
-        storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
-        boot_devs = []
-        seen = set()
-        for d in vm.get("boot_devices", ["hd"]):
-            if d in boot_type_map:
-                dev = boot_type_map[d]
-            elif d in storage_node_ids:
-                dev = "hd"
+        storage_nodes = {n["id"]: n for n in all_nodes if n.get("type") == "storageNode"}
+
+        raw_boot_devs = vm.get("boot_devices") or None
+        has_iso = any(d["format"] == "iso" for d in vm_disks)
+        has_disk = any(d["format"] != "iso" for d in vm_disks)
+        # Auto-detect if no boot devices set, or if default ["hd"] but ISO is connected
+        if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
+            if has_iso and has_disk:
+                boot_devs = ["cdrom", "hd"]
+            elif has_iso:
+                boot_devs = ["cdrom"]
+            elif has_disk:
+                boot_devs = ["hd"]
             else:
-                continue
-            if dev not in seen:
-                boot_devs.append(dev)
-                seen.add(dev)
-        if not boot_devs:
-            boot_devs = ["hd"]
+                boot_devs = ["network"]
+        else:
+            boot_devs = []
+            seen = set()
+            for d in raw_boot_devs:
+                if d in boot_type_map:
+                    dev = boot_type_map[d]
+                elif d in storage_nodes:
+                    dev = "cdrom" if storage_nodes[d].get("data", {}).get("format") == "iso" else "hd"
+                else:
+                    continue
+                if dev not in seen:
+                    boot_devs.append(dev)
+                    seen.add(dev)
+            if not boot_devs:
+                boot_devs = ["hd"]
         boot_arg = ",".join(boot_devs)
 
         cmd_parts = [
