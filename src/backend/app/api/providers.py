@@ -167,8 +167,10 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
         )
 
         ami_types = {
-            "access2": {"pattern": "RHEL-9.4*x86_64*Access2-GP3", "label": "RHEL Access2 (Gold Image / BYOS)"},
-            "hourly": {"pattern": "RHEL-9.4*x86_64*Hourly2-GP3", "label": "RHEL Marketplace (Hourly)"},
+            "rhel10-access2": {"pattern": "RHEL-10*x86_64*Access2-GP3", "label": "RHEL 10 Access2 (Gold Image / BYOS)"},
+            "rhel10-hourly":  {"pattern": "RHEL-10*x86_64*Hourly2-GP3", "label": "RHEL 10 Marketplace (Hourly)"},
+            "rhel9-access2":  {"pattern": "RHEL-9.4*x86_64*Access2-GP3", "label": "RHEL 9.4 Access2 (Gold Image / BYOS)"},
+            "rhel9-hourly":   {"pattern": "RHEL-9.4*x86_64*Hourly2-GP3", "label": "RHEL 9.4 Marketplace (Hourly)"},
         }
 
         results = []
