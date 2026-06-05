@@ -127,45 +127,75 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {projectState === "deploying" && (
-            <button className="project-stop-btn" disabled style={{ opacity: 0.5 }}>
-              Deploying...
+            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> Deploying...
             </button>
           )}
           {projectState === "active" && (
-            <button className="project-stop-btn" onClick={() => {
-              if (window.confirm("Stop all VMs in this environment?")) {
-                fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-                  .then(() => setProjectState("stopping"));
-              }
-            }}>
-              ■ Stop
-            </button>
+            <>
+              <button className="project-stop-btn" onClick={() => {
+                if (window.confirm("Stop all VMs in this environment?")) {
+                  fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
+                    .then(() => setProjectState("stopping"));
+                }
+              }}>
+                ■ Stop
+              </button>
+              <button className="project-publish-btn" onClick={() => {
+                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
+                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
+                    .then(() => setProjectState("deploying"));
+                }
+              }}>
+                ↻ Republish
+              </button>
+            </>
           )}
           {projectState === "stopping" && (
-            <button className="project-stop-btn" disabled style={{ opacity: 0.5 }}>
-              Stopping...
+            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> Stopping...
             </button>
           )}
           {projectState === "stopped" && (
-            <button className="project-publish-btn" onClick={() => {
-              fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
-                .then(() => setProjectState("starting"));
-            }}>
-              ▶ Start
-            </button>
+            <>
+              <button className="project-publish-btn" onClick={() => {
+                fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
+                  .then(() => setProjectState("starting"));
+              }}>
+                ▶ Start
+              </button>
+              <button className="project-publish-btn" onClick={() => {
+                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
+                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
+                    .then(() => setProjectState("deploying"));
+                }
+              }}>
+                ↻ Republish
+              </button>
+            </>
           )}
           {projectState === "starting" && (
-            <button className="project-publish-btn" disabled style={{ opacity: 0.5 }}>
-              Starting...
+            <button className="project-publish-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> Starting...
             </button>
           )}
           {projectState === "error" && (
-            <button className="project-publish-btn" onClick={() => {
-              fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
-                .then(() => { setProjectState("draft"); setDeployError(null); });
-            }}>
-              Reset to Draft
-            </button>
+            <>
+              <button className="project-stop-btn" onClick={() => {
+                fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
+                  .then(() => { setProjectState("draft"); setDeployError(null); });
+              }}>
+                Reset to Draft
+              </button>
+              <button className="project-publish-btn" onClick={() => {
+                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
+                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
+                    .then(() => { setProjectState("deploying"); setDeployError(null); });
+                }
+              }}>
+                ↻ Republish
+              </button>
+            </>
           )}
         </div>
       </div>

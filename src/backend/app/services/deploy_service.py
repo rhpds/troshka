@@ -68,6 +68,7 @@ def _extract_vms(topology: dict) -> list[dict]:
             "os": data.get("os", ""),
             "nics": data.get("nics", []),
             "disk_controllers": data.get("diskControllers", []),
+            "boot_devices": data.get("bootDevices", ["hd"]),
         })
     return vms
 
@@ -194,7 +195,26 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             lines.append(f"qemu-img create -f qcow2 {disk_path} 10G")
             vm_disks = [{"name": "disk0", "size_gb": 10, "format": "qcow2", "bus": "virtio"}]
 
-        # Build virt-install command
+        # Boot devices can be type strings or node IDs (for storage nodes)
+        boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
+        all_nodes = topology.get("nodes", [])
+        storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
+        boot_devs = []
+        seen = set()
+        for d in vm.get("boot_devices", ["hd"]):
+            if d in boot_type_map:
+                dev = boot_type_map[d]
+            elif d in storage_node_ids:
+                dev = "hd"
+            else:
+                continue
+            if dev not in seen:
+                boot_devs.append(dev)
+                seen.add(dev)
+        if not boot_devs:
+            boot_devs = ["hd"]
+        boot_arg = ",".join(boot_devs)
+
         cmd_parts = [
             "virt-install",
             f"--name {vm_name}",
@@ -202,7 +222,7 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             f"--memory {vm['ram_gb'] * 1024}",
             "--os-variant detect=on,name=linux2022",
             "--graphics vnc,listen=0.0.0.0",
-            "--import",
+            f"--boot {boot_arg}",
             "--noautoconsole",
             "--noreboot",
         ]
@@ -476,6 +496,14 @@ def stop_project_async(project_id: str):
 
     except Exception:
         logger.exception("Stop %s failed", project_id[:8])
+        try:
+            project = s.query(Project).filter_by(id=project_id).first()
+            if project:
+                project.state = "error"
+                project.deploy_error = "Stop failed unexpectedly. Check server logs."
+                s.commit()
+        except Exception:
+            pass
     finally:
         s.close()
 
@@ -488,6 +516,8 @@ def start_project_async(project_id: str):
 
     s = SessionLocal()
     try:
+        from app.services.vxlan import build_host_network_config
+
         project = s.query(Project).filter_by(id=project_id).first()
         if not project:
             return
@@ -531,6 +561,14 @@ def start_project_async(project_id: str):
 
     except Exception:
         logger.exception("Start %s failed", project_id[:8])
+        try:
+            project = s.query(Project).filter_by(id=project_id).first()
+            if project:
+                project.state = "error"
+                project.deploy_error = "Start failed unexpectedly. Check server logs."
+                s.commit()
+        except Exception:
+            pass
     finally:
         s.close()
 

@@ -236,6 +236,64 @@ def download_ssh_key(host_id: str, user: User = Depends(require_role("admin")), 
     )
 
 
+@router.post("/{host_id}/poweroff")
+def poweroff_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Stop the EC2 instance without terminating it."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No instance ID")
+    if host.used_vcpus > 0:
+        raise HTTPException(status_code=409, detail="Host has active projects — stop them first")
+
+    creds = None
+    if host.provider_id:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            creds = provider.get_credentials()
+
+    from app.services.provisioner import _get_ec2_client
+    client = _get_ec2_client(credentials=creds)
+    client.stop_instances(InstanceIds=[host.instance_id])
+
+    host.state = "stopped"
+    host.agent_status = "disconnected"
+    db.commit()
+    return {"status": "stopped"}
+
+
+@router.post("/{host_id}/poweron")
+def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Start a stopped EC2 instance."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No instance ID")
+
+    creds = None
+    if host.provider_id:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            creds = provider.get_credentials()
+
+    from app.services.provisioner import _get_ec2_client
+    client = _get_ec2_client(credentials=creds)
+    client.start_instances(InstanceIds=[host.instance_id])
+
+    # Wait for running and get new IP
+    waiter = client.get_waiter("instance_running")
+    waiter.wait(InstanceIds=[host.instance_id])
+    desc = client.describe_instances(InstanceIds=[host.instance_id])
+    inst = desc["Reservations"][0]["Instances"][0]
+
+    host.state = "active"
+    host.ip_address = inst.get("PublicIpAddress")
+    db.commit()
+    return {"status": "active", "ip_address": host.ip_address}
+
+
 @router.delete("/{host_id}", status_code=204)
 def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Terminate the EC2 instance and remove the host from the pool."""

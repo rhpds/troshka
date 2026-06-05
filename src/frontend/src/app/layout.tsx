@@ -82,8 +82,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   };
 
   const isLoginPage = pathname === "/login";
+  const isConsolePage = pathname === "/console";
   const isAuthenticated = !!user && !isLoginPage;
   const isAdmin = user?.role === "admin";
+
+  if (isConsolePage) {
+    return (
+      <html lang="en">
+        <head><title>Console</title></head>
+        <body style={{ margin: 0, padding: 0, overflow: "hidden" }}>{children}</body>
+      </html>
+    );
+  }
 
   const navItems = [
     { label: "Projects", path: "/projects" },

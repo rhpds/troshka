@@ -153,6 +153,7 @@ export default function AdminHostsPage() {
     active: "#4ade80",
     provisioning: "#fbbf24",
     draining: "#fbbf24",
+    stopped: "#94a3b8",
     shutting_down: "#fb923c",
     terminating: "#f87171",
     terminated: "#94a3b8",
@@ -193,6 +194,23 @@ export default function AdminHostsPage() {
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     alert(`${label} copied to clipboard`);
+  };
+
+  const [poweringHost, setPoweringHost] = useState<string | null>(null);
+
+  const powerHost = async (hostId: string, action: "poweroff" | "poweron") => {
+    setPoweringHost(hostId);
+    try {
+      const resp = await fetch(`/api/v1/hosts/${hostId}/${action}`, { method: "POST" });
+      if (!resp.ok) {
+        const data = await resp.json();
+        alert(data.detail || `Failed to ${action}`);
+      }
+      loadData();
+    } catch {
+      alert("Failed to connect to server");
+    }
+    setPoweringHost(null);
   };
 
   const [installing, setInstalling] = useState<string | null>(null);
@@ -399,8 +417,18 @@ export default function AdminHostsPage() {
                   Installing...
                 </Button>
               )}
+              {h.state === "active" && (
+                <Button variant="secondary" onClick={() => powerHost(h.id, "poweroff")} isDisabled={h.used_vcpus > 0 || poweringHost === h.id} isLoading={poweringHost === h.id}>
+                  {h.used_vcpus > 0 ? "In Use" : "Power Off"}
+                </Button>
+              )}
+              {h.state === "stopped" && (
+                <Button variant="secondary" onClick={() => powerHost(h.id, "poweron")} isLoading={poweringHost === h.id} isDisabled={poweringHost === h.id}>
+                  Power On
+                </Button>
+              )}
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={h.used_vcpus > 0 || removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
-                {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : h.used_vcpus > 0 ? "In Use" : "Remove"}
+                {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
             </CardBody>
             {showKeyFor === h.id && keyData[h.id] && (

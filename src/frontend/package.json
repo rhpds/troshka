@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@novnc/novnc": "^1.7.0",
     "@patternfly/react-core": "^6.5.1",
     "@patternfly/react-icons": "^6.5.1",
     "@patternfly/react-table": "^6.5.1",

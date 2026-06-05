@@ -14,6 +14,7 @@ from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
 from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script
+from app.services.console_proxy import get_or_create_proxy
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -206,8 +207,34 @@ def stop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh shutdown {shlex.quote(full_name)}", timeout=30)
+    qname = shlex.quote(full_name)
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh shutdown {qname} && echo SENT", timeout=15)
     return {"vm": full_name, "action": "stop", "success": result["success"], "output": result["output"]}
+
+
+@router.get("/{project_id}/vms/{vm_name}/status")
+def get_vm_status(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh domstate {shlex.quote(full_name)}", timeout=15)
+    state = ""
+    if result["success"]:
+        for line in result["output"].strip().split("\n"):
+            line = line.strip()
+            if line in ("running", "shut off", "paused", "crashed", "dying"):
+                state = line
+                break
+    return {"vm": full_name, "state": state}
+
+
+@router.post("/{project_id}/vms/{vm_name}/forcestop")
+def forcestop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh destroy {shlex.quote(full_name)}", timeout=30)
+    return {"vm": full_name, "action": "forcestop", "success": result["success"], "output": result["output"]}
 
 
 @router.post("/{project_id}/vms/{vm_name}/restart")
@@ -215,7 +242,8 @@ def restart_vm(project_id: str, vm_name: str, user: User = Depends(get_current_u
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh reboot {shlex.quote(full_name)}", timeout=30)
+    qname = shlex.quote(full_name)
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh reboot {qname} && echo SENT", timeout=15)
     return {"vm": full_name, "action": "restart", "success": result["success"], "output": result["output"]}
 
 
@@ -236,12 +264,69 @@ def get_vm_console(project_id: str, vm_name: str, user: User = Depends(get_curre
     if ":" in vnc_display:
         display_num = vnc_display.split(":")[-1]
         vnc_port = str(5900 + int(display_num))
+    if not vnc_port:
+        return {"vm": full_name, "error": "VNC not available"}
+
+    proxy = get_or_create_proxy(full_name, host.ip_address, host.private_key, int(vnc_port))
+    if "error" in proxy:
+        return {"vm": full_name, "error": proxy["error"]}
+
     return {
         "vm": full_name,
-        "host_ip": host.ip_address,
-        "vnc_display": vnc_display,
-        "vnc_port": vnc_port,
-        "vnc_url": f"vnc://{host.ip_address}:{vnc_port}" if vnc_port else None,
+        "ws_port": proxy["ws_port"],
+        "ws_url": proxy["ws_url"],
+    }
+
+
+@router.post("/{project_id}/redeploy")
+def redeploy_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Destroy existing infrastructure and redeploy with current topology."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state not in ("active", "stopped", "error"):
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, cannot redeploy")
+
+    # Destroy existing
+    if project.host_id:
+        destroy_project_sync(project.id)
+
+    # Reset for fresh deploy
+    project.state = "draft"
+    project.host_id = None
+    project.vni_map = None
+    project.deploy_error = None
+    db.commit()
+
+    # Now deploy again
+    if not project.topology:
+        raise HTTPException(status_code=400, detail="Project has no topology")
+
+    reqs = calculate_project_requirements(project.topology)
+    if reqs["vm_count"] == 0:
+        raise HTTPException(status_code=400, detail="Project has no VMs")
+
+    result = place_project(db, project)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+
+    project.vni_map = result.get("vni_map")
+    db.commit()
+
+    import threading
+    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True).start()
+
+    return {
+        "status": "deploying",
+        "host_id": result["host_id"],
+        "host_ip": result["host_ip"],
+        "requirements": result["requirements"],
     }
 
 

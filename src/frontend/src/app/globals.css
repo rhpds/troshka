@@ -496,6 +496,32 @@ body {
   color: var(--troshka-yellow);
 }
 
+.vm-btn-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: vm-spin 0.6s linear infinite;
+}
+
+@keyframes vm-spin {
+  to { transform: rotate(360deg); }
+}
+
+.project-btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: vm-spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
 /* ---- Network Node ---- */
 
 .network-node-card {

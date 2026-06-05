@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo } from "react";
+import React, { memo, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -16,27 +16,90 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const isRunning = d.status === "running";
   const isDeployed = projectState === "active" || projectState === "stopped";
 
-  const vmAction = async (action: "start" | "stop" | "restart") => {
-    if (!projectId) return;
-    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/${action}`, { method: "POST" });
-    const result = await resp.json();
-    if (result.success || result.output?.includes("already active") || result.output?.includes("domain is not running")) {
-      if (action === "stop") updateNodeData(id, { status: "stopped" });
-      else updateNodeData(id, { status: "running" });
-    } else {
-      alert(`${action} failed: ${result.output?.slice(-200) || "unknown error"}`);
+  const [actionPending, setActionPending] = useState<string | null>(null);
+
+  const pollVmStatus = async (): Promise<string> => {
+    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/status`);
+    const data = await resp.json();
+    return data.state || "";
+  };
+
+  const waitForShutdown = async (maxWaitMs: number): Promise<boolean> => {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const state = await pollVmStatus();
+      if (state === "shut off") return true;
     }
+    return false;
+  };
+
+  const vmAction = async (action: "start" | "stop" | "forcestop" | "restart") => {
+    if (!projectId || actionPending) return;
+    setActionPending(action);
+    try {
+      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/${action}`, { method: "POST" });
+      const result = await resp.json();
+      if (action === "stop") {
+        if (result.success) {
+          const off = await waitForShutdown(10000);
+          if (off) {
+            updateNodeData(id, { status: "stopped" });
+          } else {
+            alert("Graceful shutdown sent but VM is still running. Use Force Power Off if needed.");
+          }
+        } else {
+          alert(`Shutdown failed: ${result.output?.slice(-200) || "unknown error"}`);
+        }
+      } else if (action === "forcestop") {
+        if (result.success || result.output?.includes("domain is not running")) {
+          updateNodeData(id, { status: "stopped" });
+        } else {
+          alert(`Force stop failed: ${result.output?.slice(-200) || "unknown error"}`);
+        }
+      } else if (action === "start") {
+        if (result.success || result.output?.includes("already active")) {
+          updateNodeData(id, { status: "running" });
+        } else {
+          alert(`Start failed: ${result.output?.slice(-200) || "unknown error"}`);
+        }
+      } else if (action === "restart") {
+        if (result.success) {
+          const off = await waitForShutdown(10000);
+          if (off) {
+            updateNodeData(id, { status: "stopped" });
+            // Wait for it to come back up
+            const start = Date.now();
+            while (Date.now() - start < 10000) {
+              await new Promise((r) => setTimeout(r, 2000));
+              const state = await pollVmStatus();
+              if (state === "running") {
+                updateNodeData(id, { status: "running" });
+                break;
+              }
+            }
+          } else {
+            alert("Restart signal sent but VM did not shut down within 10 seconds. Use Force Power Off, then Start.");
+          }
+        } else {
+          alert(`Restart failed: ${result.output?.slice(-200) || "unknown error"}`);
+        }
+      }
+    } catch {
+      alert("Failed to connect to server");
+    }
+    setActionPending(null);
   };
 
   const openConsole = async () => {
     if (!projectId) return;
     const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/console`);
     const info = await resp.json();
-    if (info.vnc_url) {
-      alert(`VNC Console\n\nHost: ${info.host_ip}\nPort: ${info.vnc_port}\nDisplay: ${info.vnc_display}\n\nConnect with: ${info.vnc_url}`);
-    } else {
-      alert("Console not available — VM may not be running or VNC is not configured.");
-    }
+    window.open(
+      `/console?vm=${encodeURIComponent(d.name)}&project=${projectId}`,
+      `console-${d.name}`,
+      "width=1024,height=768,menubar=no,toolbar=no,location=no",
+    );
   };
   const borderColor = isRunning
     ? "var(--troshka-green)"
@@ -122,17 +185,40 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
       {/* Action buttons */}
       <div className="vm-node-footer nopan nodrag">
-        <button
-          className={`vm-node-action ${isRunning ? "power-running" : "power-stopped"}`}
-          title={isRunning ? "Stop" : "Start"}
-          onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction(isRunning ? "stop" : "start"); }}
-          disabled={!isDeployed}
-        >
-          {isRunning ? "■" : "▶"}
-        </button>
-        <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("restart"); }} disabled={!isDeployed}>
-          ↻
-        </button>
+        {!isRunning && (
+          <button
+            className="vm-node-action power-stopped"
+            title="Start"
+            onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("start"); }}
+            disabled={!isDeployed || !!actionPending}
+          >
+            {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
+          </button>
+        )}
+        {isRunning && (
+          <>
+            <button
+              className="vm-node-action power-running"
+              title="Graceful Shutdown"
+              onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("stop"); }}
+              disabled={!isDeployed || !!actionPending}
+            >
+              {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
+            </button>
+            <button
+              className="vm-node-action power-running"
+              title="Force Power Off"
+              onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("forcestop"); }}
+              disabled={!isDeployed || !!actionPending}
+              style={{ color: "#ef4444" }}
+            >
+              {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
+            </button>
+            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("restart"); }} disabled={!isDeployed || !!actionPending}>
+              {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
+            </button>
+          </>
+        )}
         <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateNode(id); }}>
           ⧉
         </button>
