@@ -105,6 +105,7 @@ export default function ConsolePage() {
       rfbRef.current = rfb;
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
+      rfb.focusOnClick = true;
 
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
       r.addEventListener("connect", () => {
@@ -216,6 +217,7 @@ export default function ConsolePage() {
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
+            pointerEvents: "none",
           }}>
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="2" y="3" width="20" height="14" rx="2" />
