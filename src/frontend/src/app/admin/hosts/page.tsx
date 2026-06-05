@@ -43,7 +43,12 @@ export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [providers, setProviders] = useState<Array<{id: string; name: string; default_region: string}>>([]);
   const [provisioning, setProvisioning] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newProviderId, setNewProviderId] = useState("");
+  const [newInstanceType, setNewInstanceType] = useState("m8i.xlarge");
+  const [newRegion, setNewRegion] = useState("");
   const [error, setError] = useState("");
   const [filterRegion, setFilterRegion] = useState("");
 
@@ -51,9 +56,11 @@ export default function AdminHostsPage() {
     Promise.all([
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/hosts/summary").then((r) => r.ok ? r.json() : []),
-    ]).then(([h, s]) => {
+      fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
+    ]).then(([h, s, p]) => {
       setHosts(Array.isArray(h) ? h : []);
       setSummary(Array.isArray(s) ? s : []);
+      setProviders(Array.isArray(p) ? p : []);
       setLoading(false);
     }).catch(() => setLoading(false));
   };
@@ -61,23 +68,24 @@ export default function AdminHostsPage() {
   useEffect(() => { loadData(); }, []);
 
   const addHost = async () => {
-    const instanceType = window.prompt("Instance type (e.g., m8i.xlarge):", "m8i.xlarge");
-    if (!instanceType) return;
-    const region = window.prompt("Region:", "us-east-1");
-    if (!region) return;
-
+    if (!newProviderId) { setError("Select a provider"); return; }
     setProvisioning(true);
     setError("");
     try {
       const resp = await fetch("/api/v1/hosts/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instance_type: instanceType, region }),
+        body: JSON.stringify({
+          provider_id: newProviderId,
+          instance_type: newInstanceType,
+          region: newRegion || undefined,
+        }),
       });
       if (!resp.ok) {
         const data = await resp.json();
         setError(data.detail || "Failed to provision host");
       } else {
+        setShowAddForm(false);
         loadData();
       }
     } catch {
@@ -85,6 +93,36 @@ export default function AdminHostsPage() {
     }
     setProvisioning(false);
   };
+
+  const instanceTypes = [
+    { value: "c8i.large",   label: "c8i.large — 2 vCPU / 4 GB" },
+    { value: "c8i.xlarge",  label: "c8i.xlarge — 4 vCPU / 8 GB" },
+    { value: "c8i.2xlarge", label: "c8i.2xlarge — 8 vCPU / 16 GB" },
+    { value: "c8i.4xlarge", label: "c8i.4xlarge — 16 vCPU / 32 GB" },
+    { value: "m8i.large",   label: "m8i.large — 2 vCPU / 8 GB" },
+    { value: "m8i.xlarge",  label: "m8i.xlarge — 4 vCPU / 16 GB" },
+    { value: "m8i.2xlarge", label: "m8i.2xlarge — 8 vCPU / 32 GB" },
+    { value: "m8i.4xlarge", label: "m8i.4xlarge — 16 vCPU / 64 GB" },
+    { value: "m8i.8xlarge", label: "m8i.8xlarge — 32 vCPU / 128 GB" },
+    { value: "r8i.large",   label: "r8i.large — 2 vCPU / 16 GB" },
+    { value: "r8i.xlarge",  label: "r8i.xlarge — 4 vCPU / 32 GB" },
+    { value: "r8i.2xlarge", label: "r8i.2xlarge — 8 vCPU / 64 GB" },
+    { value: "r8i.4xlarge", label: "r8i.4xlarge — 16 vCPU / 128 GB" },
+    { value: "r8i.8xlarge", label: "r8i.8xlarge — 32 vCPU / 256 GB" },
+    { value: "r8i.24xlarge",label: "r8i.24xlarge — 96 vCPU / 768 GB" },
+  ];
+
+  const awsRegions = [
+    { value: "us-east-1",      label: "US East (N. Virginia)" },
+    { value: "us-east-2",      label: "US East (Ohio)" },
+    { value: "us-west-1",      label: "US West (N. California)" },
+    { value: "us-west-2",      label: "US West (Oregon)" },
+    { value: "eu-west-1",      label: "Europe (Ireland)" },
+    { value: "eu-west-2",      label: "Europe (London)" },
+    { value: "eu-central-1",   label: "Europe (Frankfurt)" },
+    { value: "ap-southeast-1", label: "Asia Pacific (Singapore)" },
+    { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
+  ];
 
   const removeHost = async (hostId: string, instanceId: string | null) => {
     if (!window.confirm(`Remove host ${instanceId || hostId}? This will terminate the EC2 instance.`)) return;
@@ -124,8 +162,8 @@ export default function AdminHostsPage() {
               <Title headingLevel="h1">Host Pool</Title>
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="primary" onClick={addHost} isLoading={provisioning} isDisabled={provisioning}>
-                {provisioning ? "Provisioning..." : "+ Add Host"}
+              <Button variant="primary" onClick={() => setShowAddForm(!showAddForm)}>
+                {showAddForm ? "Cancel" : "+ Add Host"}
               </Button>
             </ToolbarItem>
           </ToolbarContent>
@@ -135,6 +173,66 @@ export default function AdminHostsPage() {
       {error && (
         <PageSection>
           <Alert variant="danger" title={error} />
+        </PageSection>
+      )}
+
+      {/* Add Host Form */}
+      {showAddForm && (
+        <PageSection>
+          <Card>
+            <CardBody>
+              <Title headingLevel="h3" size="md" style={{ marginBottom: 12 }}>Provision New Host</Title>
+              {providers.length === 0 && (
+                <Alert variant="warning" title="No providers configured. Go to Admin > Providers to add one." style={{ marginBottom: 12 }} />
+              )}
+              <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap" }}>
+                <div style={{ minWidth: 180 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
+                  <select
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    value={newProviderId}
+                    onChange={(e) => {
+                      setNewProviderId(e.target.value);
+                      const p = providers.find((p) => p.id === e.target.value);
+                      if (p) setNewRegion(p.default_region || "");
+                    }}
+                  >
+                    <option value="">Select provider...</option>
+                    {providers.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ minWidth: 280 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
+                  <select
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    value={newInstanceType}
+                    onChange={(e) => setNewInstanceType(e.target.value)}
+                  >
+                    {instanceTypes.map((t) => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ minWidth: 200 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
+                  <select
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    value={newRegion}
+                    onChange={(e) => setNewRegion(e.target.value)}
+                  >
+                    {awsRegions.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <Button variant="primary" onClick={addHost} isLoading={provisioning} isDisabled={provisioning || !newProviderId}>
+                  {provisioning ? "Provisioning..." : "Provision Host"}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
         </PageSection>
       )}
 

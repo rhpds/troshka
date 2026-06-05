@@ -8,6 +8,7 @@ from app.core.auth import require_role
 from app.core.config import config
 from app.core.database import get_db
 from app.models.host import Host
+from app.models.provider import Provider
 from app.models.user import User
 from app.schemas.host import HostResponse
 from app.services.provisioner import provision_host, terminate_host
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/hosts", tags=["hosts"])
 
 
 class ProvisionRequest(BaseModel):
+    provider_id: str
     instance_type: str | None = None
     region: str | None = None
     ami_id: str | None = None
@@ -56,11 +58,21 @@ def host_summary(user: User = Depends(require_role("operator")), db: Session = D
 @router.post("/", response_model=HostResponse, status_code=201)
 def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Provision a new EC2 host and add it to the pool."""
-    region = body.region or config.aws.default_region
+    provider = db.query(Provider).filter_by(id=body.provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.state != "active":
+        raise HTTPException(status_code=400, detail="Provider is not active")
+
+    region = body.region or provider.default_region
+    creds = provider.get_credentials()
+
     try:
         result = provision_host(
             instance_type=body.instance_type,
             ami_id=body.ami_id,
+            region=region,
+            credentials=creds,
         )
     except Exception as e:
         logger.exception("Failed to provision host: %s", e)
@@ -68,6 +80,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
 
     host = Host(
         id=result["host_id"],
+        provider_id=provider.id,
         instance_id=result["instance_id"],
         instance_type=result["instance_type"],
         region=region,

@@ -14,12 +14,13 @@ from app.core.config import config
 logger = logging.getLogger(__name__)
 
 
-def _get_ec2_client(region: str | None = None):
+def _get_ec2_client(region: str | None = None, credentials: dict | None = None):
+    creds = credentials or {}
     return boto3.client(
         "ec2",
         region_name=region or config.aws.default_region,
-        aws_access_key_id=config.aws.access_key_id or None,
-        aws_secret_access_key=config.aws.secret_access_key or None,
+        aws_access_key_id=creds.get("access_key_id") or config.aws.access_key_id or None,
+        aws_secret_access_key=creds.get("secret_access_key") or config.aws.secret_access_key or None,
     )
 
 
@@ -106,9 +107,11 @@ def provision_host(
     instance_type: str | None = None,
     ami_id: str | None = None,
     host_id: str | None = None,
+    region: str | None = None,
+    credentials: dict | None = None,
 ) -> dict:
     """Provision a new EC2 host and add it to the pool. Admin operation."""
-    client = _get_ec2_client()
+    client = _get_ec2_client(region=region, credentials=credentials)
 
     host_id = host_id or str(uuid.uuid4())
     hostname = f"troshka-host-{host_id[:8]}"
