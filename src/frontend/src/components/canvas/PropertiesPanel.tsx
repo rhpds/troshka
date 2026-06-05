@@ -1012,21 +1012,18 @@ export default function PropertiesPanel() {
               </div>
               <div className="props-field">
                 <label className="props-label">Type</label>
-                <select
-                  className="props-select"
-                  value={isIso ? "iso" : "disk"}
-                  onChange={(e) => {
-                    if (e.target.value === "iso") {
-                      update("format", "iso");
-                      update("source", "library");
-                    } else {
-                      update("format", "qcow2");
-                    }
-                  }}
-                >
-                  <option value="disk">Disk</option>
-                  <option value="iso">ISO Image</option>
-                </select>
+                {isIso ? (
+                  <span style={{ fontSize: 13 }}>ISO Image</span>
+                ) : (
+                  <select
+                    className="props-select"
+                    value={sd.format}
+                    onChange={(e) => update("format", e.target.value)}
+                  >
+                    <option value="qcow2">QCOW2</option>
+                    <option value="raw">Raw</option>
+                  </select>
+                )}
               </div>
             </div>
             <div className="props-divider" />

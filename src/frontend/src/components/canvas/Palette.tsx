@@ -60,9 +60,16 @@ const sections: PaletteSection[] = [
     items: [
       {
         type: "disk",
-        label: "Storage",
-        desc: "Disk or ISO",
+        label: "Disk",
+        desc: "Virtual disk",
         icon: "🛢",
+        iconClass: "palette-icon-storage",
+      },
+      {
+        type: "iso",
+        label: "ISO",
+        desc: "CD/DVD image",
+        icon: "💿",
         iconClass: "palette-icon-storage",
       },
     ],
