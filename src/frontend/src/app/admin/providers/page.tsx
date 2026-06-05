@@ -84,7 +84,13 @@ export default function AdminProvidersPage() {
     const resp = await fetch(`/api/v1/providers/${id}/test`, { method: "POST" });
     if (resp.ok) {
       const data = await resp.json();
-      setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
+      if (data.message) {
+        setTestResult((prev) => ({ ...prev, [id]: data.message }));
+      } else if (data.bucket) {
+        setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
+      } else {
+        setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
+      }
     } else {
       setTestResult((prev) => ({ ...prev, [id]: "FAILED" }));
     }
@@ -326,18 +332,21 @@ export default function AdminProvidersPage() {
                       {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                      {p.default_region} · {p.host_count} host{p.host_count !== 1 ? "s" : ""}
-                      {(p as Record<string, unknown>).default_ami
-                        ? <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
-                        : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
-                      }
-                      {(p as Record<string, unknown>).vpc_id
-                        ? <span> · VPC: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).vpc_id as string}</code></span>
-                        : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
-                      }
+                      {p.default_region}
+                      {p.type !== "s3" && <span> · {p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
+                      {p.type !== "s3" && (
+                        (p as Record<string, unknown>).default_ami
+                          ? <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
+                      )}
+                      {p.type !== "s3" && (
+                        (p as Record<string, unknown>).vpc_id
+                          ? <span> · VPC: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).vpc_id as string}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
+                      )}
                     </div>
                     {testResult[p.id] && (
-                      <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].startsWith("OK") ? "#4ade80" : "#f87171" }}>
+                      <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
                         {testResult[p.id]}
                       </div>
                     )}
@@ -393,6 +402,17 @@ export default function AdminProvidersPage() {
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
+                    {p.type === "s3" && (
+                      <Button variant="secondary" onClick={async () => {
+                        const resp = await fetch(`/api/v1/providers/${p.id}/create-bucket`, { method: "POST" });
+                        const data = await resp.json();
+                        if (resp.ok) {
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Bucket: ${data.bucket} (${data.status})` }));
+                        } else {
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail}` }));
+                        }
+                      }}>Create Bucket</Button>
+                    )}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>

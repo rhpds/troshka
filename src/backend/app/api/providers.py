@@ -418,8 +418,25 @@ def test_provider(provider_id: str, user: User = Depends(require_role("admin")),
                 aws_secret_access_key=creds.get("secret_access_key"),
             )
             bucket = creds.get("bucket", "troshka-images")
-            s3.head_bucket(Bucket=bucket)
-            return {"status": "ok", "bucket": bucket}
+            # Test credentials first via STS
+            sts = boto3.client(
+                "sts",
+                region_name=provider.default_region,
+                aws_access_key_id=creds.get("access_key_id"),
+                aws_secret_access_key=creds.get("secret_access_key"),
+            )
+            identity = sts.get_caller_identity()
+            # Then check bucket
+            try:
+                s3.head_bucket(Bucket=bucket)
+                return {"status": "ok", "bucket": bucket, "account": identity["Account"]}
+            except s3.exceptions.ClientError as e:
+                code = e.response["Error"]["Code"]
+                if code == "404":
+                    return {"status": "ok", "bucket_missing": True, "bucket": bucket, "account": identity["Account"], "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket."}
+                elif code == "403":
+                    return {"status": "ok", "bucket_denied": True, "bucket": bucket, "account": identity["Account"], "message": f"Credentials OK but no access to bucket '{bucket}'."}
+                raise
         else:
             sts = boto3.client(
                 "sts",
@@ -432,3 +449,40 @@ def test_provider(provider_id: str, user: User = Depends(require_role("admin")),
     except Exception:
         logger.exception("Provider test failed for %s", provider.name)
         raise HTTPException(status_code=400, detail="Credentials test failed")
+
+
+@router.post("/{provider_id}/create-bucket")
+def create_s3_bucket(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Create the S3 bucket for a storage provider."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type != "s3":
+        raise HTTPException(status_code=400, detail="Not an S3 provider")
+
+    creds = provider.get_credentials()
+    bucket = creds.get("bucket", "troshka-images")
+
+    s3 = boto3.client(
+        "s3",
+        region_name=provider.default_region,
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
+    )
+
+    try:
+        if provider.default_region == "us-east-1":
+            s3.create_bucket(Bucket=bucket)
+        else:
+            s3.create_bucket(
+                Bucket=bucket,
+                CreateBucketConfiguration={"LocationConstraint": provider.default_region},
+            )
+        return {"status": "created", "bucket": bucket}
+    except s3.exceptions.BucketAlreadyOwnedByYou:
+        return {"status": "exists", "bucket": bucket}
+    except Exception as e:
+        logger.exception("Failed to create bucket %s: %s", bucket, e)
+        raise HTTPException(status_code=500, detail=f"Failed to create bucket: {e}")
