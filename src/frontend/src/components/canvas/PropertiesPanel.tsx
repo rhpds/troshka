@@ -396,7 +396,7 @@ export default function PropertiesPanel() {
                   <input className="props-input" value={(data as Record<string, unknown>).ciHostname as string || ""} onChange={(e) => update("ciHostname", e.target.value)} placeholder={`${(data as unknown as VMNodeData).name}`} />
                 </div>
                 <div className="props-field">
-                  <label className="props-label">Root Password</label>
+                  <label className="props-label">root password</label>
                   <div style={{ display: "flex", gap: 4 }}>
                     <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, unknown>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
                     <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
@@ -405,7 +405,26 @@ export default function PropertiesPanel() {
                   </div>
                 </div>
                 <div className="props-field">
-                  <label className="props-label">SSH Keys</label>
+                  <label className="props-label">cloud-user password</label>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, unknown>).ciCloudUserPassword as string || ""} onChange={(e) => update("ciCloudUserPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
+                      {showPassword ? "🙈" : "👁"}
+                    </button>
+                  </div>
+                </div>
+                <div className="props-field">
+                  <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={(data as Record<string, unknown>).ciCloudUserSudo as boolean ?? true}
+                      onChange={(e) => update("ciCloudUserSudo", e.target.checked)}
+                    />
+                    cloud-user has sudo
+                  </label>
+                </div>
+                <div className="props-field">
+                  <label className="props-label">SSH Keys <span style={{ fontSize: 10, opacity: 0.6 }}>(injected for root + cloud-user)</span></label>
                   {sshKeys.length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {sshKeys.map((k) => {

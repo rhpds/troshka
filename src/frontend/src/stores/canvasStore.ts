@@ -822,7 +822,7 @@ useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
   if (_loadingProject) return;
-  if (state.nodes.length === 0 && _lastSavedNodeCount > 0) return;
+  if (state.nodes.length === 0) return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _lastSavedNodeCount = state.nodes.length;

@@ -12,46 +12,66 @@ logger = logging.getLogger(__name__)
 
 def generate_userdata(vm_data: dict) -> str:
     """Generate cloud-init user-data YAML for a VM."""
+    from passlib.hash import sha512_crypt
+
     lines = ["#cloud-config"]
 
     hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
     lines.append(f"hostname: {hostname}")
     lines.append(f"fqdn: {hostname}")
 
+    # SSH keys — injected for all users
     ssh_keys = vm_data.get("ciSshKeys", [])
     ssh_key = vm_data.get("ciSshKey", "").strip()
-    if ssh_keys:
+    all_keys = [k.strip() for k in ssh_keys if k.strip()] if ssh_keys else ([ssh_key] if ssh_key else [])
+    if all_keys:
         lines.append("ssh_authorized_keys:")
-        for key in ssh_keys:
-            if key.strip():
-                lines.append(f"  - {key.strip()}")
-    elif ssh_key:
-        lines.append("ssh_authorized_keys:")
-        lines.append(f"  - {ssh_key}")
+        for key in all_keys:
+            lines.append(f"  - {key}")
 
+    # Passwords
     root_pw = vm_data.get("ciRootPassword", "")
-    if root_pw:
-        from passlib.hash import sha512_crypt
-        pw_hash = sha512_crypt.using(rounds=5000).hash(root_pw)
+    cloud_user_pw = vm_data.get("ciCloudUserPassword", "")
+    root_hash = sha512_crypt.using(rounds=5000).hash(root_pw) if root_pw else None
+    cloud_user_hash = sha512_crypt.using(rounds=5000).hash(cloud_user_pw) if cloud_user_pw else None
+
+    chpasswd_users = []
+    if root_hash:
+        chpasswd_users.append(f"    root:{root_hash}")
+    if cloud_user_hash:
+        chpasswd_users.append(f"    cloud-user:{cloud_user_hash}")
+
+    if chpasswd_users:
         lines.append("chpasswd:")
         lines.append("  expire: false")
-        lines.append("  users:")
-        lines.append(f"    - name: root")
-        lines.append(f"      password: {pw_hash}")
+        lines.append("  list: |")
+        lines.extend(chpasswd_users)
         lines.append("ssh_pwauth: true")
 
+    # Users
     lines.append("disable_root: false")
+    cloud_user_sudo = vm_data.get("ciCloudUserSudo", True)
     lines.append("users:")
     lines.append("  - default")
-    if root_pw:
+    if root_hash:
         lines.append("  - name: root")
-        lines.append(f"    hashed_passwd: {pw_hash}")
         lines.append("    lock_passwd: false")
+    lines.append("  - name: cloud-user")
+    lines.append("    lock_passwd: false")
+    if all_keys:
+        lines.append("    ssh_authorized_keys:")
+        for key in all_keys:
+            lines.append(f"      - {key}")
+    if cloud_user_sudo:
+        lines.append("    sudo: ALL=(ALL) NOPASSWD:ALL")
+        lines.append("    groups: wheel")
 
+    # Eject seed ISO after boot
     lines.append("runcmd:")
     lines.append("  - eject /dev/sr0 2>/dev/null || true")
     lines.append("  - eject /dev/sr1 2>/dev/null || true")
 
+    # Custom user-data
     custom = vm_data.get("ciUserData", "").strip()
     if custom:
         for line in custom.split("\n"):

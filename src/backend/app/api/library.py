@@ -404,6 +404,38 @@ def import_from_url(
     return {"id": item.id, "state": "importing"}
 
 
+@router.post("/{item_id}/cancel")
+def cancel_import(item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Cancel an in-progress import and clean up S3."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if item.s3_key:
+        from app.services.s3_storage import _get_s3_client, _bucket
+        client = _get_s3_client()
+        bucket = _bucket()
+        # Abort any in-progress multipart uploads for this key
+        try:
+            mpus = client.list_multipart_uploads(Bucket=bucket, Prefix=item.s3_key)
+            for u in mpus.get("Uploads", []):
+                client.abort_multipart_upload(Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"])
+        except Exception:
+            pass
+        # Delete any partial object
+        try:
+            client.delete_object(Bucket=bucket, Key=item.s3_key)
+        except Exception:
+            pass
+
+    db.delete(item)
+    db.commit()
+    return {"status": "cancelled"}
+
+
 class ShareRequest(BaseModel):
     user_email: str
     permission: str = "use"

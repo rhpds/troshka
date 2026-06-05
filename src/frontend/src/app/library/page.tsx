@@ -358,6 +358,15 @@ export default function LibraryPage() {
               }}>
                 Edit
               </Button>
+              {(item.state === "importing" || item.state === "uploading") && (
+                <Button variant="secondary" onClick={async () => {
+                  if (!window.confirm("Cancel this transfer?")) return;
+                  await fetch(`/api/v1/library/${item.id}/cancel`, { method: "POST" });
+                  loadItems();
+                }}>
+                  Cancel
+                </Button>
+              )}
               <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.state === "uploading" || item.state === "importing"}>
                 Delete
               </Button>
