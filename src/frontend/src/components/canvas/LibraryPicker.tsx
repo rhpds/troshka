@@ -107,7 +107,6 @@ export default function LibraryPicker({ type, onSelect, onClose }: LibraryPicker
                 </div>
                 <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2, marginLeft: 26 }}>
                   {formatSize(item.size_bytes)}
-                  {item.os_variant && ` · ${item.os_variant}`}
                 </div>
               </div>
               <span style={{ fontSize: 11, color: "var(--pf-t--global--color--brand--default)" }}>Select</span>

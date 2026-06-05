@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Button,
   Card,
   CardBody,
+  FileUpload,
   PageSection,
   Title,
   Alert,
@@ -34,7 +35,8 @@ export default function LibraryPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState("");
 
   const [showUpload, setShowUpload] = useState(false);
   const [newName, setNewName] = useState("");
@@ -59,7 +61,7 @@ export default function LibraryPage() {
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
 
   const handleUpload = async () => {
-    const file = fileRef.current?.files?.[0];
+    const file = selectedFile;
     if (!file || !newName.trim()) {
       setError("Name and file are required");
       return;
@@ -180,23 +182,15 @@ export default function LibraryPage() {
                       <option value="image">Disk Image</option>
                     </select>
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Format</label>
-                    <select style={inputStyle} value={newFormat} onChange={(e) => setNewFormat(e.target.value)}>
-                      {newType === "iso" ? (
-                        <option value="iso">ISO</option>
-                      ) : (
-                        <>
-                          <option value="qcow2">QCOW2</option>
-                          <option value="raw">Raw</option>
-                        </>
-                      )}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OS Variant (optional)</label>
-                  <input style={inputStyle} value={newOs} onChange={(e) => setNewOs(e.target.value)} placeholder="e.g. rhel10, win11" />
+                  {newType !== "iso" && (
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Format</label>
+                      <select style={inputStyle} value={newFormat} onChange={(e) => setNewFormat(e.target.value)}>
+                        <option value="qcow2">QCOW2</option>
+                        <option value="raw">Raw</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description (optional)</label>
@@ -204,7 +198,22 @@ export default function LibraryPage() {
                 </div>
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>File</label>
-                  <input type="file" ref={fileRef} accept=".iso,.qcow2,.raw,.img" style={{ fontSize: 13 }} />
+                  <FileUpload
+                    id="library-file-upload"
+                    value={selectedFile}
+                    filename={selectedFileName}
+                    onFileInputChange={(_e, file) => {
+                      setSelectedFile(file);
+                      setSelectedFileName(file.name);
+                      if (!newName.trim()) setNewName(file.name.replace(/\.[^.]+$/, ""));
+                    }}
+                    onClearClick={() => {
+                      setSelectedFile(null);
+                      setSelectedFileName("");
+                    }}
+                    browseButtonText="Browse"
+                    hideDefaultPreview
+                  />
                 </div>
                 <Button variant="primary" onClick={handleUpload} isLoading={uploading} isDisabled={uploading} style={{ alignSelf: "flex-start" }}>
                   {uploading ? uploadProgress : "Upload"}
@@ -238,7 +247,6 @@ export default function LibraryPage() {
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                   {formatSize(item.size_bytes)}
-                  {item.os_variant && ` · ${item.os_variant}`}
                   {item.description && ` · ${item.description}`}
                   {" · "}{new Date(item.created_at).toLocaleDateString()}
                 </div>

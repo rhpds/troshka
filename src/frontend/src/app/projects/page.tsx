@@ -34,6 +34,16 @@ interface Project {
 
 const API_BASE = "";
 
+const stateColors: Record<string, string> = {
+  draft: "#94a3b8",
+  deploying: "#fbbf24",
+  active: "#4ade80",
+  stopping: "#fbbf24",
+  starting: "#fbbf24",
+  stopped: "#f87171",
+  error: "#ef4444",
+};
+
 export default function ProjectsPage() {
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -111,7 +121,7 @@ export default function ProjectsPage() {
               <Title headingLevel="h1">Projects</Title>
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="primary" icon={<PlusCircleIcon />}>
+              <Button variant="primary" icon={<PlusCircleIcon />} onClick={createProject}>
                 New Project
               </Button>
             </ToolbarItem>
@@ -126,9 +136,19 @@ export default function ProjectsPage() {
               isClickable
               isSelectable
               onClick={() => router.push(`/projects/${p.id}`)}
+              style={{ border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 8 }}
             >
               <CardTitle style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                {p.name}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <strong>{p.name}</strong>
+                  <span style={{
+                    fontSize: 11, padding: "1px 6px", borderRadius: 4,
+                    background: `${stateColors[p.state] || "#94a3b8"}22`,
+                    color: stateColors[p.state] || "#94a3b8",
+                  }}>
+                    {p.state}
+                  </span>
+                </div>
                 <Button
                   variant="plain"
                   style={{ color: "var(--pf-t--global--color--status--danger--default)", padding: 4 }}
@@ -146,9 +166,9 @@ export default function ProjectsPage() {
                 >✕</Button>
               </CardTitle>
               <CardBody>
-                <p>{p.description || "No description"}</p>
-                <p style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-                  State: {p.state} &middot; {p.host_type}
+                <p style={{ fontSize: 13, opacity: 0.7 }}>{p.description || "No description"}</p>
+                <p style={{ marginTop: 8, fontSize: 11, opacity: 0.5 }}>
+                  {p.host_type} &middot; {new Date(p.created_at).toLocaleDateString()}
                 </p>
               </CardBody>
             </Card>
