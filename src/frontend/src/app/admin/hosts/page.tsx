@@ -95,21 +95,21 @@ export default function AdminHostsPage() {
   };
 
   const instanceTypes = [
-    { value: "c8i.large",   label: "c8i.large — 2 vCPU / 4 GB" },
-    { value: "c8i.xlarge",  label: "c8i.xlarge — 4 vCPU / 8 GB" },
-    { value: "c8i.2xlarge", label: "c8i.2xlarge — 8 vCPU / 16 GB" },
-    { value: "c8i.4xlarge", label: "c8i.4xlarge — 16 vCPU / 32 GB" },
-    { value: "m8i.large",   label: "m8i.large — 2 vCPU / 8 GB" },
-    { value: "m8i.xlarge",  label: "m8i.xlarge — 4 vCPU / 16 GB" },
-    { value: "m8i.2xlarge", label: "m8i.2xlarge — 8 vCPU / 32 GB" },
-    { value: "m8i.4xlarge", label: "m8i.4xlarge — 16 vCPU / 64 GB" },
-    { value: "m8i.8xlarge", label: "m8i.8xlarge — 32 vCPU / 128 GB" },
-    { value: "r8i.large",   label: "r8i.large — 2 vCPU / 16 GB" },
-    { value: "r8i.xlarge",  label: "r8i.xlarge — 4 vCPU / 32 GB" },
-    { value: "r8i.2xlarge", label: "r8i.2xlarge — 8 vCPU / 64 GB" },
-    { value: "r8i.4xlarge", label: "r8i.4xlarge — 16 vCPU / 128 GB" },
-    { value: "r8i.8xlarge", label: "r8i.8xlarge — 32 vCPU / 256 GB" },
-    { value: "r8i.24xlarge",label: "r8i.24xlarge — 96 vCPU / 768 GB" },
+    { value: "c8i.large",    label: "c8i.large — 2 vCPU / 4 GB — ~$0.085/hr" },
+    { value: "c8i.xlarge",   label: "c8i.xlarge — 4 vCPU / 8 GB — ~$0.170/hr" },
+    { value: "c8i.2xlarge",  label: "c8i.2xlarge — 8 vCPU / 16 GB — ~$0.340/hr" },
+    { value: "c8i.4xlarge",  label: "c8i.4xlarge — 16 vCPU / 32 GB — ~$0.680/hr" },
+    { value: "m8i.large",    label: "m8i.large — 2 vCPU / 8 GB — ~$0.096/hr" },
+    { value: "m8i.xlarge",   label: "m8i.xlarge — 4 vCPU / 16 GB — ~$0.192/hr" },
+    { value: "m8i.2xlarge",  label: "m8i.2xlarge — 8 vCPU / 32 GB — ~$0.384/hr" },
+    { value: "m8i.4xlarge",  label: "m8i.4xlarge — 16 vCPU / 64 GB — ~$0.768/hr" },
+    { value: "m8i.8xlarge",  label: "m8i.8xlarge — 32 vCPU / 128 GB — ~$1.536/hr" },
+    { value: "r8i.large",    label: "r8i.large — 2 vCPU / 16 GB — ~$0.126/hr" },
+    { value: "r8i.xlarge",   label: "r8i.xlarge — 4 vCPU / 32 GB — ~$0.252/hr" },
+    { value: "r8i.2xlarge",  label: "r8i.2xlarge — 8 vCPU / 64 GB — ~$0.504/hr" },
+    { value: "r8i.4xlarge",  label: "r8i.4xlarge — 16 vCPU / 128 GB — ~$1.008/hr" },
+    { value: "r8i.8xlarge",  label: "r8i.8xlarge — 32 vCPU / 256 GB — ~$2.016/hr" },
+    { value: "r8i.24xlarge", label: "r8i.24xlarge — 96 vCPU / 768 GB — ~$6.048/hr" },
   ];
 
   const awsRegions = [
