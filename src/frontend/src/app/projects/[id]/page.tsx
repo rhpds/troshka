@@ -95,7 +95,9 @@ export default function ProjectCanvasPage() {
       if (resp.ok) {
         setProjectState("deploying");
         useCanvasStore.setState({ topologyDirty: false });
-        showToast(`Deploying ${data.requirements.vm_count} VM(s) to ${data.host_ip}`);
+        const userStr = localStorage.getItem("troshka-user");
+        const isAdmin = userStr ? JSON.parse(userStr).role === "admin" : false;
+        showToast(`Deploying ${data.requirements.vm_count} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
       } else {
         alert(data.detail || "Deployment failed");
       }

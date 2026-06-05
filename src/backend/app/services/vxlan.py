@@ -107,12 +107,31 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
             "peers": peer_ips,
         }
 
-        # DHCP config
+        # DHCP config — auto-generate from CIDR if not explicitly set
         if net_config["dhcp_enabled"]:
+            range_start = data.get("dhcpRangeStart", "")
+            range_end = data.get("dhcpRangeEnd", "")
+            gateway = data.get("dhcpGateway", "")
+
+            net_cidr = data.get("cidr", "")
+            if net_cidr and (not range_start or not range_end or not gateway):
+                import ipaddress
+                try:
+                    network = ipaddress.ip_network(net_cidr, strict=False)
+                    hosts = list(network.hosts())
+                    if not gateway:
+                        gateway = str(hosts[0])
+                    if not range_start:
+                        range_start = str(hosts[min(9, len(hosts) - 2)])
+                    if not range_end:
+                        range_end = str(hosts[-1])
+                except (ValueError, IndexError):
+                    pass
+
             net_config["dhcp_config"] = {
-                "range_start": data.get("dhcpRangeStart", ""),
-                "range_end": data.get("dhcpRangeEnd", ""),
-                "gateway": data.get("dhcpGateway", ""),
+                "range_start": range_start,
+                "range_end": range_end,
+                "gateway": gateway,
                 "lease_time": data.get("dhcpLeaseTime", "24h"),
             }
 
@@ -283,6 +302,9 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                 int_port = pf.get("intPort", "")
                 if ext_port and int_ip and int_port:
                     gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat to {int_ip}:{int_port}")
+
+    if dhcp_cmds:
+        dhcp_cmds.append("systemctl restart dnsmasq")
 
     return AGENT_SETUP_SCRIPT.format(
         vxlan_commands="\n".join(vxlan_cmds) or "# No VXLAN networks",
