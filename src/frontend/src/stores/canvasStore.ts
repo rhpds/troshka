@@ -811,7 +811,7 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
-  if (state.projectState !== "draft" && state.projectState !== "stopped") return;
+  if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTopologyToApi(state.currentProjectId!, state);

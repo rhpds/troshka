@@ -396,24 +396,33 @@ def generate_reconfigure_script(project_id: str, topology: dict, vni_map: dict) 
 
         boot_xml = "".join(f"<boot dev='{d}'/>" for d in boot_devs)
 
+        boot_xml_lines = "".join(f"    <boot dev=\\'{d}\\'/>\n" for d in boot_devs)
+        mem_kib = vm['ram_gb'] * 1024 * 1024
+
         lines.append(f'echo "Reconfiguring {vm_name}"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
         lines.append(f"""
 TMPXML=$(mktemp)
 virsh dumpxml --inactive {vm_name} > $TMPXML
 
-# Update boot order
-sed -i '/<boot dev=/d' $TMPXML
-sed -i 's|<os>|<os>\\n    {boot_xml}|' $TMPXML
-
-# Update vcpus and memory
-sed -i "s|<vcpu[^>]*>[^<]*</vcpu>|<vcpu placement='static'>{vm['vcpus']}</vcpu>|" $TMPXML
-sed -i "s|<memory[^>]*>[^<]*</memory>|<memory unit='KiB'>{vm['ram_gb'] * 1024 * 1024}</memory>|" $TMPXML
-sed -i "s|<currentMemory[^>]*>[^<]*</currentMemory>|<currentMemory unit='KiB'>{vm['ram_gb'] * 1024 * 1024}</currentMemory>|" $TMPXML
+python3 -c "
+import re, sys
+xml = open('$TMPXML').read()
+# Remove existing boot lines
+xml = re.sub(r'\\s*<boot dev=[^/]*/>', '', xml)
+# Insert new boot lines after <type...>...</type>
+boot = '''{boot_xml_lines}'''
+xml = re.sub(r'(</type>)', r'\\1\\n' + boot, xml, count=1)
+# Update vcpus
+xml = re.sub(r'<vcpu[^>]*>[^<]*</vcpu>', '<vcpu placement=\"static\">{vm['vcpus']}</vcpu>', xml)
+# Update memory
+xml = re.sub(r'<memory[^>]*>[^<]*</memory>', '<memory unit=\"KiB\">{mem_kib}</memory>', xml)
+xml = re.sub(r'<currentMemory[^>]*>[^<]*</currentMemory>', '<currentMemory unit=\"KiB\">{mem_kib}</currentMemory>', xml)
+open('$TMPXML', 'w').write(xml)
+"
 
 virsh define $TMPXML
 rm -f $TMPXML
-
 virsh start {vm_name}
 echo "{vm_name} reconfigured and started"
 """)
@@ -521,16 +530,28 @@ def generate_incremental_script(
             boot_devs = ["hd"]
         boot_xml = "".join(f"<boot dev='{bd}'/>" for bd in boot_devs)
 
+        boot_xml_lines2 = "".join(f"    <boot dev=\\'{bd}\\'/>\n" for bd in boot_devs)
+        mem_kib2 = d.get('ram', 4) * 1024 * 1024
+        vcpus2 = d.get('vcpus', 2)
+
         lines.append(f'echo "Reconfiguring {vm_name}"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
         lines.append(f"""
 TMPXML=$(mktemp)
 virsh dumpxml --inactive {vm_name} > $TMPXML
-sed -i '/<boot dev=/d' $TMPXML
-sed -i 's|<os>|<os>\\n    {boot_xml}|' $TMPXML
-sed -i "s|<vcpu[^>]*>[^<]*</vcpu>|<vcpu placement=\\'static\\'>{d.get('vcpus', 2)}</vcpu>|" $TMPXML
-sed -i "s|<memory[^>]*>[^<]*</memory>|<memory unit=\\'KiB\\'>{d.get('ram', 4) * 1024 * 1024}</memory>|" $TMPXML
-sed -i "s|<currentMemory[^>]*>[^<]*</currentMemory>|<currentMemory unit=\\'KiB\\'>{d.get('ram', 4) * 1024 * 1024}</currentMemory>|" $TMPXML
+
+python3 -c "
+import re
+xml = open('$TMPXML').read()
+xml = re.sub(r'\\s*<boot dev=[^/]*/>', '', xml)
+boot = '''{boot_xml_lines2}'''
+xml = re.sub(r'(</type>)', r'\\1\\n' + boot, xml, count=1)
+xml = re.sub(r'<vcpu[^>]*>[^<]*</vcpu>', '<vcpu placement=\"static\">{vcpus2}</vcpu>', xml)
+xml = re.sub(r'<memory[^>]*>[^<]*</memory>', '<memory unit=\"KiB\">{mem_kib2}</memory>', xml)
+xml = re.sub(r'<currentMemory[^>]*>[^<]*</currentMemory>', '<currentMemory unit=\"KiB\">{mem_kib2}</currentMemory>', xml)
+open('$TMPXML', 'w').write(xml)
+"
+
 virsh define $TMPXML
 rm -f $TMPXML
 virsh start {vm_name}

@@ -41,6 +41,16 @@ else
 fi
 systemctl enable --now nftables
 
+# Allow ec2-user to manage libvirt without polkit agent
+usermod -aG libvirt ec2-user
+cat > /etc/polkit-1/rules.d/50-libvirt.rules << 'POLKITEOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.libvirt") == 0 && subject.isInGroup("libvirt")) {
+        return polkit.Result.YES;
+    }
+});
+POLKITEOF
+
 # Create directories
 mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /etc/troshka-agent /opt/troshka-agent
 

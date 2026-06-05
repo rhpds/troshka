@@ -13,8 +13,9 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, generate_reconfigure_script, diff_topologies, generate_incremental_script
+from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, generate_reconfigure_script, diff_topologies, generate_incremental_script, _resolve_boot_devs, _extract_vms
 from app.services.vxlan import generate_setup_script
+from app.services import libvirt_mgr
 from app.services.console_proxy import get_or_create_proxy
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -199,8 +200,11 @@ def start_vm(project_id: str, vm_name: str, user: User = Depends(get_current_use
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh start {shlex.quote(full_name)}", timeout=30)
-    return {"vm": full_name, "action": "start", "success": result["success"], "output": result["output"]}
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        return {"vm": full_name, "action": "start", "success": libvirt_mgr.start_vm(conn, full_name)}
+    finally:
+        conn.close()
 
 
 @router.post("/{project_id}/vms/{vm_name}/stop")
@@ -208,9 +212,11 @@ def stop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    qname = shlex.quote(full_name)
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh shutdown {qname} && echo SENT", timeout=15)
-    return {"vm": full_name, "action": "stop", "success": result["success"], "output": result["output"]}
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        return {"vm": full_name, "action": "stop", "success": libvirt_mgr.shutdown_vm(conn, full_name)}
+    finally:
+        conn.close()
 
 
 @router.get("/{project_id}/vms/{vm_name}/status")
@@ -218,15 +224,12 @@ def get_vm_status(project_id: str, vm_name: str, user: User = Depends(get_curren
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh domstate {shlex.quote(full_name)}", timeout=15)
-    state = ""
-    if result["success"]:
-        for line in result["output"].strip().split("\n"):
-            line = line.strip()
-            if line in ("running", "shut off", "paused", "crashed", "dying"):
-                state = line
-                break
-    return {"vm": full_name, "state": state}
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        state = libvirt_mgr.get_vm_state(conn, full_name)
+        return {"vm": full_name, "state": state}
+    finally:
+        conn.close()
 
 
 @router.post("/{project_id}/vms/{vm_name}/forcestop")
@@ -234,8 +237,11 @@ def forcestop_vm(project_id: str, vm_name: str, user: User = Depends(get_current
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh destroy {shlex.quote(full_name)}", timeout=30)
-    return {"vm": full_name, "action": "forcestop", "success": result["success"], "output": result["output"]}
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        return {"vm": full_name, "action": "forcestop", "success": libvirt_mgr.destroy_vm(conn, full_name)}
+    finally:
+        conn.close()
 
 
 @router.post("/{project_id}/vms/{vm_name}/restart")
@@ -243,9 +249,11 @@ def restart_vm(project_id: str, vm_name: str, user: User = Depends(get_current_u
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    qname = shlex.quote(full_name)
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh reboot {qname} && echo SENT", timeout=15)
-    return {"vm": full_name, "action": "restart", "success": result["success"], "output": result["output"]}
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        return {"vm": full_name, "action": "restart", "success": libvirt_mgr.reboot_vm(conn, full_name)}
+    finally:
+        conn.close()
 
 
 @router.get("/{project_id}/vms/{vm_name}/console")
@@ -253,22 +261,16 @@ def get_vm_console(project_id: str, vm_name: str, user: User = Depends(get_curre
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
     full_name = f"troshka-{project_id[:8]}-{vm_name}"
-    result = run_ssh_script(host.ip_address, host.private_key, f"virsh vncdisplay {shlex.quote(full_name)}", timeout=15)
-    vnc_display = ""
-    if result["success"]:
-        for line in result["output"].strip().split("\n"):
-            line = line.strip()
-            if line.startswith(":") or line.startswith("0.0.0.0:") or line.startswith("127.0.0.1:"):
-                vnc_display = line
-                break
-    vnc_port = ""
-    if ":" in vnc_display:
-        display_num = vnc_display.split(":")[-1]
-        vnc_port = str(5900 + int(display_num))
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        vnc_port = libvirt_mgr.get_vnc_port(conn, full_name)
+    finally:
+        conn.close()
+
     if not vnc_port:
         return {"vm": full_name, "error": "VNC not available"}
 
-    proxy = get_or_create_proxy(full_name, host.ip_address, host.private_key, int(vnc_port))
+    proxy = get_or_create_proxy(full_name, host.ip_address, host.private_key, vnc_port)
     if "error" in proxy:
         return {"vm": full_name, "error": proxy["error"]}
 
@@ -300,26 +302,18 @@ def reconfigure_project(
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
 
-    deployed = project.deployed_topology or {}
     current = project.topology or {}
-
-    if not deployed:
-        return {"status": "failed", "output": "No previous deployment to compare against. Use Republish."}
-
-    diff = diff_topologies(current, deployed)
-    if not diff["has_changes"]:
-        return {"status": "no_changes"}
-
-    # For new networks, allocate VNIs
+    deployed = project.deployed_topology or {}
     vni_map = dict(project.vni_map or {})
+
+    diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
+
+    # For new networks, allocate VNIs and set up VXLAN
     if diff["added_networks"]:
         from app.services.vxlan import allocate_vni
         for net_node in diff["added_networks"]:
             if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
                 vni_map[net_node["id"]] = allocate_vni(db)
-
-    # For new networks, set up VXLAN
-    if diff["added_networks"]:
         from app.services.vxlan import build_host_network_config
         all_hosts = db.query(Host).filter(Host.state == "active").all()
         peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
@@ -329,25 +323,56 @@ def reconfigure_project(
         if not net_result["success"]:
             return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
 
-    script = generate_incremental_script(project_id, current, diff, vni_map)
-    result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
+    # Use libvirt to reconfigure all existing VMs and add/remove as needed
+    prefix = f"troshka-{project_id[:8]}"
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    errors = []
+    try:
+        # Remove deleted VMs
+        for node in diff["removed_vms"]:
+            vm_name = f"{prefix}-{node['data']['name']}"
+            if not libvirt_mgr.undefine_vm(conn, vm_name):
+                errors.append(f"Failed to remove {vm_name}")
 
-    if result["success"]:
-        # Update capacity for added/removed VMs
-        added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
-        added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
-        removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
-        removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
-        host.used_vcpus = max(0, host.used_vcpus + added_vcpus - removed_vcpus)
-        host.used_ram_mb = max(0, host.used_ram_mb + added_ram - removed_ram)
+        # Reconfigure all existing VMs (force sync boot order, CPU, RAM)
+        vms = _extract_vms(current)
+        added_ids = {n["id"] for n in diff["added_vms"]}
+        removed_ids = {n["id"] for n in diff["removed_vms"]}
+        for vm in vms:
+            if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+                continue
+            vm_name = f"{prefix}-{vm['name']}"
+            boot_devs = _resolve_boot_devs(vm, current)
+            if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024):
+                errors.append(f"Failed to reconfigure {vm_name}")
 
-        project.deployed_topology = current
-        project.vni_map = vni_map
-        project.state = "active"
-        db.commit()
-        return {"status": "reconfigured", "output": result["output"]}
-    else:
-        return {"status": "failed", "output": result["output"]}
+        # Add new VMs via SSH (virt-install not available via libvirt API)
+        if diff["added_vms"]:
+            from app.services.deploy_service import generate_incremental_script
+            add_diff = {"added_vms": diff["added_vms"], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
+            script = generate_incremental_script(project_id, current, add_diff, vni_map)
+            result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
+            if not result["success"]:
+                errors.append(f"Failed to add VMs: {result['output'][-300:]}")
+    finally:
+        conn.close()
+
+    # Update capacity
+    added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
+    added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
+    removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
+    removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
+    host.used_vcpus = max(0, host.used_vcpus + added_vcpus - removed_vcpus)
+    host.used_ram_mb = max(0, host.used_ram_mb + added_ram - removed_ram)
+
+    project.deployed_topology = current
+    project.vni_map = vni_map
+    project.state = "active"
+    db.commit()
+
+    if errors:
+        return {"status": "partial", "errors": errors}
+    return {"status": "reconfigured"}
 
 
 @router.post("/{project_id}/redeploy")
