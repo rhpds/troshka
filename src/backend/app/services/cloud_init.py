@@ -31,13 +31,21 @@ def generate_userdata(vm_data: dict) -> str:
 
     root_pw = vm_data.get("ciRootPassword", "")
     if root_pw:
+        import crypt
+        pw_hash = crypt.crypt(root_pw, crypt.mksalt(crypt.METHOD_SHA512))
         lines.append("chpasswd:")
         lines.append("  expire: false")
-        lines.append("  list: |")
-        lines.append(f"    root:{root_pw}")
+        lines.append("  users:")
+        lines.append("    - name: root")
+        lines.append(f"      password: '{pw_hash}'")
+        lines.append(f"      type: HASH")
         lines.append("ssh_pwauth: true")
 
     lines.append("disable_root: false")
+
+    lines.append("runcmd:")
+    lines.append("  - eject /dev/sr0 2>/dev/null || true")
+    lines.append("  - eject /dev/sr1 2>/dev/null || true")
 
     custom = vm_data.get("ciUserData", "").strip()
     if custom:
