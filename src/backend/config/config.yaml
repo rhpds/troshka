@@ -29,8 +29,16 @@ s3:
   endpoint_url: ""
 
 aws:
+  profile: ""
+  access_key_id: ""
+  secret_access_key: ""
   default_region: "us-east-1"
   default_instance_type: "r8i.4xlarge"
+  default_ami: ""
+  vpc_id: ""
+  subnet_id: ""
+  security_group_id: ""
+  key_pair_name: ""
 
 defaults:
   run_timer_hours: 8

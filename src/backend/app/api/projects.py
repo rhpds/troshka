@@ -6,6 +6,7 @@ from app.core.database import get_db
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
+from app.services.placement import place_project, calculate_project_requirements
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -75,6 +76,38 @@ def update_project(
     db.commit()
     db.refresh(project)
     return project
+
+
+@router.post("/{project_id}/deploy")
+def deploy_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state != "draft":
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, not draft")
+    if not project.topology:
+        raise HTTPException(status_code=400, detail="Project has no topology")
+
+    reqs = calculate_project_requirements(project.topology)
+    if reqs["vm_count"] == 0:
+        raise HTTPException(status_code=400, detail="Project has no VMs")
+
+    result = place_project(db, project)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+
+    return {
+        "status": "deploying",
+        "host_id": result["host_id"],
+        "host_ip": result["host_ip"],
+        "requirements": result["requirements"],
+    }
 
 
 @router.delete("/{project_id}", status_code=204)

@@ -1,0 +1,43 @@
+---
+# Dev environment configuration for troshka host provisioning
+#
+# AWS credentials are read from src/backend/config/config.local.yaml
+# so there's one source of truth. No credentials in this file.
+
+# Networking
+use_default_vpc: true
+
+# EC2 instance
+instance_type: m8i.xlarge
+instance_name: troshka-host-dev
+key_pair_name: troshka-dev
+
+# RHEL 9 AMI (Access2 = Cloud Access / gold image)
+# Set to "auto" to find the latest RHEL 9.4 Access2 AMI automatically
+ami_id: auto
+ami_name_pattern: "RHEL-9.4*x86_64*Access2-GP3"
+ami_owner: "309956199498"
+
+# Security group
+security_group_name: troshka-host-sg
+security_group_description: "Troshka host agent"
+
+security_group_rules:
+  - proto: tcp
+    ports: 22
+    cidr_ip: "0.0.0.0/0"
+    description: "SSH access"
+  - proto: tcp
+    ports: 8443
+    cidr_ip: "0.0.0.0/0"
+    description: "Troshka agent WebSocket"
+
+# Root volume
+root_volume_size: 50
+root_volume_type: gp3
+
+# Tags
+tags:
+  Project: troshka
+  Environment: dev
+  ManagedBy: ansible

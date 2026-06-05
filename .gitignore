@@ -53,3 +53,5 @@ secrets/
 .playwright-mcp/
 troshka.db*
 mockup.html
+ansible/vars/dev.yml
+ansible/vars/*-host.yml

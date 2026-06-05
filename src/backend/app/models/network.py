@@ -21,6 +21,7 @@ class Network(Base):
     dns_upstream: Mapped[bool] = mapped_column(Boolean, default=False)
     pxe_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     pxe_profile_id: Mapped[str | None] = mapped_column(String(36))
+    vni: Mapped[int | None] = mapped_column(Integer, unique=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

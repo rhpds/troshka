@@ -56,17 +56,18 @@ export default function ProjectCanvasPage() {
     )) return;
 
     try {
-      const resp = await fetch(`/api/v1/projects/${projectId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: "deploying" }),
+      const resp = await fetch(`/api/v1/projects/${projectId}/deploy`, {
+        method: "POST",
       });
+      const data = await resp.json();
       if (resp.ok) {
         setProjectState("deploying");
-        alert("Deployment started! (Backend provisioning not yet implemented — coming in Phase 5)");
+        alert(`Deployment started!\n\nHost: ${data.host_ip}\nVMs: ${data.requirements.vm_count}\nvCPUs: ${data.requirements.total_vcpus}\nRAM: ${data.requirements.total_ram_mb} MB`);
+      } else {
+        alert(data.detail || "Deployment failed");
       }
     } catch {
-      alert("Failed to start deployment");
+      alert("Failed to connect to server");
     }
   };
 
