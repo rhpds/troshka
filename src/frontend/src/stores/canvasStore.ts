@@ -406,11 +406,19 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   loadProject: (projectId) => {
     const current = get().currentProjectId;
-    if (current) {
-      _saveTopologyToApi(current, get());
-    }
+
     _loadingProject = true;
-    set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], selectedNodeId: null });
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+
+    // Only save+clear when switching to a different project
+    if (current && current !== projectId) {
+      if (get().nodes.length > 0) {
+        _saveTopologyToApi(current, get());
+      }
+      set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], selectedNodeId: null });
+    } else {
+      set({ currentProjectId: projectId });
+    }
 
     fetch(`/api/v1/projects/${projectId}`)
       .then((r) => r.ok ? r.json() : null)
@@ -825,7 +833,10 @@ useCanvasStore.subscribe((state) => {
   if (state.nodes.length === 0) return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
-    _lastSavedNodeCount = state.nodes.length;
-    _saveTopologyToApi(state.currentProjectId!, state);
+    if (_loadingProject) return;
+    const s = useCanvasStore.getState();
+    if (s.nodes.length === 0) return;
+    _lastSavedNodeCount = s.nodes.length;
+    _saveTopologyToApi(s.currentProjectId!, s);
   }, 1000);
 });

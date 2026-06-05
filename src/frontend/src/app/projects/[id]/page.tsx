@@ -23,8 +23,12 @@ export default function ProjectCanvasPage() {
   const [projectState, setProjectState] = useState("draft");
 
   useEffect(() => {
-    if (projectId && projectId !== currentProjectId) {
-      loadProject(projectId);
+    if (projectId) {
+      // Always reload if nodes are empty (e.g., returning from another page)
+      const store = useCanvasStore.getState();
+      if (projectId !== currentProjectId || store.nodes.length === 0) {
+        loadProject(projectId);
+      }
     }
   }, [projectId, currentProjectId, loadProject]);
 
