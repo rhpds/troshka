@@ -30,6 +30,7 @@ export default function AdminProvidersPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState<Record<string, string>>({});
+  const [amiResult, setAmiResult] = useState<Record<string, string>>({});
 
   const [name, setName] = useState("");
   const [type, setType] = useState("ec2");
@@ -110,6 +111,18 @@ export default function AdminProvidersPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to update");
+    }
+  };
+
+  const discoverAmi = async (id: string) => {
+    setAmiResult((prev) => ({ ...prev, [id]: "discovering..." }));
+    const resp = await fetch(`/api/v1/providers/${id}/discover-ami`, { method: "POST" });
+    if (resp.ok) {
+      const data = await resp.json();
+      setAmiResult((prev) => ({ ...prev, [id]: `${data.ami_id} (${data.name})` }));
+      loadProviders();
+    } else {
+      setAmiResult((prev) => ({ ...prev, [id]: "FAILED — no AMI found" }));
     }
   };
 
@@ -244,15 +257,27 @@ export default function AdminProvidersPage() {
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                       {p.default_region} · {p.host_count} host{p.host_count !== 1 ? "s" : ""}
+                      {(p as Record<string, unknown>).default_ami && (
+                        <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
+                      )}
+                      {!(p as Record<string, unknown>).default_ami && (
+                        <span style={{ color: "#fbbf24" }}> · ⚠ No AMI set</span>
+                      )}
                     </div>
                     {testResult[p.id] && (
                       <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].startsWith("OK") ? "#4ade80" : "#f87171" }}>
                         {testResult[p.id]}
                       </div>
                     )}
+                    {amiResult[p.id] && (
+                      <div style={{ fontSize: 11, marginTop: 4, color: amiResult[p.id].startsWith("ami-") ? "#4ade80" : "#f87171" }}>
+                        AMI: {amiResult[p.id]}
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
+                    <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}

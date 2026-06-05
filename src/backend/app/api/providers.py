@@ -17,6 +17,7 @@ class ProviderCreate(BaseModel):
     name: str
     type: str
     default_region: str
+    default_ami: str = ""
     access_key_id: str
     secret_access_key: str
 
@@ -24,6 +25,7 @@ class ProviderCreate(BaseModel):
 class ProviderUpdate(BaseModel):
     name: str | None = None
     default_region: str | None = None
+    default_ami: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
     state: str | None = None
@@ -34,6 +36,7 @@ class ProviderResponse(BaseModel):
     name: str
     type: str
     default_region: str | None
+    default_ami: str | None
     state: str
     has_credentials: bool
     host_count: int
@@ -51,6 +54,7 @@ def list_providers(user: User = Depends(require_role("admin")), db: Session = De
             name=p.name,
             type=p.type,
             default_region=p.default_region,
+            default_ami=p.default_ami,
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -70,6 +74,7 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
         name=body.name,
         type=body.type,
         default_region=body.default_region,
+        default_ami=body.default_ami or None,
         created_by=user.email,
     )
     provider.set_credentials({
@@ -85,6 +90,7 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
         name=provider.name,
         type=provider.type,
         default_region=provider.default_region,
+        default_ami=provider.default_ami,
         state=provider.state,
         has_credentials=True,
         host_count=0,
@@ -102,6 +108,8 @@ def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends
         provider.name = body.name
     if body.default_region is not None:
         provider.default_region = body.default_region
+    if body.default_ami is not None:
+        provider.default_ami = body.default_ami
     if body.state is not None:
         provider.state = body.state
 
@@ -121,6 +129,7 @@ def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends
         name=provider.name,
         type=provider.type,
         default_region=provider.default_region,
+        default_ami=provider.default_ami,
         state=provider.state,
         has_credentials=bool(provider.credentials),
         host_count=len(provider.hosts),
@@ -137,6 +146,51 @@ def delete_provider(provider_id: str, user: User = Depends(require_role("admin")
         raise HTTPException(status_code=409, detail="Provider has hosts — remove them first")
     db.delete(provider)
     db.commit()
+
+
+@router.post("/{provider_id}/discover-ami")
+def discover_ami(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Find the latest RHEL 9 Access2 AMI in the provider's region and save it."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    creds = provider.get_credentials()
+    try:
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+        response = ec2.describe_images(
+            Owners=["309956199498"],
+            Filters=[
+                {"Name": "name", "Values": ["RHEL-9.4*x86_64*Access2-GP3"]},
+                {"Name": "state", "Values": ["available"]},
+            ],
+        )
+        images = sorted(response["Images"], key=lambda x: x["CreationDate"])
+        if not images:
+            raise HTTPException(status_code=404, detail="No RHEL 9.4 Access2 AMI found in this region")
+
+        ami = images[-1]
+        provider.default_ami = ami["ImageId"]
+        db.commit()
+
+        return {
+            "ami_id": ami["ImageId"],
+            "name": ami["Name"],
+            "created": ami["CreationDate"],
+            "region": provider.default_region,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("AMI discovery failed for %s", provider.name)
+        raise HTTPException(status_code=500, detail="AMI discovery failed. Check server logs.")
 
 
 @router.post("/{provider_id}/test")

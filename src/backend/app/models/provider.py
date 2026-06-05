@@ -17,6 +17,7 @@ class Provider(Base):
     type: Mapped[str] = mapped_column(String(20))
     credentials: Mapped[str | None] = mapped_column(Text)
     default_region: Mapped[str | None] = mapped_column(String(100))
+    default_ami: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(20), default="active")
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime.datetime] = mapped_column(
