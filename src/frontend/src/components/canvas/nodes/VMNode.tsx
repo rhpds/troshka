@@ -159,6 +159,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       <div className="vm-node-header">
         <div className="vm-node-icon">{d.icon || "🖥"}</div>
         <span className="vm-node-title">{d.name}</span>
+        {(actionPending || d.status === "redeploying") ? (
+          <span className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
+        ) : (
         <span
           className="vm-node-status-dot"
           style={{
@@ -168,6 +171,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             boxShadow: isRunning ? "0 0 6px var(--troshka-green)" : "none",
           }}
         />
+        )}
       </div>
 
       {/* Specs */}
@@ -178,7 +182,16 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           <span className="vm-node-spec-label">RAM</span>
           <span className="vm-node-spec-val">{d.ram} GB</span>
           <span className="vm-node-spec-label">OS</span>
-          <span className="vm-node-spec-val">{d.os}</span>
+          <span className="vm-node-spec-val">{
+            { rhel10: "RHEL 10", rhel9: "RHEL 9", rhel8: "RHEL 8", rhel7: "RHEL 7",
+              "centos-stream10": "CentOS 10", "centos-stream9": "CentOS 9",
+              almalinux9: "Alma 9", rocky9: "Rocky 9",
+              fedora42: "Fedora 42", fedora41: "Fedora 41", fedora40: "Fedora 40",
+              ubuntu2404: "Ubuntu 24.04", ubuntu2204: "Ubuntu 22.04",
+              debian12: "Debian 12", win11: "Win 11", win10: "Win 10",
+              win2022: "WinSrv 2022", win2019: "WinSrv 2019",
+            }[d.os] || d.os
+          }</span>
         </div>
 
         {/* Boot order badge */}

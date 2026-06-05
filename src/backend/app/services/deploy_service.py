@@ -742,7 +742,14 @@ def deploy_project_async(project_id: str):
             s.commit()
             return
 
-        # Step 2: Prepare library image presigned URLs
+        # Step 2: Start cloud-init metadata service
+        from app.services.cloud_init import generate_metadata_service_script
+        meta_script = generate_metadata_service_script(project_id, topology, vni_map)
+        if meta_script:
+            logger.info("Deploy %s: starting metadata service", project_id[:8])
+            run_ssh_script(host_ip, private_key, meta_script, timeout=30)
+
+        # Step 3: Prepare library image presigned URLs
         _prepare_library_downloads(topology, host_ip, private_key, s)
 
         # Step 3: Create VMs

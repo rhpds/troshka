@@ -78,6 +78,12 @@ function validateDhcpRangeFull(cidr: string, start: string, end: string, gateway
   return errors;
 }
 
+interface SshKeyOption {
+  id: number;
+  name: string;
+  public_key: string;
+}
+
 export default function PropertiesPanel() {
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
@@ -85,6 +91,15 @@ export default function PropertiesPanel() {
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const [showLibraryPicker, setShowLibraryPicker] = useState<"iso" | "image" | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
+
+  React.useEffect(() => {
+    fetch("/api/v1/auth/ssh-keys")
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setSshKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
 
   const node = nodes.find((n) => n.id === selectedNodeId);
 
@@ -369,6 +384,56 @@ export default function PropertiesPanel() {
                 Cloud-init enabled
               </label>
             </div>
+            {(data as unknown as VMNodeData).cloudInit && useCanvasStore.getState().deployedVmIds.has(node.id) && (
+              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
+                Cloud-init runs on first boot only. Changes here require Republish to take effect.
+              </span>
+            )}
+            {(data as unknown as VMNodeData).cloudInit && (
+              <>
+                <div className="props-field">
+                  <label className="props-label">Hostname</label>
+                  <input className="props-input" value={(data as Record<string, unknown>).ciHostname as string || ""} onChange={(e) => update("ciHostname", e.target.value)} placeholder={`${(data as unknown as VMNodeData).name}`} />
+                </div>
+                <div className="props-field">
+                  <label className="props-label">Root Password</label>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, unknown>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
+                      {showPassword ? "🙈" : "👁"}
+                    </button>
+                  </div>
+                </div>
+                <div className="props-field">
+                  <label className="props-label">SSH Keys</label>
+                  {sshKeys.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {sshKeys.map((k) => {
+                        const selectedIds: number[] = (data as Record<string, unknown>).ciSshKeyIds as number[] || [];
+                        const isSelected = selectedIds.includes(k.id);
+                        return (
+                          <label key={k.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                            <input type="checkbox" checked={isSelected} onChange={() => {
+                              const newIds = isSelected ? selectedIds.filter((id) => id !== k.id) : [...selectedIds, k.id];
+                              const newKeys = sshKeys.filter((sk) => newIds.includes(sk.id)).map((sk) => sk.public_key);
+                              update("ciSshKeyIds", newIds);
+                              update("ciSshKeys", newKeys);
+                            }} />
+                            {k.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>No SSH keys configured. Add one in Settings.</span>
+                  )}
+                </div>
+                <div className="props-field">
+                  <label className="props-label">Custom User-Data (YAML)</label>
+                  <textarea className="props-input" style={{ minHeight: 60, fontFamily: "monospace", fontSize: 11 }} value={(data as Record<string, unknown>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
+                </div>
+              </>
+            )}
           </div>
           <div className="props-divider" />
 
@@ -1160,6 +1225,35 @@ export default function PropertiesPanel() {
           </>
         );
       })()}
+
+      {/* Redeploy VM button */}
+      {nodeType === "vmNode" && useCanvasStore.getState().deployedVmIds.has(node.id) && (
+        <>
+          <div className="props-divider" />
+          <div className="props-section">
+            <button
+              className="props-library-btn"
+              style={{ color: "#ef4444", borderColor: "#ef4444" }}
+              onClick={async () => {
+                const vmName = (data as unknown as VMNodeData).name;
+                if (!window.confirm(`Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`)) return;
+                const projectId = useCanvasStore.getState().currentProjectId;
+                updateNodeData(node.id, { status: "redeploying" });
+                const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
+                const result = await resp.json();
+                if (result.status === "redeployed") {
+                  updateNodeData(node.id, { status: "running" });
+                } else {
+                  updateNodeData(node.id, { status: "stopped" });
+                  alert(`Redeploy failed: ${result.output || result.error || "unknown error"}`);
+                }
+              }}
+            >
+              🔄 Redeploy This VM
+            </button>
+          </div>
+        </>
+      )}
 
       {/* Delete button */}
       <div className="props-divider" />

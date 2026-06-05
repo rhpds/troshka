@@ -325,6 +325,12 @@ def reconfigure_project(
     if not net_result["success"]:
         return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
 
+    # Update cloud-init metadata service
+    from app.services.cloud_init import generate_metadata_service_script
+    meta_script = generate_metadata_service_script(project_id, current, vni_map)
+    if meta_script:
+        run_ssh_script(host.ip_address, host.private_key, meta_script, timeout=30)
+
     # Use libvirt to reconfigure all existing VMs and add/remove as needed
     prefix = f"troshka-{project_id[:8]}"
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
@@ -427,6 +433,68 @@ def reconfigure_project(
     if errors:
         return {"status": "partial", "errors": errors}
     return {"status": "reconfigured"}
+
+
+@router.post("/{project_id}/vms/{vm_name}/redeploy")
+def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Destroy and recreate a single VM without touching others."""
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    prefix = f"troshka-{project_id[:8]}"
+    full_name = f"{prefix}-{vm_name}"
+    vni_map = project.vni_map or {}
+    topology = project.topology
+
+    # Check current state before destroying
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    was_running = False
+    try:
+        was_running = libvirt_mgr.get_vm_state(conn, full_name) == "running"
+        libvirt_mgr.undefine_vm(conn, full_name)
+    finally:
+        conn.close()
+
+    # Delete its disk files
+    run_ssh_script(host.ip_address, host.private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
+
+    # Prepare library downloads
+    from app.services.deploy_service import _prepare_library_downloads, generate_incremental_script
+    _prepare_library_downloads(topology, host.ip_address, host.private_key, db)
+
+    # Find this VM's node
+    vm_node = None
+    for n in topology.get("nodes", []):
+        if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name:
+            vm_node = n
+            break
+    if not vm_node:
+        return {"status": "failed", "error": "VM not found in topology"}
+
+    # Recreate just this VM
+    diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
+    script = generate_incremental_script(project_id, topology, diff, vni_map)
+    result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
+
+    # Restore previous state
+    if was_running:
+        conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+        try:
+            libvirt_mgr.start_vm(conn, full_name)
+        finally:
+            conn.close()
+
+    # Restart metadata service
+    from app.services.cloud_init import generate_metadata_service_script
+    meta_script = generate_metadata_service_script(project_id, topology, vni_map)
+    if meta_script:
+        run_ssh_script(host.ip_address, host.private_key, meta_script, timeout=30)
+
+    if result["success"]:
+        project.deployed_topology = topology
+        db.commit()
+        return {"status": "redeployed", "vm": full_name}
+    else:
+        return {"status": "failed", "output": result["output"][-300:]}
 
 
 @router.post("/{project_id}/redeploy")

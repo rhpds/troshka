@@ -14,7 +14,16 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const hideNode = useCanvasStore((s) => s.hideNode);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
+  const projectId = useCanvasStore((s) => s.currentProjectId);
   const ref = useRef<HTMLDivElement>(null);
+
+  const node = nodes.find((n) => n.id === nodeId);
+  const isVm = node?.type === "vmNode";
+  const isDeployed = isVm && deployedVmIds.has(nodeId);
+  const vmName = isVm ? (node?.data as Record<string, unknown>).name as string : "";
+  const isRunning = isVm && (node?.data as Record<string, unknown>).status === "running";
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -30,12 +39,51 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       className="node-context-menu"
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
+      {isDeployed && isRunning && (
+        <>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/stop`, { method: "POST" }); onClose(); }}>
+            ■ Graceful Shutdown
+          </button>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/forcestop`, { method: "POST" }); onClose(); }}>
+            ⏻ Force Power Off
+          </button>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/restart`, { method: "POST" }); onClose(); }}>
+            ↻ Restart
+          </button>
+        </>
+      )}
+      {isDeployed && !isRunning && (
+        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/start`, { method: "POST" }); onClose(); }}>
+          ▶ Start
+        </button>
+      )}
+      {isDeployed && (
+        <button onClick={() => {
+          window.open(`/console?vm=${encodeURIComponent(vmName)}&project=${projectId}`, `console-${vmName}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
+          onClose();
+        }}>
+          🖥 Console
+        </button>
+      )}
       <button onClick={() => { duplicateNode(nodeId); onClose(); }}>
         ⧉ Duplicate
       </button>
       <button onClick={() => { hideNode(nodeId); onClose(); }}>
         👁 Hide
       </button>
+      {isDeployed && (
+        <button className="danger" onClick={() => {
+          onClose();
+          setTimeout(async () => {
+            if (!window.confirm(`Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`)) return;
+            const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
+            const result = await resp.json();
+            if (result.status !== "redeployed") alert(`Redeploy failed: ${result.output || result.error || "unknown"}`);
+          }, 50);
+        }}>
+          🔄 Redeploy VM
+        </button>
+      )}
       <button onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
         ✕ Delete
       </button>

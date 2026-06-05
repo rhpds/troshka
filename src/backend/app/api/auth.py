@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import create_jwt, get_current_user, role_for_email
 from app.core.config import config
 from app.core.database import get_db
-from app.models.user import User
+from app.models.user import User, UserSshKey
 from app.schemas.auth import LoginResponse, UserIdentity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -64,3 +64,41 @@ def dev_token_with_role(role: str, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserIdentity)
 def auth_me(user: User = Depends(get_current_user)):
     return UserIdentity.model_validate(user)
+
+
+# ── SSH Keys ──
+
+from pydantic import BaseModel
+
+
+class SshKeyCreate(BaseModel):
+    name: str
+    public_key: str
+
+
+@router.get("/ssh-keys")
+def list_ssh_keys(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    keys = db.query(UserSshKey).filter_by(user_id=user.id).order_by(UserSshKey.created_at).all()
+    return [{"id": k.id, "name": k.name, "public_key": k.public_key, "created_at": str(k.created_at)} for k in keys]
+
+
+@router.post("/ssh-keys", status_code=201)
+def add_ssh_key(body: SshKeyCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    import re
+    pk = body.public_key.strip()
+    if not re.match(r'^(ssh-(rsa|ed25519|dss|ecdsa-sha2-nistp(256|384|521))|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+', pk):
+        raise HTTPException(status_code=400, detail="Invalid SSH public key format. Must start with ssh-rsa, ssh-ed25519, etc.")
+    key = UserSshKey(user_id=user.id, name=body.name, public_key=pk)
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return {"id": key.id, "name": key.name}
+
+
+@router.delete("/ssh-keys/{key_id}", status_code=204)
+def delete_ssh_key(key_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    key = db.query(UserSshKey).filter_by(id=key_id, user_id=user.id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Key not found")
+    db.delete(key)
+    db.commit()

@@ -144,6 +144,91 @@ export default function SettingsPage() {
           </Card>
         ))}
       </PageSection>
+      <PageSection>
+        <SshKeysSection />
+      </PageSection>
+    </>
+  );
+}
+
+function SshKeysSection() {
+  const [keys, setSshKeys] = useState<Array<{ id: number; name: string; public_key: string; created_at: string }>>([]);
+  const [newName, setNewName] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [sshError, setSshError] = useState("");
+
+  const loadKeys = () => {
+    fetch("/api/v1/auth/ssh-keys")
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setSshKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  };
+
+  useEffect(() => { loadKeys(); }, []);
+
+  const addKey = async () => {
+    if (!newName.trim() || !newKey.trim()) { setSshError("Name and key are required"); return; }
+    setSshError("");
+    const resp = await fetch("/api/v1/auth/ssh-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newName, public_key: newKey }),
+    });
+    if (resp.ok) {
+      setNewName(""); setNewKey("");
+      loadKeys();
+    } else {
+      const data = await resp.json();
+      setSshError(data.detail || "Failed to add key");
+    }
+  };
+
+  const deleteKey = async (id: number) => {
+    await fetch(`/api/v1/auth/ssh-keys/${id}`, { method: "DELETE" });
+    loadKeys();
+  };
+
+  const inputStyle = { width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 };
+
+  return (
+    <>
+      <Title headingLevel="h2" size="lg" style={{ marginBottom: 16 }}>SSH Public Keys</Title>
+      <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
+        SSH keys are injected into VMs via cloud-init. Add your public keys here, then select them per VM.
+      </p>
+
+      <Card style={{ marginBottom: 16 }}>
+        <CardBody>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
+              <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Work Laptop, CI Key" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Public Key</label>
+              <textarea style={{ ...inputStyle, minHeight: 60, fontFamily: "monospace", fontSize: 11 }} value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="ssh-ed25519 AAAA... or ssh-rsa AAAA..." />
+            </div>
+            <Button variant="primary" onClick={addKey} style={{ alignSelf: "flex-start" }}>Add Key</Button>
+            {sshError && <Alert variant="danger" title={sshError} />}
+          </div>
+        </CardBody>
+      </Card>
+
+      {keys.length === 0 && <p style={{ opacity: 0.6 }}>No SSH keys added yet.</p>}
+
+      {keys.map((k) => (
+        <Card key={k.id} style={{ marginBottom: 8 }}>
+          <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ flex: 1 }}>
+              <strong>{k.name}</strong>
+              <div style={{ fontSize: 11, opacity: 0.6, fontFamily: "monospace", marginTop: 2, wordBreak: "break-all" }}>
+                {k.public_key.length > 80 ? k.public_key.slice(0, 80) + "..." : k.public_key}
+              </div>
+            </div>
+            <Button variant="danger" onClick={() => deleteKey(k.id)}>Delete</Button>
+          </CardBody>
+        </Card>
+      ))}
     </>
   );
 }
