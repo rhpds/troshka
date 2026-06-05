@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.host import Host
 from app.models.project import Project
+from app.services.provisioner import provision_host
 from app.services.vxlan import allocate_vnis_for_project, build_host_network_config
 
 logger = logging.getLogger(__name__)
@@ -64,10 +65,29 @@ def place_project(db: Session, project: Project) -> dict:
 
     host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"])
     if not host:
-        return {
-            "error": f"No host available with {reqs['total_vcpus']} vCPUs and {reqs['total_ram_mb']} MB RAM free",
-            "required": reqs,
-        }
+        logger.info("No host with capacity — auto-provisioning a new one")
+        try:
+            result = provision_host()
+            host = Host(
+                id=result["host_id"],
+                instance_id=result["instance_id"],
+                instance_type=result["instance_type"],
+                state="active",
+                host_type="shared",
+                total_vcpus=result["total_vcpus"],
+                total_ram_mb=result["total_ram_mb"],
+                ip_address=result["public_ip"],
+                agent_status="disconnected",
+            )
+            db.add(host)
+            db.commit()
+            db.refresh(host)
+            logger.info("Auto-provisioned host %s (%s)", host.id, host.ip_address)
+        except Exception as e:
+            return {
+                "error": f"No host available and auto-provision failed: {e}",
+                "required": reqs,
+            }
 
     # Allocate VNIs for project networks
     vni_map = allocate_vnis_for_project(db, project.topology)
