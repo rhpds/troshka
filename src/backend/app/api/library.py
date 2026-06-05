@@ -131,6 +131,27 @@ def get_item(item_id: str, user: User = Depends(get_current_user), db: Session =
     }
 
 
+class LibraryItemUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+@router.patch("/{item_id}")
+def update_item(item_id: str, body: LibraryItemUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if body.name is not None:
+        item.name = body.name
+    if body.description is not None:
+        item.description = body.description
+    db.commit()
+    return {"id": item.id, "name": item.name, "description": item.description}
+
+
 @router.post("/", status_code=201)
 def create_item(
     body: LibraryItemCreate,
@@ -329,7 +350,7 @@ def import_from_url(
             bucket = _bucket()
 
             # Stream download from URL and multipart upload to S3
-            resp = requests.get(body.url, stream=True, timeout=30)
+            resp = requests.get(body.url, stream=True, timeout=(30, 120))
             resp.raise_for_status()
 
             mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
@@ -351,12 +372,16 @@ def import_from_url(
                     parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
                     total += len(part_data)
                     logger.info("Import %s: part %d, %d MB", item_id[:8], part_num, total // (1024*1024))
+                    it.size_bytes = total
+                    sess.commit()
 
             if buf:
                 part_num += 1
                 r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=part_num, Body=buf)
                 parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
                 total += len(buf)
+                it.size_bytes = total
+                sess.commit()
 
             client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
 

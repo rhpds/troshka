@@ -64,6 +64,14 @@ export default function LibraryPage() {
 
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
 
+  // Auto-refresh when any item is importing
+  useEffect(() => {
+    if (items.some((i) => i.state === "importing" || i.state === "uploading")) {
+      const interval = setInterval(loadItems, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [items]);
+
   const handleUpload = async () => {
     if (!newName.trim()) { setError("Name is required"); return; }
     if (sourceMode === "file" && !selectedFile) { setError("Select a file"); return; }
@@ -326,22 +334,31 @@ export default function LibraryPage() {
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {item.state}
+                    {item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...") : item.state}
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
-                    {item.type}
-                  </span>
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
-                    {item.format}
+                    {item.format === "iso" ? "ISO" : item.format}
                   </span>
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {formatSize(item.size_bytes)}
-                  {item.description && ` · ${item.description}`}
+                  {item.state !== "importing" && formatSize(item.size_bytes)}
+                  {item.description && `${item.state !== "importing" ? " · " : ""}${item.description}`}
                   {" · "}{new Date(item.created_at).toLocaleDateString()}
                 </div>
               </div>
-              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.state === "uploading"}>
+              <Button variant="secondary" onClick={() => {
+                const newName = window.prompt("Rename:", item.name);
+                if (newName && newName !== item.name) {
+                  fetch(`/api/v1/library/${item.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name: newName }),
+                  }).then(() => loadItems());
+                }
+              }}>
+                Edit
+              </Button>
+              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.state === "uploading" || item.state === "importing"}>
                 Delete
               </Button>
             </CardBody>

@@ -1183,6 +1183,8 @@ export default function PropertiesPanel() {
               libraryItemName: item.name,
               libraryItemSize: item.size_gb,
               source: "library",
+              size: Math.max(item.size_gb, (data as Record<string, unknown>).size as number || 0),
+              format: item.format === "iso" ? "iso" : item.format,
             });
           }}
           onClose={() => setShowLibraryPicker(null)}

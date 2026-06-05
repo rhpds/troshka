@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,7 +30,7 @@ class LibraryItem(Base):
     description: Mapped[str | None] = mapped_column(String(1000))
     type: Mapped[str] = mapped_column(String(20))
     format: Mapped[str] = mapped_column(String(10))
-    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     s3_key: Mapped[str | None] = mapped_column(String(500))
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     os_variant: Mapped[str | None] = mapped_column(String(50))
