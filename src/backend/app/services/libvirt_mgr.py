@@ -92,10 +92,15 @@ def undefine_vm(conn: libvirt.virConnect, name: str, remove_storage: bool = True
         dom = conn.lookupByName(name)
         if dom.isActive():
             dom.destroy()
-        flags = libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE
-        if remove_storage:
+        flags = 0
+        if hasattr(libvirt, "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE"):
+            flags |= libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE
+        if remove_storage and hasattr(libvirt, "VIR_DOMAIN_UNDEFINE_STORAGE"):
             flags |= libvirt.VIR_DOMAIN_UNDEFINE_STORAGE
-        dom.undefineFlags(flags)
+        if flags:
+            dom.undefineFlags(flags)
+        else:
+            dom.undefine()
         return True
     except libvirt.libvirtError as e:
         logger.error("Failed to undefine %s: %s", name, e)

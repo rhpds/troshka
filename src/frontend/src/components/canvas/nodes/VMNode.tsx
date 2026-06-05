@@ -15,6 +15,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
+  const isRedeploying = d.status === "redeploying";
 
   const nicCount = (d.nics || []).length;
   const dcCount = (d.diskControllers || []).length;
@@ -221,7 +222,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             className="vm-node-action power-stopped"
             title="Start"
             onClick={(e) => { e.stopPropagation(); vmAction("start"); }}
-            disabled={!!actionPending}
+            disabled={!!actionPending || isRedeploying}
           >
             {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
           </button>
@@ -232,7 +233,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               className="vm-node-action power-running"
               title="Graceful Shutdown"
               onClick={(e) => { e.stopPropagation(); vmAction("stop"); }}
-              disabled={!!actionPending}
+              disabled={!!actionPending || isRedeploying}
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
             </button>
@@ -240,12 +241,12 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               className="vm-node-action power-running"
               title="Force Power Off"
               onClick={(e) => { e.stopPropagation(); vmAction("forcestop"); }}
-              disabled={!!actionPending}
+              disabled={!!actionPending || isRedeploying}
               style={{ color: "#ef4444" }}
             >
               {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
             </button>
-            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); vmAction("restart"); }} disabled={!!actionPending}>
+            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
               {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
             </button>
           </>

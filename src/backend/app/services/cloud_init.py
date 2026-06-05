@@ -57,6 +57,43 @@ def generate_metadata(vm_name: str, mac: str = "") -> str:
     })
 
 
+def generate_seed_iso_script(project_id: str, topology: dict) -> str:
+    """Generate a script to create NoCloud seed ISOs for each VM with cloud-init enabled."""
+    prefix = f"troshka-{project_id[:8]}"
+    nodes = topology.get("nodes", [])
+    lines = ["#!/bin/bash", ""]
+
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if not data.get("cloudInit"):
+            continue
+
+        vm_name = f"{prefix}-{data.get('name', 'vm')}"
+        userdata = generate_userdata(data)
+        metadata = generate_metadata(vm_name)
+
+        seed_dir = f"/tmp/troshka-seed-{vm_name}"
+        seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
+
+        lines.append(f"mkdir -p {seed_dir}")
+        lines.append(f"cat > {seed_dir}/user-data << 'USERDATA'")
+        lines.append(userdata)
+        lines.append("USERDATA")
+        lines.append(f"cat > {seed_dir}/meta-data << 'METADATA'")
+        lines.append(metadata)
+        lines.append("METADATA")
+        lines.append(f"genisoimage -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data 2>/dev/null || mkisofs -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data")
+        lines.append(f"rm -rf {seed_dir}")
+        lines.append(f'echo "Seed ISO created for {vm_name}"')
+        lines.append("")
+
+    if len(lines) <= 2:
+        return ""
+    return "\n".join(lines)
+
+
 def generate_metadata_service_script(project_id: str, topology: dict, vni_map: dict) -> str:
     """Generate a Python HTTP metadata service that runs on the host bridge.
 
@@ -103,7 +140,11 @@ def generate_metadata_service_script(project_id: str, topology: dict, vni_map: d
 # Serves user-data/meta-data on 169.254.169.254 via bridge IP
 
 # Kill any existing metadata service for this project
-pkill -f "troshka-metadata-{project_id[:8]}" 2>/dev/null || true
+pkill -9 -f "metadata-{project_id[:8]}.py" 2>/dev/null || true
+sleep 1
+# Also kill anything on port 80 of 169.254.169.254
+fuser -k 80/tcp 2>/dev/null || true
+sleep 1
 
 # Add route for metadata IP on each bridge
 for br in {' '.join(bridges)}; do
@@ -141,29 +182,44 @@ class MetadataHandler(http.server.BaseHTTPRequestHandler):
 
         config = CONFIGS.get(mac, {{}})
 
+        meta = json.loads(config.get("metadata", "{{}}"))
+        vm_name = config.get("vm_name", "troshka-vm")
+
         if self.path in ("/latest/user-data", "/latest/user-data/"):
             self.send_response(200)
             self.send_header("Content-Type", "text/yaml")
             self.end_headers()
             self.wfile.write(config.get("userdata", "").encode())
-        elif self.path in ("/latest/meta-data", "/latest/meta-data/", "/latest/meta-data/instance-id"):
+        elif self.path in ("/latest/meta-data/", "/latest/meta-data"):
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(config.get("metadata", "{{}}" ).encode())
+            self.wfile.write(b"ami-id\\ninstance-id\\nlocal-hostname\\nhostname\\ninstance-type\\n")
+        elif self.path == "/latest/meta-data/instance-id":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(meta.get("instance-id", vm_name).encode())
         elif self.path in ("/latest/meta-data/local-hostname", "/latest/meta-data/hostname"):
             self.send_response(200)
             self.end_headers()
-            meta = json.loads(config.get("metadata", "{{}}"))
-            self.wfile.write(meta.get("local-hostname", "localhost").encode())
+            self.wfile.write(meta.get("local-hostname", vm_name).encode())
+        elif self.path == "/latest/meta-data/ami-id":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"troshka-image")
+        elif self.path == "/latest/meta-data/instance-type":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"troshka.nested")
         elif self.path in ("/", "/latest", "/latest/"):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"user-data\\nmeta-data\\n")
+            self.wfile.write(b"latest\\n")
         else:
-            self.send_response(404)
+            self.send_response(200)
             self.end_headers()
 
+import socketserver
+socketserver.TCPServer.allow_reuse_address = True
 server = http.server.HTTPServer(("169.254.169.254", 80), MetadataHandler)
 print(f"Metadata service running on 169.254.169.254:80")
 server.serve_forever()

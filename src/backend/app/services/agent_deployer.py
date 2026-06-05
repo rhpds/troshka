@@ -29,7 +29,7 @@ fi
 # Ensure prerequisites
 echo "Installing prerequisites..."
 dnf install -y qemu-kvm libvirt libvirt-client libvirt-devel virt-install \
-    python3 python3-pip python3-libvirt dnsmasq nftables || true
+    python3 python3-pip python3-libvirt dnsmasq nftables genisoimage || true
 
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then

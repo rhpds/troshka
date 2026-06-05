@@ -450,7 +450,7 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
     was_running = False
     try:
         was_running = libvirt_mgr.get_vm_state(conn, full_name) == "running"
-        libvirt_mgr.undefine_vm(conn, full_name)
+        libvirt_mgr.undefine_vm(conn, full_name, remove_storage=False)
     finally:
         conn.close()
 
@@ -469,6 +469,12 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
             break
     if not vm_node:
         return {"status": "failed", "error": "VM not found in topology"}
+
+    # Create cloud-init seed ISO
+    from app.services.cloud_init import generate_seed_iso_script
+    seed_script = generate_seed_iso_script(project_id, topology)
+    if seed_script:
+        run_ssh_script(host.ip_address, host.private_key, seed_script, timeout=15)
 
     # Recreate just this VM
     diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}

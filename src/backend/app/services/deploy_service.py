@@ -69,6 +69,7 @@ def _extract_vms(topology: dict) -> list[dict]:
             "nics": data.get("nics", []),
             "disk_controllers": data.get("diskControllers", []),
             "boot_devices": data.get("bootDevices", ["hd"]),
+            "cloud_init": data.get("cloudInit", False),
         })
     return vms
 
@@ -269,6 +270,11 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
 
         if not has_disk:
             cmd_parts.append("--disk none")
+
+        # Add cloud-init seed ISO if cloud-init is enabled
+        if vm.get("cloud_init"):
+            seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
+            cmd_parts.append(f"--disk path={seed_iso},device=cdrom,readonly=on")
 
         # Add networks
         if vm_networks:
@@ -611,9 +617,17 @@ echo "{vm_name} reconfigured"
         if vm_disks:
             for disk in vm_disks:
                 if disk["format"] == "iso":
+                    if disk.get("library_item_id"):
+                        cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                        lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     continue
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-                lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
+                if disk.get("source") == "library" and disk.get("library_item_id"):
+                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+                    lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                    lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
+                else:
+                    lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
 
         boot_devs = [boot_type_map[bd] for bd in vm_data.get("boot_devices", ["hd"]) if bd in boot_type_map]
         boot_devs += ["hd" for bd in vm_data.get("boot_devices", []) if bd in storage_node_ids and "hd" not in boot_devs]
@@ -642,6 +656,11 @@ echo "{vm_name} reconfigured"
 
         if not has_disk:
             cmd_parts.append("--disk none")
+
+        # Cloud-init seed ISO
+        if d.get("cloudInit"):
+            seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
+            cmd_parts.append(f"--disk path={seed_iso},device=cdrom,readonly=on")
 
         if vm_networks:
             for net in vm_networks:
@@ -742,12 +761,12 @@ def deploy_project_async(project_id: str):
             s.commit()
             return
 
-        # Step 2: Start cloud-init metadata service
-        from app.services.cloud_init import generate_metadata_service_script
-        meta_script = generate_metadata_service_script(project_id, topology, vni_map)
-        if meta_script:
-            logger.info("Deploy %s: starting metadata service", project_id[:8])
-            run_ssh_script(host_ip, private_key, meta_script, timeout=30)
+        # Step 2: Create cloud-init seed ISOs
+        from app.services.cloud_init import generate_seed_iso_script
+        seed_script = generate_seed_iso_script(project_id, topology)
+        if seed_script:
+            logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
+            run_ssh_script(host_ip, private_key, seed_script, timeout=30)
 
         # Step 3: Prepare library image presigned URLs
         _prepare_library_downloads(topology, host_ip, private_key, s)
