@@ -206,6 +206,19 @@ export default function ProjectCanvasPage() {
                   const data = await resp.json();
                   if (data.status === "reconfigured" || data.status === "no_changes") {
                     useCanvasStore.setState({ topologyDirty: false });
+                    // Refresh deployed VM IDs so newly deployed VMs show as running
+                    fetch(`/api/v1/projects/${projectId}`)
+                      .then((r) => r.ok ? r.json() : null)
+                      .then((proj) => {
+                        if (!proj) return;
+                        const ids = new Set<string>(
+                          (proj.deployed_topology?.nodes || [])
+                            .filter((n: Record<string, unknown>) => n.type === "vmNode")
+                            .map((n: Record<string, unknown>) => n.id as string)
+                        );
+                        setDeployedVmIds(ids);
+                        useCanvasStore.setState({ deployedVmIds: ids });
+                      });
                     showToast(data.status === "no_changes" ? "No VM changes needed" : "Changes applied");
                   } else {
                     alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || "unknown error"}`);

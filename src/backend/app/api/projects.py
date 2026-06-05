@@ -371,10 +371,17 @@ def reconfigure_project(
                     continue
                 path = f"/var/lib/troshka/vms/{vm_name}-{d['name']}.{d['format']}"
                 disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
-                new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
-            # Create any new disk images on host
+                if d.get("source") == "library" and d.get("library_item_id"):
+                    cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                    new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{d['library_item_id']})\"")
+                    new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
+                else:
+                    new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+            # Prepare library downloads and create disk images
             if new_disk_cmds:
-                run_ssh_script(host.ip_address, host.private_key, "\n".join(new_disk_cmds), timeout=30)
+                from app.services.deploy_service import _prepare_library_downloads
+                _prepare_library_downloads(current, host.ip_address, host.private_key, db)
+                run_ssh_script(host.ip_address, host.private_key, "\n".join(new_disk_cmds), timeout=300)
 
             # Skip reconfigure if nothing changed (avoids unnecessary VM restart)
             current_cfg = libvirt_mgr.get_vm_config(conn, vm_name)
