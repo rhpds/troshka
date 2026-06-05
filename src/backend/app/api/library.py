@@ -286,6 +286,99 @@ def delete_item(item_id: str, user: User = Depends(get_current_user), db: Sessio
     db.commit()
 
 
+class ImportUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/{item_id}/import-url")
+def import_from_url(
+    item_id: str,
+    body: ImportUrlRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Import a file from a URL — downloads server-side and uploads to S3."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ext = item.format if item.format != "qcow2" else "qcow2"
+    s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
+
+    item.s3_key = s3_key
+    item.state = "importing"
+    db.commit()
+
+    import threading
+    def _download_and_upload():
+        from app.core.database import SessionLocal as SL
+        from app.services.s3_storage import _get_s3_client, _bucket
+        import requests
+
+        sess = SL()
+        try:
+            it = sess.query(LibraryItem).filter_by(id=item_id).first()
+            if not it:
+                return
+
+            client = _get_s3_client()
+            bucket = _bucket()
+
+            # Stream download from URL and multipart upload to S3
+            resp = requests.get(body.url, stream=True, timeout=30)
+            resp.raise_for_status()
+
+            mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
+            upload_id = mpu["UploadId"]
+
+            parts = []
+            part_num = 0
+            chunk_size = 100 * 1024 * 1024
+            buf = b""
+            total = 0
+
+            for data in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                buf += data
+                while len(buf) >= chunk_size:
+                    part_num += 1
+                    part_data = buf[:chunk_size]
+                    buf = buf[chunk_size:]
+                    r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=part_num, Body=part_data)
+                    parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
+                    total += len(part_data)
+                    logger.info("Import %s: part %d, %d MB", item_id[:8], part_num, total // (1024*1024))
+
+            if buf:
+                part_num += 1
+                r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=part_num, Body=buf)
+                parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
+                total += len(buf)
+
+            client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
+
+            head = client.head_object(Bucket=bucket, Key=s3_key)
+            it.size_bytes = head["ContentLength"]
+            it.state = "ready"
+            sess.commit()
+            logger.info("Import %s complete: %d bytes", item_id[:8], it.size_bytes)
+        except Exception:
+            logger.exception("Import failed for %s", item_id[:8])
+            it = sess.query(LibraryItem).filter_by(id=item_id).first()
+            if it:
+                it.state = "error"
+                sess.commit()
+        finally:
+            sess.close()
+
+    threading.Thread(target=_download_and_upload, daemon=True).start()
+
+    return {"id": item.id, "state": "importing"}
+
+
 class ShareRequest(BaseModel):
     user_email: str
     permission: str = "use"

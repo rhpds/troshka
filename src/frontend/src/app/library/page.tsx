@@ -35,10 +35,14 @@ export default function LibraryPage() {
   const [typeFilter, setTypeFilter] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
+  const [toast, setToast] = useState<string | null>(null);
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(null), 4000); };
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [selectedFileName, setSelectedFileName] = useState("");
 
   const [showUpload, setShowUpload] = useState(false);
+  const [sourceMode, setSourceMode] = useState<"file" | "url">("file");
+  const [importUrl, setImportUrl] = useState("");
   const [newName, setNewName] = useState("");
   const [newType, setNewType] = useState("iso");
   const [newFormat, setNewFormat] = useState("iso");
@@ -61,11 +65,10 @@ export default function LibraryPage() {
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
 
   const handleUpload = async () => {
+    if (!newName.trim()) { setError("Name is required"); return; }
+    if (sourceMode === "file" && !selectedFile) { setError("Select a file"); return; }
+    if (sourceMode === "url" && !importUrl.trim()) { setError("Enter a URL"); return; }
     const file = selectedFile;
-    if (!file || !newName.trim()) {
-      setError("Name and file are required");
-      return;
-    }
 
     setUploading(true);
     setUploadProgress("Creating item...");
@@ -90,6 +93,27 @@ export default function LibraryPage() {
         return;
       }
       const { id } = await createResp.json();
+
+      if (sourceMode === "url") {
+        // Import from URL — server-side download
+        setUploadProgress("Importing from URL...");
+        const importResp = await fetch(`/api/v1/library/${id}/import-url`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: importUrl }),
+        });
+        if (importResp.ok) {
+          setUploadProgress("");
+          setShowUpload(false);
+          setNewName(""); setNewDesc(""); setImportUrl("");
+          showToast("Import started — download in progress on server");
+          loadItems();
+        } else {
+          setError("Failed to start import");
+        }
+        setUploading(false);
+        return;
+      }
 
       // Step 2: Start multipart upload
       setUploadProgress("Starting upload...");
@@ -179,7 +203,7 @@ export default function LibraryPage() {
   };
 
   const inputStyle = { width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 };
-  const stateColors: Record<string, string> = { ready: "#4ade80", uploading: "#fbbf24", pending: "#94a3b8", error: "#f87171" };
+  const stateColors: Record<string, string> = { ready: "#4ade80", uploading: "#fbbf24", importing: "#fbbf24", pending: "#94a3b8", error: "#f87171" };
 
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
 
@@ -246,28 +270,40 @@ export default function LibraryPage() {
                   <input style={inputStyle} value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder="Notes about this image" />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>File</label>
-                  <FileUpload
-                    id="library-file-upload"
-                    value={selectedFile}
-                    filename={selectedFileName}
-                    onFileInputChange={(_e, file) => {
-                      setSelectedFile(file);
-                      setSelectedFileName(file.name);
-                      if (!newName.trim()) setNewName(file.name.replace(/\.[^.]+$/, ""));
-                    }}
-                    onClearClick={() => {
-                      setSelectedFile(null);
-                      setSelectedFileName("");
-                    }}
-                    browseButtonText="Browse"
-                    hideDefaultPreview
-                    dropzoneProps={{
-                      accept: newType === "iso"
-                        ? { "application/x-iso9660-image": [".iso"] }
-                        : { "application/octet-stream": [".qcow2", ".raw", ".img"] },
-                    }}
-                  />
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Source</label>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <button onClick={() => setSourceMode("file")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "file" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "file" ? "#4ade80" : undefined }}>
+                      Upload File
+                    </button>
+                    <button onClick={() => setSourceMode("url")} style={{ ...inputStyle, textAlign: "center" as const, cursor: "pointer", background: sourceMode === "url" ? "rgba(74,222,128,0.15)" : undefined, borderColor: sourceMode === "url" ? "#4ade80" : undefined }}>
+                      Import from URL
+                    </button>
+                  </div>
+                  {sourceMode === "file" ? (
+                    <FileUpload
+                      id="library-file-upload"
+                      value={selectedFile}
+                      filename={selectedFileName}
+                      onFileInputChange={(_e, file) => {
+                        setSelectedFile(file);
+                        setSelectedFileName(file.name);
+                        if (!newName.trim()) setNewName(file.name.replace(/\.[^.]+$/, ""));
+                      }}
+                      onClearClick={() => {
+                        setSelectedFile(null);
+                        setSelectedFileName("");
+                      }}
+                      browseButtonText="Browse"
+                      hideDefaultPreview
+                      dropzoneProps={{
+                        accept: newType === "iso"
+                          ? { "application/x-iso9660-image": [".iso"] }
+                          : { "application/octet-stream": [".qcow2", ".raw", ".img"] },
+                      }}
+                    />
+                  ) : (
+                    <input style={inputStyle} value={importUrl} onChange={(e) => setImportUrl(e.target.value)} placeholder="https://example.com/rhel-9.4-x86_64-dvd.iso" />
+                  )}
                 </div>
                 <Button variant="primary" onClick={handleUpload} isLoading={uploading} isDisabled={uploading} style={{ alignSelf: "flex-start" }}>
                   {uploading ? uploadProgress : "Upload"}
@@ -312,6 +348,17 @@ export default function LibraryPage() {
           </Card>
         ))}
       </PageSection>
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+          padding: "8px 20px", borderRadius: 8,
+          background: "rgba(30,30,50,0.95)", color: "#4ade80",
+          fontSize: 13, boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+          border: "1px solid rgba(74,222,128,0.3)", zIndex: 1000,
+        }}>
+          {toast}
+        </div>
+      )}
     </>
   );
 }
