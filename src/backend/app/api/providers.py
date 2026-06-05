@@ -148,9 +148,9 @@ def delete_provider(provider_id: str, user: User = Depends(require_role("admin")
     db.commit()
 
 
-@router.post("/{provider_id}/discover-ami")
-def discover_ami(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
-    """Find the latest RHEL 9 Access2 AMI in the provider's region and save it."""
+@router.get("/{provider_id}/discover-ami")
+def list_available_amis(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """List available RHEL 9 AMIs (both Access2/Gold and Hourly/Marketplace)."""
     import boto3
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -165,32 +165,47 @@ def discover_ami(provider_id: str, user: User = Depends(require_role("admin")), 
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
         )
-        response = ec2.describe_images(
-            Owners=["309956199498"],
-            Filters=[
-                {"Name": "name", "Values": ["RHEL-9.4*x86_64*Access2-GP3"]},
-                {"Name": "state", "Values": ["available"]},
-            ],
-        )
-        images = sorted(response["Images"], key=lambda x: x["CreationDate"])
-        if not images:
-            raise HTTPException(status_code=404, detail="No RHEL 9.4 Access2 AMI found in this region")
 
-        ami = images[-1]
-        provider.default_ami = ami["ImageId"]
-        db.commit()
-
-        return {
-            "ami_id": ami["ImageId"],
-            "name": ami["Name"],
-            "created": ami["CreationDate"],
-            "region": provider.default_region,
+        ami_types = {
+            "access2": {"pattern": "RHEL-9.4*x86_64*Access2-GP3", "label": "RHEL Access2 (Gold Image / BYOS)"},
+            "hourly": {"pattern": "RHEL-9.4*x86_64*Hourly2-GP3", "label": "RHEL Marketplace (Hourly)"},
         }
-    except HTTPException:
-        raise
+
+        results = []
+        for ami_type, info in ami_types.items():
+            response = ec2.describe_images(
+                Owners=["309956199498"],
+                Filters=[
+                    {"Name": "name", "Values": [info["pattern"]]},
+                    {"Name": "state", "Values": ["available"]},
+                ],
+            )
+            images = sorted(response["Images"], key=lambda x: x["CreationDate"])
+            if images:
+                latest = images[-1]
+                results.append({
+                    "type": ami_type,
+                    "label": info["label"],
+                    "ami_id": latest["ImageId"],
+                    "name": latest["Name"],
+                    "created": latest["CreationDate"],
+                })
+
+        return {"region": provider.default_region, "amis": results}
     except Exception:
         logger.exception("AMI discovery failed for %s", provider.name)
         raise HTTPException(status_code=500, detail="AMI discovery failed. Check server logs.")
+
+
+@router.post("/{provider_id}/set-ami")
+def set_ami(provider_id: str, ami_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Set the default AMI for a provider."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    provider.default_ami = ami_id
+    db.commit()
+    return {"ami_id": ami_id}
 
 
 @router.post("/{provider_id}/test")

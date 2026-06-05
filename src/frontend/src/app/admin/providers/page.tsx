@@ -31,6 +31,7 @@ export default function AdminProvidersPage() {
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [amiResult, setAmiResult] = useState<Record<string, string>>({});
+  const [amiOptions, setAmiOptions] = useState<Record<string, Array<{type: string; label: string; ami_id: string; name: string; created: string}>>>({});
 
   const [name, setName] = useState("");
   const [type, setType] = useState("ec2");
@@ -116,13 +117,27 @@ export default function AdminProvidersPage() {
 
   const discoverAmi = async (id: string) => {
     setAmiResult((prev) => ({ ...prev, [id]: "discovering..." }));
-    const resp = await fetch(`/api/v1/providers/${id}/discover-ami`, { method: "POST" });
+    setAmiOptions((prev) => ({ ...prev, [id]: [] }));
+    const resp = await fetch(`/api/v1/providers/${id}/discover-ami`);
     if (resp.ok) {
       const data = await resp.json();
-      setAmiResult((prev) => ({ ...prev, [id]: `${data.ami_id} (${data.name})` }));
-      loadProviders();
+      if (data.amis && data.amis.length > 0) {
+        setAmiOptions((prev) => ({ ...prev, [id]: data.amis }));
+        setAmiResult((prev) => ({ ...prev, [id]: `Found ${data.amis.length} AMI(s) in ${data.region}` }));
+      } else {
+        setAmiResult((prev) => ({ ...prev, [id]: "No AMIs found in this region" }));
+      }
     } else {
-      setAmiResult((prev) => ({ ...prev, [id]: "FAILED — no AMI found" }));
+      setAmiResult((prev) => ({ ...prev, [id]: "FAILED — check credentials and region" }));
+    }
+  };
+
+  const selectAmi = async (providerId: string, amiId: string) => {
+    const resp = await fetch(`/api/v1/providers/${providerId}/set-ami?ami_id=${amiId}`, { method: "POST" });
+    if (resp.ok) {
+      setAmiOptions((prev) => ({ ...prev, [providerId]: [] }));
+      setAmiResult((prev) => ({ ...prev, [providerId]: `Set to ${amiId}` }));
+      loadProviders();
     }
   };
 
@@ -270,8 +285,24 @@ export default function AdminProvidersPage() {
                       </div>
                     )}
                     {amiResult[p.id] && (
-                      <div style={{ fontSize: 11, marginTop: 4, color: amiResult[p.id].startsWith("ami-") ? "#4ade80" : "#f87171" }}>
-                        AMI: {amiResult[p.id]}
+                      <div style={{ fontSize: 11, marginTop: 4, color: amiResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
+                        {amiResult[p.id]}
+                      </div>
+                    )}
+                    {amiOptions[p.id] && amiOptions[p.id].length > 0 && (
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                        {amiOptions[p.id].map((ami) => (
+                          <div key={ami.ami_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
+                              <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{ami.ami_id}</div>
+                              <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name} · {new Date(ami.created).toLocaleDateString()}</div>
+                            </div>
+                            <Button variant="secondary" onClick={() => selectAmi(p.id, ami.ami_id)}>
+                              Select
+                            </Button>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
