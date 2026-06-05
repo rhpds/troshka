@@ -13,7 +13,8 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script
+from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, generate_reconfigure_script, diff_topologies, generate_incremental_script
+from app.services.vxlan import generate_setup_script
 from app.services.console_proxy import get_or_create_proxy
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -278,6 +279,77 @@ def get_vm_console(project_id: str, vm_name: str, user: User = Depends(get_curre
     }
 
 
+@router.post("/{project_id}/reconfigure")
+def reconfigure_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Apply config changes (boot order, CPU, RAM) without destroying disks."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, cannot reconfigure")
+    if not project.host_id or not project.vni_map:
+        raise HTTPException(status_code=400, detail="Project has no active deployment")
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host or not host.private_key or not host.ip_address:
+        raise HTTPException(status_code=503, detail="Host not available")
+
+    deployed = project.deployed_topology or {}
+    current = project.topology or {}
+
+    if not deployed:
+        return {"status": "failed", "output": "No previous deployment to compare against. Use Republish."}
+
+    diff = diff_topologies(current, deployed)
+    if not diff["has_changes"]:
+        return {"status": "no_changes"}
+
+    # For new networks, allocate VNIs
+    vni_map = dict(project.vni_map or {})
+    if diff["added_networks"]:
+        from app.services.vxlan import allocate_vni
+        for net_node in diff["added_networks"]:
+            if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
+                vni_map[net_node["id"]] = allocate_vni(db)
+
+    # For new networks, set up VXLAN
+    if diff["added_networks"]:
+        from app.services.vxlan import build_host_network_config
+        all_hosts = db.query(Host).filter(Host.state == "active").all()
+        peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+        net_config = build_host_network_config(current, vni_map, peer_ips)
+        net_script = generate_setup_script(net_config, host.ip_address)
+        net_result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
+        if not net_result["success"]:
+            return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
+
+    script = generate_incremental_script(project_id, current, diff, vni_map)
+    result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
+
+    if result["success"]:
+        # Update capacity for added/removed VMs
+        added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
+        added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
+        removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
+        removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
+        host.used_vcpus = max(0, host.used_vcpus + added_vcpus - removed_vcpus)
+        host.used_ram_mb = max(0, host.used_ram_mb + added_ram - removed_ram)
+
+        project.deployed_topology = current
+        project.vni_map = vni_map
+        project.state = "active"
+        db.commit()
+        return {"status": "reconfigured", "output": result["output"]}
+    else:
+        return {"status": "failed", "output": result["output"]}
+
+
 @router.post("/{project_id}/redeploy")
 def redeploy_project(
     project_id: str,
@@ -297,8 +369,8 @@ def redeploy_project(
     if project.host_id:
         destroy_project_sync(project.id)
 
-    # Reset for fresh deploy
-    project.state = "draft"
+    # Reset for fresh deploy — skip "draft" to avoid frontend auto-save wiping topology
+    project.state = "deploying"
     project.host_id = None
     project.vni_map = None
     project.deploy_error = None

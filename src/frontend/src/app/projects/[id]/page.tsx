@@ -56,6 +56,7 @@ export default function ProjectCanvasPage() {
   }, [projectState]);
 
   const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
+  const topologyDirty = useCanvasStore((s) => s.topologyDirty);
 
   // Sync VM status and project state into the store
   useEffect(() => {
@@ -63,6 +64,13 @@ export default function ProjectCanvasPage() {
     if (projectState === "active") setAllVmStatus("running");
     else if (projectState === "stopped" || projectState === "draft") setAllVmStatus("stopped");
   }, [projectState, setAllVmStatus]);
+
+  const [toast, setToast] = useState<string | null>(null);
+
+  const showToast = (msg: string, duration = 4000) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), duration);
+  };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
   const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "network").length;
@@ -86,7 +94,8 @@ export default function ProjectCanvasPage() {
       const data = await resp.json();
       if (resp.ok) {
         setProjectState("deploying");
-        alert(`Deployment started!\n\nHost: ${data.host_ip}\nVMs: ${data.requirements.vm_count}\nvCPUs: ${data.requirements.total_vcpus}\nRAM: ${data.requirements.total_ram_mb} MB`);
+        useCanvasStore.setState({ topologyDirty: false });
+        showToast(`Deploying ${data.requirements.vm_count} VM(s) to ${data.host_ip}`);
       } else {
         alert(data.detail || "Deployment failed");
       }
@@ -141,8 +150,20 @@ export default function ProjectCanvasPage() {
               }}>
                 ■ Stop
               </button>
+              <button className="project-publish-btn" disabled={!topologyDirty} style={!topologyDirty ? { opacity: 0.4 } : {}} onClick={async () => {
+                const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
+                const data = await resp.json();
+                if (data.status === "reconfigured") {
+                  useCanvasStore.setState({ topologyDirty: false });
+                  showToast("Changes applied — VMs reconfigured");
+                } else {
+                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || "unknown error"}`);
+                }
+              }}>
+                Apply Changes
+              </button>
               <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
+                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(() => setProjectState("deploying"));
                 }
@@ -164,13 +185,33 @@ export default function ProjectCanvasPage() {
               }}>
                 ▶ Start
               </button>
+              <button className="project-publish-btn" onClick={async () => {
+                const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
+                const data = await resp.json();
+                if (data.status === "reconfigured") {
+                  setProjectState("active");
+                  showToast("Changes applied — VMs reconfigured and started");
+                } else {
+                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || "unknown error"}`);
+                }
+              }}>
+                Apply Changes
+              </button>
               <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
+                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(() => setProjectState("deploying"));
                 }
               }}>
                 ↻ Republish
+              </button>
+              <button className="project-stop-btn" onClick={() => {
+                if (window.confirm("Undeploy? This will destroy all VMs and return to design mode.")) {
+                  fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
+                    .then(() => { setProjectState("draft"); setDeployError(null); });
+                }
+              }}>
+                Undeploy
               </button>
             </>
           )}
@@ -204,10 +245,23 @@ export default function ProjectCanvasPage() {
           {deployError}
         </div>
       )}
-      <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`}>
+      <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
         <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />
         <Canvas />
         <PropertiesPanel />
+        {toast && (
+          <div style={{
+            position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)",
+            padding: "8px 20px", borderRadius: 8,
+            background: "rgba(30,30,50,0.95)", color: "#4ade80",
+            fontSize: 13, boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+            border: "1px solid rgba(74,222,128,0.3)",
+            animation: "toast-in 0.3s ease-out",
+            zIndex: 1000,
+          }}>
+            {toast}
+          </div>
+        )}
       </div>
       {showStartOrder && <StartOrderPanel onClose={() => setShowStartOrder(false)} />}
       {showExternalIps && <ExternalIpsPanel onClose={() => setShowExternalIps(false)} />}

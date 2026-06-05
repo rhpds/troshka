@@ -360,6 +360,255 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
     return "\n".join(lines)
 
 
+def generate_reconfigure_script(project_id: str, topology: dict, vni_map: dict) -> str:
+    """Update VM definitions in-place without destroying disks."""
+    prefix = f"troshka-{project_id[:8]}"
+    vms = _extract_vms(topology)
+    lines = [
+        "#!/bin/bash",
+        "set -uo pipefail",
+        f'echo "=== Reconfiguring VMs for project {project_id[:8]} ==="',
+        "",
+    ]
+
+    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
+    all_nodes = topology.get("nodes", [])
+    storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
+
+    for vm in vms:
+        vm_name = f"{prefix}-{vm['name']}"
+        vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
+
+        boot_devs = []
+        seen = set()
+        for d in vm.get("boot_devices", ["hd"]):
+            if d in boot_type_map:
+                dev = boot_type_map[d]
+            elif d in storage_node_ids:
+                dev = "hd"
+            else:
+                continue
+            if dev not in seen:
+                boot_devs.append(dev)
+                seen.add(dev)
+        if not boot_devs:
+            boot_devs = ["hd"]
+
+        boot_xml = "".join(f"<boot dev='{d}'/>" for d in boot_devs)
+
+        lines.append(f'echo "Reconfiguring {vm_name}"')
+        lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
+        lines.append(f"""
+TMPXML=$(mktemp)
+virsh dumpxml --inactive {vm_name} > $TMPXML
+
+# Update boot order
+sed -i '/<boot dev=/d' $TMPXML
+sed -i 's|<os>|<os>\\n    {boot_xml}|' $TMPXML
+
+# Update vcpus and memory
+sed -i "s|<vcpu[^>]*>[^<]*</vcpu>|<vcpu placement='static'>{vm['vcpus']}</vcpu>|" $TMPXML
+sed -i "s|<memory[^>]*>[^<]*</memory>|<memory unit='KiB'>{vm['ram_gb'] * 1024 * 1024}</memory>|" $TMPXML
+sed -i "s|<currentMemory[^>]*>[^<]*</currentMemory>|<currentMemory unit='KiB'>{vm['ram_gb'] * 1024 * 1024}</currentMemory>|" $TMPXML
+
+virsh define $TMPXML
+rm -f $TMPXML
+
+virsh start {vm_name}
+echo "{vm_name} reconfigured and started"
+""")
+
+    lines.append('echo "=== Reconfiguration complete ==="')
+    return "\n".join(lines)
+
+
+def diff_topologies(current: dict, deployed: dict) -> dict:
+    """Diff current topology against what was deployed. Returns changes."""
+    cur_nodes = {n["id"]: n for n in current.get("nodes", [])}
+    dep_nodes = {n["id"]: n for n in deployed.get("nodes", [])}
+
+    added_vms = []
+    removed_vms = []
+    changed_vms = []
+    added_networks = []
+    removed_networks = []
+
+    for nid, node in cur_nodes.items():
+        if nid not in dep_nodes:
+            if node.get("type") == "vmNode":
+                added_vms.append(node)
+            elif node.get("type") == "networkNode":
+                added_networks.append(node)
+
+    for nid, node in dep_nodes.items():
+        if nid not in cur_nodes:
+            if node.get("type") == "vmNode":
+                removed_vms.append(node)
+            elif node.get("type") == "networkNode":
+                removed_networks.append(node)
+
+    for nid, node in cur_nodes.items():
+        if nid in dep_nodes and node.get("type") == "vmNode":
+            cur_data = node.get("data", {})
+            dep_data = dep_nodes[nid].get("data", {})
+            if (cur_data.get("vcpus") != dep_data.get("vcpus") or
+                cur_data.get("ram") != dep_data.get("ram") or
+                cur_data.get("bootDevices") != dep_data.get("bootDevices")):
+                changed_vms.append(node)
+
+    return {
+        "added_vms": added_vms,
+        "removed_vms": removed_vms,
+        "changed_vms": changed_vms,
+        "added_networks": added_networks,
+        "removed_networks": removed_networks,
+        "has_changes": bool(added_vms or removed_vms or changed_vms or added_networks or removed_networks),
+    }
+
+
+def generate_incremental_script(
+    project_id: str,
+    topology: dict,
+    diff: dict,
+    vni_map: dict,
+) -> str:
+    """Generate script for incremental changes — add/remove/update without touching untouched VMs."""
+    prefix = f"troshka-{project_id[:8]}"
+    lines = [
+        "#!/bin/bash",
+        "set -uo pipefail",
+        f'echo "=== Applying incremental changes for {project_id[:8]} ==="',
+        "",
+    ]
+
+    # Remove VMs that were deleted from canvas
+    for node in diff["removed_vms"]:
+        vm_name = f"{prefix}-{node['data']['name']}"
+        lines.append(f'echo "Removing VM: {vm_name}"')
+        lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
+        lines.append(f"virsh undefine {vm_name} --remove-all-storage 2>/dev/null || true")
+
+    # Remove networks that were deleted
+    for node in diff["removed_networks"]:
+        nid = node["id"]
+        if nid in vni_map:
+            vni = vni_map[nid]
+            lines.append(f"ip link del br-{vni} 2>/dev/null || true")
+            lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
+            lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
+
+    # Reconfigure changed VMs (boot order, CPU, RAM)
+    all_nodes = topology.get("nodes", [])
+    storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
+    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
+
+    for node in diff["changed_vms"]:
+        d = node.get("data", {})
+        vm_name = f"{prefix}-{d['name']}"
+        boot_devs = []
+        seen = set()
+        for bd in d.get("bootDevices", ["hd"]):
+            if bd in boot_type_map:
+                dev = boot_type_map[bd]
+            elif bd in storage_node_ids:
+                dev = "hd"
+            else:
+                continue
+            if dev not in seen:
+                boot_devs.append(dev)
+                seen.add(dev)
+        if not boot_devs:
+            boot_devs = ["hd"]
+        boot_xml = "".join(f"<boot dev='{bd}'/>" for bd in boot_devs)
+
+        lines.append(f'echo "Reconfiguring {vm_name}"')
+        lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
+        lines.append(f"""
+TMPXML=$(mktemp)
+virsh dumpxml --inactive {vm_name} > $TMPXML
+sed -i '/<boot dev=/d' $TMPXML
+sed -i 's|<os>|<os>\\n    {boot_xml}|' $TMPXML
+sed -i "s|<vcpu[^>]*>[^<]*</vcpu>|<vcpu placement=\\'static\\'>{d.get('vcpus', 2)}</vcpu>|" $TMPXML
+sed -i "s|<memory[^>]*>[^<]*</memory>|<memory unit=\\'KiB\\'>{d.get('ram', 4) * 1024 * 1024}</memory>|" $TMPXML
+sed -i "s|<currentMemory[^>]*>[^<]*</currentMemory>|<currentMemory unit=\\'KiB\\'>{d.get('ram', 4) * 1024 * 1024}</currentMemory>|" $TMPXML
+virsh define $TMPXML
+rm -f $TMPXML
+virsh start {vm_name}
+echo "{vm_name} reconfigured"
+""")
+
+    # Add new VMs
+    for node in diff["added_vms"]:
+        d = node.get("data", {})
+        vm_name = f"{prefix}-{d.get('name', 'vm')}"
+        vm_data = {
+            "node_id": node["id"],
+            "name": d.get("name", "vm"),
+            "vcpus": d.get("vcpus", 2),
+            "ram_gb": d.get("ram", 4),
+            "boot_devices": d.get("bootDevices", ["hd"]),
+        }
+
+        vm_disks = _find_vm_disks(node["id"], topology)
+        vm_networks = _find_vm_networks(node["id"], topology, vni_map)
+
+        lines.append(f'echo "Adding new VM: {vm_name}"')
+
+        # Create disks
+        if vm_disks:
+            for disk in vm_disks:
+                if disk["format"] == "iso":
+                    continue
+                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
+                lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
+        else:
+            disk_path = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
+            lines.append(f"qemu-img create -f qcow2 {disk_path} 10G")
+            vm_disks = [{"name": "disk0", "size_gb": 10, "format": "qcow2", "bus": "virtio"}]
+
+        boot_devs = [boot_type_map[bd] for bd in vm_data.get("boot_devices", ["hd"]) if bd in boot_type_map]
+        boot_devs += ["hd" for bd in vm_data.get("boot_devices", []) if bd in storage_node_ids and "hd" not in boot_devs]
+        if not boot_devs:
+            boot_devs = ["hd"]
+
+        cmd_parts = [
+            "virt-install",
+            f"--name {vm_name}",
+            f"--vcpus {vm_data['vcpus']}",
+            f"--memory {vm_data['ram_gb'] * 1024}",
+            "--os-variant detect=on,name=linux2022",
+            "--graphics vnc,listen=0.0.0.0",
+            f"--boot {','.join(boot_devs)}",
+            "--noautoconsole",
+            "--noreboot",
+        ]
+
+        for disk in vm_disks:
+            if disk["format"] == "iso":
+                continue
+            dp = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
+            cmd_parts.append(f"--disk path={dp},format={disk['format']},bus={disk['bus']}")
+
+        if not any(d["format"] != "iso" for d in vm_disks):
+            dp = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
+            cmd_parts.append(f"--disk path={dp},format=qcow2,bus=virtio")
+
+        if vm_networks:
+            for net in vm_networks:
+                mac_arg = f",mac={net['mac']}" if net["mac"] else ""
+                cmd_parts.append(f"--network bridge={net['bridge']},model=virtio{mac_arg}")
+        else:
+            cmd_parts.append("--network none")
+
+        lines.append(" \\\n  ".join(cmd_parts))
+        lines.append(f"virsh start {vm_name}")
+        lines.append(f'echo "VM {vm_name} created and started"')
+        lines.append("")
+
+    lines.append('echo "=== Incremental changes applied ==="')
+    return "\n".join(lines)
+
+
 def generate_network_teardown_script(vni_map: dict) -> str:
     """Generate a script to tear down only the network infrastructure."""
     lines = ["#!/bin/bash", "set -uo pipefail", ""]
@@ -441,6 +690,7 @@ def deploy_project_async(project_id: str):
 
         project.state = "active"
         project.deploy_error = None
+        project.deployed_topology = project.topology
         s.commit()
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 

@@ -153,6 +153,7 @@ export default function AdminHostsPage() {
     active: "#4ade80",
     provisioning: "#fbbf24",
     draining: "#fbbf24",
+    starting: "#fbbf24",
     stopped: "#94a3b8",
     shutting_down: "#fb923c",
     terminating: "#f87171",
@@ -407,7 +408,7 @@ export default function AdminHostsPage() {
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
               </Button>
-              {(h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
+              {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
                 <Button variant="secondary" onClick={() => installAgent(h.id)} isLoading={installing === h.id} isDisabled={installing === h.id}>
                   {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
                 </Button>
@@ -425,6 +426,11 @@ export default function AdminHostsPage() {
               {h.state === "stopped" && (
                 <Button variant="secondary" onClick={() => powerHost(h.id, "poweron")} isLoading={poweringHost === h.id} isDisabled={poweringHost === h.id}>
                   Power On
+                </Button>
+              )}
+              {h.state === "starting" && (
+                <Button variant="secondary" isDisabled isLoading>
+                  Starting...
                 </Button>
               )}
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={h.used_vcpus > 0 || removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>

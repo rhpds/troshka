@@ -146,6 +146,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   panMode: true,
   currentProjectId: null as string | null,
   projectState: "draft" as string,
+  topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
 
@@ -310,20 +311,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         },
         get().edges,
       ),
+      topologyDirty: true,
     });
   },
 
   addNode: (node) => {
-    set({ nodes: [...get().nodes, node] });
+    set({ nodes: [...get().nodes, node], topologyDirty: true });
   },
 
   updateNodeData: (nodeId, data) => {
+    const isStatusOnly = Object.keys(data).length === 1 && "status" in data;
     set({
       nodes: get().nodes.map((node) =>
         node.id === nodeId
           ? { ...node, data: { ...node.data, ...data } }
           : node,
       ),
+      ...(isStatusOnly ? {} : { topologyDirty: true }),
     });
   },
 
@@ -345,6 +349,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
       selectedNodeId:
         get().selectedNodeId === nodeId ? null : get().selectedNodeId,
+      topologyDirty: true,
     });
   },
 
@@ -802,10 +807,11 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
   }).catch(() => {});
 }
 
-// Debounced auto-save to API
+// Debounced auto-save to API — only save in draft mode
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
+  if (state.projectState !== "draft" && state.projectState !== "stopped") return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTopologyToApi(state.currentProjectId!, state);

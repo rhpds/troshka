@@ -282,16 +282,54 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
     client = _get_ec2_client(credentials=creds)
     client.start_instances(InstanceIds=[host.instance_id])
 
-    # Wait for running and get new IP
-    waiter = client.get_waiter("instance_running")
-    waiter.wait(InstanceIds=[host.instance_id])
-    desc = client.describe_instances(InstanceIds=[host.instance_id])
-    inst = desc["Reservations"][0]["Instances"][0]
-
-    host.state = "active"
-    host.ip_address = inst.get("PublicIpAddress")
+    host.state = "starting"
     db.commit()
-    return {"status": "active", "ip_address": host.ip_address}
+
+    # Background: wait for running, update IP, reinstall agent
+    host_id = host.id
+    instance_id = host.instance_id
+
+    import threading
+    def _wait_and_reinstall():
+        from app.core.database import SessionLocal
+        from app.services.provisioner import _get_ec2_client as get_client
+        from app.services.agent_deployer import wait_for_ssh, deploy_agent
+        s = SessionLocal()
+        try:
+            # Wait for instance running
+            ec2 = get_client(credentials=creds)
+            waiter = ec2.get_waiter("instance_running")
+            waiter.wait(InstanceIds=[instance_id])
+            desc = ec2.describe_instances(InstanceIds=[instance_id])
+            inst = desc["Reservations"][0]["Instances"][0]
+
+            h = s.query(Host).filter_by(id=host_id).first()
+            if not h:
+                return
+            h.state = "active"
+            h.ip_address = inst.get("PublicIpAddress")
+            h.agent_status = "waiting_ssh"
+            s.commit()
+
+            if not h.private_key or not h.ip_address:
+                return
+            if not wait_for_ssh(h.ip_address, h.private_key):
+                h.agent_status = "install_failed"
+                s.commit()
+                return
+            h.agent_status = "installing"
+            s.commit()
+            result = deploy_agent(h.ip_address, h.private_key, h.id)
+            h.agent_status = "connected" if result["success"] else "install_failed"
+            s.commit()
+        except Exception:
+            logger.exception("Power on failed for host %s", host_id)
+        finally:
+            s.close()
+
+    threading.Thread(target=_wait_and_reinstall, daemon=True).start()
+
+    return {"status": "starting"}
 
 
 @router.delete("/{host_id}", status_code=204)
