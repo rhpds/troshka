@@ -90,6 +90,8 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         total_ram_mb=result["total_ram_mb"],
         ip_address=result["public_ip"],
         agent_status="disconnected",
+        key_pair_name=result.get("key_pair_name"),
+        private_key=result.get("private_key"),
     )
     db.add(host)
     db.commit()
@@ -103,6 +105,38 @@ def get_host(host_id: str, user: User = Depends(require_role("operator")), db: S
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
     return host
+
+
+@router.get("/{host_id}/ssh-key")
+def get_ssh_key(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Get the SSH private and public key for a host."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.private_key:
+        raise HTTPException(status_code=404, detail="No SSH key stored for this host")
+
+    result = {
+        "key_pair_name": host.key_pair_name,
+        "private_key": host.private_key,
+        "ssh_command": f"ssh -i <key-file> ec2-user@{host.ip_address}" if host.ip_address else None,
+    }
+
+    # Derive public key from private key
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["ssh-keygen", "-y", "-f", "/dev/stdin"],
+            input=host.private_key,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            result["public_key"] = proc.stdout.strip()
+    except Exception:
+        pass
+
+    return result
 
 
 @router.delete("/{host_id}", status_code=204)

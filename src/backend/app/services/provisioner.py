@@ -39,8 +39,8 @@ def find_rhel_ami(region: str | None = None) -> str:
     return images[-1]["ImageId"]
 
 
-def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg") -> str:
-    client = _get_ec2_client()
+def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None) -> str:
+    client = _get_ec2_client(credentials=credentials)
     existing = client.describe_security_groups(
         Filters=[
             {"Name": "group-name", "Values": [name]},
@@ -69,8 +69,8 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg") -> str:
     return sg_id
 
 
-def get_default_vpc_and_subnet() -> tuple[str, str]:
-    client = _get_ec2_client()
+def get_default_vpc_and_subnet(credentials: dict | None = None) -> tuple[str, str]:
+    client = _get_ec2_client(credentials=credentials)
     vpcs = client.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
     if not vpcs["Vpcs"]:
         raise ValueError("No default VPC found")
@@ -123,13 +123,16 @@ def provision_host(
     vpc_id = getattr(config.aws, "vpc_id", None)
     subnet_id = getattr(config.aws, "subnet_id", None)
     if not vpc_id or not subnet_id:
-        vpc_id, subnet_id = get_default_vpc_and_subnet()
+        vpc_id, subnet_id = get_default_vpc_and_subnet(credentials=credentials)
 
     sg_id = getattr(config.aws, "security_group_id", None)
     if not sg_id:
-        sg_id = ensure_security_group(vpc_id)
+        sg_id = ensure_security_group(vpc_id, credentials=credentials)
 
-    key_name = getattr(config.aws, "key_pair_name", None) or "troshka-host"
+    key_name = f"troshka-{host_id[:8]}"
+    key_result = client.create_key_pair(KeyName=key_name)
+    private_key = key_result.get("KeyMaterial", "")
+    logger.info("Created key pair %s", key_name)
 
     user_data = CLOUD_INIT.format(hostname=hostname, host_id=host_id)
 
@@ -187,6 +190,8 @@ def provision_host(
         "state": "active",
         "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
         "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
+        "key_pair_name": key_name,
+        "private_key": private_key,
     }
 
 
