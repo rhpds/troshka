@@ -342,7 +342,21 @@ def reconfigure_project(
             if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
                 continue
             vm_name = f"{prefix}-{vm['name']}"
-            boot_devs = libvirt_mgr.resolve_boot_devs(vm.get("boot_devices", ["hd"]), current)
+            raw_boot = vm.get("boot_devices") or None
+            vm_disks_for_boot = _find_vm_disks(vm["node_id"], current)
+            has_iso = any(d["format"] == "iso" for d in vm_disks_for_boot)
+            has_disk = any(d["format"] != "iso" for d in vm_disks_for_boot)
+            if raw_boot is None or (raw_boot == ["hd"] and has_iso):
+                if has_iso and has_disk:
+                    boot_devs = ["cdrom", "hd"]
+                elif has_iso:
+                    boot_devs = ["cdrom"]
+                elif has_disk:
+                    boot_devs = ["hd"]
+                else:
+                    boot_devs = ["network"]
+            else:
+                boot_devs = libvirt_mgr.resolve_boot_devs(raw_boot, current)
             vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
             nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
 
