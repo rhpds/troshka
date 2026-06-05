@@ -134,8 +134,21 @@ def reconfigure_vm(
     boot_devs: list[str] | None = None,
     vcpus: int | None = None,
     ram_mb: int | None = None,
+    nics: list[dict] | None = None,
+    disks: list[dict] | None = None,
+    vnc_listen: str = "127.0.0.1",
 ) -> bool:
-    """Reconfigure a VM's boot order, CPU, and RAM without touching disks."""
+    """Reconfigure a VM without wiping existing disks.
+
+    Args:
+        boot_devs: List of boot devices (e.g., ["network", "hd"])
+        vcpus: Number of vCPUs
+        ram_mb: RAM in MB
+        nics: List of {"bridge": "br-1000", "mac": "52:54:00:xx:xx:xx", "model": "virtio"}
+        disks: List of {"path": "/var/.../disk.qcow2", "format": "qcow2", "bus": "virtio"}
+               Only adds missing disks and removes orphaned ones. Never touches existing.
+        vnc_listen: VNC listen address
+    """
     try:
         dom = conn.lookupByName(name)
         was_active = dom.isActive()
@@ -170,6 +183,90 @@ def reconfigure_vm(
             if cur_mem is not None:
                 cur_mem.text = str(ram_kib)
                 cur_mem.set("unit", "KiB")
+
+        if nics is not None:
+            devices = root.find("devices")
+            for iface in devices.findall("interface"):
+                devices.remove(iface)
+            for nic in nics:
+                iface = ET.SubElement(devices, "interface")
+                iface.set("type", "bridge")
+                source = ET.SubElement(iface, "source")
+                source.set("bridge", nic["bridge"])
+                if nic.get("mac"):
+                    mac_elem = ET.SubElement(iface, "mac")
+                    mac_elem.set("address", nic["mac"])
+                model = ET.SubElement(iface, "model")
+                model.set("type", nic.get("model", "virtio"))
+
+        if disks is not None:
+            devices = root.find("devices")
+            existing_disks = devices.findall("disk") if devices is not None else []
+            existing_paths = set()
+            for d in existing_disks:
+                source = d.find("source")
+                if source is not None and source.get("file"):
+                    existing_paths.add(source.get("file"))
+
+            desired_paths = {d["path"] for d in disks}
+
+            # Remove disks no longer in the topology (but keep cdrom devices)
+            for d in existing_disks:
+                if d.get("device") == "cdrom":
+                    continue
+                source = d.find("source")
+                path = source.get("file") if source is not None else None
+                if path and path not in desired_paths:
+                    devices.remove(d)
+                    logger.info("Removed disk %s from %s", path, name)
+
+            # Add new disks that don't exist yet
+            target_letters = "bcdefghijklmnop"
+            used_targets = {d.find("target").get("dev") for d in devices.findall("disk") if d.find("target") is not None}
+            for disk_info in disks:
+                if disk_info["path"] in existing_paths:
+                    continue
+                # Find next available target dev
+                target_dev = None
+                for letter in target_letters:
+                    dev_name = f"vd{letter}"
+                    if dev_name not in used_targets:
+                        target_dev = dev_name
+                        used_targets.add(dev_name)
+                        break
+                if not target_dev:
+                    continue
+
+                disk_elem = ET.SubElement(devices, "disk")
+                disk_elem.set("type", "file")
+                disk_elem.set("device", "disk")
+                driver = ET.SubElement(disk_elem, "driver")
+                driver.set("name", "qemu")
+                driver.set("type", disk_info.get("format", "qcow2"))
+                source = ET.SubElement(disk_elem, "source")
+                source.set("file", disk_info["path"])
+                target = ET.SubElement(disk_elem, "target")
+                target.set("dev", target_dev)
+                target.set("bus", disk_info.get("bus", "virtio"))
+                logger.info("Added disk %s as %s to %s", disk_info["path"], target_dev, name)
+
+        if vnc_listen:
+            devices = root.find("devices")
+            graphics = devices.find("graphics[@type='vnc']") if devices is not None else None
+            if graphics is not None:
+                graphics.set("listen", vnc_listen)
+                listen_elem = graphics.find("listen")
+                if listen_elem is not None:
+                    listen_elem.set("address", vnc_listen)
+            elif devices is not None:
+                graphics = ET.SubElement(devices, "graphics")
+                graphics.set("type", "vnc")
+                graphics.set("port", "-1")
+                graphics.set("autoport", "yes")
+                graphics.set("listen", vnc_listen)
+                listen_sub = ET.SubElement(graphics, "listen")
+                listen_sub.set("type", "address")
+                listen_sub.set("address", vnc_listen)
 
         new_xml = ET.tostring(root, encoding="unicode")
         conn.defineXML(new_xml)

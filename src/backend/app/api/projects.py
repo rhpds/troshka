@@ -13,7 +13,7 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, diff_topologies, generate_incremental_script, _extract_vms
+from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, diff_topologies, generate_incremental_script, _extract_vms, _find_vm_networks, _find_vm_disks
 from app.services.vxlan import generate_setup_script
 from app.services import libvirt_mgr
 from app.services.console_proxy import get_or_create_proxy
@@ -343,7 +343,24 @@ def reconfigure_project(
                 continue
             vm_name = f"{prefix}-{vm['name']}"
             boot_devs = libvirt_mgr.resolve_boot_devs(vm.get("boot_devices", ["hd"]), current)
-            if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024):
+            vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
+            nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
+
+            # Build disk list — create new qcow2 files if needed
+            vm_disks_raw = _find_vm_disks(vm["node_id"], current)
+            disk_list = []
+            new_disk_cmds = []
+            for d in vm_disks_raw:
+                if d["format"] == "iso":
+                    continue
+                path = f"/var/lib/troshka/vms/{vm_name}-{d['name']}.{d['format']}"
+                disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
+                new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+            # Create any new disk images on host
+            if new_disk_cmds:
+                run_ssh_script(host.ip_address, host.private_key, "\n".join(new_disk_cmds), timeout=30)
+
+            if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list):
                 errors.append(f"Failed to reconfigure {vm_name}")
 
         # Add new VMs via SSH (virt-install not available via libvirt API)

@@ -190,10 +190,6 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
                 if disk["format"] == "iso":
                     continue
                 lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
-        else:
-            disk_path = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
-            lines.append(f"qemu-img create -f qcow2 {disk_path} 10G")
-            vm_disks = [{"name": "disk0", "size_gb": 10, "format": "qcow2", "bus": "virtio"}]
 
         # Boot devices can be type strings or node IDs (for storage nodes)
         boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
@@ -221,22 +217,23 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             f"--vcpus {vm['vcpus']}",
             f"--memory {vm['ram_gb'] * 1024}",
             "--os-variant detect=on,name=linux2022",
-            "--graphics vnc,listen=0.0.0.0",
+            "--graphics vnc,listen=127.0.0.1",
             f"--boot {boot_arg}",
             "--noautoconsole",
             "--noreboot",
         ]
 
         # Add disks
+        has_disk = False
         for disk in vm_disks:
             if disk["format"] == "iso":
                 continue
             disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
             cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
+            has_disk = True
 
-        if not any(d["format"] != "iso" for d in vm_disks):
-            disk_path = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
-            cmd_parts.append(f"--disk path={disk_path},format=qcow2,bus=virtio")
+        if not has_disk:
+            cmd_parts.append("--disk none")
 
         # Add networks
         if vm_networks:
@@ -582,10 +579,6 @@ echo "{vm_name} reconfigured"
                     continue
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
                 lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
-        else:
-            disk_path = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
-            lines.append(f"qemu-img create -f qcow2 {disk_path} 10G")
-            vm_disks = [{"name": "disk0", "size_gb": 10, "format": "qcow2", "bus": "virtio"}]
 
         boot_devs = [boot_type_map[bd] for bd in vm_data.get("boot_devices", ["hd"]) if bd in boot_type_map]
         boot_devs += ["hd" for bd in vm_data.get("boot_devices", []) if bd in storage_node_ids and "hd" not in boot_devs]
@@ -598,21 +591,22 @@ echo "{vm_name} reconfigured"
             f"--vcpus {vm_data['vcpus']}",
             f"--memory {vm_data['ram_gb'] * 1024}",
             "--os-variant detect=on,name=linux2022",
-            "--graphics vnc,listen=0.0.0.0",
+            "--graphics vnc,listen=127.0.0.1",
             f"--boot {','.join(boot_devs)}",
             "--noautoconsole",
             "--noreboot",
         ]
 
+        has_disk = False
         for disk in vm_disks:
             if disk["format"] == "iso":
                 continue
             dp = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
             cmd_parts.append(f"--disk path={dp},format={disk['format']},bus={disk['bus']}")
+            has_disk = True
 
-        if not any(d["format"] != "iso" for d in vm_disks):
-            dp = f"/var/lib/troshka/vms/{vm_name}-disk0.qcow2"
-            cmd_parts.append(f"--disk path={dp},format=qcow2,bus=virtio")
+        if not has_disk:
+            cmd_parts.append("--disk none")
 
         if vm_networks:
             for net in vm_networks:

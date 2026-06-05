@@ -321,6 +321,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   updateNodeData: (nodeId, data) => {
     const isStatusOnly = Object.keys(data).length === 1 && "status" in data;
+    const handlesChanged = "nics" in data || "diskControllers" in data;
     set({
       nodes: get().nodes.map((node) =>
         node.id === nodeId
@@ -328,6 +329,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           : node,
       ),
       ...(isStatusOnly ? {} : { topologyDirty: true }),
+      // Force React Flow to re-route edges by creating new edge references
+      ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
     });
   },
 

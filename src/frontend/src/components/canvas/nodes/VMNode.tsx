@@ -1,7 +1,7 @@
 "use client";
 
-import React, { memo, useState } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import React, { memo, useState, useEffect } from "react";
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 
@@ -12,8 +12,18 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const projectState = useCanvasStore((s) => s.projectState);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
+  const updateNodeInternals = useUpdateNodeInternals();
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
+
+  const nicCount = (d.nics || []).length;
+  const dcCount = (d.diskControllers || []).length;
+  useEffect(() => {
+    // Two-pass update: first let DOM render new handles, then re-measure
+    const t1 = setTimeout(() => updateNodeInternals(id), 0);
+    const t2 = setTimeout(() => updateNodeInternals(id), 200);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [id, nicCount, dcCount, updateNodeInternals]);
   const isDeployed = projectState === "active" || projectState === "stopped";
 
   const [actionPending, setActionPending] = useState<string | null>(null);
