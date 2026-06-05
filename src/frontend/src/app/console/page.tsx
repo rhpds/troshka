@@ -224,7 +224,16 @@ export default function ConsolePage() {
               };
               const shiftKeysym = 0xffe1; // XK_Shift_L
 
+              const controlKeys: Record<string, number> = {
+                "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09,
+              };
+
               for (const ch of text) {
+                if (ch in controlKeys) {
+                  sendKey.call(r, controlKeys[ch], "", true);
+                  sendKey.call(r, controlKeys[ch], "", false);
+                  continue;
+                }
                 let keysym = ch.charCodeAt(0);
                 if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
 
