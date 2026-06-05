@@ -200,6 +200,46 @@ export default function ConsolePage() {
             {scaled ? "Scaled" : "1:1"}
           </button>
           <button
+            onClick={async () => {
+              let text = "";
+              try {
+                text = await navigator.clipboard.readText();
+              } catch {
+                text = window.prompt("Paste text to send to VM:") || "";
+              }
+              if (!text) return;
+              const r = rfbRef.current as Record<string, unknown> | null;
+              if (!r) return;
+              const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
+              if (!sendKey) return;
+
+              // Characters that require Shift on US keyboard
+              const shiftChars: Record<string, number> = {
+                "_": 0x005f, "~": 0x007e, "!": 0x0021, "@": 0x0040,
+                "#": 0x0023, "$": 0x0024, "%": 0x0025, "^": 0x005e,
+                "&": 0x0026, "*": 0x002a, "(": 0x0028, ")": 0x0029,
+                "+": 0x002b, "{": 0x007b, "}": 0x007d, "|": 0x007c,
+                ":": 0x003a, '"': 0x0022, "<": 0x003c, ">": 0x003e,
+                "?": 0x003f,
+              };
+              const shiftKeysym = 0xffe1; // XK_Shift_L
+
+              for (const ch of text) {
+                let keysym = ch.charCodeAt(0);
+                if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
+
+                const needsShift = ch in shiftChars || (ch >= "A" && ch <= "Z");
+                if (needsShift) sendKey.call(r, shiftKeysym, "", true);
+                sendKey.call(r, keysym, "", true);
+                sendKey.call(r, keysym, "", false);
+                if (needsShift) sendKey.call(r, shiftKeysym, "", false);
+              }
+            }}
+            style={btnStyle}
+          >
+            Paste
+          </button>
+          <button
             onClick={() => {
               const r = rfbRef.current as { sendCtrlAltDel: () => void } | null;
               if (r) r.sendCtrlAltDel();
