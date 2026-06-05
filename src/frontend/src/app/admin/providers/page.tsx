@@ -36,6 +36,11 @@ export default function AdminProvidersPage() {
   const [region, setRegion] = useState("us-east-1");
   const [accessKey, setAccessKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editRegion, setEditRegion] = useState("");
+  const [editAccessKey, setEditAccessKey] = useState("");
+  const [editSecretKey, setEditSecretKey] = useState("");
 
   const loadProviders = () => {
     fetch("/api/v1/providers/")
@@ -75,6 +80,36 @@ export default function AdminProvidersPage() {
       setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
     } else {
       setTestResult((prev) => ({ ...prev, [id]: "FAILED" }));
+    }
+  };
+
+  const startEdit = (p: ProviderInfo) => {
+    setEditId(p.id);
+    setEditName(p.name);
+    setEditRegion(p.default_region || "us-east-1");
+    setEditAccessKey("");
+    setEditSecretKey("");
+  };
+
+  const saveEdit = async () => {
+    if (!editId) return;
+    const body: Record<string, string> = {};
+    if (editName) body.name = editName;
+    if (editRegion) body.default_region = editRegion;
+    if (editAccessKey) body.access_key_id = editAccessKey;
+    if (editSecretKey) body.secret_access_key = editSecretKey;
+
+    const resp = await fetch(`/api/v1/providers/${editId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (resp.ok) {
+      setEditId(null);
+      loadProviders();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update");
     }
   };
 
@@ -168,33 +203,63 @@ export default function AdminProvidersPage() {
         )}
         {providers.map((p) => (
           <Card key={p.id} style={{ marginBottom: 8 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <strong>{p.name}</strong>
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : "#a78bfa" }}>
-                    {p.type === "ec2" ? "AWS EC2" : "OCP Virt"}
-                  </span>
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
-                    {p.state}
-                  </span>
-                  {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {p.default_region} · {p.host_count} host{p.host_count !== 1 ? "s" : ""}
-                </div>
-                {testResult[p.id] && (
-                  <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].startsWith("OK") ? "#4ade80" : "#f87171" }}>
-                    {testResult[p.id]}
+            <CardBody>
+              {editId === p.id ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 500 }}>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
+                    <input style={inputStyle} value={editName} onChange={(e) => setEditName(e.target.value)} />
                   </div>
-                )}
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
-                <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
-                  {p.host_count > 0 ? "Has Hosts" : "Delete"}
-                </Button>
-              </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
+                    <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
+                      {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                    <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                    <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button variant="primary" onClick={saveEdit}>Save</Button>
+                    <Button variant="secondary" onClick={() => setEditId(null)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <strong>{p.name}</strong>
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : "#a78bfa" }}>
+                        {p.type === "ec2" ? "AWS EC2" : "OCP Virt"}
+                      </span>
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
+                        {p.state}
+                      </span>
+                      {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+                      {p.default_region} · {p.host_count} host{p.host_count !== 1 ? "s" : ""}
+                    </div>
+                    {testResult[p.id] && (
+                      <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].startsWith("OK") ? "#4ade80" : "#f87171" }}>
+                        {testResult[p.id]}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
+                    <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
+                    <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
+                      {p.host_count > 0 ? "Has Hosts" : "Delete"}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardBody>
           </Card>
         ))}
