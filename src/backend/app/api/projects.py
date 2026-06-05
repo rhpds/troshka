@@ -394,7 +394,8 @@ def reconfigure_project(
 
         # Add new VMs via SSH (virt-install not available via libvirt API)
         if diff["added_vms"]:
-            from app.services.deploy_service import generate_incremental_script
+            from app.services.deploy_service import generate_incremental_script, _prepare_library_downloads
+            _prepare_library_downloads(current, host.ip_address, host.private_key, db)
             add_diff = {"added_vms": diff["added_vms"], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
             script = generate_incremental_script(project_id, current, add_diff, vni_map)
             result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)

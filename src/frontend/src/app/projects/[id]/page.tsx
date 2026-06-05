@@ -58,34 +58,58 @@ export default function ProjectCanvasPage() {
   const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
   const topologyDirty = useCanvasStore((s) => s.topologyDirty);
 
-  // Sync VM status and project state into the store
+  // Sync project state into the store
   useEffect(() => {
     useCanvasStore.setState({ projectState });
+  }, [projectState]);
+
+  // Sync VM status from deployed_topology when project state or nodes change
+  const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
     if (projectState === "active" || projectState === "stopped") {
-      // Only set status for VMs that exist in deployed_topology
       fetch(`/api/v1/projects/${projectId}`)
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (!data) return;
-          const deployedVmIds = new Set(
+          const ids = new Set<string>(
             (data.deployed_topology?.nodes || [])
               .filter((n: Record<string, unknown>) => n.type === "vmNode")
-              .map((n: Record<string, unknown>) => n.id)
+              .map((n: Record<string, unknown>) => n.id as string)
           );
-          const status = projectState === "active" ? "running" : "stopped";
-          const store = useCanvasStore.getState();
-          useCanvasStore.setState({
-            nodes: store.nodes.map((node) =>
-              node.type === "vmNode"
-                ? { ...node, data: { ...node.data, status: deployedVmIds.has(node.id) ? status : "stopped" } }
-                : node
-            ),
-          });
+          setDeployedVmIds(ids);
+          useCanvasStore.setState({ deployedVmIds: ids });
+
+          // Check if topology differs from deployed — set dirty flag
+          const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
+          const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
+          if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
+            useCanvasStore.setState({ topologyDirty: true });
+          }
         });
-    } else if (projectState === "draft") {
-      setAllVmStatus("stopped");
+    } else {
+      setDeployedVmIds(new Set());
     }
-  }, [projectState, projectId, setAllVmStatus]);
+  }, [projectState, projectId]);
+
+  useEffect(() => {
+    if (projectState === "draft") {
+      setAllVmStatus("stopped");
+      return;
+    }
+    if (deployedVmIds.size === 0) return;
+    const status = projectState === "active" ? "running" : "stopped";
+    const store = useCanvasStore.getState();
+    if (store.nodes.length > 0) {
+      useCanvasStore.setState({
+        nodes: store.nodes.map((node) =>
+          node.type === "vmNode"
+            ? { ...node, data: { ...node.data, status: deployedVmIds.has(node.id) ? status : "stopped" } }
+            : node
+        ),
+      });
+    }
+  }, [projectState, deployedVmIds, setAllVmStatus]);
 
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);

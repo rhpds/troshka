@@ -24,7 +24,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     const t2 = setTimeout(() => updateNodeInternals(id), 200);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [id, nicCount, dcCount, updateNodeInternals]);
-  const isDeployed = projectState === "active" || projectState === "stopped";
+  const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
+  const isDeployed = (projectState === "active" || projectState === "stopped") && deployedVmIds.has(id);
 
   const [actionPending, setActionPending] = useState<string | null>(null);
 

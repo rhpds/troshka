@@ -146,6 +146,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   panMode: true,
   currentProjectId: null as string | null,
   projectState: "draft" as string,
+  deployedVmIds: new Set<string>(),
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
