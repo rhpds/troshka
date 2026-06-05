@@ -29,6 +29,7 @@ from app.api import disks as disk_routes  # noqa: E402
 from app.api import api_keys as api_key_routes  # noqa: E402
 from app.api import hosts as host_routes  # noqa: E402
 from app.api import providers as provider_routes  # noqa: E402
+from app.api import library as library_routes  # noqa: E402
 
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(project_routes.router, prefix="/api/v1")
@@ -38,6 +39,7 @@ app.include_router(disk_routes.router, prefix="/api/v1")
 app.include_router(api_key_routes.router, prefix="/api/v1")
 app.include_router(host_routes.router, prefix="/api/v1")
 app.include_router(provider_routes.router, prefix="/api/v1")
+app.include_router(library_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

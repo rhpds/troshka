@@ -158,6 +158,8 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
             "size_gb": sdata.get("size", 10),
             "format": sdata.get("format", "qcow2"),
             "bus": bus,
+            "source": sdata.get("source", "blank"),
+            "library_item_id": sdata.get("libraryItemId"),
         })
 
     return disks
@@ -183,13 +185,28 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
 
         lines.append(f'echo "Creating VM: {vm_name}"')
 
-        # Create disk images
+        # Create/download disk images
         if vm_disks:
             for disk in vm_disks:
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
                 if disk["format"] == "iso":
+                    # ISO from library: download to cache if not present
+                    if disk.get("library_item_id"):
+                        cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                        lines.append(f'echo "Caching ISO {disk["name"]}..."')
+                        lines.append(f"PRESIGNED_ISO_{disk['name']}=$(cat /tmp/troshka-presigned-{disk['library_item_id']} 2>/dev/null || echo '')")
+                        lines.append(f'test -f {cache_path} || curl -sL -o {cache_path} "$PRESIGNED_ISO_{disk["name"]}"')
                     continue
-                lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
+                if disk.get("source") == "library" and disk.get("library_item_id"):
+                    # Library base image: download to cache, create COW overlay
+                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+                    lines.append(f'echo "Caching base image {disk["name"]}..."')
+                    lines.append(f"PRESIGNED_{disk['name']}=$(cat /tmp/troshka-presigned-{disk['library_item_id']} 2>/dev/null || echo '')")
+                    lines.append(f'test -f {cache_path} || curl -sL -o {cache_path} "$PRESIGNED_{disk["name"]}"')
+                    lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
+                else:
+                    # Blank disk
+                    lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
 
         # Boot devices can be type strings or node IDs (for storage nodes)
         boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
@@ -223,13 +240,20 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             "--noreboot",
         ]
 
-        # Add disks
+        # Add disks and ISOs
         has_disk = False
         for disk in vm_disks:
             if disk["format"] == "iso":
+                if disk.get("library_item_id"):
+                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                    cmd_parts.append(f"--disk path={cache_path},device=cdrom,readonly=on")
                 continue
-            disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-            cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
+            if disk.get("source") == "library" and disk.get("library_item_id"):
+                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
+                cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
+            else:
+                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
+                cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
             has_disk = True
 
         if not has_disk:
@@ -637,6 +661,34 @@ def generate_network_teardown_script(vni_map: dict) -> str:
     return "\n".join(lines)
 
 
+def _prepare_library_downloads(topology: dict, host_ip: str, private_key: str, db_session):
+    """Generate presigned S3 URLs for library items and write them to the host."""
+    from app.models.library import LibraryItem
+    from app.services import s3_storage
+
+    nodes = topology.get("nodes", [])
+    library_item_ids = set()
+    for node in nodes:
+        if node.get("type") == "storageNode":
+            item_id = node.get("data", {}).get("libraryItemId")
+            if item_id:
+                library_item_ids.add(item_id)
+
+    if not library_item_ids:
+        return
+
+    lines = ["#!/bin/bash"]
+    for item_id in library_item_ids:
+        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+        if not item or not item.s3_key:
+            continue
+        url = s3_storage.generate_presigned_url(item.s3_key, expires=7200)
+        lines.append(f"echo '{url}' > /tmp/troshka-presigned-{item_id}")
+
+    if len(lines) > 1:
+        run_ssh_script(host_ip, private_key, "\n".join(lines), timeout=15)
+
+
 # ── Async orchestrators ──
 
 def deploy_project_async(project_id: str):
@@ -679,7 +731,10 @@ def deploy_project_async(project_id: str):
             s.commit()
             return
 
-        # Step 2: Create VMs
+        # Step 2: Prepare library image presigned URLs
+        _prepare_library_downloads(topology, host_ip, private_key, s)
+
+        # Step 3: Create VMs
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vm_script = generate_vm_script(project_id, topology, vni_map)
 

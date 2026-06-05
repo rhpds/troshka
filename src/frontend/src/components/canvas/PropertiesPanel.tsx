@@ -1,6 +1,7 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
+import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac } from "@/stores/canvasStore";
 import type {
   VMNodeData,
@@ -83,6 +84,7 @@ export default function PropertiesPanel() {
   const edges = useCanvasStore((s) => s.edges);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
+  const [showLibraryPicker, setShowLibraryPicker] = useState<"iso" | "image" | null>(null);
 
   const node = nodes.find((n) => n.id === selectedNodeId);
 
@@ -1035,20 +1037,28 @@ export default function PropertiesPanel() {
                   <label className="props-label">Source</label>
                   <button
                     className="props-library-btn"
-                    onClick={() => alert("Library picker — coming in Phase 7.\n\nThis will show ISOs from the public and personal library.")}
+                    onClick={() => setShowLibraryPicker("iso")}
                   >
                     📚 Select from Library...
                   </button>
-                  <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
-                    {(data as Record<string, unknown>).libraryItemName as string || "No ISO selected"}
-                  </span>
+                  {(data as Record<string, unknown>).libraryItemName ? (
+                    <span style={{ fontSize: 12, marginTop: 4, display: "block", color: "var(--troshka-green)" }}>
+                      💿 {(data as Record<string, unknown>).libraryItemName as string}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
+                      No ISO selected
+                    </span>
+                  )}
                 </div>
-                <div className="props-field">
-                  <label className="props-label">Size</label>
-                  <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
-                    {sd.size} GB (read-only)
-                  </span>
-                </div>
+                {(data as Record<string, unknown>).libraryItemSize && (
+                  <div className="props-field">
+                    <label className="props-label">Size</label>
+                    <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
+                      {(data as Record<string, unknown>).libraryItemSize as number} GB (read-only)
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="props-section">
@@ -1068,13 +1078,19 @@ export default function PropertiesPanel() {
                   <div className="props-field">
                     <button
                       className="props-library-btn"
-                      onClick={() => alert("Library picker — coming in Phase 7.\n\nThis will show disk images from the public and personal library.")}
+                      onClick={() => setShowLibraryPicker("image")}
                     >
                       📚 Select from Library...
                     </button>
-                    <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
-                      {(data as Record<string, unknown>).libraryItemName as string || "No image selected"}
-                    </span>
+                    {(data as Record<string, unknown>).libraryItemName ? (
+                      <span style={{ fontSize: 12, marginTop: 4, display: "block", color: "var(--troshka-green)" }}>
+                        🛢 {(data as Record<string, unknown>).libraryItemName as string}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
+                        No image selected
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="props-row">
@@ -1158,6 +1174,20 @@ export default function PropertiesPanel() {
           ) : "Storage"}
         </button>
       </div>
+      {showLibraryPicker && node && (
+        <LibraryPicker
+          type={showLibraryPicker}
+          onSelect={(item) => {
+            updateNodeData(node.id, {
+              libraryItemId: item.id,
+              libraryItemName: item.name,
+              libraryItemSize: item.size_gb,
+              source: "library",
+            });
+          }}
+          onClose={() => setShowLibraryPicker(null)}
+        />
+      )}
     </div>
   );
 }
