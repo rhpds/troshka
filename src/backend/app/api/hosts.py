@@ -123,7 +123,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             h.agent_status = "installing"
             s.commit()
             result = deploy_agent(h.ip_address, h.private_key, h.id)
-            h.agent_status = "installed" if result["success"] else "install_failed"
+            h.agent_status = "connected" if result["success"] else "install_failed"
             s.commit()
         except Exception:
             logger.exception("Auto-install failed for host %s", host.id)

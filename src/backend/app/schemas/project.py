@@ -38,7 +38,9 @@ class ProjectResponse(BaseModel):
     guest_permission: str
     run_timer_hours: int | None = None
     poweroff_mode: str
+    host_id: str | None = None
     topology: dict | None = None
+    deploy_error: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

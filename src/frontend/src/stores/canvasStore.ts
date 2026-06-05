@@ -98,6 +98,7 @@ interface CanvasState {
   // Actions
   addNode: (node: Node) => void;
   updateNodeData: (nodeId: string, data: Partial<Record<string, unknown>>) => void;
+  setAllVmStatus: (status: "running" | "stopped") => void;
   deleteNode: (nodeId: string) => void;
   setSelectedNode: (nodeId: string | null) => void;
   toggleMinimap: () => void;
@@ -144,6 +145,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   suppressDeleteWarning: false,
   panMode: true,
   currentProjectId: null as string | null,
+  projectState: "draft" as string,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
 
@@ -320,6 +322,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       nodes: get().nodes.map((node) =>
         node.id === nodeId
           ? { ...node, data: { ...node.data, ...data } }
+          : node,
+      ),
+    });
+  },
+
+  setAllVmStatus: (status) => {
+    set({
+      nodes: get().nodes.map((node) =>
+        node.type === "vmNode"
+          ? { ...node, data: { ...node.data, status } }
           : node,
       ),
     });

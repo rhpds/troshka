@@ -1,4 +1,9 @@
+import re
+import shlex
+
 from fastapi import APIRouter, Depends, HTTPException
+
+VM_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$')
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -7,6 +12,8 @@ from app.models.project import Project
 from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
+from app.models.host import Host
+from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -102,12 +109,165 @@ def deploy_project(
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
+    # Persist VNI map for stop/start/destroy
+    project.vni_map = result.get("vni_map")
+    db.commit()
+
+    # Deploy in background
+    import threading
+    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True).start()
+
     return {
         "status": "deploying",
         "host_id": result["host_id"],
         "host_ip": result["host_ip"],
         "requirements": result["requirements"],
     }
+
+
+@router.post("/{project_id}/stop")
+def stop_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state != "active":
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, not active")
+
+    project.state = "stopping"
+    db.commit()
+
+    import threading
+    threading.Thread(target=stop_project_async, args=(project.id,), daemon=True).start()
+
+    return {"status": "stopping"}
+
+
+@router.post("/{project_id}/start")
+def start_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state != "stopped":
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, not stopped")
+
+    project.state = "starting"
+    db.commit()
+
+    import threading
+    threading.Thread(target=start_project_async, args=(project.id,), daemon=True).start()
+
+    return {"status": "starting"}
+
+
+def _get_project_and_host(project_id: str, user: User, db: Session):
+    """Helper to load project + host with auth and state checks."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail=f"Project is {project.state}, VMs not accessible")
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host or not host.private_key or not host.ip_address:
+        raise HTTPException(status_code=503, detail="Host not available")
+    return project, host
+
+
+def _validate_vm_name(vm_name: str) -> str:
+    if not VM_NAME_RE.match(vm_name):
+        raise HTTPException(status_code=400, detail="Invalid VM name")
+    return vm_name
+
+
+@router.post("/{project_id}/vms/{vm_name}/start")
+def start_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh start {shlex.quote(full_name)}", timeout=30)
+    return {"vm": full_name, "action": "start", "success": result["success"], "output": result["output"]}
+
+
+@router.post("/{project_id}/vms/{vm_name}/stop")
+def stop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh shutdown {shlex.quote(full_name)}", timeout=30)
+    return {"vm": full_name, "action": "stop", "success": result["success"], "output": result["output"]}
+
+
+@router.post("/{project_id}/vms/{vm_name}/restart")
+def restart_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh reboot {shlex.quote(full_name)}", timeout=30)
+    return {"vm": full_name, "action": "restart", "success": result["success"], "output": result["output"]}
+
+
+@router.get("/{project_id}/vms/{vm_name}/console")
+def get_vm_console(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _validate_vm_name(vm_name)
+    project, host = _get_project_and_host(project_id, user, db)
+    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    result = run_ssh_script(host.ip_address, host.private_key, f"virsh vncdisplay {shlex.quote(full_name)}", timeout=15)
+    vnc_display = ""
+    if result["success"]:
+        for line in result["output"].strip().split("\n"):
+            line = line.strip()
+            if line.startswith(":") or line.startswith("0.0.0.0:") or line.startswith("127.0.0.1:"):
+                vnc_display = line
+                break
+    vnc_port = ""
+    if ":" in vnc_display:
+        display_num = vnc_display.split(":")[-1]
+        vnc_port = str(5900 + int(display_num))
+    return {
+        "vm": full_name,
+        "host_ip": host.ip_address,
+        "vnc_display": vnc_display,
+        "vnc_port": vnc_port,
+        "vnc_url": f"vnc://{host.ip_address}:{vnc_port}" if vnc_port else None,
+    }
+
+
+@router.post("/{project_id}/undeploy")
+def undeploy_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Destroy all infrastructure and reset project to draft."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if project.host_id:
+        destroy_project_sync(project.id)
+
+    project.state = "draft"
+    project.host_id = None
+    project.vni_map = None
+    project.deploy_error = None
+    db.commit()
+
+    return {"status": "draft"}
 
 
 @router.delete("/{project_id}", status_code=204)
@@ -121,5 +281,10 @@ def delete_project(
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # Clean up infrastructure if deployed
+    if project.host_id and project.state in ("active", "stopped", "error"):
+        destroy_project_sync(project.id)
+
     db.delete(project)
     db.commit()

@@ -205,18 +205,21 @@ export default function PropertiesPanel() {
                 onChange={(e) => update("os", e.target.value)}
               >
                 <optgroup label="Red Hat Enterprise Linux">
+                  <option value="rhel10">RHEL 10</option>
                   <option value="rhel9">RHEL 9</option>
                   <option value="rhel8">RHEL 8</option>
                   <option value="rhel7">RHEL 7</option>
                 </optgroup>
                 <optgroup label="CentOS / Alma / Rocky">
+                  <option value="centos-stream10">CentOS Stream 10</option>
                   <option value="centos-stream9">CentOS Stream 9</option>
                   <option value="almalinux9">AlmaLinux 9</option>
                   <option value="rocky9">Rocky Linux 9</option>
                 </optgroup>
                 <optgroup label="Fedora">
+                  <option value="fedora42">Fedora 42</option>
+                  <option value="fedora41">Fedora 41</option>
                   <option value="fedora40">Fedora 40</option>
-                  <option value="fedora39">Fedora 39</option>
                 </optgroup>
                 <optgroup label="Ubuntu">
                   <option value="ubuntu24.04">Ubuntu 24.04 LTS</option>

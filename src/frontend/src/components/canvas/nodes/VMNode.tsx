@@ -9,8 +9,35 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const edges = useCanvasStore((s) => s.edges);
   const nodes = useCanvasStore((s) => s.nodes);
+  const projectId = useCanvasStore((s) => s.currentProjectId);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
+  const isDeployed = projectState === "active" || projectState === "stopped";
+
+  const vmAction = async (action: "start" | "stop" | "restart") => {
+    if (!projectId) return;
+    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/${action}`, { method: "POST" });
+    const result = await resp.json();
+    if (result.success || result.output?.includes("already active") || result.output?.includes("domain is not running")) {
+      if (action === "stop") updateNodeData(id, { status: "stopped" });
+      else updateNodeData(id, { status: "running" });
+    } else {
+      alert(`${action} failed: ${result.output?.slice(-200) || "unknown error"}`);
+    }
+  };
+
+  const openConsole = async () => {
+    if (!projectId) return;
+    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/console`);
+    const info = await resp.json();
+    if (info.vnc_url) {
+      alert(`VNC Console\n\nHost: ${info.host_ip}\nPort: ${info.vnc_port}\nDisplay: ${info.vnc_display}\n\nConnect with: ${info.vnc_url}`);
+    } else {
+      alert("Console not available — VM may not be running or VNC is not configured.");
+    }
+  };
   const borderColor = isRunning
     ? "var(--troshka-green)"
     : "var(--troshka-red)";
@@ -94,20 +121,22 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       {/* Action buttons */}
-      <div className="vm-node-footer">
+      <div className="vm-node-footer nopan nodrag">
         <button
           className={`vm-node-action ${isRunning ? "power-running" : "power-stopped"}`}
           title={isRunning ? "Stop" : "Start"}
+          onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction(isRunning ? "stop" : "start"); }}
+          disabled={!isDeployed}
         >
           {isRunning ? "■" : "▶"}
         </button>
-        <button className="vm-node-action restart" title="Restart">
+        <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("restart"); }} disabled={!isDeployed}>
           ↻
         </button>
         <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateNode(id); }}>
           ⧉
         </button>
-        <button className="vm-node-action console" title="Console">
+        <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); if (isDeployed) openConsole(); }} disabled={!isDeployed}>
           <svg
             width="14"
             height="14"
