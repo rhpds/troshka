@@ -84,8 +84,9 @@ def place_project(db: Session, project: Project) -> dict:
             db.refresh(host)
             logger.info("Auto-provisioned host %s (%s)", host.id, host.ip_address)
         except Exception as e:
+            logger.exception("Auto-provisioning failed: %s", e)
             return {
-                "error": f"No host available and auto-provision failed: {e}",
+                "error": "No host available and auto-provisioning failed. Check server logs or contact an admin.",
                 "required": reqs,
             }
 
