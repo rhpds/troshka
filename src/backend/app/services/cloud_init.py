@@ -36,12 +36,17 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append("chpasswd:")
         lines.append("  expire: false")
         lines.append("  users:")
-        lines.append("    - name: root")
-        lines.append(f"      password: '{pw_hash}'")
-        lines.append(f"      type: HASH")
+        lines.append(f"    - name: root")
+        lines.append(f"      password: {pw_hash}")
         lines.append("ssh_pwauth: true")
 
     lines.append("disable_root: false")
+    lines.append("users:")
+    lines.append("  - default")
+    if root_pw:
+        lines.append("  - name: root")
+        lines.append(f"    hashed_passwd: {pw_hash}")
+        lines.append("    lock_passwd: false")
 
     lines.append("runcmd:")
     lines.append("  - eject /dev/sr0 2>/dev/null || true")
