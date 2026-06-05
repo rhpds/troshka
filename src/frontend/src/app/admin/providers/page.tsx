@@ -41,6 +41,7 @@ export default function AdminProvidersPage() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editRegion, setEditRegion] = useState("");
+  const [s3Bucket, setS3Bucket] = useState("troshka-images");
   const [editAccessKey, setEditAccessKey] = useState("");
   const [editSecretKey, setEditSecretKey] = useState("");
 
@@ -62,7 +63,11 @@ export default function AdminProvidersPage() {
     const resp = await fetch("/api/v1/providers/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, type, default_region: region, access_key_id: accessKey, secret_access_key: secretKey }),
+      body: JSON.stringify({
+        name, type, default_region: region,
+        access_key_id: accessKey, secret_access_key: secretKey,
+        ...(type === "s3" ? { bucket: s3Bucket } : {}),
+      }),
     });
     if (resp.ok) {
       setShowAdd(false);
@@ -238,9 +243,13 @@ export default function AdminProvidersPage() {
                 <div style={{ display: "flex", gap: 10 }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Type</label>
-                    <select style={inputStyle} value={type} onChange={(e) => setType(e.target.value)}>
+                    <select style={inputStyle} value={type} onChange={(e) => {
+                      setType(e.target.value);
+                      if (e.target.value === "s3") setRegion("us-east-1");
+                    }}>
                       <option value="ec2">AWS EC2</option>
                       <option value="ocp_virt">OCP Virtualization</option>
+                      <option value="s3">S3 Storage</option>
                     </select>
                   </div>
                   <div style={{ flex: 1 }}>
@@ -250,6 +259,12 @@ export default function AdminProvidersPage() {
                     </select>
                   </div>
                 </div>
+                {type === "s3" && (
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>S3 Bucket</label>
+                    <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" />
+                  </div>
+                )}
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID</label>
                   <input style={{ ...inputStyle, fontFamily: "monospace" }} value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="AKIA..." />
@@ -302,8 +317,8 @@ export default function AdminProvidersPage() {
                   <div style={{ flex: 1 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
-                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : "#a78bfa" }}>
-                        {p.type === "ec2" ? "AWS EC2" : "OCP Virt"}
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : "#a78bfa" }}>
+                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : "OCP Virt"}
                       </span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
                         {p.state}
@@ -378,8 +393,8 @@ export default function AdminProvidersPage() {
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
-                    <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>
-                    <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>
+                    {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
+                    {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}

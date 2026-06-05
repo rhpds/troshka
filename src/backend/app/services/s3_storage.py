@@ -13,21 +13,50 @@ from app.core.config import config
 logger = logging.getLogger(__name__)
 
 
-def _get_s3_client():
-    kwargs = {
-        "region_name": config.s3.region or "us-east-1",
+def _get_s3_config() -> dict:
+    """Get S3 config from DB provider (type='s3') or fall back to config.yaml."""
+    try:
+        from app.core.database import SessionLocal
+        from app.models.provider import Provider
+        s = SessionLocal()
+        provider = s.query(Provider).filter_by(type="s3", state="active").first()
+        if provider:
+            creds = provider.get_credentials()
+            result = {
+                "region": creds.get("region") or provider.default_region or "us-east-1",
+                "access_key_id": creds.get("access_key_id", ""),
+                "secret_access_key": creds.get("secret_access_key", ""),
+                "bucket": creds.get("bucket", "troshka-images"),
+                "endpoint_url": creds.get("endpoint_url", ""),
+            }
+            s.close()
+            return result
+        s.close()
+    except Exception:
+        pass
+    return {
+        "region": config.s3.region or "us-east-1",
+        "access_key_id": getattr(config.s3, "access_key_id", ""),
+        "secret_access_key": getattr(config.s3, "secret_access_key", ""),
+        "bucket": config.s3.bucket or "troshka-images",
+        "endpoint_url": getattr(config.s3, "endpoint_url", ""),
     }
-    if config.s3.access_key_id:
-        kwargs["aws_access_key_id"] = config.s3.access_key_id
-    if config.s3.secret_access_key:
-        kwargs["aws_secret_access_key"] = config.s3.secret_access_key
-    if config.s3.endpoint_url:
-        kwargs["endpoint_url"] = config.s3.endpoint_url
+
+
+def _get_s3_client():
+    cfg = _get_s3_config()
+    kwargs = {"region_name": cfg["region"]}
+    if cfg["access_key_id"]:
+        kwargs["aws_access_key_id"] = cfg["access_key_id"]
+    if cfg["secret_access_key"]:
+        kwargs["aws_secret_access_key"] = cfg["secret_access_key"]
+    if cfg["endpoint_url"]:
+        kwargs["endpoint_url"] = cfg["endpoint_url"]
     return boto3.client("s3", **kwargs)
 
 
 def _bucket():
-    return config.s3.bucket or "troshka-images"
+    return _get_s3_config()["bucket"]
 
 
 def upload_file(key: str, file_obj, content_type: str = "application/octet-stream") -> dict:

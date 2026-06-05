@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.library import Library, LibraryItem
+from app.models.library import Library, LibraryItem, LibraryShare
 from app.models.user import User
 from app.services import s3_storage
 
@@ -63,9 +63,19 @@ def list_items(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List library items. Filter by type (iso, image) and search by name."""
+    """List library items: user's own + shared with them."""
+    from sqlalchemy import or_
     lib = _ensure_user_library(user, db)
-    query = db.query(LibraryItem).filter(LibraryItem.library_id == lib.id)
+
+    # Get IDs of items shared with this user
+    shared_ids = [s.item_id for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()]
+
+    query = db.query(LibraryItem).filter(
+        or_(
+            LibraryItem.library_id == lib.id,
+            LibraryItem.id.in_(shared_ids) if shared_ids else False,
+        )
+    )
 
     if type:
         query = query.filter(LibraryItem.type == type)
@@ -73,6 +83,15 @@ def list_items(
         query = query.filter(LibraryItem.name.ilike(f"%{q}%"))
 
     items = query.order_by(LibraryItem.created_at.desc()).all()
+
+    # Get owner info for shared items
+    owner_libs = {lib.id: lib.owner_id}
+    for i in items:
+        if i.library_id not in owner_libs:
+            item_lib = db.query(Library).filter_by(id=i.library_id).first()
+            if item_lib:
+                owner_libs[i.library_id] = item_lib.owner_id
+
     return [
         {
             "id": i.id,
@@ -85,6 +104,8 @@ def list_items(
             "state": i.state,
             "tags": i.tags,
             "created_at": str(i.created_at),
+            "owned": i.library_id == lib.id,
+            "owner_id": owner_libs.get(i.library_id),
         }
         for i in items
     ]
@@ -194,3 +215,58 @@ def delete_item(item_id: str, user: User = Depends(get_current_user), db: Sessio
 
     db.delete(item)
     db.commit()
+
+
+class ShareRequest(BaseModel):
+    user_email: str
+    permission: str = "use"
+
+
+@router.post("/{item_id}/share")
+def share_item(item_id: str, body: ShareRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Share a library item with another user."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the owner can share")
+
+    target_user = db.query(User).filter_by(email=body.user_email).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail=f"User {body.user_email} not found")
+    if target_user.id == user.id:
+        raise HTTPException(status_code=400, detail="Cannot share with yourself")
+
+    existing = db.query(LibraryShare).filter_by(item_id=item_id, shared_with_id=target_user.id).first()
+    if existing:
+        existing.permission = body.permission
+    else:
+        db.add(LibraryShare(item_id=item_id, shared_with_id=target_user.id, permission=body.permission))
+    db.commit()
+
+    return {"shared_with": body.user_email, "permission": body.permission}
+
+
+@router.delete("/{item_id}/share/{user_email}")
+def unshare_item(item_id: str, user_email: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Remove sharing for a library item."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the owner can unshare")
+
+    target_user = db.query(User).filter_by(email=user_email).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    share = db.query(LibraryShare).filter_by(item_id=item_id, shared_with_id=target_user.id).first()
+    if share:
+        db.delete(share)
+        db.commit()
+
+    return {"unshared": user_email}

@@ -22,6 +22,7 @@ class ProviderCreate(BaseModel):
     subnet_id: str = ""
     access_key_id: str
     secret_access_key: str
+    bucket: str | None = None
 
 
 class ProviderUpdate(BaseModel):
@@ -90,10 +91,13 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
         subnet_id=body.subnet_id or None,
         created_by=user.email,
     )
-    provider.set_credentials({
+    creds = {
         "access_key_id": body.access_key_id,
         "secret_access_key": body.secret_access_key,
-    })
+    }
+    if body.bucket:
+        creds["bucket"] = body.bucket
+    provider.set_credentials(creds)
     db.add(provider)
     db.commit()
     db.refresh(provider)
@@ -406,18 +410,25 @@ def test_provider(provider_id: str, user: User = Depends(require_role("admin")),
 
     creds = provider.get_credentials()
     try:
-        sts = boto3.client(
-            "sts",
-            region_name=provider.default_region,
-            aws_access_key_id=creds.get("access_key_id"),
-            aws_secret_access_key=creds.get("secret_access_key"),
-        )
-        identity = sts.get_caller_identity()
-        return {
-            "status": "ok",
-            "account": identity["Account"],
-            "arn": identity["Arn"],
-        }
+        if provider.type == "s3":
+            s3 = boto3.client(
+                "s3",
+                region_name=provider.default_region,
+                aws_access_key_id=creds.get("access_key_id"),
+                aws_secret_access_key=creds.get("secret_access_key"),
+            )
+            bucket = creds.get("bucket", "troshka-images")
+            s3.head_bucket(Bucket=bucket)
+            return {"status": "ok", "bucket": bucket}
+        else:
+            sts = boto3.client(
+                "sts",
+                region_name=provider.default_region,
+                aws_access_key_id=creds.get("access_key_id"),
+                aws_secret_access_key=creds.get("secret_access_key"),
+            )
+            identity = sts.get_caller_identity()
+            return {"status": "ok", "account": identity["Account"], "arn": identity["Arn"]}
     except Exception:
         logger.exception("Provider test failed for %s", provider.name)
         raise HTTPException(status_code=400, detail="Credentials test failed")
