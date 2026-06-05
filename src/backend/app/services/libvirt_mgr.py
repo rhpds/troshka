@@ -128,6 +128,43 @@ def get_vnc_port(conn: libvirt.virConnect, name: str) -> int | None:
     return None
 
 
+def get_vm_config(conn: libvirt.virConnect, name: str) -> dict | None:
+    """Get current VM config from libvirt for comparison."""
+    try:
+        dom = conn.lookupByName(name)
+        xml_str = dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE)
+        root = SafeET.fromstring(xml_str)
+
+        boot_devs = [b.get("dev") for b in root.findall(".//os/boot")]
+        vcpus = int(root.findtext("vcpu", "0"))
+        mem_elem = root.find("memory")
+        mem_kib = int(mem_elem.text) if mem_elem is not None else 0
+        if mem_elem is not None and mem_elem.get("unit", "KiB") == "KiB":
+            ram_mb = mem_kib // 1024
+        else:
+            ram_mb = mem_kib
+
+        nics = []
+        for iface in root.findall(".//interface"):
+            source = iface.find("source")
+            mac = iface.find("mac")
+            nics.append({
+                "bridge": source.get("bridge", "") if source is not None else "",
+                "mac": mac.get("address", "") if mac is not None else "",
+            })
+
+        disks = []
+        for disk in root.findall(".//disk"):
+            if disk.get("device") == "cdrom":
+                continue
+            source = disk.find("source")
+            disks.append(source.get("file", "") if source is not None else "")
+
+        return {"boot_devs": boot_devs, "vcpus": vcpus, "ram_mb": ram_mb, "nics": nics, "disks": disks}
+    except libvirt.libvirtError:
+        return None
+
+
 def reconfigure_vm(
     conn: libvirt.virConnect,
     name: str,

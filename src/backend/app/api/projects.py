@@ -308,20 +308,22 @@ def reconfigure_project(
 
     diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
 
-    # For new networks, allocate VNIs and set up VXLAN
+    # Allocate VNIs for any new networks
     if diff["added_networks"]:
         from app.services.vxlan import allocate_vni
         for net_node in diff["added_networks"]:
             if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
                 vni_map[net_node["id"]] = allocate_vni(db)
-        from app.services.vxlan import build_host_network_config
-        all_hosts = db.query(Host).filter(Host.state == "active").all()
-        peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-        net_config = build_host_network_config(current, vni_map, peer_ips)
-        net_script = generate_setup_script(net_config, host.ip_address)
-        net_result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
-        if not net_result["success"]:
-            return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
+
+    # Always re-run network setup to pick up gateway/router/DHCP changes
+    from app.services.vxlan import build_host_network_config
+    all_hosts = db.query(Host).filter(Host.state == "active").all()
+    peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+    net_config = build_host_network_config(current, vni_map, peer_ips)
+    net_script = generate_setup_script(net_config, host.ip_address)
+    net_result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
+    if not net_result["success"]:
+        return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
 
     # Use libvirt to reconfigure all existing VMs and add/remove as needed
     prefix = f"troshka-{project_id[:8]}"
@@ -373,6 +375,19 @@ def reconfigure_project(
             # Create any new disk images on host
             if new_disk_cmds:
                 run_ssh_script(host.ip_address, host.private_key, "\n".join(new_disk_cmds), timeout=30)
+
+            # Skip reconfigure if nothing changed (avoids unnecessary VM restart)
+            current_cfg = libvirt_mgr.get_vm_config(conn, vm_name)
+            desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
+            desired_disks = [d["path"] for d in disk_list]
+            if current_cfg and (
+                current_cfg["boot_devs"] == boot_devs and
+                current_cfg["vcpus"] == vm["vcpus"] and
+                current_cfg["ram_mb"] == vm["ram_gb"] * 1024 and
+                current_cfg["nics"] == desired_nics and
+                current_cfg["disks"] == desired_disks
+            ):
+                continue
 
             if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list):
                 errors.append(f"Failed to reconfigure {vm_name}")

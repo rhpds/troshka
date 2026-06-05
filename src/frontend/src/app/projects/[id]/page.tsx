@@ -66,6 +66,7 @@ export default function ProjectCanvasPage() {
   }, [projectState, setAllVmStatus]);
 
   const [toast, setToast] = useState<string | null>(null);
+  const [applyingChanges, setApplyingChanges] = useState(false);
 
   const showToast = (msg: string, duration = 4000) => {
     setToast(msg);
@@ -152,17 +153,21 @@ export default function ProjectCanvasPage() {
               }}>
                 ■ Stop
               </button>
-              <button className="project-publish-btn" disabled={!topologyDirty} style={!topologyDirty ? { opacity: 0.4 } : {}} onClick={async () => {
-                const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
-                const data = await resp.json();
-                if (data.status === "reconfigured") {
-                  useCanvasStore.setState({ topologyDirty: false });
-                  showToast("Changes applied — VMs reconfigured");
-                } else {
-                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || "unknown error"}`);
-                }
+              <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={async () => {
+                setApplyingChanges(true);
+                try {
+                  const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
+                  const data = await resp.json();
+                  if (data.status === "reconfigured" || data.status === "no_changes") {
+                    useCanvasStore.setState({ topologyDirty: false });
+                    showToast(data.status === "no_changes" ? "No VM changes needed" : "Changes applied");
+                  } else {
+                    alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || "unknown error"}`);
+                  }
+                } catch { alert("Failed to connect to server"); }
+                setApplyingChanges(false);
               }}>
-                Apply Changes
+                {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {

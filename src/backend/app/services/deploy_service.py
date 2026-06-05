@@ -98,11 +98,12 @@ def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict) -> list[di
             continue
 
         # Find the NIC data to get MAC address
+        # Handle format: "nic-{nicId}-top" or "nic-{nicId}-bottom"
         vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
         mac = ""
         if vm_node:
             for nic in vm_node.get("data", {}).get("nics", []):
-                if nic["id"] == handle:
+                if nic["id"] in handle:
                     mac = nic.get("mac", "")
                     break
 
