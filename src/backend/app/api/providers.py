@@ -150,7 +150,8 @@ def delete_provider(provider_id: str, user: User = Depends(require_role("admin")
 
 @router.get("/{provider_id}/discover-ami")
 def list_available_amis(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
-    """List available RHEL 9 AMIs (both Access2/Gold and Hourly/Marketplace)."""
+    """List available RHEL 9 and 10 AMIs (both Access2/Gold and Hourly/Marketplace)."""
+    import re
     import boto3
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -169,8 +170,8 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
         ami_types = {
             "rhel10-access2": {"pattern": "RHEL-10*x86_64*Access2-GP3", "label": "RHEL 10 Access2 (Gold Image / BYOS)"},
             "rhel10-hourly":  {"pattern": "RHEL-10*x86_64*Hourly2-GP3", "label": "RHEL 10 Marketplace (Hourly)"},
-            "rhel9-access2":  {"pattern": "RHEL-9.4*x86_64*Access2-GP3", "label": "RHEL 9.4 Access2 (Gold Image / BYOS)"},
-            "rhel9-hourly":   {"pattern": "RHEL-9.4*x86_64*Hourly2-GP3", "label": "RHEL 9.4 Marketplace (Hourly)"},
+            "rhel9-access2":  {"pattern": "RHEL-9*x86_64*Access2-GP3",  "label": "RHEL 9 Access2 (Gold Image / BYOS)"},
+            "rhel9-hourly":   {"pattern": "RHEL-9*x86_64*Hourly2-GP3",  "label": "RHEL 9 Marketplace (Hourly)"},
         }
 
         results = []
@@ -182,12 +183,23 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
                     {"Name": "state", "Values": ["available"]},
                 ],
             )
-            images = sorted(response["Images"], key=lambda x: x["CreationDate"])
+            def version_key(img):
+                m = re.search(r"RHEL-(\d+)\.(\d+)\.(\d+)", img["Name"])
+                if m:
+                    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), img["CreationDate"])
+                return (0, 0, 0, img["CreationDate"])
+
+            images = sorted(response["Images"], key=version_key)
             if images:
                 latest = images[-1]
+                # Extract version from name like "RHEL-10.2.0_HVM..." or "RHEL-9.7.0_HVM..."
+                ami_name = latest["Name"]
+                version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", ami_name)
+                version = version_match.group(1) if version_match else ""
+                label = info["label"].replace("RHEL 10", f"RHEL {version}").replace("RHEL 9", f"RHEL {version}") if version else info["label"]
                 results.append({
                     "type": ami_type,
-                    "label": info["label"],
+                    "label": label,
                     "ami_id": latest["ImageId"],
                     "name": latest["Name"],
                     "created": latest["CreationDate"],
