@@ -91,27 +91,76 @@ export default function LibraryPage() {
       }
       const { id } = await createResp.json();
 
-      // Step 2: Upload file
-      setUploadProgress(`Uploading ${file.name} (${formatSize(file.size)})...`);
-      const formData = new FormData();
-      formData.append("file", file);
+      // Step 2: Start multipart upload
+      setUploadProgress("Starting upload...");
+      const startResp = await fetch(`/api/v1/library/${id}/upload-start`, { method: "POST" });
+      if (!startResp.ok) { setError("Failed to start upload"); setUploading(false); return; }
+      const { upload_id } = await startResp.json();
 
-      const uploadResp = await fetch(`/api/v1/library/${id}/upload`, {
+      // Step 3: Upload parts (100 MB chunks)
+      const CHUNK_SIZE = 100 * 1024 * 1024;
+      const totalParts = Math.ceil(file.size / CHUNK_SIZE);
+      const parts: Array<{ part_number: number; etag: string }> = [];
+      let uploaded = 0;
+
+      for (let i = 0; i < totalParts; i++) {
+        const partNumber = i + 1;
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+
+        // Get presigned URL for this part
+        const partResp = await fetch(`/api/v1/library/${id}/upload-part-url?upload_id=${upload_id}&part_number=${partNumber}`, { method: "POST" });
+        if (!partResp.ok) throw new Error("Failed to get part URL");
+        const { url } = await partResp.json();
+
+        // Upload the chunk
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", url);
+
+        const etag = await new Promise<string>((resolve, reject) => {
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const totalUploaded = uploaded + e.loaded;
+              const pct = Math.round((totalUploaded / file.size) * 100);
+              setUploadProgress(`Uploading... ${pct}% (${formatSize(totalUploaded)} / ${formatSize(file.size)})`);
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve(xhr.getResponseHeader("ETag") || "");
+            } else {
+              reject(new Error(`Part ${partNumber} failed (HTTP ${xhr.status})`));
+            }
+          };
+          xhr.onerror = () => reject(new Error(`Part ${partNumber} network error`));
+          xhr.send(chunk);
+        });
+
+        parts.push({ part_number: partNumber, etag });
+        uploaded = end;
+      }
+
+      // Step 4: Complete multipart upload
+      setUploadProgress("Finalizing...");
+      const completeResp = await fetch(`/api/v1/library/${id}/upload-complete`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upload_id, parts }),
       });
-
-      if (uploadResp.ok) {
+      if (completeResp.ok) {
         setUploadProgress("");
         setShowUpload(false);
         setNewName("");
         setNewDesc("");
+        setSelectedFile(null);
+        setSelectedFileName("");
         loadItems();
       } else {
-        setError("Upload failed");
+        setError("Upload finalization failed");
       }
-    } catch {
-      setError("Failed to connect to server");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to connect to server");
     }
     setUploading(false);
   };
@@ -213,6 +262,11 @@ export default function LibraryPage() {
                     }}
                     browseButtonText="Browse"
                     hideDefaultPreview
+                    dropzoneProps={{
+                      accept: newType === "iso"
+                        ? { "application/x-iso9660-image": [".iso"] }
+                        : { "application/octet-stream": [".qcow2", ".raw", ".img"] },
+                    }}
                   />
                 </div>
                 <Button variant="primary" onClick={handleUpload} isLoading={uploading} isDisabled={uploading} style={{ alignSelf: "flex-start" }}>

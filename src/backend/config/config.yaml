@@ -23,13 +23,6 @@ auth:
   admin_groups: ""
   operator_groups: ""
 
-s3:
-  bucket: "troshka-images"
-  region: "us-east-1"
-  endpoint_url: ""
-  access_key_id: ""
-  secret_access_key: ""
-
 aws:
   default_region: "us-east-1"
   default_instance_type: "m8i.xlarge"

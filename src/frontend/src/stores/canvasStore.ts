@@ -408,6 +408,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     if (current) {
       _saveTopologyToApi(current, get());
     }
+    _loadingProject = true;
     set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], selectedNodeId: null });
 
     fetch(`/api/v1/projects/${projectId}`)
@@ -422,9 +423,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             startOrder: t.startOrder || [],
             externalIps: t.externalIps || [],
           });
+          _lastSavedNodeCount = (t.nodes || []).length;
         }
+        _loadingProject = false;
       })
-      .catch(() => {});
+      .catch(() => { _loadingProject = false; });
   },
 
   setStartOrder: (order) => {
@@ -813,10 +816,11 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
 // Debounced auto-save to API — only save in draft mode
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSavedNodeCount = 0;
+let _loadingProject = false;
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
-  // Never save an empty topology if we previously had nodes (prevents wipe on crash/reload)
+  if (_loadingProject) return;
   if (state.nodes.length === 0 && _lastSavedNodeCount > 0) return;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {

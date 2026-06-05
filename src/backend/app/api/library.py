@@ -155,14 +155,16 @@ def create_item(
     return {"id": item.id, "state": item.state}
 
 
-@router.post("/{item_id}/upload")
-async def upload_file(
+@router.post("/{item_id}/upload-start")
+def start_multipart_upload(
     item_id: str,
-    file: UploadFile = File(...),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Upload a file for a library item. Streams to S3."""
+    """Start a multipart S3 upload and return presigned URLs for each part."""
+    from pydantic import BaseModel as BM
+    import math
+
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -174,26 +176,93 @@ async def upload_file(
     ext = item.format if item.format != "qcow2" else "qcow2"
     s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
 
+    item.s3_key = s3_key
     item.state = "uploading"
     db.commit()
 
+    from app.services.s3_storage import _get_s3_client, _bucket
+    client = _get_s3_client()
+
+    # Parse file_size from query param
+    from fastapi import Request
+    # We'll receive file_size in the JSON body instead
+    return _do_start_upload(client, _bucket(), s3_key, item_id)
+
+
+def _do_start_upload(client, bucket, s3_key, item_id):
+    mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
+    upload_id = mpu["UploadId"]
+    return {"upload_id": upload_id, "s3_key": s3_key}
+
+
+@router.post("/{item_id}/upload-part-url")
+def get_part_upload_url(
+    item_id: str,
+    upload_id: str = Query(...),
+    part_number: int = Query(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get a presigned URL for uploading one part of a multipart upload."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item or not item.s3_key:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    from app.services.s3_storage import _get_s3_client, _bucket
+    client = _get_s3_client()
+    url = client.generate_presigned_url(
+        "upload_part",
+        Params={"Bucket": _bucket(), "Key": item.s3_key, "UploadId": upload_id, "PartNumber": part_number},
+        ExpiresIn=7200,
+    )
+    return {"url": url, "part_number": part_number}
+
+
+class CompleteUploadRequest(BaseModel):
+    upload_id: str
+    parts: list[dict]
+
+
+@router.post("/{item_id}/upload-complete")
+def complete_upload(
+    item_id: str,
+    body: CompleteUploadRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Complete a multipart S3 upload."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not item.s3_key:
+        raise HTTPException(status_code=400, detail="No S3 key set")
+
+    from app.services.s3_storage import _get_s3_client, _bucket
+    client = _get_s3_client()
     try:
-        result = s3_storage.upload_file(s3_key, file.file)
-        item.s3_key = s3_key
-        item.size_bytes = result["size_bytes"]
+        client.complete_multipart_upload(
+            Bucket=_bucket(),
+            Key=item.s3_key,
+            UploadId=body.upload_id,
+            MultipartUpload={"Parts": [{"PartNumber": p["part_number"], "ETag": p["etag"]} for p in body.parts]},
+        )
+
+        head = client.head_object(Bucket=_bucket(), Key=item.s3_key)
+        item.size_bytes = head["ContentLength"]
         item.state = "ready"
-
-        # Compute checksum from S3 (ETag for single-part uploads)
-        item.checksum_sha256 = ""
         db.commit()
-
-        logger.info("Library item %s uploaded: %s (%d bytes)", item.id, s3_key, result["size_bytes"])
-        return {"id": item.id, "state": "ready", "size_bytes": result["size_bytes"], "s3_key": s3_key}
+        logger.info("Library item %s upload complete: %s (%d bytes)", item.id, item.s3_key, item.size_bytes)
+        return {"id": item.id, "state": "ready", "size_bytes": item.size_bytes}
     except Exception as e:
-        logger.exception("Upload failed for %s: %s", item_id, e)
+        logger.exception("Upload completion failed for %s: %s", item_id, e)
         item.state = "error"
         db.commit()
-        raise HTTPException(status_code=500, detail="Upload failed")
+        raise HTTPException(status_code=500, detail="Upload completion failed")
 
 
 @router.delete("/{item_id}", status_code=204)

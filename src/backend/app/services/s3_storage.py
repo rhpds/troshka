@@ -34,13 +34,16 @@ def _get_s3_config() -> dict:
         s.close()
     except Exception:
         pass
-    return {
-        "region": config.s3.region or "us-east-1",
-        "access_key_id": getattr(config.s3, "access_key_id", ""),
-        "secret_access_key": getattr(config.s3, "secret_access_key", ""),
-        "bucket": config.s3.bucket or "troshka-images",
-        "endpoint_url": getattr(config.s3, "endpoint_url", ""),
-    }
+    try:
+        return {
+            "region": config.s3.region or "us-east-1",
+            "access_key_id": getattr(config.s3, "access_key_id", ""),
+            "secret_access_key": getattr(config.s3, "secret_access_key", ""),
+            "bucket": config.s3.bucket or "troshka-images",
+            "endpoint_url": getattr(config.s3, "endpoint_url", ""),
+        }
+    except AttributeError:
+        raise ValueError("No S3 provider configured. Add an S3 provider in Admin > Providers.")
 
 
 def _get_s3_client():
