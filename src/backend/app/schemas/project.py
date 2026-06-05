@@ -40,6 +40,7 @@ class ProjectResponse(BaseModel):
     poweroff_mode: str
     host_id: str | None = None
     topology: dict | None = None
+    deployed_topology: dict | None = None
     deploy_error: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime

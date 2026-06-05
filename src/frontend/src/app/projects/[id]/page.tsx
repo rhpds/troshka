@@ -61,9 +61,31 @@ export default function ProjectCanvasPage() {
   // Sync VM status and project state into the store
   useEffect(() => {
     useCanvasStore.setState({ projectState });
-    if (projectState === "active") setAllVmStatus("running");
-    else if (projectState === "stopped" || projectState === "draft") setAllVmStatus("stopped");
-  }, [projectState, setAllVmStatus]);
+    if (projectState === "active" || projectState === "stopped") {
+      // Only set status for VMs that exist in deployed_topology
+      fetch(`/api/v1/projects/${projectId}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!data) return;
+          const deployedVmIds = new Set(
+            (data.deployed_topology?.nodes || [])
+              .filter((n: Record<string, unknown>) => n.type === "vmNode")
+              .map((n: Record<string, unknown>) => n.id)
+          );
+          const status = projectState === "active" ? "running" : "stopped";
+          const store = useCanvasStore.getState();
+          useCanvasStore.setState({
+            nodes: store.nodes.map((node) =>
+              node.type === "vmNode"
+                ? { ...node, data: { ...node.data, status: deployedVmIds.has(node.id) ? status : "stopped" } }
+                : node
+            ),
+          });
+        });
+    } else if (projectState === "draft") {
+      setAllVmStatus("stopped");
+    }
+  }, [projectState, projectId, setAllVmStatus]);
 
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);

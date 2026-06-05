@@ -202,36 +202,36 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
       {/* Action buttons */}
       <div className="vm-node-footer nopan nodrag">
-        {!isRunning && (
+        {isDeployed && !isRunning && (
           <button
             className="vm-node-action power-stopped"
             title="Start"
-            onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("start"); }}
-            disabled={!isDeployed || !!actionPending}
+            onClick={(e) => { e.stopPropagation(); vmAction("start"); }}
+            disabled={!!actionPending}
           >
             {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
           </button>
         )}
-        {isRunning && (
+        {isDeployed && isRunning && (
           <>
             <button
               className="vm-node-action power-running"
               title="Graceful Shutdown"
-              onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("stop"); }}
-              disabled={!isDeployed || !!actionPending}
+              onClick={(e) => { e.stopPropagation(); vmAction("stop"); }}
+              disabled={!!actionPending}
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
             </button>
             <button
               className="vm-node-action power-running"
               title="Force Power Off"
-              onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("forcestop"); }}
-              disabled={!isDeployed || !!actionPending}
+              onClick={(e) => { e.stopPropagation(); vmAction("forcestop"); }}
+              disabled={!!actionPending}
               style={{ color: "#ef4444" }}
             >
               {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
             </button>
-            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (isDeployed) vmAction("restart"); }} disabled={!isDeployed || !!actionPending}>
+            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); vmAction("restart"); }} disabled={!!actionPending}>
               {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
             </button>
           </>
