@@ -49,3 +49,7 @@ build/
 secrets/
 *.pem
 *.key
+*.png
+.playwright-mcp/
+troshka.db*
+mockup.html

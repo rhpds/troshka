@@ -1,6 +1,6 @@
 app:
   name: troshka
-  port: 8000
+  port: 8200
   host: "0.0.0.0"
   log_level: info
   root_path: ""
@@ -16,6 +16,9 @@ auth:
   jwt_algorithm: "HS256"
   jwt_expiry_hours: 24
   oauth_enabled: false
+  allow_registration: true
+  admin_users: "prutledg@redhat.com"
+  operator_users: ""
   allowed_groups: ""
   admin_groups: ""
   operator_groups: ""

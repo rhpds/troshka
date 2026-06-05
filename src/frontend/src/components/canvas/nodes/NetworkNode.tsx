@@ -1,0 +1,146 @@
+"use client";
+
+import React, { memo } from "react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
+import type { NetworkNodeData } from "@/stores/canvasStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+
+function RJ45Icon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="2" width="16" height="16" rx="2" />
+      <line x1="8" y1="18" x2="8" y2="22" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+      <line x1="16" y1="18" x2="16" y2="22" />
+      <rect x="6" y="5" width="12" height="6" rx="1" />
+      <line x1="9" y1="5" x2="9" y2="11" />
+      <line x1="12" y1="5" x2="12" y2="11" />
+      <line x1="15" y1="5" x2="15" y2="11" />
+    </svg>
+  );
+}
+
+function NetworkNodeComponent({ data, selected }: NodeProps) {
+  const d = data as unknown as NetworkNodeData;
+
+  return (
+    <div
+      className="network-node-card"
+      style={(() => {
+        const colors = {
+          router:  { bg: "rgba(251,146,60,0.08)", border: "rgba(251,146,60,0.6)",  glow: "rgba(251,146,60,0.2)",  selected: "#fb923c" },
+          gateway: { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",   glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
+          network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
+        };
+        const c = colors[d.subtype as keyof typeof colors] || colors.network;
+        return {
+          background: c.bg,
+          borderColor: selected ? c.selected : c.border,
+          boxShadow: selected ? `0 0 0 3px ${c.glow}` : "none",
+        };
+      })()}
+    >
+      <span className="network-node-icon">
+        {d.subtype === "router" ? "🔀" : d.subtype === "gateway" ? "🌐" : <RJ45Icon />}
+      </span>
+      <div className="network-node-info">
+        <div className="network-node-name">{d.name}</div>
+        {d.subtype === "network" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="network-node-cidr">{d.cidr}</span>
+            {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
+            {d.dns && <span className="network-node-badge dns">DNS</span>}
+          </div>
+        )}
+        {d.subtype === "router" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="network-node-cidr" style={{ fontSize: 10 }}>L3 Router</span>
+          </div>
+        )}
+        {d.subtype === "gateway" && (() => {
+          const gw = d as unknown as Record<string, unknown>;
+          const isPortFwd = gw.gatewayMode === "nat-portforward";
+          const portForwards = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string}>) || [];
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="network-node-cidr" style={{ fontSize: 10 }}>
+                  {isPortFwd ? "NAT + Port Fwd" : "NAT Outbound"}
+                </span>
+                {(() => {
+                  const projectIps = useCanvasStore.getState().externalIps;
+                  const withIps = projectIps.filter((eip) => eip.ip);
+                  return withIps.length > 0 ? (
+                    <span className="network-node-badge dhcp" style={{ fontSize: 9 }}>
+                      {withIps.map((eip) => eip.ip).join(", ")}
+                    </span>
+                  ) : null;
+                })()}
+              </div>
+              {isPortFwd && (() => {
+                const externalIps = useCanvasStore.getState().externalIps;
+                const hasIncomplete = portForwards.some((pf) =>
+                  !(pf as Record<string, string>).extIpId || !pf.extPort || !pf.intIp || !pf.intPort
+                );
+                const noIps = externalIps.length === 0 && portForwards.length > 0;
+                return (
+                  <>
+                    {portForwards.length > 0 && (
+                      <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", lineHeight: 1.4 }}>
+                        {portForwards.map((pf, i) => {
+                          const extIpId = (pf as Record<string, string>).extIpId;
+                          const eip = externalIps.find((e) => e.id === extIpId);
+                          const ipLabel = eip ? (eip.ip || "auto") : "";
+                          return (
+                            <div key={i}>{ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} → {pf.intIp || "?"}:{pf.intPort || "?"}</div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {portForwards.length === 0 && (
+                      <div style={{ fontSize: 9, color: "var(--troshka-yellow)" }}>⚠ No port forwards</div>
+                    )}
+                    {hasIncomplete && (
+                      <div style={{ fontSize: 9, color: "var(--troshka-yellow)" }}>⚠ Incomplete rules</div>
+                    )}
+                    {noIps && (
+                      <div style={{ fontSize: 9, color: "var(--troshka-yellow)" }}>⚠ No external IPs</div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Networks: top/bottom (blue) for VMs, left/right (orange) for routers/gateways */}
+      {d.subtype === "network" && (
+        <>
+          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
+          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
+          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+      {/* Routers: orange handles on all 4 sides */}
+      {d.subtype === "router" && (
+        <>
+          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+      {/* Gateways: left/right only */}
+      {d.subtype === "gateway" && (
+        <>
+          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
+          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+    </div>
+  );
+}
+
+export default memo(NetworkNodeComponent);

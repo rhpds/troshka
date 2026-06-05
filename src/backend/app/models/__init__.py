@@ -6,6 +6,7 @@ from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.network import Network, SecurityRule
 from app.models.disk import Disk
 from app.models.library import Library, LibraryItem, LibraryShare, ImageCache
+from app.models.api_key import ApiKey
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -14,4 +15,5 @@ __all__ = [
     "Network", "SecurityRule",
     "Disk",
     "Library", "LibraryItem", "LibraryShare", "ImageCache",
+    "ApiKey",
 ]
