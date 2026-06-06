@@ -109,7 +109,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     const info = await resp.json();
     window.open(
       `/console?vm=${encodeURIComponent(d.name)}&project=${projectId}`,
-      `console-${d.name}`,
+      `console_${projectId?.replace(/-/g, "")}_${d.name.replace(/-/g, "")}`,
       "width=1024,height=768,menubar=no,toolbar=no,location=no",
     );
   };
