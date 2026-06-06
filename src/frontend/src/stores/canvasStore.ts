@@ -808,8 +808,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
 // Save topology to API
 function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[]; startOrder: StartOrderEntry[]; externalIps: ExternalIp[] }) {
+  const cleanNodes = state.nodes.map((n) => {
+    if (n.type !== "vmNode") return n;
+    const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, unknown>;
+    return { ...n, data: rest };
+  });
   const topology = {
-    nodes: state.nodes,
+    nodes: cleanNodes,
     edges: state.edges,
     hiddenNodeIds: state.hiddenNodeIds,
     startOrder: state.startOrder,

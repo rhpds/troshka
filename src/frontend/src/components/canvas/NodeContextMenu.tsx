@@ -72,6 +72,16 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       <button onClick={() => { hideNode(nodeId); onClose(); }}>
         👁 Hide
       </button>
+      {isDeployed && isRedeploying && (
+        <button className="danger" onClick={async () => {
+          await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/cancel-redeploy`, { method: "POST" });
+          const updateNodeData = useCanvasStore.getState().updateNodeData;
+          updateNodeData(nodeId, { status: "stopped", redeployStep: null, redeployDetail: null });
+          onClose();
+        }}>
+          ✕ Cancel Redeploy
+        </button>
+      )}
       {isDeployed && !isRedeploying && (
         <button className="danger" onClick={() => {
           const updateNodeData = useCanvasStore.getState().updateNodeData;

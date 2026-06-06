@@ -577,6 +577,22 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
     return {"status": "redeploying"}
 
 
+@router.post("/{project_id}/vms/{vm_name}/cancel-redeploy")
+def cancel_redeploy(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Cancel a stuck redeploy by clearing the progress tracker."""
+    _validate_vm_name(vm_name)
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    prefix = f"troshka-{project_id[:8]}"
+    full_name = f"{prefix}-{vm_name}"
+    _redeploy_progress.pop(full_name, None)
+    return {"status": "cancelled"}
+
+
 @router.post("/{project_id}/redeploy")
 def redeploy_project(
     project_id: str,
