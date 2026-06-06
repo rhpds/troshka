@@ -175,7 +175,7 @@ def get_host(host_id: str, user: User = Depends(require_role("operator")), db: S
 
 @router.post("/{host_id}/install-agent")
 def install_agent(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
-    """SSH into the host and install the troshka agent."""
+    """SSH into the host and install the troshka agent. Runs async."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -183,36 +183,47 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
         raise HTTPException(status_code=400, detail="Host has no IP address")
     if not host.private_key:
         raise HTTPException(status_code=400, detail="No SSH key stored for this host")
+    if host.agent_status in ("waiting_ssh", "installing"):
+        raise HTTPException(status_code=409, detail="Agent install already in progress")
 
-    from app.services.agent_deployer import wait_for_ssh, deploy_agent
-
-    # Stage 1: Wait for SSH
     host.agent_status = "waiting_ssh"
     db.commit()
 
-    ssh_ok = wait_for_ssh(host.ip_address, host.private_key)
-    if not ssh_ok:
-        host.agent_status = "disconnected"
-        db.commit()
-        return {"success": False, "stage": "ssh", "output": "SSH connection timed out"}
+    h_id = host.id
+    h_ip = host.ip_address
+    h_key = host.private_key
 
-    # Stage 2: Install agent
-    host.agent_status = "installing"
-    db.commit()
+    import threading
+    def _install():
+        from app.core.database import SessionLocal
+        from app.services.agent_deployer import wait_for_ssh, deploy_agent
+        s = SessionLocal()
+        try:
+            h = s.query(Host).filter_by(id=h_id).first()
+            if not h:
+                return
+            ssh_ok = wait_for_ssh(h_ip, h_key)
+            if not ssh_ok:
+                h.agent_status = "disconnected"
+                s.commit()
+                return
+            h.agent_status = "installing"
+            s.commit()
+            result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id)
+            h.agent_status = "connected" if result["success"] else "install_failed"
+            s.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Agent install failed for %s", h_id[:8])
+            h = s.query(Host).filter_by(id=h_id).first()
+            if h:
+                h.agent_status = "install_failed"
+                s.commit()
+        finally:
+            s.close()
 
-    result = deploy_agent(
-        host_ip=host.ip_address,
-        private_key=host.private_key,
-        host_id=host.id,
-    )
-
-    if result["success"]:
-        host.agent_status = "installed"
-    else:
-        host.agent_status = "install_failed"
-    db.commit()
-
-    return result
+    threading.Thread(target=_install, daemon=True).start()
+    return {"status": "installing"}
 
 
 @router.get("/{host_id}/ssh-key")
