@@ -376,6 +376,7 @@ def import_from_url(
 
             executor = ThreadPoolExecutor(max_workers=2)
             last_commit = 0
+            max_buffer = chunk_size * 3  # Max ~600 MB in memory
 
             it.state = "downloading"
             sess.commit()
@@ -391,6 +392,10 @@ def import_from_url(
                     last_commit = total_downloaded
 
                 while len(buf) >= chunk_size:
+                    # Backpressure: wait for uploads to drain before buffering more
+                    while len([f for f in upload_futures if not f.done()]) >= 2:
+                        import time; time.sleep(0.5)
+
                     part_num += 1
                     part_data = buf[:chunk_size]
                     buf = buf[chunk_size:]
@@ -403,13 +408,19 @@ def import_from_url(
                     upload_futures.append(future)
                     logger.info("Import %s: queued part %d, downloaded %d MB", item_id[:8], part_num, total_downloaded // (1024*1024))
 
+                    # Collect completed futures to free memory
+                    done = [f for f in upload_futures if f.done()]
+                    for f in done:
+                        total_uploaded += f.result()
+                        upload_futures.remove(f)
+
             # Upload remaining buffer
             if buf:
                 part_num += 1
                 future = executor.submit(upload_part_async, buf, part_num)
                 upload_futures.append(future)
 
-            # Wait for all uploads to finish
+            # Wait for all remaining uploads
             it.state = "uploading_s3"
             sess.commit()
             for f in upload_futures:
