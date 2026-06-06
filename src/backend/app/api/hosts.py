@@ -111,6 +111,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         agent_status="disconnected",
         key_pair_name=result.get("key_pair_name"),
         private_key=result.get("private_key"),
+        storage_size_gb=result.get("storage_size_gb", 500),
     )
     db.add(host)
     db.commit()
@@ -367,6 +368,49 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
     threading.Thread(target=_wait_and_reinstall, daemon=True).start()
 
     return {"status": "starting"}
+
+
+@router.post("/{host_id}/resize-storage")
+def resize_storage(host_id: str, body: dict, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Grow the dedicated EBS storage volume. XFS supports online resize."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    new_size = body.get("size_gb")
+    if not new_size or not isinstance(new_size, int) or new_size < 1:
+        raise HTTPException(status_code=400, detail="size_gb is required (integer)")
+    if new_size <= host.storage_size_gb:
+        raise HTTPException(status_code=400, detail=f"New size must be larger than current ({host.storage_size_gb} GB)")
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No EC2 instance associated — cannot resize")
+
+    provider = host.provider
+    creds = None
+    if provider:
+        creds = {"access_key_id": provider.access_key_id, "secret_access_key": provider.secret_access_key}
+
+    from app.services.provisioner import _get_ec2_client
+    ec2 = _get_ec2_client(credentials=creds)
+
+    # Find the data volume (not root)
+    volumes = ec2.describe_volumes(Filters=[
+        {"Name": "attachment.instance-id", "Values": [host.instance_id]},
+        {"Name": "attachment.device", "Values": ["/dev/sdf", "/dev/xvdf"]},
+    ])
+    if not volumes["Volumes"]:
+        raise HTTPException(status_code=404, detail="No data volume found on instance. Was it provisioned with dedicated storage?")
+
+    vol_id = volumes["Volumes"][0]["VolumeId"]
+    ec2.modify_volume(VolumeId=vol_id, Size=new_size)
+
+    # Grow the filesystem on the host (XFS online grow)
+    if host.ip_address and host.private_key:
+        from app.services.deploy_service import run_ssh_script
+        run_ssh_script(host.ip_address, host.private_key, "xfs_growfs /var/lib/troshka", timeout=30)
+
+    host.storage_size_gb = new_size
+    db.commit()
+    return {"status": "resized", "old_size_gb": host.storage_size_gb, "new_size_gb": new_size, "volume_id": vol_id}
 
 
 @router.delete("/{host_id}", status_code=204)

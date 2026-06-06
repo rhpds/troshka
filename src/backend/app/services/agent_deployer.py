@@ -59,8 +59,23 @@ polkit.addRule(function(action, subject) {
 });
 POLKITEOF
 
+# Mount dedicated storage volume if present and not already mounted
+if [ -b /dev/nvme1n1 ] && ! mountpoint -q /var/lib/troshka; then
+    echo "Mounting dedicated storage volume..."
+    blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1
+    mkdir -p /var/lib/troshka
+    mount /dev/nvme1n1 /var/lib/troshka
+    grep -q '/var/lib/troshka' /etc/fstab || \
+        echo '/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2' >> /etc/fstab
+    echo "Storage volume mounted at /var/lib/troshka"
+elif mountpoint -q /var/lib/troshka; then
+    echo "Storage volume already mounted at /var/lib/troshka"
+else
+    echo "WARNING: No dedicated storage volume found — using root filesystem"
+fi
+
 # Create directories
-mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /etc/troshka-agent /opt/troshka-agent
+mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent /opt/troshka-agent
 
 # Write agent config
 cat > /etc/troshka-agent/config.yaml << 'AGENTCFG'

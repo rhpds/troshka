@@ -358,12 +358,22 @@ def import_from_url(
             client = _get_s3_client()
             bucket = _bucket()
 
+            # Check disk space before downloading
+            from app.services.deploy_service import check_host_disk_space
+            disk = check_host_disk_space(host.ip_address, host.private_key)
+            if disk["used_pct"] >= 90:
+                free_gb = disk["free_bytes"] / (1024 ** 3)
+                logger.error("Import %s: host storage %d%% full (%.1f GB free)", item_id[:8], disk["used_pct"], free_gb)
+                it.state = "error"
+                sess.commit()
+                return
+
             it.state = "downloading"
             sess.commit()
 
             # Step 1: Download file on host in background, poll size
-            cache_path = f"/tmp/troshka-import-{item_id[:8]}"
-            # Start download in background on host
+            cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
+            run_ssh_script(host.ip_address, host.private_key, f"mkdir -p /var/lib/troshka/tmp", timeout=10)
             run_ssh_script(host.ip_address, host.private_key,
                 f"nohup bash -c \"curl -sfL -o {cache_path} '{body.url}' && echo DONE > {cache_path}.status || echo FAIL > {cache_path}.status\" > /dev/null 2>&1 &",
                 timeout=15)
@@ -401,10 +411,11 @@ def import_from_url(
             # Step 2: Split file on host
             file_size = it.size_bytes or 0
             chunk_size = 500 * 1024 * 1024
-            prefix = f"troshka-part-{item_id[:8]}"
+            tmp_dir = "/var/lib/troshka/tmp"
+            prefix = f"part-{item_id[:8]}"
 
             split_result = run_ssh_script(host.ip_address, host.private_key,
-                f"cd /tmp && split -b {chunk_size} -d {cache_path} {prefix}- && ls -1 /tmp/{prefix}-* | wc -l",
+                f"cd {tmp_dir} && split -b {chunk_size} -d {cache_path} {prefix}- && ls -1 {tmp_dir}/{prefix}-* | wc -l",
                 timeout=300)
             if not split_result["success"]:
                 logger.error("Import %s: split failed", item_id[:8])
@@ -429,7 +440,7 @@ def import_from_url(
 
             for pn in range(1, num_parts + 1):
                 idx = f"{pn - 1:02d}"
-                part_file = f"/tmp/{prefix}-{idx}"
+                part_file = f"{tmp_dir}/{prefix}-{idx}"
                 url = client.generate_presigned_url(
                     "upload_part",
                     Params={"Bucket": bucket, "Key": s3_key, "UploadId": upload_id, "PartNumber": pn},
@@ -456,7 +467,7 @@ def import_from_url(
                 else:
                     logger.error("Import %s: part %d upload failed: %s", item_id[:8], pn, result["output"][-200:])
                     client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
-                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} /tmp/{prefix}-*", timeout=15)
+                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} {tmp_dir}/{prefix}-*", timeout=15)
                     it.state = "error"
                     sess.commit()
                     return
@@ -482,6 +493,14 @@ def import_from_url(
                 it.state = "error"
                 sess.commit()
         finally:
+            # Always clean up temp files on the host
+            try:
+                if host and host.ip_address and host.private_key:
+                    run_ssh_script(host.ip_address, host.private_key,
+                        f"rm -f /var/lib/troshka/tmp/import-{item_id[:8]}* /var/lib/troshka/tmp/part-{item_id[:8]}-*",
+                        timeout=15)
+            except Exception:
+                pass
             sess.close()
 
     threading.Thread(target=_host_download, daemon=True).start()

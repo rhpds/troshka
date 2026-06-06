@@ -98,7 +98,8 @@ packages:
 runcmd:
   - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
   - systemctl enable --now nftables
-  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /etc/troshka-agent
+  - bash -c 'while [ ! -b /dev/nvme1n1 ]; do sleep 1; done; blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1; mkdir -p /var/lib/troshka; mount /dev/nvme1n1 /var/lib/troshka; grep -q /var/lib/troshka /etc/fstab || echo "/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab'
+  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
   - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
 """
 
@@ -109,6 +110,7 @@ def provision_host(
     host_id: str | None = None,
     region: str | None = None,
     credentials: dict | None = None,
+    storage_size_gb: int = 500,
     **kwargs,
 ) -> dict:
     """Provision a new EC2 host and add it to the pool. Admin operation."""
@@ -147,10 +149,16 @@ def provision_host(
         MaxCount=1,
         CpuOptions={"NestedVirtualization": "enabled"},
         UserData=user_data,
-        BlockDeviceMappings=[{
-            "DeviceName": "/dev/sda1",
-            "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "DeleteOnTermination": True},
-        }],
+        BlockDeviceMappings=[
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "DeleteOnTermination": True},
+            },
+            {
+                "DeviceName": "/dev/sdf",
+                "Ebs": {"VolumeSize": storage_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
+            },
+        ],
         TagSpecifications=[{
             "ResourceType": "instance",
             "Tags": [
@@ -193,6 +201,7 @@ def provision_host(
         "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
         "key_pair_name": key_name,
         "private_key": private_key,
+        "storage_size_gb": storage_size_gb,
     }
 
 

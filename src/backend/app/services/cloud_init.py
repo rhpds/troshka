@@ -107,7 +107,7 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
         userdata = generate_userdata(data)
         metadata = generate_metadata(vm_name)
 
-        seed_dir = f"/tmp/troshka-seed-{vm_name}"
+        seed_dir = f"/var/lib/troshka/tmp/seed-{vm_name}"
         seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
 
         lines.append(f"mkdir -p {seed_dir}")

@@ -114,6 +114,14 @@ def deploy_project(
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
+    from app.services.deploy_service import check_host_disk_space
+    host = db.query(Host).filter_by(id=result["host_id"]).first()
+    if host and host.ip_address and host.private_key:
+        disk = check_host_disk_space(host.ip_address, host.private_key)
+        if disk["used_pct"] >= 90:
+            free_gb = disk["free_bytes"] / (1024 ** 3)
+            raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
+
     # Persist VNI map for stop/start/destroy
     project.vni_map = result.get("vni_map")
     db.commit()
@@ -176,7 +184,7 @@ def start_project(
     return {"status": "starting"}
 
 
-def _get_project_and_host(project_id: str, user: User, db: Session):
+def _get_project_and_host(project_id: str, user: User, db: Session, check_disk: bool = False):
     """Helper to load project + host with auth and state checks."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
@@ -188,6 +196,12 @@ def _get_project_and_host(project_id: str, user: User, db: Session):
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
+    if check_disk:
+        from app.services.deploy_service import check_host_disk_space
+        disk = check_host_disk_space(host.ip_address, host.private_key)
+        if disk["used_pct"] >= 90:
+            free_gb = disk["free_bytes"] / (1024 ** 3)
+            raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume.")
     return project, host
 
 
@@ -433,7 +447,7 @@ def reconfigure_project(
                 disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
                 if d.get("source") == "library" and d.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
-                    new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{d['library_item_id']})\"")
+                    new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{d['library_item_id']})\"")
                     new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
                 else:
                     new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
@@ -493,7 +507,7 @@ def reconfigure_project(
 def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Destroy and recreate a single VM in a background thread."""
     _validate_vm_name(vm_name)
-    project, host = _get_project_and_host(project_id, user, db)
+    project, host = _get_project_and_host(project_id, user, db, check_disk=True)
     _check_library_items_ready(project.topology, db)
 
     # Capture values for the background thread
@@ -530,48 +544,41 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
                 conn.close()
 
             _redeploy_progress[full_name] = {"step": "preparing", "detail": ""}
-            print(f"[REDEPLOY] preparing {full_name}", flush=True)
             run_ssh_script(host_ip, private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
 
             vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
             if not vm_node:
-                print(f"[REDEPLOY] vm_node not found for {vm_name}", flush=True)
+                logger.warning("Redeploy %s: vm_node not found in topology", vm_name)
                 _redeploy_progress.pop(full_name, None)
                 return
 
-            # Build a filtered topology with only this VM's storage nodes
+            # Build a filtered topology with only this VM's connected nodes
             edges = topology.get("edges", [])
-            vm_storage_ids = set()
+            vm_connected_ids = set()
             for edge in edges:
                 src, tgt = edge.get("source"), edge.get("target")
                 if src == vm_node["id"]:
-                    vm_storage_ids.add(tgt)
+                    vm_connected_ids.add(tgt)
                 elif tgt == vm_node["id"]:
-                    vm_storage_ids.add(src)
-            vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_storage_ids]}
+                    vm_connected_ids.add(src)
+            vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_connected_ids]}
 
             _redeploy_progress[full_name] = {"step": "downloading", "detail": "0%"}
-            print(f"[REDEPLOY] downloading images for {full_name}, {len(vm_topo['nodes'])} storage nodes", flush=True)
             from app.services.deploy_service import cache_library_images
             def _progress(downloaded, total):
                 pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
                 _redeploy_progress[full_name] = {"step": "downloading", "detail": pct}
             cache_library_images(vm_topo, host_ip, private_key, s, progress_callback=_progress)
-            print(f"[REDEPLOY] download complete for {full_name}", flush=True)
 
-            print(f"[REDEPLOY] generating seed ISO for {full_name}", flush=True)
             seed_script = generate_seed_iso_script(p_id, topology)
             if seed_script:
                 _redeploy_progress[full_name] = {"step": "creating", "detail": "cloud-init seed ISO"}
                 run_ssh_script(host_ip, private_key, seed_script, timeout=15)
 
-            print(f"[REDEPLOY] generating VM script for {full_name}", flush=True)
             _redeploy_progress[full_name] = {"step": "creating", "detail": "VM definition"}
             diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
             script = generate_incremental_script(p_id, topology, diff, vni_map)
-            print(f"[REDEPLOY] running VM script for {full_name} ({len(script)} chars)", flush=True)
             run_ssh_script(host_ip, private_key, script, timeout=7200)
-            print(f"[REDEPLOY] VM script complete for {full_name}", flush=True)
 
             if was_running:
                 conn = libvirt_mgr.connect(host_ip, private_key)
@@ -585,10 +592,8 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
             s.commit()
             _redeploy_progress.pop(full_name, None)
             logger.info("Redeploy %s complete", full_name)
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            logger.exception("Redeploy %s failed: %s", vm_name, exc)
+        except Exception:
+            logger.exception("Redeploy %s failed", vm_name)
             _redeploy_progress.pop(full_name, None)
         finally:
             s.close()

@@ -26,6 +26,7 @@ class Host(Base):
     agent_status: Mapped[str] = mapped_column(String(20), default="disconnected")
     key_pair_name: Mapped[str | None] = mapped_column(String(100))
     private_key: Mapped[str | None] = mapped_column(Text)
+    storage_size_gb: Mapped[int] = mapped_column(Integer, default=500)
     last_health_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

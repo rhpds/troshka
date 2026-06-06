@@ -14,6 +14,22 @@ from app.services.vxlan import generate_setup_script
 logger = logging.getLogger(__name__)
 
 
+def check_host_disk_space(host_ip: str, private_key: str) -> dict:
+    """Check free space on /var/lib/troshka mount (or root if not mounted)."""
+    result = run_ssh_script(host_ip, private_key,
+        "df -B1 /var/lib/troshka 2>/dev/null || df -B1 / | tail -1 | awk '{print $4, $2, $5}'",
+        timeout=10)
+    if not result["success"]:
+        return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": result["output"]}
+    parts = result["output"].strip().split()
+    if len(parts) >= 3:
+        free = int(parts[0]) if parts[0].isdigit() else 0
+        total = int(parts[1]) if parts[1].isdigit() else 0
+        used_pct = int(parts[2].rstrip("%")) if parts[2].rstrip("%").isdigit() else 0
+        return {"free_bytes": free, "total_bytes": total, "used_pct": used_pct}
+    return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": "Could not parse df output"}
+
+
 def run_ssh_script(host_ip: str, private_key: str, script: str, timeout: int = 600) -> dict:
     """Execute a bash script on a remote host via SSH."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
@@ -615,12 +631,12 @@ echo "{vm_name} reconfigured"
                 if disk["format"] == "iso":
                     if disk.get("library_item_id"):
                         cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{disk['library_item_id']})\"")
                     continue
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
                 if disk.get("source") == "library" and disk.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
-                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{disk['library_item_id']})\"")
                     lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
                 else:
                     lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
@@ -730,8 +746,8 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
     import base64 as _b64
     for ic in items_to_cache:
         status_file = ic["cache_path"] + ".status"
-        log_file = f"/tmp/troshka-dl-{ic['item_id']}.log"
-        script_file = f"/tmp/troshka-dl-{ic['item_id']}.py"
+        log_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.log"
+        script_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.py"
         py_lines = [
             "import os, sys, urllib.request",
             "cache = %r" % ic["cache_path"],
@@ -795,8 +811,6 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                 if status != "DONE":
                     all_done = False
 
-        print(f"[CACHE] poll: {total_downloaded}/{total_expected} bytes, all_done={all_done}", flush=True)
-
         if progress_callback:
             progress_callback(total_downloaded, total_expected)
 
@@ -838,7 +852,7 @@ def _prepare_library_downloads(topology: dict, host_ip: str, private_key: str, d
         if not item or not item.s3_key:
             continue
         url = s3_storage.generate_presigned_url(item.s3_key, expires=7200)
-        lines.append(f"echo '{url}' > /tmp/troshka-presigned-{item_id}")
+        lines.append(f"echo '{url}' > /var/lib/troshka/tmp/presigned-{item_id}")
 
     if len(lines) > 1:
         run_ssh_script(host_ip, private_key, "\n".join(lines), timeout=15)
