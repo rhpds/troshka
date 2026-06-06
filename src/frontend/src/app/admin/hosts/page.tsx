@@ -419,8 +419,11 @@ export default function AdminHostsPage() {
                 </Button>
               )}
               {h.state === "active" && (
-                <Button variant="secondary" onClick={() => powerHost(h.id, "poweroff")} isDisabled={h.used_vcpus > 0 || poweringHost === h.id} isLoading={poweringHost === h.id}>
-                  {h.used_vcpus > 0 ? "In Use" : "Power Off"}
+                <Button variant="secondary" onClick={() => {
+                  if (h.used_vcpus > 0 && !window.confirm("This host has projects allocated. Powering off will make them unavailable until the host is powered back on. Continue?")) return;
+                  powerHost(h.id, "poweroff");
+                }} isDisabled={poweringHost === h.id} isLoading={poweringHost === h.id}>
+                  Power Off
                 </Button>
               )}
               {h.state === "stopped" && (

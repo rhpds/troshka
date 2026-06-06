@@ -350,7 +350,7 @@ def import_from_url(
             bucket = _bucket()
 
             # Stream download from URL and multipart upload to S3
-            resp = requests.get(body.url, stream=True, timeout=(30, 120))
+            resp = requests.get(body.url, stream=True, timeout=(30, 60))
             resp.raise_for_status()
 
             mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
@@ -358,7 +358,7 @@ def import_from_url(
 
             parts = []
             part_num = 0
-            chunk_size = 100 * 1024 * 1024
+            chunk_size = 500 * 1024 * 1024
             buf = b""
             total = 0
 

@@ -244,8 +244,11 @@ def poweroff_host(host_id: str, user: User = Depends(require_role("admin")), db:
         raise HTTPException(status_code=404, detail="Host not found")
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance ID")
-    if host.used_vcpus > 0:
-        raise HTTPException(status_code=409, detail="Host has active projects — stop them first")
+    # Check for running projects (not just allocated — stopped projects are OK to power off)
+    from app.models.project import Project
+    running_projects = db.query(Project).filter_by(host_id=host.id, state="active").count()
+    if running_projects > 0:
+        raise HTTPException(status_code=409, detail="Host has running projects — stop them first")
 
     creds = None
     if host.provider_id:

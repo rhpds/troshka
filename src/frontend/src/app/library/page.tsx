@@ -130,7 +130,7 @@ export default function LibraryPage() {
       const { upload_id } = await startResp.json();
 
       // Step 3: Upload parts (100 MB chunks)
-      const CHUNK_SIZE = 100 * 1024 * 1024;
+      const CHUNK_SIZE = 500 * 1024 * 1024;
       const totalParts = Math.ceil(file.size / CHUNK_SIZE);
       const parts: Array<{ part_number: number; etag: string }> = [];
       let uploaded = 0;
