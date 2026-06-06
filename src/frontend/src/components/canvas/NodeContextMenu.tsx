@@ -24,6 +24,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
   const isDeployed = isVm && deployedVmIds.has(nodeId);
   const vmName = isVm ? (node?.data as Record<string, unknown>).name as string : "";
   const isRunning = isVm && (node?.data as Record<string, unknown>).status === "running";
+  const isRedeploying = isVm && (node?.data as Record<string, unknown>).status === "redeploying";
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -39,7 +40,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       className="node-context-menu"
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
-      {isDeployed && isRunning && (
+      {isDeployed && isRunning && !isRedeploying && (
         <>
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
@@ -52,7 +53,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
           </button>
         </>
       )}
-      {isDeployed && !isRunning && (
+      {isDeployed && !isRunning && !isRedeploying && (
         <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>
@@ -71,7 +72,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       <button onClick={() => { hideNode(nodeId); onClose(); }}>
         👁 Hide
       </button>
-      {isDeployed && (
+      {isDeployed && !isRedeploying && (
         <button className="danger" onClick={() => {
           const updateNodeData = useCanvasStore.getState().updateNodeData;
           onClose();

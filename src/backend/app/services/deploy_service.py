@@ -195,12 +195,12 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
                     if disk.get("library_item_id"):
                         cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
                         lines.append(f'echo "Caching ISO {disk["name"]}..."')
-                        lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     continue
                 if disk.get("source") == "library" and disk.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
                     lines.append(f'echo "Caching base image {disk["name"]}..."')
-                    lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
                 else:
                     lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
@@ -619,12 +619,12 @@ echo "{vm_name} reconfigured"
                 if disk["format"] == "iso":
                     if disk.get("library_item_id"):
                         cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                        lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     continue
                 disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
                 if disk.get("source") == "library" and disk.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
-                    lines.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
+                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
                 else:
                     lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")

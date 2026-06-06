@@ -67,53 +67,54 @@ export default function ProjectCanvasPage() {
     useCanvasStore.setState({ projectState });
   }, [projectState]);
 
-  // Sync VM status from deployed_topology when project state or nodes change
+  // Sync VM status from libvirt via API
   const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    if (projectState === "active" || projectState === "stopped") {
-      fetch(`/api/v1/projects/${projectId}`)
-        .then((r) => r.ok ? r.json() : null)
-        .then((data) => {
-          if (!data) return;
-          const ids = new Set<string>(
-            (data.deployed_topology?.nodes || [])
-              .filter((n: Record<string, unknown>) => n.type === "vmNode")
-              .map((n: Record<string, unknown>) => n.id as string)
-          );
-          setDeployedVmIds(ids);
-          useCanvasStore.setState({ deployedVmIds: ids });
+  const syncVmStates = () => {
+    if (projectState !== "active" && projectState !== "stopped") return;
+    fetch(`/api/v1/projects/${projectId}/vm-states`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.states) return;
+        const states: Record<string, string> = data.states;
+        const ids = new Set<string>(Object.keys(states).filter((id) => states[id] !== "not_found"));
+        setDeployedVmIds(ids);
+        useCanvasStore.setState({ deployedVmIds: ids });
 
-          // Check if topology differs from deployed — set dirty flag
-          const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
-          const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
-          if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
-            useCanvasStore.setState({ topologyDirty: true });
-          }
+        // Set per-VM status from libvirt
+        const store = useCanvasStore.getState();
+        useCanvasStore.setState({
+          nodes: store.nodes.map((node) =>
+            node.type === "vmNode" && node.id in states
+              ? { ...node, data: { ...node.data, status: states[node.id] } }
+              : node.type === "vmNode" ? { ...node, data: { ...node.data, status: "stopped" } }
+              : node
+          ),
         });
-    } else {
-      setDeployedVmIds(new Set());
-    }
+      });
+
+    // Check dirty flag
+    fetch(`/api/v1/projects/${projectId}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data) return;
+        const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
+        const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
+        if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
+          useCanvasStore.setState({ topologyDirty: true });
+        }
+        });
+  };
+
+  useEffect(() => {
+    syncVmStates();
   }, [projectState, projectId]);
 
   useEffect(() => {
     if (projectState === "draft") {
       setAllVmStatus("stopped");
-      return;
     }
-    if (deployedVmIds.size === 0) return;
-    const status = projectState === "active" ? "running" : "stopped";
-    const store = useCanvasStore.getState();
-    if (store.nodes.length > 0) {
-      useCanvasStore.setState({
-        nodes: store.nodes.map((node) =>
-          node.type === "vmNode"
-            ? { ...node, data: { ...node.data, status: deployedVmIds.has(node.id) ? status : "stopped" } }
-            : node
-        ),
-      });
-    }
-  }, [projectState, deployedVmIds, setAllVmStatus]);
+  }, [projectState, setAllVmStatus]);
 
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
@@ -210,19 +211,7 @@ export default function ProjectCanvasPage() {
                   const data = await resp.json();
                   if (data.status === "reconfigured" || data.status === "no_changes") {
                     useCanvasStore.setState({ topologyDirty: false });
-                    // Refresh deployed VM IDs so newly deployed VMs show as running
-                    fetch(`/api/v1/projects/${projectId}`)
-                      .then((r) => r.ok ? r.json() : null)
-                      .then((proj) => {
-                        if (!proj) return;
-                        const ids = new Set<string>(
-                          (proj.deployed_topology?.nodes || [])
-                            .filter((n: Record<string, unknown>) => n.type === "vmNode")
-                            .map((n: Record<string, unknown>) => n.id as string)
-                        );
-                        setDeployedVmIds(ids);
-                        useCanvasStore.setState({ deployedVmIds: ids });
-                      });
+                    syncVmStates();
                     showToast(data.status === "no_changes" ? "No VM changes needed" : "Changes applied");
                   } else {
                     alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || "unknown error"}`);

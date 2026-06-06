@@ -211,6 +211,34 @@ def _validate_vm_name(vm_name: str) -> str:
     return vm_name
 
 
+@router.get("/{project_id}/vm-states")
+def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get actual running state of all VMs from libvirt."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.host_id:
+        return {"states": {}}
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host or not host.private_key or not host.ip_address:
+        return {"states": {}}
+
+    prefix = f"troshka-{project_id[:8]}"
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        states = {}
+        for node in project.topology.get("nodes", []):
+            if node.get("type") != "vmNode":
+                continue
+            vm_name = f"{prefix}-{node['data']['name']}"
+            state = libvirt_mgr.get_vm_state(conn, vm_name)
+            states[node["id"]] = "running" if state == "running" else "stopped" if state in ("shut_off", "not_found") else state
+        return {"states": states}
+    finally:
+        conn.close()
+
+
 @router.post("/{project_id}/vms/{vm_name}/start")
 def start_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _validate_vm_name(vm_name)
