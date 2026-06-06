@@ -60,7 +60,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       )}
       {isDeployed && (
         <button onClick={() => {
-          window.open(`/console?vm=${encodeURIComponent(vmName)}&project=${projectId}`, `console-${vmName}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
+          window.open(`/console?vm=${encodeURIComponent(vmName)}&project=${projectId}`, `console-${projectId}-${vmName}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
           onClose();
         }}>
           🖥 Console
