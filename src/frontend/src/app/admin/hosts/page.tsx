@@ -26,6 +26,9 @@ interface Host {
   used_ram_mb: number;
   ip_address: string | null;
   agent_status: string;
+  storage_size_gb: number;
+  storage_used_pct?: number;
+  storage_free_gb?: number;
   created_at: string;
 }
 
@@ -408,6 +411,9 @@ export default function AdminHostsPage() {
                 </div>
                 <div style={{ fontSize: 13 }}>
                   RAM: <strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB <span style={{ fontSize: 10, opacity: 0.4 }}>({Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1)</span>
+                </div>
+                <div style={{ fontSize: 13, color: (h.storage_used_pct ?? 0) >= 80 ? "#f87171" : undefined }}>
+                  Storage: {h.storage_used_pct != null ? <><strong>{h.storage_used_pct}%</strong> of {h.storage_size_gb} GB <span style={{ fontSize: 10, opacity: 0.4 }}>({h.storage_free_gb ?? "?"} GB free)</span></> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}
                 </div>
               </div>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
