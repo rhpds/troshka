@@ -361,92 +361,118 @@ def import_from_url(
             it.state = "downloading"
             sess.commit()
 
-            # Step 1: Download file on host
+            # Step 1: Download file on host in background, poll size
             cache_path = f"/tmp/troshka-import-{item_id[:8]}"
-            dl_script = f"curl -sfL -o {cache_path} '{body.url}' && stat -c%s {cache_path} 2>/dev/null || stat -f%z {cache_path}"
-            result = run_ssh_script(host.ip_address, host.private_key, dl_script, timeout=7200)
+            # Start download in background on host
+            run_ssh_script(host.ip_address, host.private_key,
+                f"nohup bash -c \"curl -sfL -o {cache_path} '{body.url}' && echo DONE > {cache_path}.status || echo FAIL > {cache_path}.status\" > /dev/null 2>&1 &",
+                timeout=15)
 
-            if not result["success"]:
-                logger.error("Import %s: download failed on host: %s", item_id[:8], result["output"][-200:])
+            # Poll file size while downloading
+            import time as _time
+            while True:
+                _time.sleep(5)
+                poll = run_ssh_script(host.ip_address, host.private_key,
+                    f"cat {cache_path}.status 2>/dev/null; stat -c%s {cache_path} 2>/dev/null || echo 0",
+                    timeout=10)
+                lines = [l.strip() for l in poll["output"].strip().split("\n") if not l.strip().startswith("Warning:")]
+                status_line = lines[0] if lines else ""
+                size_line = lines[-1] if len(lines) > 1 else lines[0] if lines else "0"
+
+                if status_line == "DONE":
+                    if size_line.isdigit():
+                        it.size_bytes = int(size_line)
+                    it.state = "uploading_s3"
+                    sess.commit()
+                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}.status", timeout=10)
+                    break
+                elif status_line == "FAIL":
+                    logger.error("Import %s: download failed on host", item_id[:8])
+                    it.state = "error"
+                    sess.commit()
+                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} {cache_path}.status", timeout=10)
+                    return
+                else:
+                    # Still downloading — update size
+                    if size_line.isdigit() and int(size_line) > 0:
+                        it.size_bytes = int(size_line)
+                        sess.commit()
+
+            # Step 2: Split file on host
+            file_size = it.size_bytes or 0
+            chunk_size = 500 * 1024 * 1024
+            prefix = f"troshka-part-{item_id[:8]}"
+
+            split_result = run_ssh_script(host.ip_address, host.private_key,
+                f"cd /tmp && split -b {chunk_size} -d {cache_path} {prefix}- && ls -1 /tmp/{prefix}-* | wc -l",
+                timeout=300)
+            if not split_result["success"]:
+                logger.error("Import %s: split failed", item_id[:8])
                 it.state = "error"
                 sess.commit()
                 return
 
-            # Parse file size
-            for line in result["output"].strip().split("\n"):
-                line = line.strip()
-                if line.isdigit():
-                    it.size_bytes = int(line)
-                    it.state = "uploading_s3"
-                    sess.commit()
-                    break
+            num_parts = 0
+            for line in split_result["output"].strip().split("\n"):
+                if line.strip().isdigit():
+                    num_parts = int(line.strip())
 
-            # Step 2: Multipart upload from host to S3
-            file_size = it.size_bytes or 0
-            chunk_size = 500 * 1024 * 1024  # 500 MB parts
-
+            # Step 3: Upload each part individually with progress
             mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
             upload_id = mpu["UploadId"]
+            parts = []
+            uploaded_bytes = 0
 
-            num_parts = max(1, (file_size + chunk_size - 1) // chunk_size)
-            part_urls = []
+            it.state = "uploading_s3"
+            it.tags = {"total_parts": num_parts, "uploaded_parts": 0}
+            sess.commit()
+
             for pn in range(1, num_parts + 1):
+                idx = f"{pn - 1:02d}"
+                part_file = f"/tmp/{prefix}-{idx}"
                 url = client.generate_presigned_url(
                     "upload_part",
                     Params={"Bucket": bucket, "Key": s3_key, "UploadId": upload_id, "PartNumber": pn},
                     ExpiresIn=14400,
                 )
-                part_urls.append((pn, url))
 
-            # Build script to split file and upload each part
-            up_lines = [f"cd /tmp && split -b {chunk_size} -d {cache_path} troshka-part-{item_id[:8]}-"]
-            up_lines.append("PARTS_JSON='['")
-            for pn, url in part_urls:
-                idx = f"{pn - 1:02d}"
-                part_file = f"troshka-part-{item_id[:8]}-{idx}"
-                up_lines.append(f"if [ -f {part_file} ]; then")
-                up_lines.append(f"  ETAG=$(curl -sfL -X PUT -T {part_file} '{url}' -D- -o /dev/null | grep -i etag | tr -d '\\r' | awk '{{print $2}}')")
-                up_lines.append(f'  PARTS_JSON="${{PARTS_JSON}}{{\\\"PartNumber\\\":{pn},\\\"ETag\\\":${{ETAG}}}},"')
-                up_lines.append(f"  rm -f {part_file}")
-                up_lines.append("fi")
-            up_lines.append("PARTS_JSON=\"${PARTS_JSON%,}]\"")
-            up_lines.append(f"rm -f {cache_path}")
-            up_lines.append("echo \"PARTS:$PARTS_JSON\"")
+                result = run_ssh_script(host.ip_address, host.private_key,
+                    f"ETAG=$(curl -sfL -X PUT -T {part_file} '{url}' -D- -o /dev/null | grep -i etag | tr -d '\\r' | awk '{{print $2}}') && rm -f {part_file} && echo $ETAG",
+                    timeout=600)
 
-            up_script = "\n".join(up_lines)
-            result = run_ssh_script(host.ip_address, host.private_key, up_script, timeout=7200)
-
-            if result["success"]:
-                # Parse ETags from output
-                parts = []
-                for line in result["output"].split("\n"):
-                    if line.startswith("PARTS:"):
-                        import json as _json
-                        try:
-                            parts = _json.loads(line[6:])
-                        except Exception:
-                            logger.error("Failed to parse parts JSON: %s", line[6:])
-
-                if parts:
-                    client.complete_multipart_upload(
-                        Bucket=bucket, Key=s3_key, UploadId=upload_id,
-                        MultipartUpload={"Parts": parts},
-                    )
-                    head = client.head_object(Bucket=bucket, Key=s3_key)
-                    it.size_bytes = head["ContentLength"]
-                    it.state = "ready"
-                    it.tags = None
-                    sess.commit()
-                    logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
-                else:
-                    logger.error("Import %s: no parts parsed from host output", item_id[:8])
+                if result["success"]:
+                    etag = result["output"].strip().split("\n")[-1].strip()
+                    if etag:
+                        parts.append({"PartNumber": pn, "ETag": etag})
+                        uploaded_bytes += chunk_size
+                        it.tags = {"total_parts": num_parts, "uploaded_parts": pn}
+                        sess.commit()
+                        logger.info("Import %s: part %d/%d uploaded", item_id[:8], pn, num_parts)
+                    else:
+                        logger.error("Import %s: no etag for part %d", item_id[:8], pn)
                     client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
                     it.state = "error"
                     sess.commit()
+                else:
+                    logger.error("Import %s: part %d upload failed: %s", item_id[:8], pn, result["output"][-200:])
+                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
+                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} /tmp/{prefix}-*", timeout=15)
+                    it.state = "error"
+                    sess.commit()
+                    return
+
+            # Complete multipart upload
+            run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}", timeout=15)
+            if parts:
+                client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
+                head = client.head_object(Bucket=bucket, Key=s3_key)
+                it.size_bytes = head["ContentLength"]
+                it.state = "ready"
+                it.tags = None
+                sess.commit()
+                logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
             else:
-                logger.error("Import %s: S3 upload failed: %s", item_id[:8], result["output"][-200:])
                 client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
-                run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} /tmp/troshka-part-{item_id[:8]}-*", timeout=15)
                 it.state = "error"
                 sess.commit()
         except Exception:

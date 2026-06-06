@@ -335,8 +335,13 @@ export default function LibraryPage() {
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {item.state === "downloading" ? `downloading from URL · ${formatSize(item.size_bytes)}`
-                      : item.state === "uploading_s3" ? `uploading to library · ${formatSize(item.size_bytes)}`
+                    {item.state === "downloading" ? (item.size_bytes > 0 ? `downloading from URL · ${formatSize(item.size_bytes)}` : "starting download...")
+                      : item.state === "uploading_s3" ? (() => {
+                          const tags = item.tags as Record<string, number> | null;
+                          const tp = tags?.total_parts || 0;
+                          const up = tags?.uploaded_parts || 0;
+                          return tp ? `uploading to library · ${Math.round((up / tp) * 100)}%` : `uploading to library · ${formatSize(item.size_bytes)}`;
+                        })()
                       : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
                       : item.state}
                   </span>
