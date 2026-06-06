@@ -530,30 +530,48 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
                 conn.close()
 
             _redeploy_progress[full_name] = {"step": "preparing", "detail": ""}
+            print(f"[REDEPLOY] preparing {full_name}", flush=True)
             run_ssh_script(host_ip, private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
-            _redeploy_progress[full_name] = {"step": "downloading", "detail": "0%"}
 
+            vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
+            if not vm_node:
+                print(f"[REDEPLOY] vm_node not found for {vm_name}", flush=True)
+                _redeploy_progress.pop(full_name, None)
+                return
+
+            # Build a filtered topology with only this VM's storage nodes
+            edges = topology.get("edges", [])
+            vm_storage_ids = set()
+            for edge in edges:
+                src, tgt = edge.get("source"), edge.get("target")
+                if src == vm_node["id"]:
+                    vm_storage_ids.add(tgt)
+                elif tgt == vm_node["id"]:
+                    vm_storage_ids.add(src)
+            vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_storage_ids]}
+
+            _redeploy_progress[full_name] = {"step": "downloading", "detail": "0%"}
+            print(f"[REDEPLOY] downloading images for {full_name}, {len(vm_topo['nodes'])} storage nodes", flush=True)
             from app.services.deploy_service import cache_library_images
             def _progress(downloaded, total):
                 pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
                 _redeploy_progress[full_name] = {"step": "downloading", "detail": pct}
+            cache_library_images(vm_topo, host_ip, private_key, s, progress_callback=_progress)
+            print(f"[REDEPLOY] download complete for {full_name}", flush=True)
 
-            cache_library_images(topology, host_ip, private_key, s, progress_callback=_progress)
-
-            vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
-            if not vm_node:
-                _redeploy_progress.pop(full_name, None)
-                return
-
+            print(f"[REDEPLOY] generating seed ISO for {full_name}", flush=True)
             seed_script = generate_seed_iso_script(p_id, topology)
             if seed_script:
                 _redeploy_progress[full_name] = {"step": "creating", "detail": "cloud-init seed ISO"}
                 run_ssh_script(host_ip, private_key, seed_script, timeout=15)
 
+            print(f"[REDEPLOY] generating VM script for {full_name}", flush=True)
             _redeploy_progress[full_name] = {"step": "creating", "detail": "VM definition"}
             diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
             script = generate_incremental_script(p_id, topology, diff, vni_map)
+            print(f"[REDEPLOY] running VM script for {full_name} ({len(script)} chars)", flush=True)
             run_ssh_script(host_ip, private_key, script, timeout=7200)
+            print(f"[REDEPLOY] VM script complete for {full_name}", flush=True)
 
             if was_running:
                 conn = libvirt_mgr.connect(host_ip, private_key)
@@ -567,8 +585,10 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
             s.commit()
             _redeploy_progress.pop(full_name, None)
             logger.info("Redeploy %s complete", full_name)
-        except Exception:
-            logger.exception("Redeploy %s failed", vm_name)
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            logger.exception("Redeploy %s failed: %s", vm_name, exc)
             _redeploy_progress.pop(full_name, None)
         finally:
             s.close()

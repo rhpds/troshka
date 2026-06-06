@@ -726,15 +726,51 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
         url = s3_storage.generate_presigned_url(ic["s3_key"], expires=7200)
         ic["url"] = url
 
-    # Start all downloads in background on host
-    start_cmds = []
+    # Start all downloads in background on host using python3
+    import base64 as _b64
     for ic in items_to_cache:
-        status_file = f"{ic['cache_path']}.status"
-        start_cmds.append(f"if [ -f {ic['cache_path']} ] && [ $(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0) -ge {max(ic['expected_size'] - 1024, 0)} ]; then echo DONE > {status_file}; else nohup bash -c \"curl -sfL -C - -o {ic['cache_path']} '{ic['url']}' && echo DONE > {status_file} || echo FAIL > {status_file}\" > /dev/null 2>&1 & fi")
-    run_ssh_script(host_ip, private_key, "\n".join(start_cmds), timeout=15)
+        status_file = ic["cache_path"] + ".status"
+        log_file = f"/tmp/troshka-dl-{ic['item_id']}.log"
+        script_file = f"/tmp/troshka-dl-{ic['item_id']}.py"
+        py_lines = [
+            "import os, sys, urllib.request",
+            "cache = %r" % ic["cache_path"],
+            "status = %r" % status_file,
+            "expected = %d" % ic["expected_size"],
+            "url = %r" % ic["url"],
+            "try:",
+            "    current = os.path.getsize(cache) if os.path.exists(cache) else 0",
+            "    if current >= expected - 1024 and expected > 0:",
+            "        open(status, 'w').write('DONE')",
+            "        sys.exit(0)",
+            "    print('downloading %d bytes remaining' % (expected - current), flush=True)",
+            "    req = urllib.request.Request(url)",
+            "    if current > 0:",
+            "        req.add_header('Range', 'bytes=%d-' % current)",
+            "    with urllib.request.urlopen(req, timeout=300) as resp:",
+            "        mode = 'ab' if current > 0 and resp.status == 206 else 'wb'",
+            "        with open(cache, mode) as f:",
+            "            while True:",
+            "                chunk = resp.read(1048576)",
+            "                if not chunk:",
+            "                    break",
+            "                f.write(chunk)",
+            "    open(status, 'w').write('DONE')",
+            "except Exception as e:",
+            "    print('FAILED: %s' % e, flush=True)",
+            "    open(status, 'w').write('FAIL')",
+        ]
+        py_script = "\n".join(py_lines) + "\n"
+        b64 = _b64.b64encode(py_script.encode()).decode()
+        run_ssh_script(host_ip, private_key,
+            f"echo '{b64}' | base64 -d > {script_file}\n"
+            f"nohup python3 {script_file} > {log_file} 2>&1 &",
+            timeout=15)
 
     # Poll until all downloads complete
     total_expected = sum(ic["expected_size"] for ic in items_to_cache)
+    last_total = 0
+    stale_polls = 0
     while True:
         _time.sleep(5)
         poll_cmds = []
@@ -759,11 +795,22 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                 if status != "DONE":
                     all_done = False
 
+        print(f"[CACHE] poll: {total_downloaded}/{total_expected} bytes, all_done={all_done}", flush=True)
+
         if progress_callback:
             progress_callback(total_downloaded, total_expected)
 
+        if total_downloaded == last_total:
+            stale_polls += 1
+        else:
+            stale_polls = 0
+            last_total = total_downloaded
+
+        if stale_polls >= 12:
+            logger.error("Download stalled for 60s at %d/%d bytes", total_downloaded, total_expected)
+            return
+
         if all_done:
-            # Clean up status files
             cleanup = [f"rm -f {ic['cache_path']}.status" for ic in items_to_cache]
             run_ssh_script(host_ip, private_key, "\n".join(cleanup), timeout=15)
             return
