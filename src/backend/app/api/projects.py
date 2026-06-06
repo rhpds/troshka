@@ -68,6 +68,22 @@ def get_project(
     return project
 
 
+@router.get("/{project_id}/deploy-progress")
+def get_deploy_progress(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    from app.services.deploy_service import _deploy_progress
+    progress = _deploy_progress.get(project_id)
+    return {"state": project.state, "progress": progress}
+
+
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(
     project_id: str,

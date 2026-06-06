@@ -51,6 +51,8 @@ export default function ProjectCanvasPage() {
     fetchProjectState();
   }, [projectId]);
 
+  const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string } | null>(null);
+
   // Poll during transitional states
   useEffect(() => {
     if (["deploying", "stopping", "starting"].includes(projectState)) {
@@ -58,6 +60,20 @@ export default function ProjectCanvasPage() {
       return () => clearInterval(interval);
     }
   }, [projectState]);
+
+  // Poll deploy progress during deploying state
+  useEffect(() => {
+    if (projectState !== "deploying") { setDeployProgress(null); return; }
+    const poll = () => {
+      fetch(`/api/v1/projects/${projectId}/deploy-progress`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => { if (d?.progress) setDeployProgress(d.progress); })
+        .catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [projectState, projectId]);
 
   const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
   const topologyDirty = useCanvasStore((s) => s.topologyDirty);
@@ -203,7 +219,7 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "deploying" && (
             <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> Deploying...
+              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}: ${deployProgress.detail}` : "Deploying..."}
             </button>
           )}
           {projectState === "active" && (

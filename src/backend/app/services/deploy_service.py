@@ -13,6 +13,9 @@ from app.services.vxlan import generate_setup_script
 
 logger = logging.getLogger(__name__)
 
+# In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ...}
+_deploy_progress: dict[str, dict] = {}
+
 
 def check_host_disk_space(host_ip: str, private_key: str) -> dict:
     """Check free space on /var/lib/troshka mount (or root if not mounted)."""
@@ -888,6 +891,7 @@ def deploy_project_async(project_id: str):
         private_key = host.private_key
 
         # Step 1: Set up VXLAN networks
+        _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
         logger.info("Deploy %s: setting up networks on %s", project_id[:8], host_ip)
         from app.services.vxlan import build_host_network_config
         all_hosts = s.query(Host).filter(Host.state == "active").all()
@@ -901,9 +905,11 @@ def deploy_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = f"Network setup failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
             s.commit()
+            _deploy_progress.pop(project_id, None)
             return
 
         # Step 2: Create cloud-init seed ISOs
+        _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
         from app.services.cloud_init import generate_seed_iso_script
         seed_script = generate_seed_iso_script(project_id, topology)
         if seed_script:
@@ -911,10 +917,15 @@ def deploy_project_async(project_id: str):
             run_ssh_script(host_ip, private_key, seed_script, timeout=30)
 
         # Step 3: Cache library images on host
+        _deploy_progress[project_id] = {"step": "downloading", "detail": "0%"}
         logger.info("Deploy %s: caching library images", project_id[:8])
-        cache_library_images(topology, host_ip, private_key, s)
+        def _deploy_dl_progress(downloaded, total):
+            pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+            _deploy_progress[project_id] = {"step": "downloading", "detail": pct}
+        cache_library_images(topology, host_ip, private_key, s, progress_callback=_deploy_dl_progress)
 
-        # Step 3: Create VMs
+        # Step 4: Create VMs
+        _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vm_script = generate_vm_script(project_id, topology, vni_map)
 
@@ -924,9 +935,11 @@ def deploy_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = f"VM creation failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
             s.commit()
+            _deploy_progress.pop(project_id, None)
             return
 
-        # Step 3: Start VMs
+        # Step 5: Start VMs
+        _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
         logger.info("Deploy %s: starting VMs", project_id[:8])
         start_script = generate_start_script(project_id, topology)
 
@@ -936,16 +949,19 @@ def deploy_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = f"VM start failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
             s.commit()
+            _deploy_progress.pop(project_id, None)
             return
 
         project.state = "active"
         project.deploy_error = None
         project.deployed_topology = project.topology
         s.commit()
+        _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
     except Exception:
         logger.exception("Deploy %s failed unexpectedly", project_id[:8])
+        _deploy_progress.pop(project_id, None)
         try:
             project = s.query(Project).filter_by(id=project_id).first()
             if project:
