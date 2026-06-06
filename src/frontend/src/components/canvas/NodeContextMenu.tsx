@@ -81,8 +81,12 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
             updateNodeData(nodeId, { status: "redeploying" });
             const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
             const result = await resp.json();
-            updateNodeData(nodeId, { status: result.status === "redeployed" ? "running" : "stopped" });
-            if (result.status !== "redeployed") alert(`Redeploy failed: ${result.output || result.error || "unknown"}`);
+            if (result.status === "redeploying") {
+              updateNodeData(nodeId, { status: "redeploying" });
+            } else {
+              updateNodeData(nodeId, { status: "stopped" });
+              alert(`Redeploy failed: ${result.output || result.error || "unknown"}`);
+            }
           }, 50);
         }}>
           🔄 Redeploy VM

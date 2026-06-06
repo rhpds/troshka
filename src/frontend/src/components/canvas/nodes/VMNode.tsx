@@ -224,7 +224,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
       {/* Action buttons */}
       <div className="vm-node-footer nopan nodrag">
-        {isDeployed && !isRunning && (
+        {isDeployed && !isRunning && !isRedeploying && (
           <button
             className="vm-node-action power-stopped"
             title="Start"
@@ -234,7 +234,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
           </button>
         )}
-        {isDeployed && isRunning && (
+        {isDeployed && isRunning && !isRedeploying && (
           <>
             <button
               className="vm-node-action power-running"

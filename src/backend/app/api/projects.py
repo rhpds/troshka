@@ -531,14 +531,19 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
 
             _redeploy_progress[full_name] = {"step": "preparing", "detail": ""}
             run_ssh_script(host_ip, private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
-            _redeploy_progress[full_name] = {"step": "downloading", "detail": "preparing presigned URLs"}
-            _prepare_library_downloads(topology, host_ip, private_key, s)
+            _redeploy_progress[full_name] = {"step": "downloading", "detail": "0%"}
+
+            from app.services.deploy_service import cache_library_images
+            def _progress(downloaded, total):
+                pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+                _redeploy_progress[full_name] = {"step": "downloading", "detail": pct}
+
+            cache_library_images(topology, host_ip, private_key, s, progress_callback=_progress)
 
             vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
             if not vm_node:
+                _redeploy_progress.pop(full_name, None)
                 return
-
-            _redeploy_progress[full_name] = {"step": "downloading", "detail": "caching library images"}
 
             seed_script = generate_seed_iso_script(p_id, topology)
             if seed_script:

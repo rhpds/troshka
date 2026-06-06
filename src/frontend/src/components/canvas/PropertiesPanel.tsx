@@ -1260,8 +1260,8 @@ export default function PropertiesPanel() {
                 updateNodeData(node.id, { status: "redeploying" });
                 const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
                 const result = await resp.json();
-                if (result.status === "redeployed") {
-                  updateNodeData(node.id, { status: "running" });
+                if (result.status === "redeploying") {
+                  updateNodeData(node.id, { status: "redeploying" });
                 } else {
                   updateNodeData(node.id, { status: "stopped" });
                   alert(`Redeploy failed: ${result.output || result.error || "unknown error"}`);

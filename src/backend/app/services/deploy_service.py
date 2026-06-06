@@ -194,13 +194,9 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
                 if disk["format"] == "iso":
                     if disk.get("library_item_id"):
                         cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                        lines.append(f'echo "Caching ISO {disk["name"]}..."')
-                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     continue
                 if disk.get("source") == "library" and disk.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
-                    lines.append(f'echo "Caching base image {disk["name"]}..."')
-                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /tmp/troshka-presigned-{disk['library_item_id']})\"")
                     lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
                 else:
                     lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
@@ -691,6 +687,88 @@ def generate_network_teardown_script(vni_map: dict) -> str:
     return "\n".join(lines)
 
 
+def cache_library_images(topology: dict, host_ip: str, private_key: str, db_session, progress_callback=None):
+    """Download all library images to host cache with progress tracking.
+
+    Starts downloads in background on the host, polls until complete.
+    progress_callback(downloaded_bytes, total_bytes, item_name) called periodically.
+    """
+    from app.models.library import LibraryItem
+    from app.services import s3_storage
+    import time as _time
+
+    nodes = topology.get("nodes", [])
+    items_to_cache = []
+    for node in nodes:
+        if node.get("type") != "storageNode":
+            continue
+        item_id = node.get("data", {}).get("libraryItemId")
+        if not item_id:
+            continue
+        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+        if not item or not item.s3_key:
+            continue
+        fmt = node.get("data", {}).get("format", "qcow2")
+        cache_path = f"/var/lib/troshka/images/{item_id}.{fmt}"
+        items_to_cache.append({
+            "item_id": item_id,
+            "name": item.name,
+            "s3_key": item.s3_key,
+            "cache_path": cache_path,
+            "expected_size": item.size_bytes,
+        })
+
+    if not items_to_cache:
+        return
+
+    # Generate presigned URLs
+    for ic in items_to_cache:
+        url = s3_storage.generate_presigned_url(ic["s3_key"], expires=7200)
+        ic["url"] = url
+
+    # Start all downloads in background on host
+    start_cmds = []
+    for ic in items_to_cache:
+        status_file = f"{ic['cache_path']}.status"
+        start_cmds.append(f"if [ -f {ic['cache_path']} ] && [ $(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0) -ge {max(ic['expected_size'] - 1024, 0)} ]; then echo DONE > {status_file}; else nohup bash -c \"curl -sfL -C - -o {ic['cache_path']} '{ic['url']}' && echo DONE > {status_file} || echo FAIL > {status_file}\" > /dev/null 2>&1 & fi")
+    run_ssh_script(host_ip, private_key, "\n".join(start_cmds), timeout=15)
+
+    # Poll until all downloads complete
+    total_expected = sum(ic["expected_size"] for ic in items_to_cache)
+    while True:
+        _time.sleep(5)
+        poll_cmds = []
+        for ic in items_to_cache:
+            poll_cmds.append(f"echo \"FILE:{ic['item_id']}:$(cat {ic['cache_path']}.status 2>/dev/null || echo PENDING):$(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0)\"")
+        result = run_ssh_script(host_ip, private_key, "\n".join(poll_cmds), timeout=15)
+
+        all_done = True
+        total_downloaded = 0
+        for line in result["output"].strip().split("\n"):
+            line = line.strip()
+            if not line.startswith("FILE:"):
+                continue
+            parts = line.split(":")
+            if len(parts) >= 4:
+                status = parts[2]
+                size = int(parts[3]) if parts[3].isdigit() else 0
+                total_downloaded += size
+                if status == "FAIL":
+                    logger.error("Download failed for %s", parts[1])
+                    return
+                if status != "DONE":
+                    all_done = False
+
+        if progress_callback:
+            progress_callback(total_downloaded, total_expected)
+
+        if all_done:
+            # Clean up status files
+            cleanup = [f"rm -f {ic['cache_path']}.status" for ic in items_to_cache]
+            run_ssh_script(host_ip, private_key, "\n".join(cleanup), timeout=15)
+            return
+
+
 def _prepare_library_downloads(topology: dict, host_ip: str, private_key: str, db_session):
     """Generate presigned S3 URLs for library items and write them to the host."""
     from app.models.library import LibraryItem
@@ -768,8 +846,9 @@ def deploy_project_async(project_id: str):
             logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
             run_ssh_script(host_ip, private_key, seed_script, timeout=30)
 
-        # Step 3: Prepare library image presigned URLs
-        _prepare_library_downloads(topology, host_ip, private_key, s)
+        # Step 3: Cache library images on host
+        logger.info("Deploy %s: caching library images", project_id[:8])
+        cache_library_images(topology, host_ip, private_key, s)
 
         # Step 3: Create VMs
         logger.info("Deploy %s: creating VMs", project_id[:8])
