@@ -64,29 +64,23 @@ export default function AdminHostsPage() {
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/hosts/summary").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
-    ]).then(([h, s, p]) => {
+      fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}),
+    ]).then(([h, s, p, st]) => {
       setHosts(Array.isArray(h) ? h : []);
       setSummary(Array.isArray(s) ? s : []);
       setProviders(Array.isArray(p) ? p : []);
+      if (st && typeof st === "object") setStorageInfo(st);
       setLoading(false);
     }).catch(() => setLoading(false));
   };
 
-  const loadStorage = () => {
-    fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
-      if (d && typeof d === "object") setStorageInfo(d);
-    }).catch(() => {});
-  };
-
   useEffect(() => {
     loadData();
-    loadStorage();
     fetch("/api/v1/hosts/overcommit").then((r) => r.ok ? r.json() : null).then((d) => {
       if (d) { setCpuRatio(d.cpu_ratio); setRamRatio(d.ram_ratio); }
     }).catch(() => {});
-    const interval = setInterval(loadData, 5000);
-    const storageInterval = setInterval(loadStorage, 30000);
-    return () => { clearInterval(interval); clearInterval(storageInterval); };
+    const interval = setInterval(loadData, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const addHost = async () => {
@@ -429,8 +423,8 @@ export default function AdminHostsPage() {
                 {(() => { const si = storageInfo[h.id]; return (
                 <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Storage</div>
-                  <div>{si ? <><strong>{si.used_pct}%</strong> of {si.total_gb} GB</> : <>{h.storage_size_gb} GB</>}</div>
-                  {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{si.free_gb} GB free</div>}
+                  <div>{si ? <><strong>{si.used_pct}%</strong> of {Math.round(si.total_gb)} GB</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}</div>
+                  {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(si.free_gb)} GB free</div>}
                 </div>); })()}
               </div>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
