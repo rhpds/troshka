@@ -356,32 +356,68 @@ def import_from_url(
             mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
             upload_id = mpu["UploadId"]
 
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, Future
+
             parts = []
+            parts_lock = threading.Lock()
             part_num = 0
-            chunk_size = 500 * 1024 * 1024
+            chunk_size = 200 * 1024 * 1024
             buf = b""
-            total = 0
+            total_downloaded = 0
+            total_uploaded = 0
+            upload_futures: list[Future] = []
+
+            def upload_part_async(part_data, pn):
+                r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=pn, Body=part_data)
+                with parts_lock:
+                    parts.append({"PartNumber": pn, "ETag": r["ETag"]})
+                return len(part_data)
+
+            executor = ThreadPoolExecutor(max_workers=2)
+            last_commit = 0
+
+            it.state = "downloading"
+            sess.commit()
 
             for data in resp.iter_content(chunk_size=8 * 1024 * 1024):
                 buf += data
+                total_downloaded += len(data)
+
+                if total_downloaded - last_commit >= 50 * 1024 * 1024:
+                    it.size_bytes = total_downloaded
+                    it.state = "downloading"
+                    sess.commit()
+                    last_commit = total_downloaded
+
                 while len(buf) >= chunk_size:
                     part_num += 1
                     part_data = buf[:chunk_size]
                     buf = buf[chunk_size:]
-                    r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=part_num, Body=part_data)
-                    parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
-                    total += len(part_data)
-                    logger.info("Import %s: part %d, %d MB", item_id[:8], part_num, total // (1024*1024))
-                    it.size_bytes = total
+
+                    it.state = "uploading_s3"
+                    it.size_bytes = total_downloaded
                     sess.commit()
 
+                    future = executor.submit(upload_part_async, part_data, part_num)
+                    upload_futures.append(future)
+                    logger.info("Import %s: queued part %d, downloaded %d MB", item_id[:8], part_num, total_downloaded // (1024*1024))
+
+            # Upload remaining buffer
             if buf:
                 part_num += 1
-                r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=part_num, Body=buf)
-                parts.append({"PartNumber": part_num, "ETag": r["ETag"]})
-                total += len(buf)
-                it.size_bytes = total
+                future = executor.submit(upload_part_async, buf, part_num)
+                upload_futures.append(future)
+
+            # Wait for all uploads to finish
+            it.state = "uploading_s3"
+            sess.commit()
+            for f in upload_futures:
+                total_uploaded += f.result()
+                it.size_bytes = total_uploaded
                 sess.commit()
+
+            executor.shutdown(wait=True)
 
             client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
 

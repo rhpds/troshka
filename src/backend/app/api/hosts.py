@@ -281,12 +281,26 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
         if provider:
             creds = provider.get_credentials()
 
-    from app.services.provisioner import _get_ec2_client
+    from app.services.provisioner import _get_ec2_client, get_host_status
     client = _get_ec2_client(credentials=creds)
-    client.start_instances(InstanceIds=[host.instance_id])
 
-    host.state = "starting"
-    db.commit()
+    # Check actual EC2 state first
+    status = get_host_status(host.instance_id, credentials=creds)
+    ec2_state = status["state"] if status else "unknown"
+
+    if ec2_state == "running":
+        # Already running — just update DB and reinstall agent
+        host.state = "active"
+        host.ip_address = status.get("public_ip")
+        host.agent_status = "disconnected"
+        db.commit()
+    elif ec2_state in ("stopped", "stopping"):
+        if ec2_state == "stopped":
+            client.start_instances(InstanceIds=[host.instance_id])
+        host.state = "starting"
+        db.commit()
+    else:
+        raise HTTPException(status_code=409, detail=f"Instance is in unexpected state: {ec2_state}")
 
     # Background: wait for running, update IP, reinstall agent
     host_id = host.id
@@ -327,6 +341,14 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
             s.commit()
         except Exception:
             logger.exception("Power on failed for host %s", host_id)
+            try:
+                h = s.query(Host).filter_by(id=host_id).first()
+                if h:
+                    h.state = "active"
+                    h.agent_status = "install_failed"
+                    s.commit()
+            except Exception:
+                pass
         finally:
             s.close()
 

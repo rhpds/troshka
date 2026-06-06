@@ -4,6 +4,7 @@ app:
   host: "0.0.0.0"
   log_level: info
   root_path: ""
+  external_url: ""
 
 database:
   url: "postgresql+psycopg2://troshka:troshka@localhost:5433/troshka"

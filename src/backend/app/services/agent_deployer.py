@@ -26,10 +26,14 @@ else
     echo "WARNING: Nested virtualization NOT detected"
 fi
 
-# Ensure prerequisites
-echo "Installing prerequisites..."
-dnf install -y qemu-kvm libvirt libvirt-client libvirt-devel virt-install \
-    python3 python3-pip python3-libvirt dnsmasq nftables genisoimage || true
+# Ensure prerequisites — skip dnf if already installed
+if ! which virsh &>/dev/null || ! which virt-install &>/dev/null; then
+    echo "Installing prerequisites..."
+    dnf install -y qemu-kvm libvirt libvirt-client libvirt-devel virt-install \
+        python3 python3-libvirt dnsmasq nftables xorriso || true
+else
+    echo "Prerequisites already installed, skipping dnf"
+fi
 
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then
@@ -118,10 +122,11 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
 def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "") -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
 
-    script = AGENT_INSTALL_SCRIPT.format(
-        host_id=host_id,
-        api_url=api_url or "https://troshka.example.com",
-    )
+    from app.core.config import config
+    actual_api_url = api_url or getattr(config.app, "external_url", "")
+    if not actual_api_url:
+        logger.warning("No external_url configured — agent will not be able to call back to the API")
+    script = AGENT_INSTALL_SCRIPT.replace("{host_id}", host_id).replace("{api_url}", actual_api_url)
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)

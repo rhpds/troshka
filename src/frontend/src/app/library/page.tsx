@@ -66,7 +66,7 @@ export default function LibraryPage() {
 
   // Auto-refresh when any item is importing
   useEffect(() => {
-    if (items.some((i) => i.state === "importing" || i.state === "uploading")) {
+    if (items.some((i) => ["importing", "uploading", "downloading", "uploading_s3"].includes(i.state))) {
       const interval = setInterval(loadItems, 3000);
       return () => clearInterval(interval);
     }
@@ -124,7 +124,7 @@ export default function LibraryPage() {
       }
 
       // Step 2: Start multipart upload
-      setUploadProgress("Starting upload...");
+      setUploadProgress("Preparing upload...");
       const startResp = await fetch(`/api/v1/library/${id}/upload-start`, { method: "POST" });
       if (!startResp.ok) { setError("Failed to start upload"); setUploading(false); return; }
       const { upload_id } = await startResp.json();
@@ -142,6 +142,7 @@ export default function LibraryPage() {
         const chunk = file.slice(start, end);
 
         // Get presigned URL for this part
+        if (partNumber === 1) setUploadProgress(`Reading file (${formatSize(file.size)})...`);
         const partResp = await fetch(`/api/v1/library/${id}/upload-part-url?upload_id=${upload_id}&part_number=${partNumber}`, { method: "POST" });
         if (!partResp.ok) throw new Error("Failed to get part URL");
         const { url } = await partResp.json();
@@ -211,7 +212,7 @@ export default function LibraryPage() {
   };
 
   const inputStyle = { width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 };
-  const stateColors: Record<string, string> = { ready: "#4ade80", uploading: "#fbbf24", importing: "#fbbf24", pending: "#94a3b8", error: "#f87171" };
+  const stateColors: Record<string, string> = { ready: "#4ade80", uploading: "#fbbf24", importing: "#fbbf24", downloading: "#fbbf24", uploading_s3: "#22d3ee", pending: "#94a3b8", error: "#f87171" };
 
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
 
@@ -334,7 +335,10 @@ export default function LibraryPage() {
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...") : item.state}
+                    {item.state === "downloading" ? `downloading · ${formatSize(item.size_bytes)}`
+                      : item.state === "uploading_s3" ? `uploading to S3 · ${formatSize(item.size_bytes)}`
+                      : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
+                      : item.state}
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
                     {item.format === "iso" ? "ISO" : item.format}
