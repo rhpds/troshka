@@ -38,16 +38,30 @@ def calculate_project_requirements(topology: dict) -> dict:
     }
 
 
+def _get_overcommit_ratios():
+    from app.core.config import config
+    cpu = getattr(getattr(config, "overcommit", None), "cpu_ratio", 4.0) or 4.0
+    ram = getattr(getattr(config, "overcommit", None), "ram_ratio", 1.5) or 1.5
+    return float(cpu), float(ram)
+
+
+def get_allocatable(host: Host) -> tuple[int, int]:
+    """Get allocatable vCPUs and RAM for a host with overcommit ratios."""
+    cpu_ratio, ram_ratio = _get_overcommit_ratios()
+    return int(host.total_vcpus * cpu_ratio), int(host.total_ram_mb * ram_ratio)
+
+
 def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int) -> Host | None:
-    """Find an active host with enough free capacity."""
+    """Find an active host with enough free capacity (with overcommit)."""
     hosts = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
     ).all()
 
     for host in hosts:
-        free_vcpus = host.total_vcpus - host.used_vcpus
-        free_ram = host.total_ram_mb - host.used_ram_mb
+        alloc_vcpus, alloc_ram = get_allocatable(host)
+        free_vcpus = alloc_vcpus - host.used_vcpus
+        free_ram = alloc_ram - host.used_ram_mb
         if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
             return host
 

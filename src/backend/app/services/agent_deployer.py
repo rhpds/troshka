@@ -45,6 +45,10 @@ else
 fi
 systemctl enable --now nftables
 
+# Enable KSM for RAM overcommit
+echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+
 # Allow ec2-user to manage libvirt without polkit agent
 usermod -aG libvirt ec2-user
 cat > /etc/polkit-1/rules.d/50-libvirt.rules << 'POLKITEOF'

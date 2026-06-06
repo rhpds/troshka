@@ -39,18 +39,23 @@ def list_hosts(
 @router.get("/summary")
 def host_summary(user: User = Depends(require_role("operator")), db: Session = Depends(get_db)):
     """Summary of host pool by region."""
+    from app.services.placement import get_allocatable
+
     hosts = db.query(Host).all()
     regions: dict[str, dict] = {}
     for h in hosts:
+        alloc_vcpus, alloc_ram = get_allocatable(h)
         r = h.region or "unknown"
         if r not in regions:
-            regions[r] = {"region": r, "total_hosts": 0, "active_hosts": 0, "total_vcpus": 0, "used_vcpus": 0, "total_ram_mb": 0, "used_ram_mb": 0}
+            regions[r] = {"region": r, "total_hosts": 0, "active_hosts": 0, "total_vcpus": 0, "alloc_vcpus": 0, "used_vcpus": 0, "total_ram_mb": 0, "alloc_ram_mb": 0, "used_ram_mb": 0}
         regions[r]["total_hosts"] += 1
         if h.state == "active":
             regions[r]["active_hosts"] += 1
         regions[r]["total_vcpus"] += h.total_vcpus
+        regions[r]["alloc_vcpus"] += alloc_vcpus
         regions[r]["used_vcpus"] += h.used_vcpus
         regions[r]["total_ram_mb"] += h.total_ram_mb
+        regions[r]["alloc_ram_mb"] += alloc_ram
         regions[r]["used_ram_mb"] += h.used_ram_mb
     return list(regions.values())
 

@@ -388,6 +388,7 @@ def import_from_url(
                 if total_downloaded - last_commit >= 50 * 1024 * 1024:
                     it.size_bytes = total_downloaded
                     it.state = "downloading"
+                    it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
                     sess.commit()
                     last_commit = total_downloaded
 
@@ -402,6 +403,7 @@ def import_from_url(
 
                     it.state = "uploading_s3"
                     it.size_bytes = total_downloaded
+                    it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
                     sess.commit()
 
                     future = executor.submit(upload_part_async, part_data, part_num)
@@ -426,6 +428,7 @@ def import_from_url(
             for f in upload_futures:
                 total_uploaded += f.result()
                 it.size_bytes = total_uploaded
+                it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
                 sess.commit()
 
             executor.shutdown(wait=True)

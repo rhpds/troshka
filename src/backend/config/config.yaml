@@ -34,3 +34,7 @@ defaults:
   max_vms_per_project: 20
   max_projects_per_user: 10
   user_library_quota_gb: 500
+
+overcommit:
+  cpu_ratio: 4.0
+  ram_ratio: 1.5

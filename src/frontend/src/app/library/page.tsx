@@ -335,9 +335,13 @@ export default function LibraryPage() {
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {item.state === "downloading" ? `downloading · ${formatSize(item.size_bytes)}`
-                      : item.state === "uploading_s3" ? `uploading to S3 · ${formatSize(item.size_bytes)}`
-                      : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
+                    {(item.state === "downloading" || item.state === "uploading_s3") ? (
+                      <>
+                        <span style={{ color: "#fbbf24" }}>↓ {formatSize((item.tags as Record<string, number>)?.downloaded || item.size_bytes)}</span>
+                        {" · "}
+                        <span style={{ color: "#22d3ee" }}>↑ {formatSize((item.tags as Record<string, number>)?.uploaded || 0)}</span>
+                      </>
+                    ) : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
                       : item.state}
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
@@ -362,7 +366,7 @@ export default function LibraryPage() {
               }}>
                 Edit
               </Button>
-              {(item.state === "importing" || item.state === "uploading") && (
+              {["importing", "uploading", "downloading", "uploading_s3"].includes(item.state) && (
                 <Button variant="secondary" onClick={async () => {
                   if (!window.confirm("Cancel this transfer?")) return;
                   await fetch(`/api/v1/library/${item.id}/cancel`, { method: "POST" });
@@ -371,7 +375,7 @@ export default function LibraryPage() {
                   Cancel
                 </Button>
               )}
-              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.state === "uploading" || item.state === "importing"}>
+              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
                 Delete
               </Button>
             </CardBody>
