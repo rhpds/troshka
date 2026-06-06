@@ -57,6 +57,8 @@ export default function AdminHostsPage() {
   const [cpuRatio, setCpuRatio] = useState(4.0);
   const [ramRatio, setRamRatio] = useState(1.5);
 
+  const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
+
   const loadData = () => {
     Promise.all([
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
@@ -70,13 +72,21 @@ export default function AdminHostsPage() {
     }).catch(() => setLoading(false));
   };
 
+  const loadStorage = () => {
+    fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
+      if (d && typeof d === "object") setStorageInfo(d);
+    }).catch(() => {});
+  };
+
   useEffect(() => {
     loadData();
+    loadStorage();
     fetch("/api/v1/hosts/overcommit").then((r) => r.ok ? r.json() : null).then((d) => {
       if (d) { setCpuRatio(d.cpu_ratio); setRamRatio(d.ram_ratio); }
     }).catch(() => {});
     const interval = setInterval(loadData, 5000);
-    return () => clearInterval(interval);
+    const storageInterval = setInterval(loadStorage, 30000);
+    return () => { clearInterval(interval); clearInterval(storageInterval); };
   }, []);
 
   const addHost = async () => {
@@ -405,16 +415,23 @@ export default function AdminHostsPage() {
                   {h.instance_type} · {h.region} · {h.ip_address || "no IP"} · {h.host_type}
                 </div>
               </div>
-              <div style={{ textAlign: "right", marginRight: 16 }}>
-                <div style={{ fontSize: 13 }}>
-                  vCPU: <strong>{h.used_vcpus}</strong>/{Math.round(h.total_vcpus * cpuRatio)} <span style={{ fontSize: 10, opacity: 0.4 }}>({h.total_vcpus} phys · {cpuRatio}:1)</span>
+              <div style={{ display: "flex", gap: 24, marginRight: 16, fontSize: 13 }}>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>vCPU</div>
+                  <div><strong>{h.used_vcpus}</strong>/{Math.round(h.total_vcpus * cpuRatio)}</div>
+                  <div style={{ fontSize: 10, opacity: 0.4 }}>{h.total_vcpus} phys · {cpuRatio}:1</div>
                 </div>
-                <div style={{ fontSize: 13 }}>
-                  RAM: <strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB <span style={{ fontSize: 10, opacity: 0.4 }}>({Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1)</span>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>RAM</div>
+                  <div><strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB</div>
+                  <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1</div>
                 </div>
-                <div style={{ fontSize: 13, color: (h.storage_used_pct ?? 0) >= 80 ? "#f87171" : undefined }}>
-                  Storage: {h.storage_used_pct != null ? <><strong>{h.storage_used_pct}%</strong> of {h.storage_size_gb} GB <span style={{ fontSize: 10, opacity: 0.4 }}>({h.storage_free_gb ?? "?"} GB free)</span></> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}
-                </div>
+                {(() => { const si = storageInfo[h.id]; return (
+                <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
+                  <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Storage</div>
+                  <div>{si ? <><strong>{si.used_pct}%</strong> of {si.total_gb} GB</> : <>{h.storage_size_gb} GB</>}</div>
+                  {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{si.free_gb} GB free</div>}
+                </div>); })()}
               </div>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}

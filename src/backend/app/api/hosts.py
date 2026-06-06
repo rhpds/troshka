@@ -43,6 +43,23 @@ def list_hosts(
     return query.order_by(Host.region, Host.created_at).all()
 
 
+@router.get("/storage")
+def host_storage(user: User = Depends(require_role("operator")), db: Session = Depends(get_db)):
+    """Get live disk usage for all active hosts."""
+    from app.services.deploy_service import check_host_disk_space
+    hosts = db.query(Host).filter(Host.state == "active", Host.agent_status == "connected").all()
+    result = {}
+    for h in hosts:
+        if h.ip_address and h.private_key:
+            disk = check_host_disk_space(h.ip_address, h.private_key)
+            result[h.id] = {
+                "used_pct": disk["used_pct"],
+                "free_gb": round(disk["free_bytes"] / (1024 ** 3), 1),
+                "total_gb": round(disk["total_bytes"] / (1024 ** 3), 1),
+            }
+    return result
+
+
 @router.get("/summary")
 def host_summary(user: User = Depends(require_role("operator")), db: Session = Depends(get_db)):
     """Summary of host pool by region."""
