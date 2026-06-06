@@ -81,15 +81,18 @@ export default function ProjectCanvasPage() {
         setDeployedVmIds(ids);
         useCanvasStore.setState({ deployedVmIds: ids });
 
-        // Set per-VM status from libvirt
+        // Set per-VM status from libvirt + redeploy progress
+        const progressMap: Record<string, Record<string, string>> = data.progress || {};
         const store = useCanvasStore.getState();
         useCanvasStore.setState({
-          nodes: store.nodes.map((node) =>
-            node.type === "vmNode" && node.id in states
-              ? { ...node, data: { ...node.data, status: states[node.id] } }
-              : node.type === "vmNode" ? { ...node, data: { ...node.data, status: "stopped" } }
-              : node
-          ),
+          nodes: store.nodes.map((node) => {
+            if (node.type !== "vmNode") return node;
+            if (node.id in states) {
+              const redeployInfo = progressMap[node.id];
+              return { ...node, data: { ...node.data, status: states[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null } };
+            }
+            return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
+          }),
         });
       });
 
@@ -109,6 +112,15 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     syncVmStates();
   }, [projectState, projectId]);
+
+  // Poll vm-states when any VM is redeploying
+  useEffect(() => {
+    const hasRedeploying = nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).status === "redeploying");
+    if (hasRedeploying) {
+      const interval = setInterval(syncVmStates, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [nodes]);
 
   useEffect(() => {
     if (projectState === "draft") {

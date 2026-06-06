@@ -191,6 +191,9 @@ def _get_project_and_host(project_id: str, user: User, db: Session):
     return project, host
 
 
+_redeploy_progress: dict[str, dict] = {}
+
+
 def _check_library_items_ready(topology: dict, db: Session):
     """Ensure all referenced library items are in 'ready' state."""
     from app.models.library import LibraryItem
@@ -217,6 +220,8 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
     if not project.host_id:
         return {"states": {}}
 
@@ -228,13 +233,18 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
         states = {}
+        progress = {}
         for node in project.topology.get("nodes", []):
             if node.get("type") != "vmNode":
                 continue
             vm_name = f"{prefix}-{node['data']['name']}"
-            state = libvirt_mgr.get_vm_state(conn, vm_name)
-            states[node["id"]] = "running" if state == "running" else "stopped" if state in ("shut_off", "not_found") else state
-        return {"states": states}
+            if vm_name in _redeploy_progress:
+                states[node["id"]] = "redeploying"
+                progress[node["id"]] = _redeploy_progress[vm_name]
+            else:
+                state = libvirt_mgr.get_vm_state(conn, vm_name)
+                states[node["id"]] = "running" if state == "running" else "stopped" if state in ("shut_off", "not_found") else state
+        return {"states": states, "progress": progress}
     finally:
         conn.close()
 
@@ -481,72 +491,85 @@ def reconfigure_project(
 
 @router.post("/{project_id}/vms/{vm_name}/redeploy")
 def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Destroy and recreate a single VM without touching others."""
+    """Destroy and recreate a single VM in a background thread."""
     _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db)
-    prefix = f"troshka-{project_id[:8]}"
-    full_name = f"{prefix}-{vm_name}"
-    vni_map = project.vni_map or {}
-    topology = project.topology
+    _check_library_items_ready(project.topology, db)
 
-    _check_library_items_ready(topology, db)
+    # Capture values for the background thread
+    p_id = project.id
+    host_id = host.id
+    host_ip = host.ip_address
+    private_key = host.private_key
 
-    # Check current state before destroying
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    was_running = False
-    try:
-        was_running = libvirt_mgr.get_vm_state(conn, full_name) == "running"
-        libvirt_mgr.undefine_vm(conn, full_name, remove_storage=False)
-    finally:
-        conn.close()
+    import threading
+    def _do_redeploy():
+        from app.core.database import SessionLocal
+        from app.services.deploy_service import _prepare_library_downloads, generate_incremental_script, run_ssh_script
+        from app.services.cloud_init import generate_seed_iso_script
 
-    # Delete its disk files
-    run_ssh_script(host.ip_address, host.private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
-
-    # Prepare library downloads
-    from app.services.deploy_service import _prepare_library_downloads, generate_incremental_script
-    _prepare_library_downloads(topology, host.ip_address, host.private_key, db)
-
-    # Find this VM's node
-    vm_node = None
-    for n in topology.get("nodes", []):
-        if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name:
-            vm_node = n
-            break
-    if not vm_node:
-        return {"status": "failed", "error": "VM not found in topology"}
-
-    # Create cloud-init seed ISO
-    from app.services.cloud_init import generate_seed_iso_script
-    seed_script = generate_seed_iso_script(project_id, topology)
-    if seed_script:
-        run_ssh_script(host.ip_address, host.private_key, seed_script, timeout=15)
-
-    # Recreate just this VM
-    diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
-    script = generate_incremental_script(project_id, topology, diff, vni_map)
-    result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
-
-    # Restore previous state
-    if was_running:
-        conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+        s = SessionLocal()
         try:
-            libvirt_mgr.start_vm(conn, full_name)
+            proj = s.query(Project).filter_by(id=p_id).first()
+            h = s.query(Host).filter_by(id=host_id).first()
+            if not proj or not h:
+                return
+
+            prefix = f"troshka-{p_id[:8]}"
+            full_name = f"{prefix}-{vm_name}"
+            topology = proj.topology
+            vni_map = proj.vni_map or {}
+
+            # Check state and undefine
+            conn = libvirt_mgr.connect(host_ip, private_key)
+            was_running = False
+            try:
+                was_running = libvirt_mgr.get_vm_state(conn, full_name) == "running"
+                libvirt_mgr.undefine_vm(conn, full_name, remove_storage=False)
+            finally:
+                conn.close()
+
+            _redeploy_progress[full_name] = {"step": "preparing", "detail": ""}
+            run_ssh_script(host_ip, private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
+            _redeploy_progress[full_name] = {"step": "downloading", "detail": "preparing presigned URLs"}
+            _prepare_library_downloads(topology, host_ip, private_key, s)
+
+            vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
+            if not vm_node:
+                return
+
+            _redeploy_progress[full_name] = {"step": "downloading", "detail": "caching library images"}
+
+            seed_script = generate_seed_iso_script(p_id, topology)
+            if seed_script:
+                _redeploy_progress[full_name] = {"step": "creating", "detail": "cloud-init seed ISO"}
+                run_ssh_script(host_ip, private_key, seed_script, timeout=15)
+
+            _redeploy_progress[full_name] = {"step": "creating", "detail": "VM definition"}
+            diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
+            script = generate_incremental_script(p_id, topology, diff, vni_map)
+            run_ssh_script(host_ip, private_key, script, timeout=7200)
+
+            if was_running:
+                conn = libvirt_mgr.connect(host_ip, private_key)
+                try:
+                    libvirt_mgr.start_vm(conn, full_name)
+                finally:
+                    conn.close()
+
+            _redeploy_progress[full_name] = {"step": "starting", "detail": ""}
+            proj.deployed_topology = topology
+            s.commit()
+            _redeploy_progress.pop(full_name, None)
+            logger.info("Redeploy %s complete", full_name)
+        except Exception:
+            logger.exception("Redeploy %s failed", vm_name)
+            _redeploy_progress.pop(full_name, None)
         finally:
-            conn.close()
+            s.close()
 
-    # Restart metadata service
-    from app.services.cloud_init import generate_metadata_service_script
-    meta_script = generate_metadata_service_script(project_id, topology, vni_map)
-    if meta_script:
-        run_ssh_script(host.ip_address, host.private_key, meta_script, timeout=30)
-
-    if result["success"]:
-        project.deployed_topology = topology
-        db.commit()
-        return {"status": "redeployed", "vm": full_name}
-    else:
-        return {"status": "failed", "output": result["output"][-300:]}
+    threading.Thread(target=_do_redeploy, daemon=True).start()
+    return {"status": "redeploying"}
 
 
 @router.post("/{project_id}/redeploy")

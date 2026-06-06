@@ -161,7 +161,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         <div className="vm-node-icon">{d.icon || "🖥"}</div>
         <span className="vm-node-title">{d.name}</span>
         {(actionPending || d.status === "redeploying") ? (
-          <span className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
+          <span title={(d as Record<string, unknown>).redeployStep as string || ""} className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
         ) : (
         <span
           className="vm-node-status-dot"
@@ -174,6 +174,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         />
         )}
       </div>
+
+      {/* Redeploy progress */}
+      {d.status === "redeploying" && (d as Record<string, unknown>).redeployStep && (
+        <div style={{ fontSize: 9, color: "#fbbf24", textAlign: "center", padding: "2px 0" }}>
+          {(d as Record<string, unknown>).redeployStep as string}{(d as Record<string, unknown>).redeployDetail ? `: ${(d as Record<string, unknown>).redeployDetail}` : ""}
+        </div>
+      )}
 
       {/* Specs */}
       <div className="vm-node-body">
