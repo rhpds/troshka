@@ -51,6 +51,8 @@ export default function AdminHostsPage() {
   const [newRegion, setNewRegion] = useState("");
   const [error, setError] = useState("");
   const [filterRegion, setFilterRegion] = useState("");
+  const [cpuRatio, setCpuRatio] = useState(4.0);
+  const [ramRatio, setRamRatio] = useState(1.5);
 
   const loadData = () => {
     Promise.all([
@@ -67,6 +69,9 @@ export default function AdminHostsPage() {
 
   useEffect(() => {
     loadData();
+    fetch("/api/v1/hosts/overcommit").then((r) => r.ok ? r.json() : null).then((d) => {
+      if (d) { setCpuRatio(d.cpu_ratio); setRamRatio(d.ram_ratio); }
+    }).catch(() => {});
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -399,10 +404,10 @@ export default function AdminHostsPage() {
               </div>
               <div style={{ textAlign: "right", marginRight: 16 }}>
                 <div style={{ fontSize: 13 }}>
-                  vCPU: <strong>{h.used_vcpus}</strong>/{h.total_vcpus}
+                  vCPU: <strong>{h.used_vcpus}</strong>/{Math.round(h.total_vcpus * cpuRatio)} <span style={{ fontSize: 10, opacity: 0.4 }}>({h.total_vcpus} phys · {cpuRatio}:1)</span>
                 </div>
                 <div style={{ fontSize: 13 }}>
-                  RAM: <strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb / 1024)} GB
+                  RAM: <strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB <span style={{ fontSize: 10, opacity: 0.4 }}>({Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1)</span>
                 </div>
               </div>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>

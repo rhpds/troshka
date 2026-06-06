@@ -24,6 +24,13 @@ class ProvisionRequest(BaseModel):
     ami_id: str | None = None
 
 
+@router.get("/overcommit")
+def get_overcommit():
+    from app.services.placement import _get_overcommit_ratios
+    cpu, ram = _get_overcommit_ratios()
+    return {"cpu_ratio": cpu, "ram_ratio": ram}
+
+
 @router.get("/", response_model=list[HostResponse])
 def list_hosts(
     region: str | None = None,

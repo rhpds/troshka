@@ -318,7 +318,7 @@ def import_from_url(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Import a file from a URL — downloads server-side and uploads to S3."""
+    """Import a file from a URL via host — no data passes through the app."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -335,10 +335,12 @@ def import_from_url(
     db.commit()
 
     import threading
-    def _download_and_upload():
+    def _host_download():
         from app.core.database import SessionLocal as SL
         from app.services.s3_storage import _get_s3_client, _bucket
-        import requests
+        from app.services.deploy_service import run_ssh_script
+        from app.models.host import Host
+        import time as _time
 
         sess = SL()
         try:
@@ -346,100 +348,61 @@ def import_from_url(
             if not it:
                 return
 
+            host = sess.query(Host).filter_by(state="active", agent_status="connected").first()
+            if not host or not host.ip_address or not host.private_key:
+                logger.error("Import %s: no active host available", item_id[:8])
+                it.state = "error"
+                sess.commit()
+                return
+
             client = _get_s3_client()
             bucket = _bucket()
-
-            # Stream download from URL and multipart upload to S3
-            resp = requests.get(body.url, stream=True, timeout=(30, 60))
-            resp.raise_for_status()
-
-            mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
-            upload_id = mpu["UploadId"]
-
-            import threading
-            from concurrent.futures import ThreadPoolExecutor, Future
-
-            parts = []
-            parts_lock = threading.Lock()
-            part_num = 0
-            chunk_size = 200 * 1024 * 1024
-            buf = b""
-            total_downloaded = 0
-            total_uploaded = 0
-            upload_futures: list[Future] = []
-
-            def upload_part_async(part_data, pn):
-                r = client.upload_part(Bucket=bucket, Key=s3_key, UploadId=upload_id, PartNumber=pn, Body=part_data)
-                with parts_lock:
-                    parts.append({"PartNumber": pn, "ETag": r["ETag"]})
-                return len(part_data)
-
-            executor = ThreadPoolExecutor(max_workers=2)
-            last_commit = 0
-            max_buffer = chunk_size * 3  # Max ~600 MB in memory
 
             it.state = "downloading"
             sess.commit()
 
-            for data in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                buf += data
-                total_downloaded += len(data)
+            # Step 1: Download file on host
+            cache_path = f"/tmp/troshka-import-{item_id[:8]}"
+            dl_script = f"curl -sfL -o {cache_path} '{body.url}' && stat -c%s {cache_path} 2>/dev/null || stat -f%z {cache_path}"
+            result = run_ssh_script(host.ip_address, host.private_key, dl_script, timeout=7200)
 
-                if total_downloaded - last_commit >= 50 * 1024 * 1024:
-                    it.size_bytes = total_downloaded
-                    it.state = "downloading"
-                    it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
-                    sess.commit()
-                    last_commit = total_downloaded
-
-                while len(buf) >= chunk_size:
-                    # Backpressure: wait for uploads to drain before buffering more
-                    while len([f for f in upload_futures if not f.done()]) >= 2:
-                        import time; time.sleep(0.5)
-
-                    part_num += 1
-                    part_data = buf[:chunk_size]
-                    buf = buf[chunk_size:]
-
-                    it.state = "uploading_s3"
-                    it.size_bytes = total_downloaded
-                    it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
-                    sess.commit()
-
-                    future = executor.submit(upload_part_async, part_data, part_num)
-                    upload_futures.append(future)
-                    logger.info("Import %s: queued part %d, downloaded %d MB", item_id[:8], part_num, total_downloaded // (1024*1024))
-
-                    # Collect completed futures to free memory
-                    done = [f for f in upload_futures if f.done()]
-                    for f in done:
-                        total_uploaded += f.result()
-                        upload_futures.remove(f)
-
-            # Upload remaining buffer
-            if buf:
-                part_num += 1
-                future = executor.submit(upload_part_async, buf, part_num)
-                upload_futures.append(future)
-
-            # Wait for all remaining uploads
-            it.state = "uploading_s3"
-            sess.commit()
-            for f in upload_futures:
-                total_uploaded += f.result()
-                it.size_bytes = total_uploaded
-                it.tags = {"downloaded": total_downloaded, "uploaded": total_uploaded}
+            if not result["success"]:
+                logger.error("Import %s: download failed on host: %s", item_id[:8], result["output"][-200:])
+                it.state = "error"
                 sess.commit()
+                return
 
-            executor.shutdown(wait=True)
+            # Parse file size
+            for line in result["output"].strip().split("\n"):
+                line = line.strip()
+                if line.isdigit():
+                    it.size_bytes = int(line)
+                    it.state = "uploading_s3"
+                    sess.commit()
+                    break
 
-            client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
+            # Step 2: Upload from host to S3 via presigned URL
+            presigned_put = client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": bucket, "Key": s3_key, "ContentType": "application/octet-stream"},
+                ExpiresIn=14400,
+            )
 
-            head = client.head_object(Bucket=bucket, Key=s3_key)
-            it.size_bytes = head["ContentLength"]
-            it.state = "ready"
-            sess.commit()
-            logger.info("Import %s complete: %d bytes", item_id[:8], it.size_bytes)
+            up_script = f"curl -sfL -X PUT -T {cache_path} -H 'Content-Type: application/octet-stream' '{presigned_put}' && rm -f {cache_path} && echo DONE"
+            result = run_ssh_script(host.ip_address, host.private_key, up_script, timeout=7200)
+
+            if result["success"] and "DONE" in result["output"]:
+                head = client.head_object(Bucket=bucket, Key=s3_key)
+                it.size_bytes = head["ContentLength"]
+                it.state = "ready"
+                it.tags = None
+                sess.commit()
+                logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
+            else:
+                logger.error("Import %s: S3 upload failed: %s", item_id[:8], result["output"][-200:])
+                run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}", timeout=15)
+                it.state = "error"
+                sess.commit()
         except Exception:
             logger.exception("Import failed for %s", item_id[:8])
             it = sess.query(LibraryItem).filter_by(id=item_id).first()
@@ -449,7 +412,7 @@ def import_from_url(
         finally:
             sess.close()
 
-    threading.Thread(target=_download_and_upload, daemon=True).start()
+    threading.Thread(target=_host_download, daemon=True).start()
 
     return {"id": item.id, "state": "importing"}
 
