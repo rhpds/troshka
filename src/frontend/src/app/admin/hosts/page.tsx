@@ -64,14 +64,16 @@ export default function AdminHostsPage() {
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/hosts/summary").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
-      fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}),
-    ]).then(([h, s, p, st]) => {
+    ]).then(([h, s, p]) => {
       setHosts(Array.isArray(h) ? h : []);
       setSummary(Array.isArray(s) ? s : []);
       setProviders(Array.isArray(p) ? p : []);
-      if (st && typeof st === "object") setStorageInfo(st);
       setLoading(false);
     }).catch(() => setLoading(false));
+    // Storage fetched separately — SSH calls can be slow and shouldn't block the page
+    fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
+      if (d && typeof d === "object") setStorageInfo(d);
+    }).catch(() => {});
   };
 
   useEffect(() => {

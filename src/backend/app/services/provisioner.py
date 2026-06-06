@@ -94,6 +94,7 @@ packages:
   - python3-libvirt
   - dnsmasq
   - nftables
+  - nmap-ncat
 
 runcmd:
   - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
