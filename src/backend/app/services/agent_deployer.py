@@ -29,7 +29,7 @@ fi
 # Ensure prerequisites — skip dnf if already installed
 if ! which virsh &>/dev/null || ! which virt-install &>/dev/null || ! which nc &>/dev/null; then
     echo "Installing prerequisites..."
-    dnf install -y qemu-kvm libvirt libvirt-client libvirt-devel virt-install \
+    dnf install -y qemu-kvm libvirt libvirt-client virt-install \
         python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat || true
 else
     echo "Prerequisites already installed, skipping dnf"

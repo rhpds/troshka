@@ -87,7 +87,7 @@ hostname: {hostname}
 packages:
   - qemu-kvm
   - libvirt
-  - libvirt-devel
+  - libvirt-client
   - virt-install
   - python3
   - python3-pip
