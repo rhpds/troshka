@@ -335,13 +335,9 @@ export default function LibraryPage() {
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
-                    {(item.state === "downloading" || item.state === "uploading_s3") ? (
-                      <>
-                        <span style={{ color: "#fbbf24" }}>↓ {formatSize((item.tags as Record<string, number>)?.downloaded || item.size_bytes)}</span>
-                        {" · "}
-                        <span style={{ color: "#22d3ee" }}>↑ {formatSize((item.tags as Record<string, number>)?.uploaded || 0)}</span>
-                      </>
-                    ) : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
+                    {item.state === "downloading" ? `downloading from URL · ${formatSize(item.size_bytes)}`
+                      : item.state === "uploading_s3" ? `uploading to library · ${formatSize(item.size_bytes)}`
+                      : item.state === "importing" ? (item.size_bytes > 0 ? `importing · ${formatSize(item.size_bytes)}` : "starting download...")
                       : item.state}
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>

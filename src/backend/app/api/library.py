@@ -381,26 +381,72 @@ def import_from_url(
                     sess.commit()
                     break
 
-            # Step 2: Upload from host to S3 via presigned URL
-            presigned_put = client.generate_presigned_url(
-                "put_object",
-                Params={"Bucket": bucket, "Key": s3_key, "ContentType": "application/octet-stream"},
-                ExpiresIn=14400,
-            )
+            # Step 2: Multipart upload from host to S3
+            file_size = it.size_bytes or 0
+            chunk_size = 500 * 1024 * 1024  # 500 MB parts
 
-            up_script = f"curl -sfL -X PUT -T {cache_path} -H 'Content-Type: application/octet-stream' '{presigned_put}' && rm -f {cache_path} && echo DONE"
+            mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
+            upload_id = mpu["UploadId"]
+
+            num_parts = max(1, (file_size + chunk_size - 1) // chunk_size)
+            part_urls = []
+            for pn in range(1, num_parts + 1):
+                url = client.generate_presigned_url(
+                    "upload_part",
+                    Params={"Bucket": bucket, "Key": s3_key, "UploadId": upload_id, "PartNumber": pn},
+                    ExpiresIn=14400,
+                )
+                part_urls.append((pn, url))
+
+            # Build script to split file and upload each part
+            up_lines = [f"cd /tmp && split -b {chunk_size} -d {cache_path} troshka-part-{item_id[:8]}-"]
+            up_lines.append("PARTS_JSON='['")
+            for pn, url in part_urls:
+                idx = f"{pn - 1:02d}"
+                part_file = f"troshka-part-{item_id[:8]}-{idx}"
+                up_lines.append(f"if [ -f {part_file} ]; then")
+                up_lines.append(f"  ETAG=$(curl -sfL -X PUT -T {part_file} '{url}' -D- -o /dev/null | grep -i etag | tr -d '\\r' | awk '{{print $2}}')")
+                up_lines.append(f'  PARTS_JSON="${{PARTS_JSON}}{{\\\"PartNumber\\\":{pn},\\\"ETag\\\":${{ETAG}}}},"')
+                up_lines.append(f"  rm -f {part_file}")
+                up_lines.append("fi")
+            up_lines.append("PARTS_JSON=\"${PARTS_JSON%,}]\"")
+            up_lines.append(f"rm -f {cache_path}")
+            up_lines.append("echo \"PARTS:$PARTS_JSON\"")
+
+            up_script = "\n".join(up_lines)
             result = run_ssh_script(host.ip_address, host.private_key, up_script, timeout=7200)
 
-            if result["success"] and "DONE" in result["output"]:
-                head = client.head_object(Bucket=bucket, Key=s3_key)
-                it.size_bytes = head["ContentLength"]
-                it.state = "ready"
-                it.tags = None
-                sess.commit()
-                logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
+            if result["success"]:
+                # Parse ETags from output
+                parts = []
+                for line in result["output"].split("\n"):
+                    if line.startswith("PARTS:"):
+                        import json as _json
+                        try:
+                            parts = _json.loads(line[6:])
+                        except Exception:
+                            logger.error("Failed to parse parts JSON: %s", line[6:])
+
+                if parts:
+                    client.complete_multipart_upload(
+                        Bucket=bucket, Key=s3_key, UploadId=upload_id,
+                        MultipartUpload={"Parts": parts},
+                    )
+                    head = client.head_object(Bucket=bucket, Key=s3_key)
+                    it.size_bytes = head["ContentLength"]
+                    it.state = "ready"
+                    it.tags = None
+                    sess.commit()
+                    logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
+                else:
+                    logger.error("Import %s: no parts parsed from host output", item_id[:8])
+                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
+                    it.state = "error"
+                    sess.commit()
             else:
                 logger.error("Import %s: S3 upload failed: %s", item_id[:8], result["output"][-200:])
-                run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}", timeout=15)
+                client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
+                run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} /tmp/troshka-part-{item_id[:8]}-*", timeout=15)
                 it.state = "error"
                 sess.commit()
         except Exception:
