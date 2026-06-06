@@ -17,17 +17,20 @@ logger = logging.getLogger(__name__)
 def check_host_disk_space(host_ip: str, private_key: str) -> dict:
     """Check free space on /var/lib/troshka mount (or root if not mounted)."""
     result = run_ssh_script(host_ip, private_key,
-        "df -B1 /var/lib/troshka 2>/dev/null || df -B1 / | tail -1 | awk '{print $4, $2, $5}'",
-        timeout=10)
+        "stat -f -c '%a %b %S' /var/lib/troshka 2>/dev/null || stat -f -c '%a %b %S' /",
+        timeout=15)
     if not result["success"]:
         return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": result["output"]}
-    parts = result["output"].strip().split()
-    if len(parts) >= 3:
-        free = int(parts[0]) if parts[0].isdigit() else 0
-        total = int(parts[1]) if parts[1].isdigit() else 0
-        used_pct = int(parts[2].rstrip("%")) if parts[2].rstrip("%").isdigit() else 0
-        return {"free_bytes": free, "total_bytes": total, "used_pct": used_pct}
-    return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": "Could not parse df output"}
+    lines = [l.strip() for l in result["output"].strip().split("\n") if l.strip() and not l.strip().startswith("Warning:")]
+    if lines:
+        parts = lines[0].split()
+        if len(parts) >= 3 and all(p.isdigit() for p in parts):
+            free_blocks, total_blocks, block_size = int(parts[0]), int(parts[1]), int(parts[2])
+            free_bytes = free_blocks * block_size
+            total_bytes = total_blocks * block_size
+            used_pct = round((1 - free_blocks / max(total_blocks, 1)) * 100)
+            return {"free_bytes": free_bytes, "total_bytes": total_bytes, "used_pct": used_pct}
+    return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": "Could not parse stat output"}
 
 
 def run_ssh_script(host_ip: str, private_key: str, script: str, timeout: int = 600) -> dict:
