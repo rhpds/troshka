@@ -31,6 +31,11 @@ function StorageNodeComponent({ data, selected }: NodeProps) {
             : `${d.size} GB`
           }
         </div>
+        {(d as unknown as Record<string, unknown>).source === "library" && (d as unknown as Record<string, unknown>).libraryItemName && d.format !== "iso" && (
+          <div style={{ fontSize: 10, color: "var(--troshka-green)", marginTop: 1 }}>
+            {(d as unknown as Record<string, unknown>).libraryItemName as string}
+          </div>
+        )}
         <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 1 }}>
           {d.format === "iso" ? "ISO" : formatLabel.toUpperCase()}
           {(d as unknown as Record<string, unknown>).source === "library" ? " · library" : d.format !== "iso" ? " · blank" : ""}

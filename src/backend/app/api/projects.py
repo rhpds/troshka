@@ -108,6 +108,8 @@ def deploy_project(
     if reqs["vm_count"] == 0:
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
+    _check_library_items_ready(project.topology, db)
+
     result = place_project(db, project)
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
@@ -187,6 +189,20 @@ def _get_project_and_host(project_id: str, user: User, db: Session):
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
     return project, host
+
+
+def _check_library_items_ready(topology: dict, db: Session):
+    """Ensure all referenced library items are in 'ready' state."""
+    from app.models.library import LibraryItem
+    for node in topology.get("nodes", []):
+        if node.get("type") == "storageNode":
+            lib_id = node.get("data", {}).get("libraryItemId")
+            if lib_id:
+                lib_item = db.query(LibraryItem).filter_by(id=lib_id).first()
+                if not lib_item:
+                    raise HTTPException(status_code=400, detail=f"Library item not found for '{node['data'].get('name', 'storage')}'")
+                if lib_item.state != "ready":
+                    raise HTTPException(status_code=400, detail=f"'{lib_item.name}' is still {lib_item.state}. Wait for it to finish.")
 
 
 def _validate_vm_name(vm_name: str) -> str:
@@ -445,6 +461,8 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
     vni_map = project.vni_map or {}
     topology = project.topology
 
+    _check_library_items_ready(topology, db)
+
     # Check current state before destroying
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     was_running = False
@@ -517,6 +535,8 @@ def redeploy_project(
         raise HTTPException(status_code=403, detail="Access denied")
     if project.state not in ("active", "stopped", "error"):
         raise HTTPException(status_code=409, detail=f"Project is {project.state}, cannot redeploy")
+
+    _check_library_items_ready(project.topology, db)
 
     # Destroy existing
     if project.host_id:
