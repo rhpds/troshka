@@ -8,6 +8,7 @@ from app.models.disk import Disk
 from app.models.library import Library, LibraryItem, LibraryItemDisk, LibraryShare, ImageCache
 from app.models.api_key import ApiKey
 from app.models.pattern import Pattern, PatternDisk, PatternShare
+from app.models.elastic_ip import ElasticIp
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -18,4 +19,5 @@ __all__ = [
     "Library", "LibraryItem", "LibraryItemDisk", "LibraryShare", "ImageCache",
     "ApiKey",
     "Pattern", "PatternDisk", "PatternShare",
+    "ElasticIp",
 ]
