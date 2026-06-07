@@ -34,6 +34,17 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
     setSaving(true);
     setError("");
     try {
+      // Check for duplicate name before shutting anything down
+      const checkResp = await fetch(`/api/v1/library/?type=snapshot&q=${encodeURIComponent(name.trim())}`);
+      if (checkResp.ok) {
+        const items = await checkResp.json();
+        if (Array.isArray(items) && items.some((item: { name: string }) => item.name === name.trim())) {
+          setError(`You already have a snapshot named "${name.trim()}"`);
+          setSaving(false);
+          return;
+        }
+      }
+
       if (isRunning && stopVM) {
         setSavingStatus("Graceful shutdown...");
         await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/stop`, { method: "POST" });

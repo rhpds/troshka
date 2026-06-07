@@ -33,6 +33,17 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
     setSaving(true);
     setError("");
     try {
+      // Check for duplicate name before shutting anything down
+      const checkResp = await fetch(`/api/v1/patterns/?q=${encodeURIComponent(name.trim())}`);
+      if (checkResp.ok) {
+        const items = await checkResp.json();
+        if (Array.isArray(items) && items.some((item: { name: string }) => item.name === name.trim())) {
+          setError(`You already have a pattern named "${name.trim()}"`);
+          setSaving(false);
+          return;
+        }
+      }
+
       if (hasRunningVMs && stopVMs) {
         setSavingStatus("Graceful shutdown...");
         await fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" });
