@@ -39,6 +39,10 @@ def create_project(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    existing = db.query(Project).filter_by(owner_id=user.id, name=body.name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"You already have a project named \"{body.name}\"")
+
     project = Project(
         name=body.name,
         description=body.description,

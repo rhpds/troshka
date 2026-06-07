@@ -169,6 +169,10 @@ def create_pattern(
     """Create a pattern — either from a project (source_project_id) or from a
     raw topology+disk_mappings payload."""
 
+    existing = db.query(Pattern).filter_by(owner_id=user.id, name=body.name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"You already have a pattern named \"{body.name}\"")
+
     if body.source_project_id:
         # Capture from an existing project
         project = db.query(Project).filter_by(id=body.source_project_id, owner_id=user.id).first()
@@ -422,10 +426,15 @@ def deploy_pattern(
         if not shared:
             raise HTTPException(status_code=404, detail="Pattern not found")
 
+    project_name = body.name or f"{pattern.name} (deploy)"
+    existing = db.query(Project).filter_by(owner_id=user.id, name=project_name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"You already have a project named \"{project_name}\"")
+
     new_topology = _remap_topology(pattern.topology)
 
     project = Project(
-        name=body.name or f"{pattern.name} (deploy)",
+        name=project_name,
         description=body.description or pattern.description,
         owner_id=user.id,
         topology=new_topology,

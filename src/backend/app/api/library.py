@@ -160,6 +160,9 @@ def create_item(
 ):
     """Create a library item (metadata only). Upload file separately."""
     lib = _ensure_user_library(user, db)
+    existing = db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"You already have an item named \"{body.name}\"")
     item = LibraryItem(
         library_id=lib.id,
         name=body.name,

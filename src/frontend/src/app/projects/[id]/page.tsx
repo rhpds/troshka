@@ -294,7 +294,23 @@ export default function ProjectCanvasPage() {
       <div className="project-action-bar">
         <div className="project-action-bar-left">
           <button className="project-back-btn" onClick={() => router.push("/projects")} title="Back to projects">←</button>
-          <span className="project-action-name">{projectName || "Untitled"}</span>
+          <span
+            className="project-action-name"
+            style={{ cursor: "pointer", borderBottom: "1px dashed rgba(255,255,255,0.2)" }}
+            onClick={() => {
+              const newName = window.prompt("Rename project:", projectName);
+              if (newName && newName.trim() && newName !== projectName) {
+                fetch(`/api/v1/projects/${projectId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: newName.trim() }),
+                }).then((r) => {
+                  if (r.ok) setProjectName(newName.trim());
+                });
+              }
+            }}
+            title="Click to rename"
+          >{projectName || "Untitled"}</span>
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
             {projectState}
           </span>
