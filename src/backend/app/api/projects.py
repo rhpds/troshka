@@ -266,7 +266,14 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
                 progress[node["id"]] = _redeploy_progress[dom_name]
             else:
                 state = libvirt_mgr.get_vm_state(conn, dom_name)
-                states[node["id"]] = "running" if state == "running" else "stopped" if state in ("shut_off", "not_found") else state
+                if state == "not_found":
+                    states[node["id"]] = "not_found"
+                elif state == "running":
+                    states[node["id"]] = "running"
+                elif state == "shut_off":
+                    states[node["id"]] = "stopped"
+                else:
+                    states[node["id"]] = state
         return {"states": states, "progress": progress}
     finally:
         conn.close()
@@ -372,122 +379,175 @@ def reconfigure_project(
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
 
+    # Allocate VNIs for new networks before going async
     current = project.topology or {}
     deployed = project.deployed_topology or {}
     vni_map = dict(project.vni_map or {})
-
     diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
-
-    # Allocate VNIs for any new networks
     if diff["added_networks"]:
         from app.services.vxlan import allocate_vni
         for net_node in diff["added_networks"]:
             if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
                 vni_map[net_node["id"]] = allocate_vni(db)
-
-    # Always re-run network setup to pick up gateway/router/DHCP changes
-    from app.services.vxlan import build_host_network_config
-    all_hosts = db.query(Host).filter(Host.state == "active").all()
-    peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-    net_config = build_host_network_config(current, vni_map, peer_ips)
-    net_script = generate_setup_script(net_config, host.ip_address)
-    net_result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
-    if not net_result["success"]:
-        return {"status": "failed", "output": f"Network setup failed:\n{net_result['output'][-500:]}"}
-
-    # Update cloud-init metadata service
-    from app.services.cloud_init import generate_metadata_service_script
-    meta_script = generate_metadata_service_script(project_id, current, vni_map)
-    if meta_script:
-        run_ssh_script(host.ip_address, host.private_key, meta_script, timeout=30)
-
-    # Use libvirt to reconfigure all existing VMs and add/remove as needed
-    from app.services.deploy_service import _vm_domain_name, _vm_dir, _disk_path
-    vm_dir = _vm_dir(project_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    errors = []
-    try:
-        # Remove deleted VMs (ignore if already gone)
-        for node in diff["removed_vms"]:
-            dom = _vm_domain_name(project_id, node["id"])
-            libvirt_mgr.undefine_vm(conn, dom)
-            run_ssh_script(host.ip_address, host.private_key, f"rm -f {vm_dir}/{node['id'][:8]}-*", timeout=15)
-
-        # Reconfigure all existing VMs (force sync boot order, CPU, RAM)
-        from app.services.deploy_service import _resolve_boot_devs
-        vms = _extract_vms(current)
-        added_ids = {n["id"] for n in diff["added_vms"]}
-        removed_ids = {n["id"] for n in diff["removed_vms"]}
-        for vm in vms:
-            if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
-                continue
-            dom = _vm_domain_name(project_id, vm["node_id"])
-            vm_disks = _find_vm_disks(vm["node_id"], current)
-            boot_devs = _resolve_boot_devs(vm, vm_disks, current)
-            vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
-            nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
-
-            disk_list = []
-            new_disk_cmds = []
-            for d in vm_disks:
-                if d["format"] == "iso":
-                    continue
-                path = _disk_path(project_id, vm["node_id"], d["node_id"], d["format"])
-                disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
-                if d.get("source") == "library" and d.get("library_item_id"):
-                    cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
-                    new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{d['library_item_id']})\"")
-                    new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
-                else:
-                    new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
-            if new_disk_cmds:
-                from app.services.deploy_service import _prepare_library_downloads
-                _prepare_library_downloads(current, host.ip_address, host.private_key, db)
-                run_ssh_script(host.ip_address, host.private_key, f"mkdir -p {vm_dir}\n" + "\n".join(new_disk_cmds), timeout=300)
-
-            current_cfg = libvirt_mgr.get_vm_config(conn, dom)
-            desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
-            desired_disks = [d["path"] for d in disk_list]
-            if current_cfg and (
-                current_cfg["boot_devs"] == boot_devs and
-                current_cfg["vcpus"] == vm["vcpus"] and
-                current_cfg["ram_mb"] == vm["ram_gb"] * 1024 and
-                current_cfg["nics"] == desired_nics and
-                current_cfg["disks"] == desired_disks
-            ):
-                continue
-
-            if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list):
-                errors.append(f"Failed to reconfigure {dom}")
-
-        # Add new VMs via SSH (virt-install not available via libvirt API)
-        if diff["added_vms"]:
-            from app.services.deploy_service import generate_incremental_script, _prepare_library_downloads
-            _prepare_library_downloads(current, host.ip_address, host.private_key, db)
-            add_diff = {"added_vms": diff["added_vms"], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
-            script = generate_incremental_script(project_id, current, add_diff, vni_map)
-            result = run_ssh_script(host.ip_address, host.private_key, script, timeout=300)
-            if not result["success"]:
-                errors.append(f"Failed to add VMs: {result['output'][-300:]}")
-    finally:
-        conn.close()
-
-    # Update capacity
-    added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
-    added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
-    removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
-    removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
-    host.used_vcpus = max(0, host.used_vcpus + added_vcpus - removed_vcpus)
-    host.used_ram_mb = max(0, host.used_ram_mb + added_ram - removed_ram)
-
-    project.deployed_topology = current
     project.vni_map = vni_map
-    project.state = "active"
+    project.state = "reconfiguring"
     db.commit()
 
-    if errors:
-        return {"status": "partial", "errors": errors}
-    return {"status": "reconfigured"}
+    p_id = project.id
+    h_id = host.id
+    h_ip = host.ip_address
+    h_key = host.private_key
+
+    import threading
+    def _do_reconfigure():
+        from app.core.database import SessionLocal
+        from app.services.deploy_service import _vm_domain_name, _vm_dir, _disk_path, _resolve_boot_devs, cache_library_images, generate_incremental_script, _deploy_progress
+        from app.services.cloud_init import generate_seed_iso_script, generate_metadata_service_script
+
+        s = SessionLocal()
+        try:
+            proj = s.query(Project).filter_by(id=p_id).first()
+            h = s.query(Host).filter_by(id=h_id).first()
+            if not proj or not h:
+                return
+
+            current = proj.topology or {}
+            deployed = proj.deployed_topology or {}
+            vni_map = dict(proj.vni_map or {})
+            diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
+
+            _deploy_progress[p_id] = {"step": "networking", "detail": "configuring"}
+
+            from app.services.vxlan import build_host_network_config
+            all_hosts = s.query(Host).filter(Host.state == "active").all()
+            peer_ips = [ho.ip_address for ho in all_hosts if ho.ip_address]
+            net_config = build_host_network_config(current, vni_map, peer_ips)
+            net_script = generate_setup_script(net_config, h_ip)
+            net_result = run_ssh_script(h_ip, h_key, net_script, timeout=120)
+            if not net_result["success"]:
+                proj.state = "error"
+                proj.deploy_error = f"Network setup failed:\n{net_result['output'][-2000:]}"
+                s.commit()
+                _deploy_progress.pop(p_id, None)
+                return
+
+            meta_script = generate_metadata_service_script(p_id, current, vni_map)
+            if meta_script:
+                run_ssh_script(h_ip, h_key, meta_script, timeout=30)
+
+            vm_dir = _vm_dir(p_id)
+            conn = libvirt_mgr.connect(h_ip, h_key)
+            errors = []
+            try:
+                for node in diff["removed_vms"]:
+                    dom = _vm_domain_name(p_id, node["id"])
+                    libvirt_mgr.undefine_vm(conn, dom)
+                    run_ssh_script(h_ip, h_key, f"rm -f {vm_dir}/{node['id'][:8]}-*", timeout=15)
+
+                vms = _extract_vms(current)
+                added_ids = {n["id"] for n in diff["added_vms"]}
+                removed_ids = {n["id"] for n in diff["removed_vms"]}
+                for vm in vms:
+                    if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+                        continue
+                    dom = _vm_domain_name(p_id, vm["node_id"])
+                    vm_disks = _find_vm_disks(vm["node_id"], current)
+                    boot_devs = _resolve_boot_devs(vm, vm_disks, current)
+                    vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
+                    nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
+
+                    disk_list = []
+                    cdrom_list = []
+                    new_disk_cmds = []
+                    for d in vm_disks:
+                        if d["format"] == "iso":
+                            if d.get("library_item_id"):
+                                cdrom_list.append(f"/var/lib/troshka/images/{d['library_item_id']}.iso")
+                            continue
+                        path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"])
+                        disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
+                        if d.get("source") == "library" and d.get("library_item_id"):
+                            cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                            new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{d['library_item_id']})\"")
+                            new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
+                        else:
+                            new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+                    if vm.get("cloud_init"):
+                        from app.services.deploy_service import _seed_path
+                        cdrom_list.append(_seed_path(p_id, vm["node_id"]))
+                    if new_disk_cmds:
+                        _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                        cache_library_images(current, h_ip, h_key, s)
+                        run_ssh_script(h_ip, h_key, f"mkdir -p {vm_dir}\n" + "\n".join(new_disk_cmds), timeout=300)
+
+                    current_cfg = libvirt_mgr.get_vm_config(conn, dom)
+                    if not current_cfg:
+                        vm_node = next((n for n in current.get("nodes", []) if n["id"] == vm["node_id"]), None)
+                        if vm_node:
+                            diff["added_vms"].append(vm_node)
+                        continue
+
+                    desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
+                    desired_disks = [d["path"] for d in disk_list]
+                    if (
+                        current_cfg["boot_devs"] == boot_devs and
+                        current_cfg["vcpus"] == vm["vcpus"] and
+                        current_cfg["ram_mb"] == vm["ram_gb"] * 1024 and
+                        current_cfg["nics"] == desired_nics and
+                        current_cfg["disks"] == desired_disks and
+                        sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+                    ):
+                        continue
+
+                    _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
+                    if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list, cdroms=cdrom_list):
+                        errors.append(f"Failed to reconfigure {dom}")
+
+                if diff["added_vms"]:
+                    _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                    def _progress(downloaded, total):
+                        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+                        _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+                    cache_library_images(current, h_ip, h_key, s, progress_callback=_progress)
+                    seed_script = generate_seed_iso_script(p_id, current)
+                    if seed_script:
+                        run_ssh_script(h_ip, h_key, seed_script, timeout=30)
+                    _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
+                    add_diff = {"added_vms": diff["added_vms"], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
+                    script = generate_incremental_script(p_id, current, add_diff, vni_map)
+                    result = run_ssh_script(h_ip, h_key, script, timeout=300)
+                    if not result["success"]:
+                        errors.append(f"Failed to add VMs: {result['output'][-300:]}")
+            finally:
+                conn.close()
+
+            added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
+            added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
+            removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
+            removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
+            h.used_vcpus = max(0, h.used_vcpus + added_vcpus - removed_vcpus)
+            h.used_ram_mb = max(0, h.used_ram_mb + added_ram - removed_ram)
+
+            proj.state = "active"
+            if not errors:
+                proj.deployed_topology = current
+            else:
+                proj.deploy_error = "\n".join(errors)
+            s.commit()
+            _deploy_progress.pop(p_id, None)
+            logger.info("Reconfigure %s complete%s", p_id[:8], f" with errors: {errors}" if errors else "")
+        except Exception:
+            logger.exception("Reconfigure %s failed", p_id[:8])
+            proj = s.query(Project).filter_by(id=p_id).first()
+            if proj:
+                proj.state = "error"
+                s.commit()
+            _deploy_progress.pop(p_id, None)
+        finally:
+            s.close()
+
+    threading.Thread(target=_do_reconfigure, daemon=True).start()
+    return {"status": "reconfiguring"}
 
 
 @router.post("/{project_id}/vms/{vm_id}/redeploy")

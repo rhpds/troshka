@@ -55,7 +55,7 @@ export default function ProjectCanvasPage() {
 
   // Poll during transitional states
   useEffect(() => {
-    if (["deploying", "stopping", "starting"].includes(projectState)) {
+    if (["deploying", "reconfiguring", "stopping", "starting"].includes(projectState)) {
       const interval = setInterval(fetchProjectState, 3000);
       return () => clearInterval(interval);
     }
@@ -63,7 +63,7 @@ export default function ProjectCanvasPage() {
 
   // Poll deploy progress during deploying state
   useEffect(() => {
-    if (projectState !== "deploying") { setDeployProgress(null); return; }
+    if (projectState !== "deploying" && projectState !== "reconfiguring") { setDeployProgress(null); return; }
     const poll = () => {
       fetch(`/api/v1/projects/${projectId}/deploy-progress`)
         .then((r) => r.ok ? r.json() : null)
@@ -94,8 +94,12 @@ export default function ProjectCanvasPage() {
         if (!data?.states) return;
         const states: Record<string, string> = data.states;
         const ids = new Set<string>(Object.keys(states).filter((id) => states[id] !== "not_found"));
+        const hasUndeployed = Object.values(states).some((s) => s === "not_found");
         setDeployedVmIds(ids);
         useCanvasStore.setState({ deployedVmIds: ids });
+        if (hasUndeployed) {
+          useCanvasStore.setState({ topologyDirty: true });
+        }
 
         // Set per-VM status from libvirt + redeploy progress
         const progressMap: Record<string, Record<string, string>> = data.progress || {};
@@ -189,6 +193,7 @@ export default function ProjectCanvasPage() {
   const stateColors: Record<string, string> = {
     draft: "#94a3b8",
     deploying: "#fbbf24",
+    reconfiguring: "#fbbf24",
     starting: "#fbbf24",
     stopping: "#fbbf24",
     active: "#4ade80",
@@ -222,6 +227,11 @@ export default function ProjectCanvasPage() {
               <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}: ${deployProgress.detail}` : "Deploying..."}
             </button>
           )}
+          {projectState === "reconfiguring" && (
+            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
+              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}: ${deployProgress.detail}` : "Applying changes..."}
+            </button>
+          )}
           {projectState === "active" && (
             <>
               <button className="project-stop-btn" onClick={() => {
@@ -233,9 +243,46 @@ export default function ProjectCanvasPage() {
                 ■ Stop
               </button>
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={async () => {
+                // Check for ISO/disk changes that require restart or cause data loss
+                const projResp = await fetch(`/api/v1/projects/${projectId}`);
+                const projData = await projResp.json();
+                const deployed = projData?.deployed_topology || {};
+                const cur = useCanvasStore.getState();
+                const depStorageMap: Record<string, Record<string, unknown>> = {};
+                for (const n of (deployed.nodes || [])) {
+                  if (n.type === "storageNode") depStorageMap[n.id] = n.data;
+                }
+                const warnings: string[] = [];
+                const runningVmIds = new Set<string>();
+                for (const n of cur.nodes) {
+                  if (n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running") runningVmIds.add(n.id);
+                }
+                for (const n of cur.nodes) {
+                  if (n.type !== "storageNode") continue;
+                  const curData = n.data as Record<string, unknown>;
+                  const depData = depStorageMap[n.id];
+                  if (!depData) continue;
+                  const curLib = curData.libraryItemId as string | undefined;
+                  const depLib = depData.libraryItemId as string | undefined;
+                  if (curLib === depLib) continue;
+                  const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
+                  const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
+                  const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
+                  const vmName = vmNode ? (vmNode.data as Record<string, unknown>).name as string : "a VM";
+                  if (curData.format === "iso") {
+                    if (vmId && runningVmIds.has(vmId)) {
+                      warnings.push(`ISO "${curData.name}" changed on running VM "${vmName}". This will restart the VM.`);
+                    }
+                  } else {
+                    warnings.push(`Disk "${curData.name}" backing image changed on "${vmName}". The disk will be recreated and all data on it will be lost.`);
+                  }
+                }
+                if (warnings.length > 0) {
+                  if (!window.confirm(warnings.join("\n\n") + "\n\nContinue?")) return;
+                }
+
                 setApplyingChanges(true);
                 try {
-                  // Save current topology first so reconfigure sees the latest state
                   const s = useCanvasStore.getState();
                   await fetch(`/api/v1/projects/${projectId}`, {
                     method: "PATCH",
@@ -244,12 +291,11 @@ export default function ProjectCanvasPage() {
                   });
                   const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
                   const data = await resp.json();
-                  if (data.status === "reconfigured" || data.status === "no_changes") {
+                  if (data.status === "reconfiguring") {
+                    setProjectState("reconfiguring");
                     useCanvasStore.setState({ topologyDirty: false });
-                    syncVmStates();
-                    showToast(data.status === "no_changes" ? "No VM changes needed" : "Changes applied");
                   } else {
-                    alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || "unknown error"}`);
+                    alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "unknown error"}`);
                   }
                 } catch { alert("Failed to connect to server"); }
                 setApplyingChanges(false);
@@ -288,11 +334,10 @@ export default function ProjectCanvasPage() {
                 });
                 const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
                 const data = await resp.json();
-                if (data.status === "reconfigured") {
-                  setProjectState("active");
-                  showToast("Changes applied — VMs reconfigured and started");
+                if (data.status === "reconfiguring") {
+                  setProjectState("reconfiguring");
                 } else {
-                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || "unknown error"}`);
+                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.detail || "unknown error"}`);
                 }
               }}>
                 Apply Changes

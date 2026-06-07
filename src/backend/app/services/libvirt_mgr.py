@@ -159,13 +159,16 @@ def get_vm_config(conn: libvirt.virConnect, name: str) -> dict | None:
             })
 
         disks = []
+        cdroms = []
         for disk in root.findall(".//disk"):
-            if disk.get("device") == "cdrom":
-                continue
             source = disk.find("source")
-            disks.append(source.get("file", "") if source is not None else "")
+            path = source.get("file", "") if source is not None else ""
+            if disk.get("device") == "cdrom":
+                cdroms.append(path)
+            else:
+                disks.append(path)
 
-        return {"boot_devs": boot_devs, "vcpus": vcpus, "ram_mb": ram_mb, "nics": nics, "disks": disks}
+        return {"boot_devs": boot_devs, "vcpus": vcpus, "ram_mb": ram_mb, "nics": nics, "disks": disks, "cdroms": cdroms}
     except libvirt.libvirtError:
         return None
 
@@ -178,6 +181,7 @@ def reconfigure_vm(
     ram_mb: int | None = None,
     nics: list[dict] | None = None,
     disks: list[dict] | None = None,
+    cdroms: list[str] | None = None,
     vnc_listen: str = "127.0.0.1",
 ) -> bool:
     """Reconfigure a VM without wiping existing disks.
@@ -252,7 +256,7 @@ def reconfigure_vm(
 
             desired_paths = {d["path"] for d in disks}
 
-            # Remove disks no longer in the topology (but keep cdrom devices)
+            # Remove disks no longer in the topology (skip cdroms — handled separately)
             for d in existing_disks:
                 if d.get("device") == "cdrom":
                     continue
@@ -291,6 +295,41 @@ def reconfigure_vm(
                 target.set("dev", target_dev)
                 target.set("bus", disk_info.get("bus", "virtio"))
                 logger.info("Added disk %s as %s to %s", disk_info["path"], target_dev, name)
+
+        if cdroms is not None:
+            devices = root.find("devices")
+            existing_cdroms = [d for d in (devices.findall("disk") if devices is not None else []) if d.get("device") == "cdrom"]
+            desired_set = set(cdroms)
+            existing_set = set()
+            for cd in existing_cdroms:
+                src = cd.find("source")
+                existing_set.add(src.get("file", "") if src is not None else "")
+
+            if existing_set != desired_set:
+                for cd in existing_cdroms:
+                    devices.remove(cd)
+                target_letters = "abcdefghijklmnop"
+                used_targets = {d.find("target").get("dev") for d in devices.findall("disk") if d.find("target") is not None}
+                for path in cdroms:
+                    target_dev = None
+                    for letter in target_letters:
+                        dev_name = f"hd{letter}"
+                        if dev_name not in used_targets:
+                            target_dev = dev_name
+                            used_targets.add(dev_name)
+                            break
+                    if not target_dev:
+                        continue
+                    disk_elem = ET.SubElement(devices, "disk")
+                    disk_elem.set("type", "file")
+                    disk_elem.set("device", "cdrom")
+                    source = ET.SubElement(disk_elem, "source")
+                    source.set("file", path)
+                    target = ET.SubElement(disk_elem, "target")
+                    target.set("dev", target_dev)
+                    target.set("bus", "ide")
+                    ET.SubElement(disk_elem, "readonly")
+                    logger.info("Updated cdrom %s on %s", path, name)
 
         if vnc_listen:
             devices = root.find("devices")

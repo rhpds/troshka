@@ -287,8 +287,11 @@ export default function PropertiesPanel() {
                     type: (n!.data as Record<string, unknown>).format === "iso" ? "cdrom" as const : "disk" as const,
                   }));
 
-                const bootDevices = (data as Record<string, unknown>).bootDevices as string[] ||
-                  [...bootableDisks.map((d) => d.id), "network"];
+                let bootDevices = (data as Record<string, unknown>).bootDevices as string[] | null;
+                if (!bootDevices) {
+                  bootDevices = [...bootableDisks.map((d) => d.id), "network"];
+                  setTimeout(() => update("bootDevices", bootDevices!), 0);
+                }
 
                 // Build available options: connected bootable disks + network
                 const options: { value: string; label: string }[] = bootableDisks.map((d) => ({

@@ -170,7 +170,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           style={{
             background: isRunning
               ? "var(--troshka-green)"
-              : "var(--troshka-red)",
+              : isDeployed
+                ? "var(--troshka-red)"
+                : "#6b7280",
             boxShadow: isRunning ? "0 0 6px var(--troshka-green)" : "none",
           }}
         />

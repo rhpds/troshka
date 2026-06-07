@@ -60,14 +60,21 @@ def run_ssh_script(host_ip: str, private_key: str, script: str, timeout: int = 6
             timeout=timeout,
         )
         output = result.stdout + result.stderr
+        success = result.returncode == 0
+        if success:
+            logger.info("SSH %s (exit 0): %s", host_ip, output[-500:].strip() if len(output) > 500 else output.strip())
+        else:
+            logger.error("SSH %s (exit %d): %s", host_ip, result.returncode, output[-1000:].strip())
         return {
-            "success": result.returncode == 0,
+            "success": success,
             "exit_code": result.returncode,
             "output": output,
         }
     except subprocess.TimeoutExpired:
+        logger.error("SSH %s: timed out after %ds", host_ip, timeout)
         return {"success": False, "exit_code": -1, "output": f"SSH command timed out after {timeout}s"}
     except Exception as e:
+        logger.error("SSH %s: %s", host_ip, e)
         return {"success": False, "exit_code": -1, "output": str(e)}
     finally:
         os.unlink(key_path)

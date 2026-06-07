@@ -14,20 +14,27 @@ export default function StartOrderPanel({ onClose }: Props) {
   const setStartOrder = useCanvasStore((s) => s.setStartOrder);
 
   const vmNodes = nodes.filter((n) => n.type === "vmNode");
+  const autoStartIds = new Set(
+    startOrder.filter((e) => e.autoStart !== false).map((e) => e.vmId)
+  );
+  const autoStartVmNodes = vmNodes.filter((v) => {
+    const entry = startOrder.find((e) => e.vmId === v.id);
+    return entry ? entry.autoStart !== false : true;
+  });
 
   const [order, setOrder] = useState<StartOrderEntry[]>([]);
 
   useEffect(() => {
     if (startOrder.length > 0) {
-      const validIds = new Set(vmNodes.map((v) => v.id));
-      const existing = startOrder.filter((e) => validIds.has(e.vmId)).map((e) => ({ ...e, autoStart: e.autoStart ?? true }));
-      const missing = vmNodes.filter((v) => !existing.some((e) => e.vmId === v.id));
+      const validIds = new Set(autoStartVmNodes.map((v) => v.id));
+      const existing = startOrder.filter((e) => validIds.has(e.vmId) && e.autoStart !== false);
+      const missing = autoStartVmNodes.filter((v) => !existing.some((e) => e.vmId === v.id));
       setOrder([
         ...existing,
         ...missing.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })),
       ]);
     } else {
-      setOrder(vmNodes.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })));
+      setOrder(autoStartVmNodes.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })));
     }
   }, []);
 
@@ -57,11 +64,15 @@ export default function StartOrderPanel({ onClose }: Props) {
   };
 
   const save = () => {
-    setStartOrder(order);
+    const disabledEntries = startOrder.filter((e) => e.autoStart === false);
+    setStartOrder([...order, ...disabledEntries]);
     onClose();
   };
 
-  if (vmNodes.length === 0) {
+  if (vmNodes.length === 0 || autoStartVmNodes.length === 0) {
+    const msg = vmNodes.length === 0
+      ? "No VMs in this project yet."
+      : "All VMs have auto-start disabled. Enable auto-start on a VM to configure start order.";
     return (
       <div className="start-order-overlay" onClick={onClose}>
         <div className="start-order-modal" onClick={(e) => e.stopPropagation()}>
@@ -71,7 +82,7 @@ export default function StartOrderPanel({ onClose }: Props) {
           </div>
           <div className="start-order-body">
             <p style={{ color: "var(--troshka-text-dim)", textAlign: "center", padding: 20 }}>
-              No VMs in this project yet.
+              {msg}
             </p>
           </div>
         </div>
@@ -88,21 +99,13 @@ export default function StartOrderPanel({ onClose }: Props) {
         </div>
         <div className="start-order-body">
           <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", marginBottom: 12 }}>
-            Drag to reorder. VMs start top-to-bottom. Uncheck a VM to keep it powered off at deploy.
+            VMs start top-to-bottom. Only VMs with auto-start enabled are shown here.
           </p>
           {order.map((entry, i) => (
             <div key={entry.vmId} className="start-order-item">
               <div className="start-order-item-header">
                 <span className="start-order-num">{i + 1}</span>
-                <label className="start-order-name" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={entry.autoStart}
-                    onChange={(e) => updateEntry(i, { autoStart: e.target.checked })}
-                    title="Power on at project start"
-                  />
-                  🖥 {getVmName(entry.vmId)}
-                </label>
+                <span className="start-order-name">🖥 {getVmName(entry.vmId)}</span>
                 <div className="start-order-arrows">
                   <button onClick={() => moveUp(i)} title="Move up" disabled={i === 0}>↑</button>
                   <button onClick={() => moveDown(i)} title="Move down" disabled={i === order.length - 1}>↓</button>
