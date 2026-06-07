@@ -84,8 +84,9 @@ def generate_userdata(vm_data: dict) -> str:
 
 def generate_metadata(vm_name: str, mac: str = "") -> str:
     """Generate cloud-init meta-data JSON for a VM."""
+    import uuid
     return json.dumps({
-        "instance-id": vm_name,
+        "instance-id": f"{vm_name}-{uuid.uuid4().hex[:8]}",
         "local-hostname": vm_name,
     })
 
