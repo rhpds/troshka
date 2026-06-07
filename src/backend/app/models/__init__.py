@@ -7,6 +7,7 @@ from app.models.network import Network, SecurityRule
 from app.models.disk import Disk
 from app.models.library import Library, LibraryItem, LibraryShare, ImageCache
 from app.models.api_key import ApiKey
+from app.models.pattern import Pattern, PatternDisk, PatternShare
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -16,4 +17,5 @@ __all__ = [
     "Disk",
     "Library", "LibraryItem", "LibraryShare", "ImageCache",
     "ApiKey",
+    "Pattern", "PatternDisk", "PatternShare",
 ]

@@ -95,6 +95,101 @@ def test_all_tables_created():
         "networks", "security_rules",
         "disks",
         "libraries", "library_items", "library_shares", "image_caches",
+        "patterns", "pattern_disks", "pattern_shares",
     ]
     for name in expected:
         assert name in table_names, f"Missing table: {name}"
+
+
+def test_create_pattern():
+    from app.models.pattern import Pattern
+
+    db = Session()
+    user = db.query(User).first()
+    pattern = Pattern(
+        name="Test Pattern",
+        description="A test pattern",
+        owner_id=user.id,
+        visibility="private",
+        topology={"nodes": [], "edges": []},
+        state="creating",
+    )
+    db.add(pattern)
+    db.commit()
+    db.refresh(pattern)
+    assert pattern.id is not None
+    assert len(pattern.id) == 36
+    assert pattern.name == "Test Pattern"
+    assert pattern.visibility == "private"
+    assert pattern.state == "creating"
+    assert pattern.topology == {"nodes": [], "edges": []}
+    assert pattern.created_at is not None
+    db.delete(pattern)
+    db.commit()
+    db.close()
+
+
+def test_create_pattern_disk():
+    from app.models.pattern import Pattern, PatternDisk
+
+    db = Session()
+    user = db.query(User).first()
+    pattern = Pattern(
+        name="Disk Test Pattern",
+        owner_id=user.id,
+        visibility="private",
+        topology={"nodes": [], "edges": []},
+        state="creating",
+    )
+    db.add(pattern)
+    db.commit()
+    db.refresh(pattern)
+
+    disk = PatternDisk(
+        pattern_id=pattern.id,
+        source_disk_id="aaaa-bbbb-cccc",
+        source_vm_id="dddd-eeee-ffff",
+        s3_key="patterns/test/disk1.qcow2",
+        format="qcow2",
+        size_bytes=1073741824,
+        virtual_size_bytes=21474836480,
+        checksum_sha256="abc123",
+        state="uploading",
+    )
+    db.add(disk)
+    db.commit()
+    db.refresh(disk)
+    assert disk.id is not None
+    assert disk.pattern_id == pattern.id
+    assert len(pattern.disks) == 1
+    db.delete(pattern)
+    db.commit()
+    db.close()
+
+
+def test_create_pattern_share():
+    from app.models.pattern import Pattern, PatternShare
+
+    db = Session()
+    user = db.query(User).first()
+    pattern = Pattern(
+        name="Share Test Pattern",
+        owner_id=user.id,
+        visibility="shared",
+        topology={"nodes": [], "edges": []},
+        state="available",
+    )
+    db.add(pattern)
+    db.commit()
+    db.refresh(pattern)
+
+    share = PatternShare(pattern_id=pattern.id, user_id=user.id)
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+    assert share.id is not None
+    assert share.pattern_id == pattern.id
+    assert len(pattern.shares) == 1
+    db.delete(pattern)
+    db.commit()
+    db.close()
