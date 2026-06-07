@@ -302,19 +302,24 @@ def reconfigure_vm(
             existing_cdroms = [d for d in (devices.findall("disk") if devices is not None else []) if d.get("device") == "cdrom"]
             desired_set = set(cdroms)
             existing_set = set()
+            cdrom_bus = "sata"
             for cd in existing_cdroms:
                 src = cd.find("source")
                 existing_set.add(src.get("file", "") if src is not None else "")
+                tgt = cd.find("target")
+                if tgt is not None and tgt.get("bus"):
+                    cdrom_bus = tgt.get("bus")
 
             if existing_set != desired_set:
                 for cd in existing_cdroms:
                     devices.remove(cd)
+                dev_prefix = "sd" if cdrom_bus == "sata" else "hd" if cdrom_bus == "ide" else "vd"
                 target_letters = "abcdefghijklmnop"
                 used_targets = {d.find("target").get("dev") for d in devices.findall("disk") if d.find("target") is not None}
                 for path in cdroms:
                     target_dev = None
                     for letter in target_letters:
-                        dev_name = f"sd{letter}"
+                        dev_name = f"{dev_prefix}{letter}"
                         if dev_name not in used_targets:
                             target_dev = dev_name
                             used_targets.add(dev_name)
@@ -328,9 +333,9 @@ def reconfigure_vm(
                     source.set("file", path)
                     target = ET.SubElement(disk_elem, "target")
                     target.set("dev", target_dev)
-                    target.set("bus", "sata")
+                    target.set("bus", cdrom_bus)
                     ET.SubElement(disk_elem, "readonly")
-                    logger.info("Updated cdrom %s on %s", path, name)
+                    logger.info("Updated cdrom %s on %s (bus=%s)", path, name, cdrom_bus)
 
         if vnc_listen:
             devices = root.find("devices")
