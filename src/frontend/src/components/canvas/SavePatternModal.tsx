@@ -91,7 +91,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    }} onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
@@ -133,7 +133,8 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <button
               onClick={onClose}
-              style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}
+              disabled={saving}
+              style={{ ...inputStyle, width: "auto", cursor: saving ? "not-allowed" : "pointer", padding: "6px 16px", opacity: saving ? 0.4 : 1 }}
             >
               Cancel
             </button>
