@@ -809,9 +809,18 @@ def import_vm_from_snapshot(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    from app.models.library import LibraryItem
+    from app.models.library import Library, LibraryItem
 
-    item = db.query(LibraryItem).filter_by(id=body.snapshot_id, type="snapshot").first()
+    item = (
+        db.query(LibraryItem)
+        .join(Library, LibraryItem.library_id == Library.id)
+        .filter(
+            LibraryItem.id == body.snapshot_id,
+            LibraryItem.type == "snapshot",
+            Library.owner_id == user.id,
+        )
+        .first()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Snapshot not found")
 
