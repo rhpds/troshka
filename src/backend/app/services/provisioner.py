@@ -200,6 +200,7 @@ def provision_host(
         "state": "active",
         "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
         "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
+        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1) - 1,
         "key_pair_name": key_name,
         "private_key": private_key,
         "storage_size_gb": storage_size_gb,

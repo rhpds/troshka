@@ -31,10 +31,13 @@ def calculate_project_requirements(topology: dict) -> dict:
         total_ram_mb += data.get("ram", 4) * 1024
         vm_count += 1
 
+    external_ips = topology.get("externalIps", [])
+
     return {
         "vm_count": vm_count,
         "total_vcpus": total_vcpus,
         "total_ram_mb": total_ram_mb,
+        "requested_eips": len(external_ips),
     }
 
 
@@ -68,7 +71,7 @@ def sync_host_capacity(db: Session, host: Host):
     host.used_ram_mb = total_ram_mb
 
 
-def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int) -> Host | None:
+def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int, required_eips: int = 0) -> Host | None:
     """Find an active host with enough free capacity (with overcommit)."""
     hosts = db.query(Host).filter(
         Host.state == "active",
@@ -80,6 +83,11 @@ def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int) 
         free_vcpus = alloc_vcpus - host.used_vcpus
         free_ram = alloc_ram - host.used_ram_mb
         if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
+            if required_eips > 0:
+                from app.services.eip_service import get_host_eip_usage
+                eip_used = get_host_eip_usage(db, host.id)
+                if host.max_eips - eip_used < required_eips:
+                    continue
             return host
 
     return None
@@ -94,7 +102,7 @@ def place_project(db: Session, project: Project) -> dict:
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
-    host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"])
+    host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"], reqs["requested_eips"])
     if not host:
         logger.info("No host with capacity — auto-provisioning a new one")
         try:
@@ -107,6 +115,7 @@ def place_project(db: Session, project: Project) -> dict:
                 host_type="shared",
                 total_vcpus=result["total_vcpus"],
                 total_ram_mb=result["total_ram_mb"],
+                max_eips=result.get("max_eips", 0),
                 ip_address=result["public_ip"],
                 agent_status="disconnected",
             )
