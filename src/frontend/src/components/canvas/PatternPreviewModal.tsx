@@ -30,12 +30,7 @@ interface PatternPreviewModalProps {
 
 function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setMounted(true), 500);
-    return () => clearTimeout(timer);
-  }, []);
+  const [liveEdges, setLiveEdges] = useState<Edge[]>([]);
 
   const styledEdges = useMemo(() => edges.map((e) => ({
     ...e,
@@ -45,7 +40,7 @@ function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
   return (
     <ReactFlow
       nodes={nodes}
-      edges={mounted ? styledEdges : []}
+      edges={liveEdges}
       nodeTypes={stableNodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -56,6 +51,9 @@ function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
       fitViewOptions={{ padding: 0.2 }}
       defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
+      onInit={() => {
+        setTimeout(() => setLiveEdges(styledEdges), 300);
+      }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
       <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
