@@ -116,7 +116,20 @@ interface CanvasState {
   unhideAll: () => void;
   getVisibleNodes: () => Node[];
   getVisibleEdges: () => Edge[];
+
+  // Undo/Redo
+  pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
+
+// Undo/redo history (not persisted)
+interface HistoryEntry { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[] }
+const _undoStack: HistoryEntry[] = [];
+const _redoStack: HistoryEntry[] = [];
+const MAX_HISTORY = 50;
 
 let nodeIdCounter = 1;
 export function generateNodeId(): string {
@@ -177,6 +190,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           return;
         }
       }
+      get().pushHistory();
       const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
       set({
         nodes: applyNodeChanges(removals, updatedNodes),
@@ -197,6 +211,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         if (others.length > 0) set({ edges: applyEdgeChanges(others, get().edges) });
         return;
       }
+      get().pushHistory();
     }
     set({ edges: applyEdgeChanges(changes, get().edges) });
   },
@@ -301,6 +316,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
+    get().pushHistory();
     set({
       edges: addEdge(
         {
@@ -317,6 +333,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   },
 
   addNode: (node) => {
+    get().pushHistory();
     set({ nodes: [...get().nodes, node], topologyDirty: true });
   },
 
@@ -346,6 +363,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   },
 
   deleteNode: (nodeId) => {
+    get().pushHistory();
     set({
       nodes: get().nodes.filter((n) => n.id !== nodeId),
       edges: get().edges.filter(
@@ -401,14 +419,45 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   },
 
   deleteEdge: (edgeId) => {
+    get().pushHistory();
     set({ edges: get().edges.filter((e) => e.id !== edgeId) });
   },
+
+  pushHistory: () => {
+    const { nodes, edges, hiddenNodeIds } = get();
+    _undoStack.push({ nodes: structuredClone(nodes), edges: structuredClone(edges), hiddenNodeIds: [...hiddenNodeIds] });
+    if (_undoStack.length > MAX_HISTORY) _undoStack.shift();
+    _redoStack.length = 0;
+    set({ canUndo: true, canRedo: false });
+  },
+
+  undo: () => {
+    const entry = _undoStack.pop();
+    if (!entry) return;
+    const { nodes, edges, hiddenNodeIds } = get();
+    _redoStack.push({ nodes: structuredClone(nodes), edges: structuredClone(edges), hiddenNodeIds: [...hiddenNodeIds] });
+    set({ nodes: entry.nodes, edges: entry.edges, hiddenNodeIds: entry.hiddenNodeIds, selectedNodeId: null, canUndo: _undoStack.length > 0, canRedo: true });
+  },
+
+  redo: () => {
+    const entry = _redoStack.pop();
+    if (!entry) return;
+    const { nodes, edges, hiddenNodeIds } = get();
+    _undoStack.push({ nodes: structuredClone(nodes), edges: structuredClone(edges), hiddenNodeIds: [...hiddenNodeIds] });
+    set({ nodes: entry.nodes, edges: entry.edges, hiddenNodeIds: entry.hiddenNodeIds, selectedNodeId: null, canUndo: true, canRedo: _redoStack.length > 0 });
+  },
+
+  canUndo: false,
+  canRedo: false,
 
   loadProject: (projectId) => {
     const current = get().currentProjectId;
 
     _loadingProject = true;
     if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+    _undoStack.length = 0;
+    _redoStack.length = 0;
+    set({ canUndo: false, canRedo: false });
 
     // Only save+clear when switching to a different project
     if (current && current !== projectId) {

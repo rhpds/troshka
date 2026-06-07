@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useRef, useMemo, useState } from "react";
+import React, { useCallback, useRef, useMemo, useState, useEffect } from "react";
 import {
   ReactFlow,
   useReactFlow,
@@ -52,6 +52,22 @@ export default function Canvas() {
   const allEdges = useCanvasStore((s) => s.edges);
   const hiddenNodeIds = useCanvasStore((s) => s.hiddenNodeIds);
   const nodes = allNodes;
+
+  // Ctrl+Z / Ctrl+Shift+Z for undo/redo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          useCanvasStore.getState().redo();
+        } else {
+          useCanvasStore.getState().undo();
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const visibleNodes = useMemo(
     () => allNodes.filter((n) => !hiddenNodeIds.includes(n.id)),

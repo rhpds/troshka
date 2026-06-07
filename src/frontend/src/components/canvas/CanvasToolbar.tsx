@@ -11,11 +11,36 @@ export default function CanvasToolbar() {
   const toggleMinimap = useCanvasStore((s) => s.toggleMinimap);
   const autoLayout = useCanvasStore((s) => s.autoLayout);
   const panMode = useCanvasStore((s) => s.panMode);
+  const canUndo = useCanvasStore((s) => s.canUndo);
+  const canRedo = useCanvasStore((s) => s.canRedo);
+  const undo = useCanvasStore((s) => s.undo);
+  const redo = useCanvasStore((s) => s.redo);
 
   const zoomPercent = Math.round(zoom * 100);
 
   return (
     <div className="canvas-toolbar">
+      <button
+        className="tool-btn"
+        onClick={undo}
+        disabled={!canUndo}
+        title="Undo (Ctrl+Z)"
+        style={{ opacity: canUndo ? 1 : 0.3 }}
+      >
+        ↶
+      </button>
+      <button
+        className="tool-btn"
+        onClick={redo}
+        disabled={!canRedo}
+        title="Redo (Ctrl+Shift+Z)"
+        style={{ opacity: canRedo ? 1 : 0.3 }}
+      >
+        ↷
+      </button>
+
+      <span className="tool-sep" />
+
       <button
         className={`tool-btn ${panMode ? "active" : ""}`}
         onClick={() => useCanvasStore.setState({ panMode: true })}
