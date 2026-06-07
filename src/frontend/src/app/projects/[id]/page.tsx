@@ -260,6 +260,7 @@ export default function ProjectCanvasPage() {
     )) return;
 
     try {
+      await saveTopology();
       const resp = await fetch(`/api/v1/projects/${projectId}/deploy`, {
         method: "POST",
       });
