@@ -416,6 +416,24 @@ export default function AdminProvidersPage() {
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
+                    {p.type === "ec2" && p.state === "active" && (
+                      <Button variant="secondary" onClick={async () => {
+                        const resp = await fetch(`/api/v1/providers/${p.id}/gc`, { method: "POST" });
+                        if (resp.ok) {
+                          const report = await resp.json();
+                          const parts: string[] = [];
+                          if (report.eips_released > 0) parts.push(`Released ${report.eips_released} orphan EIPs`);
+                          if (report.sg_rules_removed > 0) parts.push(`Removed ${report.sg_rules_removed} stale SG rules`);
+                          if (report.stale_db_rows_deleted > 0) parts.push(`Cleaned ${report.stale_db_rows_deleted} stale DB records`);
+                          if (parts.length === 0) parts.push("No orphans found");
+                          alert(parts.join("\n"));
+                        } else {
+                          alert("Provider GC failed — check server logs");
+                        }
+                      }}>
+                        Clean
+                      </Button>
+                    )}
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}
                     </Button>

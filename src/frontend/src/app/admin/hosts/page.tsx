@@ -29,6 +29,8 @@ interface Host {
   storage_size_gb: number;
   storage_used_pct?: number;
   storage_free_gb?: number;
+  max_eips: number;
+  used_eips: number;
   created_at: string;
 }
 
@@ -428,6 +430,12 @@ export default function AdminHostsPage() {
                   <div>{si ? <><strong>{si.used_pct}%</strong> of {Math.round(si.total_gb)} GB</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}</div>
                   {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(si.free_gb)} GB free</div>}
                 </div>); })()}
+                {h.max_eips > 0 && (
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>EIPs</div>
+                    <div><strong>{h.used_eips || 0}</strong>/{h.max_eips}</div>
+                  </div>
+                )}
               </div>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
