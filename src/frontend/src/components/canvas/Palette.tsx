@@ -150,7 +150,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
   useEffect(() => {
     fetch("/api/v1/library/?type=snapshot")
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => setSnapshots(Array.isArray(data) ? data : []))
+      .then((data) => setSnapshots(Array.isArray(data) ? data.filter((s: SnapshotItem) => s.state === "ready") : []))
       .catch(() => {});
   }, []);
 

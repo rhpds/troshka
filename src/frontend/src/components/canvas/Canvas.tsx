@@ -293,7 +293,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
         fetch(`/api/v1/projects/${projectId}/import-vm`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ snapshot_id: snapshotId, position: { x: position.x, y: position.y } }),
+          body: JSON.stringify({ snapshot_id: snapshotId, position_x: position.x, position_y: position.y }),
         })
           .then((r) => r.ok ? r.json() : null)
           .then((data) => {
