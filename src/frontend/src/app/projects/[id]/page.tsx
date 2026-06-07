@@ -127,6 +127,13 @@ export default function ProjectCanvasPage() {
         if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
           useCanvasStore.setState({ topologyDirty: true });
         }
+        const depSizes: Record<string, number> = {};
+        for (const n of (data.deployed_topology?.nodes || [])) {
+          if (n.type === "storageNode" && n.data?.size) {
+            depSizes[n.id] = n.data.size;
+          }
+        }
+        useCanvasStore.setState({ deployedDiskSizes: depSizes });
         });
   };
 
@@ -301,12 +308,12 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "deploying" && (
             <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}: ${deployProgress.detail}` : "Deploying..."}
+              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}${deployProgress.detail ? ": " + deployProgress.detail : ""}` : "Deploying..."}
             </button>
           )}
           {projectState === "reconfiguring" && (
             <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}: ${deployProgress.detail}` : "Applying changes..."}
+              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}${deployProgress.detail ? ": " + deployProgress.detail : ""}` : "Applying changes..."}
             </button>
           )}
           {projectState === "active" && (

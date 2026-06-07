@@ -160,6 +160,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   currentProjectId: null as string | null,
   projectState: "draft" as string,
   deployedVmIds: new Set<string>(),
+  deployedDiskSizes: {} as Record<string, number>,
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],

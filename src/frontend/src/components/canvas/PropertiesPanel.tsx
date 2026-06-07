@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac } from "@/stores/canvasStore";
 import type {
@@ -82,6 +82,42 @@ interface SshKeyOption {
   id: number;
   name: string;
   public_key: string;
+}
+
+function DiskSizeInput({ value, min, onChange }: { value: number; min: number; onChange: (v: number) => void }) {
+  const [local, setLocal] = useState(String(value));
+  const prevValue = useRef(value);
+  useEffect(() => {
+    if (value !== prevValue.current) {
+      setLocal(String(value));
+      prevValue.current = value;
+    }
+  }, [value]);
+  const localNum = parseInt(local) || 0;
+  const tooSmall = localNum > 0 && localNum < min;
+  return (
+    <>
+      <input
+        className="props-input"
+        type="number"
+        min={min}
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => {
+          const v = Math.max(parseInt(local) || min, min);
+          setLocal(String(v));
+          onChange(v);
+        }}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        style={{ borderColor: tooSmall ? "var(--troshka-red)" : undefined }}
+      />
+      {tooSmall && (
+        <span style={{ fontSize: 11, color: "var(--troshka-red)", marginTop: 4, display: "block" }}>
+          Cannot be smaller than {min} GB
+        </span>
+      )}
+    </>
+  );
 }
 
 export default function PropertiesPanel() {
@@ -1107,6 +1143,9 @@ export default function PropertiesPanel() {
       {nodeType === "storageNode" && (() => {
         const sd = data as unknown as StorageNodeData;
         const isIso = sd.format === "iso";
+        const connVmEdge = edges.find((e) => e.source === node.id || e.target === node.id);
+        const connVmId = connVmEdge ? (connVmEdge.source === node.id ? connVmEdge.target : connVmEdge.source) : null;
+        const diskIsDeployed = connVmId ? useCanvasStore.getState().deployedVmIds.has(connVmId) : false;
         return (
           <>
             <div className="props-section">
@@ -1212,32 +1251,19 @@ export default function PropertiesPanel() {
                     {(() => {
                       const isFromLibrary = (data as Record<string, unknown>).source === "library";
                       const sourceImageSize = (data as Record<string, unknown>).libraryItemSize as number || 0;
-                      const minSize = isFromLibrary && sourceImageSize > 0 ? sourceImageSize : 1;
                       const currentSize = sd.size;
-                      const tooSmall = isFromLibrary && sourceImageSize > 0 && currentSize < sourceImageSize;
+                      const baseMin = isFromLibrary && sourceImageSize > 0 ? sourceImageSize : 1;
+                      const deployedSize = (useCanvasStore.getState().deployedDiskSizes as Record<string, number>)[node.id] || 0;
+                      const minSize = Math.max(baseMin, deployedSize);
+                      const tooSmall = currentSize < minSize;
 
                       return (
                         <>
                           <label className="props-label">Size (GB)</label>
-                          <input
-                            className="props-input"
-                            type="number"
-                            min={minSize}
-                            value={currentSize}
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value) || minSize;
-                              update("size", Math.max(val, minSize));
-                            }}
-                            style={{ borderColor: tooSmall ? "var(--troshka-red)" : undefined }}
-                          />
-                          {isFromLibrary && sourceImageSize > 0 && (
+                          <DiskSizeInput value={currentSize} min={minSize} onChange={(v) => update("size", v)} />
+                          {minSize > 1 && (
                             <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                              Min {sourceImageSize} GB (source image). {currentSize > sourceImageSize ? `Disk will be resized to ${currentSize} GB.` : ""}
-                            </span>
-                          )}
-                          {tooSmall && (
-                            <span style={{ fontSize: 11, color: "var(--troshka-red)", marginTop: 2 }}>
-                              ⚠ Cannot be smaller than source image ({sourceImageSize} GB)
+                              Min {minSize} GB{deployedSize > 0 ? " (deployed)" : " (source image)"}
                             </span>
                           )}
                         </>
