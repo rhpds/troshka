@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column('id', postgresql.UUID(as_uuid=False), primary_key=True),
         sa.Column('name', sa.String(255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
-        sa.Column('owner_id', sa.String(36), sa.ForeignKey('users.id'), nullable=False),
+        sa.Column('owner_id', postgresql.UUID(as_uuid=False), sa.ForeignKey('users.id'), nullable=False),
         sa.Column('visibility', sa.String(20), nullable=False, server_default='private'),
         sa.Column('source_project_id', sa.String(36), nullable=True),
         sa.Column('topology', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
@@ -38,7 +38,7 @@ def upgrade() -> None:
     op.create_table(
         'pattern_disks',
         sa.Column('id', postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column('pattern_id', sa.String(36), sa.ForeignKey('patterns.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('pattern_id', postgresql.UUID(as_uuid=False), sa.ForeignKey('patterns.id', ondelete='CASCADE'), nullable=False),
         sa.Column('source_disk_id', sa.String(36), nullable=False),
         sa.Column('source_vm_id', sa.String(36), nullable=False),
         sa.Column('s3_key', sa.String(500), nullable=False),
@@ -52,15 +52,15 @@ def upgrade() -> None:
     op.create_table(
         'pattern_shares',
         sa.Column('id', sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column('pattern_id', sa.String(36), sa.ForeignKey('patterns.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('user_id', sa.String(36), sa.ForeignKey('users.id'), nullable=False),
+        sa.Column('pattern_id', postgresql.UUID(as_uuid=False), sa.ForeignKey('patterns.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('user_id', postgresql.UUID(as_uuid=False), sa.ForeignKey('users.id'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
 
     op.create_table(
         'library_item_disks',
         sa.Column('id', postgresql.UUID(as_uuid=False), primary_key=True),
-        sa.Column('library_item_id', sa.String(36), sa.ForeignKey('library_items.id', ondelete='CASCADE'), nullable=False),
+        sa.Column('library_item_id', postgresql.UUID(as_uuid=False), sa.ForeignKey('library_items.id', ondelete='CASCADE'), nullable=False),
         sa.Column('s3_key', sa.String(500), nullable=False),
         sa.Column('format', sa.String(10), nullable=False),
         sa.Column('size_bytes', sa.BigInteger(), nullable=False, server_default='0'),
