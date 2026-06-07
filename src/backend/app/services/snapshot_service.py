@@ -82,7 +82,10 @@ SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
 echo "Flattened size: $SIZE bytes"
 echo "Uploading flattened disk..."
 curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
-rm -f "$FLAT_PATH"
+CACHE_DIR="/var/lib/troshka/cache/snapshots/{library_item_id}"
+mkdir -p "$CACHE_DIR"
+mv "$FLAT_PATH" "$CACHE_DIR/{disk_id}.{fmt}"
+echo "Cached at $CACHE_DIR/{disk_id}.{fmt}"
 echo "SIZE:$SIZE"
 echo "UPLOAD_COMPLETE"
 '''

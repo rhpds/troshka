@@ -98,7 +98,10 @@ qemu-img convert -O qcow2 "$DISK_PATH" "$FLAT_PATH"
 SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
 echo "Uploading flattened disk ($SIZE bytes)..."
 curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
-rm -f "$FLAT_PATH"
+CACHE_DIR="/var/lib/troshka/cache/patterns/{pattern_id}"
+mkdir -p "$CACHE_DIR"
+mv "$FLAT_PATH" "$CACHE_DIR/{disk_id}.{fmt}"
+echo "Cached at $CACHE_DIR/{disk_id}.{fmt}"
 echo "SIZE:$SIZE"
 echo "UPLOAD_COMPLETE"
 '''
