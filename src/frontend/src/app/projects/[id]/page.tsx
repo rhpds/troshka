@@ -326,6 +326,23 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
+          {(projectState === "draft" || projectState === "stopped") && (
+            <button
+              className="project-stop-btn"
+              style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
+              onClick={() => {
+                if (!window.confirm(`Delete project "${projectName}"? This cannot be undone.`)) return;
+                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then((r) => {
+                  if (r.ok) {
+                    localStorage.removeItem(`troshka-canvas-${projectId}`);
+                    router.push("/projects");
+                  }
+                });
+              }}
+            >
+              Delete
+            </button>
+          )}
           {projectState === "draft" && (
             <button className="project-publish-btn" onClick={handlePublish}>
               ⚡ Deploy
