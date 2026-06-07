@@ -37,15 +37,18 @@ def generate_userdata(vm_data: dict) -> str:
 
     chpasswd_users = []
     if root_hash:
-        chpasswd_users.append(f"    root:{root_hash}")
+        chpasswd_users.append({"name": "root", "password": root_hash, "type": "hash"})
     if cloud_user_hash:
-        chpasswd_users.append(f"    cloud-user:{cloud_user_hash}")
+        chpasswd_users.append({"name": "cloud-user", "password": cloud_user_hash, "type": "hash"})
 
     if chpasswd_users:
         lines.append("chpasswd:")
         lines.append("  expire: false")
-        lines.append("  list: |")
-        lines.extend(chpasswd_users)
+        lines.append("  users:")
+        for u in chpasswd_users:
+            lines.append(f"    - name: {u['name']}")
+            lines.append(f"      password: {u['password']}")
+            lines.append(f"      type: {u['type']}")
         lines.append("ssh_pwauth: true")
 
     # Users
