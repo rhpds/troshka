@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo } from "react";
+import React, { memo, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -22,6 +22,7 @@ function RJ45Icon() {
 
 function NetworkNodeComponent({ data, selected }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
+  const [fwdExpanded, setFwdExpanded] = useState(false);
 
   return (
     <div
@@ -87,7 +88,13 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
                   <>
                     {portForwards.length > 0 && (
                       <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", lineHeight: 1.4 }}>
-                        {portForwards.map((pf, i) => {
+                        <div
+                          style={{ cursor: "pointer", userSelect: "none", color: "var(--troshka-text-dim)", marginBottom: 2 }}
+                          onClick={(e) => { e.stopPropagation(); setFwdExpanded(!fwdExpanded); }}
+                        >
+                          {fwdExpanded ? "▾" : "▸"} {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
+                        </div>
+                        {fwdExpanded && portForwards.map((pf, i) => {
                           const extIpId = (pf as Record<string, string>).extIpId;
                           const eip = externalIps.find((e) => e.id === extIpId);
                           const ipLabel = eip ? (eip.ip || "auto") : "";

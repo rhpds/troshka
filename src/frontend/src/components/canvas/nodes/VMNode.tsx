@@ -31,6 +31,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const autoStart = (() => { const e = startOrder.find((o) => o.vmId === id); return e ? e.autoStart : true; })();
 
   const [actionPending, setActionPending] = useState<string | null>(null);
+  const [nicsExpanded, setNicsExpanded] = useState(false);
 
   const pollVmStatus = async (): Promise<string> => {
     const resp = await fetch(`/api/v1/projects/${projectId}/vms/${id}/status`);
@@ -218,26 +219,24 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           })()}</span>
         </div>
 
-        <label className="vm-node-autostart" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 0" }} onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={autoStart}
-            onChange={(e) => {
-              e.stopPropagation();
-              const store = useCanvasStore.getState();
-              const order = [...store.startOrder];
-              const idx = order.findIndex((o) => o.vmId === id);
-              if (idx >= 0) {
-                order[idx] = { ...order[idx], autoStart: e.target.checked };
-              } else {
-                order.push({ vmId: id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
-              }
-              store.setStartOrder(order);
-            }}
-            style={{ width: 12, height: 12 }}
-          />
-          Auto-start
-        </label>
+        {/* NIC IPs */}
+        {(() => {
+          const nics = d.nics || [];
+          if (nics.length === 0) return null;
+          return (
+            <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", lineHeight: 1.4, padding: "2px 0" }}>
+              <div
+                style={{ cursor: "pointer", userSelect: "none" }}
+                onClick={(e) => { e.stopPropagation(); setNicsExpanded(!nicsExpanded); }}
+              >
+                {nicsExpanded ? "▾" : "▸"} {nics.length} NIC{nics.length !== 1 ? "s" : ""}
+              </div>
+              {nicsExpanded && nics.map((nic) => (
+                <div key={nic.id}>{nic.name}: {nic.ip || "DHCP"}</div>
+              ))}
+            </div>
+          );
+        })()}
         {/* Warnings */}
         {(!hasStorage || !hasWritableDisk || !hasNetwork || hasSharedDisk) && (
           <div className="vm-node-warnings">
@@ -255,9 +254,29 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             )}
           </div>
         )}
+        {/* Auto-start */}
+        <label className="nopan nodrag" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 0" }} onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={autoStart}
+          onChange={(e) => {
+            e.stopPropagation();
+            const store = useCanvasStore.getState();
+            const order = [...store.startOrder];
+            const idx = order.findIndex((o) => o.vmId === id);
+            if (idx >= 0) {
+              order[idx] = { ...order[idx], autoStart: e.target.checked };
+            } else {
+              order.push({ vmId: id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
+            }
+            store.setStartOrder(order);
+          }}
+          style={{ width: 12, height: 12 }}
+        />
+          Auto-start
+        </label>
       </div>
 
-      {/* Action buttons */}
       <div className="vm-node-footer nopan nodrag">
         {isDeployed && !isRunning && !isRedeploying && (
           <button
