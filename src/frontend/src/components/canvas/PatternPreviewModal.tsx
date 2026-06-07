@@ -7,14 +7,10 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
-  useReactFlow,
-  useUpdateNodeInternals,
   applyNodeChanges,
-  applyEdgeChanges,
   type Node,
   type Edge,
   type NodeChange,
-  type EdgeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -37,29 +33,22 @@ interface PatternPreviewModalProps {
 function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; initialEdges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
-  const [edges, setEdges] = useState<Edge[]>([]);
-  const { setEdges: rfSetEdges } = useReactFlow();
-  const updateNodeInternals = useUpdateNodeInternals();
-
-  const styledEdges = useMemo(() => initialEdges.map((e) => ({
-    ...e,
-    style: e.style || { stroke: "rgba(148,163,184,0.6)", strokeWidth: 2 },
-  })), [initialEdges]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds));
   }, []);
 
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges((eds) => applyEdgeChanges(changes, eds));
-  }, []);
+  const nodeMap = useMemo(() => {
+    const m: Record<string, Node> = {};
+    nodes.forEach((n) => { m[n.id] = n; });
+    return m;
+  }, [nodes]);
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={edges}
+      edges={[]}
       onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
       nodeTypes={stableNodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -68,18 +57,32 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
       zoomOnScroll={true}
       fitView
       fitViewOptions={{ padding: 0.2 }}
-      defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
-      onInit={() => {
-        setTimeout(() => {
-          initialNodes.forEach((n) => updateNodeInternals(n.id));
-          setTimeout(() => {
-            rfSetEdges(styledEdges);
-            setEdges(styledEdges);
-          }, 200);
-        }, 500);
-      }}
     >
+      <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}>
+        {initialEdges.map((edge, i) => {
+          const src = nodeMap[edge.source];
+          const tgt = nodeMap[edge.target];
+          if (!src || !tgt) return null;
+          const srcPos = src.position || { x: 0, y: 0 };
+          const tgtPos = tgt.position || { x: 0, y: 0 };
+          const srcX = srcPos.x + 150;
+          const srcY = srcPos.y + 60;
+          const tgtX = tgtPos.x;
+          const tgtY = tgtPos.y + 60;
+          const midX = (srcX + tgtX) / 2;
+          return (
+            <path
+              key={edge.id || `edge-${i}`}
+              d={`M ${srcX} ${srcY} C ${midX} ${srcY}, ${midX} ${tgtY}, ${tgtX} ${tgtY}`}
+              fill="none"
+              stroke="rgba(251,191,36,0.6)"
+              strokeWidth={2}
+              strokeDasharray="4 4"
+            />
+          );
+        })}
+      </svg>
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
       <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
     </ReactFlow>
