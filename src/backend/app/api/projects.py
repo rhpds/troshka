@@ -464,11 +464,13 @@ def reconfigure_project(
 
                     # Build map of deployed disk library items for change detection
                     dep_disk_libs = {}
+                    dep_disk_sizes = {}
                     dep_vm_node = next((n for n in deployed.get("nodes", []) if n["id"] == vm["node_id"]), None)
                     if dep_vm_node:
                         dep_disks = _find_vm_disks(vm["node_id"], deployed)
                         for dd in dep_disks:
                             dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
+                            dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
 
                     disk_list = []
                     cdrom_list = []
@@ -491,6 +493,9 @@ def reconfigure_project(
                             new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
                         else:
                             new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+                        old_size = dep_disk_sizes.get(d["node_id"], 0)
+                        if d["size_gb"] > old_size and old_size > 0 and not disk_image_changed:
+                            new_disk_cmds.append(f"qemu-img resize {path} {d['size_gb']}G")
                     if vm.get("cloud_init"):
                         from app.services.deploy_service import _seed_path
                         cdrom_list.append(_seed_path(p_id, vm["node_id"]))
