@@ -375,7 +375,10 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(() => { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); });
+                    .then(async (r) => {
+                      if (r.ok) { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); }
+                      else { const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                    });
                 }
               }}>
                 ↻ Republish
@@ -415,7 +418,10 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(() => { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); });
+                    .then(async (r) => {
+                      if (r.ok) { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); }
+                      else { const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                    });
                 }
               }}>
                 ↻ Republish

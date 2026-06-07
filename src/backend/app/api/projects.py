@@ -743,9 +743,14 @@ def redeploy_project(
 
     _check_library_items_ready(project.topology, db)
 
-    # Destroy existing
+    # Destroy existing and release capacity
     if project.host_id:
+        old_host_id = project.host_id
         destroy_project_sync(project.id)
+        from app.services.gc_service import sync_host_capacity
+        old_host = db.query(Host).filter_by(id=old_host_id).first()
+        if old_host:
+            sync_host_capacity(db, old_host)
 
     # Reset for fresh deploy
     project.state = "deploying"
