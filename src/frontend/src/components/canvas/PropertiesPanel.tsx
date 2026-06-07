@@ -579,6 +579,21 @@ export default function PropertiesPanel() {
                           return (ipNum & mask) === (netNum & mask);
                         };
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
+                        const ipDuplicate = nicIp ? (() => {
+                          const nd = netNode!.data as Record<string, unknown>;
+                          if (nd.gateway === nicIp) return "gateway";
+                          if (nd.dhcpStart === nicIp || nd.dhcpEnd === nicIp) return "DHCP range";
+                          for (const n of nodes) {
+                            if (n.type !== "vmNode") continue;
+                            const vmNics = ((n.data as Record<string, unknown>).nics || []) as Array<Record<string, unknown>>;
+                            for (const otherNic of vmNics) {
+                              if (n.id === node!.id && otherNic.id === nic.id) continue;
+                              if (otherNic.ip === nicIp) return n.data.name as string;
+                            }
+                          }
+                          return null;
+                        })() : null;
+                        const hasError = nicIp && (!ipValid || ipDuplicate);
                         return netNode ? (
                           <div className="props-field">
                             <label className="props-label">IP Address {netCidr ? `(${netCidr})` : ""}</label>
@@ -586,13 +601,16 @@ export default function PropertiesPanel() {
                               className="props-input"
                               value={nicIp}
                               placeholder="DHCP (auto)"
-                              style={{ fontFamily: "monospace", fontSize: 11, borderColor: nicIp && !ipValid ? "var(--troshka-red)" : undefined }}
+                              style={{ fontFamily: "monospace", fontSize: 11, borderColor: hasError ? "var(--troshka-red)" : undefined }}
                               onChange={(e) => {
                                 const updated = [...nics]; updated[i] = { ...nic, ip: e.target.value }; update("nics", updated);
                               }}
                             />
                             {nicIp && !ipValid && (
                               <span style={{ fontSize: 10, color: "var(--troshka-red)" }}>IP not in {netCidr}</span>
+                            )}
+                            {nicIp && ipValid && ipDuplicate && (
+                              <span style={{ fontSize: 10, color: "var(--troshka-red)" }}>Already used by {ipDuplicate}</span>
                             )}
                           </div>
                         ) : null;
