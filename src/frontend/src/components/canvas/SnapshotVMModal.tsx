@@ -109,8 +109,8 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
             color: "#fbbf24", fontSize: 13,
           }}>
             <div>This VM is currently running. The snapshot may capture inconsistent disk state.</div>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={stopVM} onChange={(e) => setStopVM(e.target.checked)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+              <input type="checkbox" checked={stopVM} onChange={(e) => setStopVM(e.target.checked)} disabled={saving} />
               Shut down VM before snapshot, restart after
             </label>
           </div>
@@ -119,7 +119,7 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Snapshot name" />
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Snapshot name" disabled={saving} />
           </div>
           <div>
             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description</label>
@@ -128,6 +128,7 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional description"
+              disabled={saving}
             />
           </div>
 

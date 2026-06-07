@@ -114,8 +114,8 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             color: "#fbbf24", fontSize: 13,
           }}>
             <div>For best results, stop all VMs before creating a pattern. Running VMs may have inconsistent disk state.</div>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+              <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} disabled={saving} />
               Stop VMs before capture, restart after
             </label>
           </div>
@@ -124,7 +124,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Pattern name" />
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Pattern name" disabled={saving} />
           </div>
           <div>
             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Description</label>
@@ -133,6 +133,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Optional description"
+              disabled={saving}
             />
           </div>
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
