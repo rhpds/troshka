@@ -43,7 +43,7 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
           const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
           if (stateResp.ok) {
             const st = await stateResp.json();
-            if (st.state === "shut off") { stopped = true; break; }
+            if (st.state === "shut off" || st.state === "shut_off") { stopped = true; break; }
           }
         }
         if (!stopped) {
@@ -54,7 +54,7 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
             const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
             if (stateResp.ok) {
               const st = await stateResp.json();
-              if (st.state === "shut off") break;
+              if (st.state === "shut off" || st.state === "shut_off") break;
             }
           }
         }
