@@ -216,8 +216,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
                 >
                   <div className="palette-icon" style={{ background: "rgba(74,222,128,0.15)" }}>📸</div>
                   <div>
-                    <div className="palette-item-label">VM Snapshots</div>
-                    <div className="palette-item-desc">Drag to canvas</div>
+                    <div className="palette-item-label">Snapshots</div>
+                    <div className="palette-item-desc">Virtual machine snapshot</div>
                   </div>
                 </div>
                 {showSnapshots && (
