@@ -467,6 +467,54 @@ def reconfigure_project(
             vni_map = dict(proj.vni_map or {})
             diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
 
+            # Sync EIPs before networking so DNAT rules have private IPs
+            external_ips = current.get("externalIps", [])
+            if external_ips:
+                try:
+                    from app.models.elastic_ip import ElasticIp
+                    from app.models.provider import Provider
+                    from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
+                    provider = s.query(Provider).filter_by(id=proj.provider_id).first() if proj.provider_id else None
+                    if not provider and h.provider_id:
+                        provider = s.query(Provider).filter_by(id=h.provider_id).first()
+                    if provider:
+                        for ext_ip in external_ips:
+                            canvas_id = ext_ip.get("id", "")
+                            existing = s.query(ElasticIp).filter_by(
+                                project_id=p_id, canvas_eip_id=canvas_id
+                            ).first()
+                            eip = existing or allocate_eip(s, provider, p_id, canvas_id)
+                            if eip.state != "associated":
+                                associate_eip(s, eip, h)
+                            ext_ip["ip"] = eip.public_ip
+                            ext_ip["_private_ip"] = eip.private_ip
+                        import copy, json
+                        from sqlalchemy import text
+                        new_topo = copy.deepcopy(current)
+                        s.execute(
+                            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+                            {"topo": json.dumps(new_topo), "pid": p_id},
+                        )
+                        s.commit()
+                        s.refresh(proj)
+
+                        gw_node = next(
+                            (n for n in current.get("nodes", [])
+                             if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
+                             and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
+                            None,
+                        )
+                        if gw_node:
+                            desired_sg = [
+                                {"project_id": p_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
+                                for pf in gw_node.get("data", {}).get("portForwards", [])
+                                if pf.get("extPort")
+                            ]
+                            sync_security_group_rules(s, provider, desired_sg)
+                except Exception:
+                    logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
+                    errors.append("EIP allocation/association failed — check server logs")
+
             _deploy_progress[p_id] = {"step": "networking", "detail": "configuring"}
 
             from app.services.vxlan import build_host_network_config
@@ -601,55 +649,6 @@ def reconfigure_project(
             from app.services.placement import sync_host_capacity
             sync_host_capacity(s, h)
 
-            # Sync EIPs for this project
-            external_ips = current.get("externalIps", [])
-            if external_ips:
-                try:
-                    from app.models.elastic_ip import ElasticIp
-                    from app.models.provider import Provider
-                    from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
-                    provider = s.query(Provider).filter_by(id=proj.provider_id).first() if proj.provider_id else None
-                    if not provider and h.provider_id:
-                        provider = s.query(Provider).filter_by(id=h.provider_id).first()
-                    if provider:
-                        for ext_ip in external_ips:
-                            canvas_id = ext_ip.get("id", "")
-                            existing = s.query(ElasticIp).filter_by(
-                                project_id=p_id, canvas_eip_id=canvas_id
-                            ).first()
-                            eip = existing or allocate_eip(s, provider, p_id, canvas_id)
-                            if eip.state != "associated":
-                                associate_eip(s, eip, h)
-                            ext_ip["ip"] = eip.public_ip
-                            ext_ip["_private_ip"] = eip.private_ip
-                        import copy, json
-                        from sqlalchemy import text
-                        new_topo = copy.deepcopy(current)
-                        s.execute(
-                            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                            {"topo": json.dumps(new_topo), "pid": p_id},
-                        )
-                        s.commit()
-                        s.refresh(proj)
-
-                        gw_node = next(
-                            (n for n in current.get("nodes", [])
-                             if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
-                             and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
-                            None,
-                        )
-                        if gw_node:
-                            desired_sg = [
-                                {"project_id": p_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
-                                for pf in gw_node.get("data", {}).get("portForwards", [])
-                                if pf.get("extPort")
-                            ]
-                            sync_security_group_rules(s, provider, desired_sg)
-                except Exception:
-                    logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
-                    errors.append("EIP allocation/association failed — check server logs")
-
-            # Re-read topology in case EIP sync updated it
             s.refresh(proj)
             final_topo = proj.topology or {}
 
