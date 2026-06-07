@@ -702,9 +702,8 @@ def redeploy_project(
     if project.host_id:
         destroy_project_sync(project.id)
 
-    # Reset for fresh deploy — skip "draft" to avoid frontend auto-save wiping topology
+    # Reset for fresh deploy — keep host_id so we reuse the same host
     project.state = "deploying"
-    project.host_id = None
     project.vni_map = None
     project.deploy_error = None
     db.commit()
