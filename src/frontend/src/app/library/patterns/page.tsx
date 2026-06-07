@@ -65,10 +65,14 @@ export default function PatternsPage() {
   const handleDeploy = async (patternId: string) => {
     setDeploying(patternId);
     try {
-      const resp = await fetch(`/api/v1/patterns/${patternId}/deploy`, { method: "POST" });
+      const resp = await fetch(`/api/v1/patterns/${patternId}/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
       if (resp.ok) {
         const data = await resp.json();
-        router.push(`/projects/${data.project_id}`);
+        router.push(`/projects/${data.id}`);
       } else {
         const err = await resp.json().catch(() => ({ detail: "Deploy failed" }));
         alert(err.detail || "Deploy failed");
