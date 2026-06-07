@@ -151,16 +151,20 @@ export default function ProjectCanvasPage() {
 
   const [reconfigWarnings, setReconfigWarnings] = useState<{ type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] | null>(null);
 
+  const saveTopology = async () => {
+    const s = useCanvasStore.getState();
+    await fetch(`/api/v1/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
+    });
+  };
+
   const doReconfigure = async (restartVmIds?: string[]) => {
     setReconfigWarnings(null);
     setApplyingChanges(true);
     try {
-      const s = useCanvasStore.getState();
-      await fetch(`/api/v1/projects/${projectId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
-      });
+      await saveTopology();
       const body: Record<string, unknown> = {};
       if (restartVmIds) body.restart_vm_ids = restartVmIds;
       const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, {
@@ -180,6 +184,9 @@ export default function ProjectCanvasPage() {
   };
 
   const handleApplyChanges = async () => {
+    if (applyingChanges) return;
+    // Save topology first so we diff against current canvas state
+    await saveTopology();
     const projResp = await fetch(`/api/v1/projects/${projectId}`);
     const projData = await projResp.json();
     const deployed = projData?.deployed_topology || {};

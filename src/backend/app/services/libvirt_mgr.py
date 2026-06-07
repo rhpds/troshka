@@ -314,7 +314,7 @@ def reconfigure_vm(
                 for path in cdroms:
                     target_dev = None
                     for letter in target_letters:
-                        dev_name = f"hd{letter}"
+                        dev_name = f"sd{letter}"
                         if dev_name not in used_targets:
                             target_dev = dev_name
                             used_targets.add(dev_name)
@@ -328,7 +328,7 @@ def reconfigure_vm(
                     source.set("file", path)
                     target = ET.SubElement(disk_elem, "target")
                     target.set("dev", target_dev)
-                    target.set("bus", "ide")
+                    target.set("bus", "sata")
                     ET.SubElement(disk_elem, "readonly")
                     logger.info("Updated cdrom %s on %s", path, name)
 

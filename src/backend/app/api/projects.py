@@ -538,6 +538,7 @@ def reconfigure_project(
             proj.state = "active"
             if not errors:
                 proj.deployed_topology = current
+                proj.deploy_error = None
             else:
                 proj.deploy_error = "\n".join(errors)
             s.commit()
