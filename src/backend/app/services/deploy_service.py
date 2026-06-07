@@ -899,6 +899,59 @@ def deploy_project_async(project_id: str):
             _deploy_progress.pop(project_id, None)
             return
 
+        # Step 1b: Allocate and associate EIPs
+        external_ips = topology.get("externalIps", [])
+        if external_ips:
+            _deploy_progress[project_id] = {"step": "eips", "detail": "allocating elastic IPs"}
+            logger.info("Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips))
+            from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
+            from app.models.elastic_ip import ElasticIp
+            from app.models.provider import Provider
+
+            provider = s.query(Provider).filter_by(id=project.provider_id).first()
+            if not provider:
+                project.state = "error"
+                project.deploy_error = "No provider configured for EIP allocation"
+                s.commit()
+                _deploy_progress.pop(project_id, None)
+                return
+
+            for ext_ip in external_ips:
+                canvas_id = ext_ip.get("id", "")
+                existing = s.query(ElasticIp).filter_by(
+                    project_id=project_id, canvas_eip_id=canvas_id
+                ).first()
+                if existing:
+                    eip = existing
+                else:
+                    eip = allocate_eip(s, provider, project_id, canvas_id)
+
+                if eip.state != "associated":
+                    associate_eip(s, eip, host)
+
+                ext_ip["ip"] = eip.public_ip
+                ext_ip["_private_ip"] = eip.private_ip
+
+            project.topology = topology
+            s.commit()
+
+            # Sync SG rules for port forwards
+            gateway_node = next(
+                (n for n in topology.get("nodes", [])
+                 if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"),
+                None,
+            )
+            if gateway_node and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward":
+                desired_sg = []
+                for pf in gateway_node.get("data", {}).get("portForwards", []):
+                    if pf.get("extPort"):
+                        desired_sg.append({
+                            "project_id": project_id,
+                            "ext_port": int(pf["extPort"]),
+                            "protocol": "tcp",
+                        })
+                sync_security_group_rules(s, provider, desired_sg)
+
         # Step 2: Create cloud-init seed ISOs
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
         from app.services.cloud_init import generate_seed_iso_script
@@ -996,6 +1049,16 @@ def stop_project_async(project_id: str):
             teardown_script = generate_network_teardown_script(vni_map)
             run_ssh_script(host.ip_address, host.private_key, teardown_script, timeout=60)
 
+        # Disassociate EIPs (but don't release — keep for redeploy)
+        from app.models.elastic_ip import ElasticIp
+        from app.services.eip_service import disassociate_eip
+        project_eips = s.query(ElasticIp).filter_by(project_id=project_id, state="associated").all()
+        for eip in project_eips:
+            try:
+                disassociate_eip(s, eip, host)
+            except Exception:
+                logger.warning("Failed to disassociate EIP %s on stop", eip.public_ip)
+
         project.state = "stopped"
         project.deploy_error = None
         s.commit()
@@ -1052,6 +1115,37 @@ def start_project_async(project_id: str):
                 s.commit()
                 return
 
+        # Re-associate EIPs for this project
+        from app.models.elastic_ip import ElasticIp
+        from app.services.eip_service import associate_eip
+        project_eips = s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+        for eip in project_eips:
+            try:
+                associate_eip(s, eip, host)
+            except Exception:
+                logger.warning("Failed to re-associate EIP %s on start", eip.public_ip)
+
+        # Re-sync SG rules
+        if project_eips:
+            from app.models.provider import Provider
+            from app.services.eip_service import sync_security_group_rules
+            provider = s.query(Provider).filter_by(id=project.provider_id).first()
+            if provider:
+                topo = project.topology or {}
+                gw_node = next(
+                    (n for n in topo.get("nodes", [])
+                     if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
+                     and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
+                    None,
+                )
+                if gw_node:
+                    desired_sg = [
+                        {"project_id": project_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
+                        for pf in gw_node.get("data", {}).get("portForwards", [])
+                        if pf.get("extPort")
+                    ]
+                    sync_security_group_rules(s, provider, desired_sg)
+
         # Start VMs
         start_script = generate_start_script(project_id, topology)
         result = run_ssh_script(host.ip_address, host.private_key, start_script, timeout=120)
@@ -1104,6 +1198,16 @@ def destroy_project_sync(project_id: str):
         from app.services.placement import sync_host_capacity
         sync_host_capacity(s, host)
         s.commit()
+
+        # Release all EIPs for this project
+        from app.models.elastic_ip import ElasticIp
+        from app.services.eip_service import release_eip
+        project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
+        for eip in project_eips:
+            try:
+                release_eip(s, eip)
+            except Exception:
+                logger.warning("Failed to release EIP %s on destroy", eip.public_ip)
 
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
     except Exception:

@@ -179,12 +179,23 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
     for node in nodes:
         if node.get("type") == "networkNode" and node.get("data", {}).get("subtype") == "gateway":
             data = node.get("data", {})
+            external_ips = topology.get("externalIps", [])
+            eip_map = {eip["id"]: eip for eip in external_ips}
+
+            port_forwards = []
+            for pf in data.get("portForwards", []):
+                pf_entry = dict(pf)
+                ext_ip = eip_map.get(pf.get("extIpId", ""), {})
+                pf_entry["_private_ip"] = ext_ip.get("_private_ip", "")
+                port_forwards.append(pf_entry)
+
             gateway_config = {
                 "name": data.get("name"),
                 "mode": data.get("gatewayMode", "nat"),
                 "outbound_policy": data.get("outboundPolicy", "allow-all"),
                 "outbound_ports": data.get("outboundPorts", ""),
-                "port_forwards": data.get("portForwards", []),
+                "port_forwards": port_forwards,
+                "eip_private_ips": [eip.get("_private_ip", "") for eip in external_ips if eip.get("_private_ip")],
             }
             break
 
@@ -320,19 +331,30 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
     gw = config.get("gateway")
     if gw and gw.get("mode") in ("nat", "nat-portforward"):
         gateway_cmds.append("sysctl -w net.ipv4.ip_forward=1")
+
+        # Add secondary private IPs for EIPs
+        for priv_ip in gw.get("eip_private_ips", []):
+            if priv_ip:
+                gateway_cmds.append(f"PRIMARY_IFACE=$(ip route show default | awk '{{print $5}}' | head -1)")
+                gateway_cmds.append(f"ip addr add {priv_ip}/32 dev $PRIMARY_IFACE 2>/dev/null || true")
+
         # Masquerade outbound from all project bridges
         for net in config.get("networks", []):
             bridge = net["bridge_name"]
             gateway_cmds.append(f"nft add rule inet nat postrouting oifname != \"{bridge}\" iifname \"{bridge}\" masquerade")
 
-        # Port forwards
+        # Port forwards with EIP-specific DNAT
         if gw.get("mode") == "nat-portforward":
             for pf in gw.get("port_forwards", []):
                 ext_port = pf.get("extPort", "")
                 int_ip = pf.get("intIp", "")
                 int_port = pf.get("intPort", "")
+                priv_ip = pf.get("_private_ip", "")
                 if ext_port and int_ip and int_port:
-                    gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat to {int_ip}:{int_port}")
+                    if priv_ip:
+                        gateway_cmds.append(f"nft add rule inet nat prerouting ip daddr {priv_ip} tcp dport {ext_port} dnat to {int_ip}:{int_port}")
+                    else:
+                        gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat to {int_ip}:{int_port}")
 
     if dhcp_cmds:
         dhcp_cmds.append("systemctl restart dnsmasq")
