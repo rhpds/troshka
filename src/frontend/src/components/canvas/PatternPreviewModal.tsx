@@ -8,6 +8,7 @@ import {
   MiniMap,
   ReactFlowProvider,
   useInternalNode,
+  useViewport,
   applyNodeChanges,
   type Node,
   type Edge,
@@ -61,12 +62,13 @@ function EdgeLine({ sourceId, targetId }: { sourceId: string; targetId: string }
 }
 
 function EdgeOverlay({ edges }: { edges: Edge[] }) {
+  const { x, y, zoom } = useViewport();
   return (
     <svg
       className="react-flow__edge-overlay"
-      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
+      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", overflow: "visible" }}
     >
-      <g>
+      <g transform={`translate(${x}, ${y}) scale(${zoom})`}>
         {edges.map((edge, i) => (
           <EdgeLine key={edge.id || `e-${i}`} sourceId={edge.source} targetId={edge.target} />
         ))}
