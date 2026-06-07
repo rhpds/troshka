@@ -608,38 +608,13 @@ export default function PropertiesPanel() {
                         })() : null;
                         const ipDuplicate = ipConflict;
                         const hasError = nicIp && (!ipValid || ipDuplicate);
-                        const dhcpPreview = !nicIp && netNode ? (() => {
-                          const startIp = (nd.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".100") : "");
-                          if (!startIp) return "";
-                          const parts = startIp.split(".").map(Number);
-                          if (parts.length !== 4) return "";
-                          let offset = 0;
-                          for (const n of nodes) {
-                            if (n.type !== "vmNode") continue;
-                            const vmNics = ((n.data as Record<string, unknown>).nics || []) as Array<Record<string, unknown>>;
-                            for (const otherNic of vmNics) {
-                              if (n.id === node!.id && otherNic.id === nic.id) break;
-                              if (otherNic.ip) continue;
-                              const otherNicHandleT = `nic-${otherNic.id}-top`;
-                              const otherNicHandleB = `nic-${otherNic.id}-bottom`;
-                              const onSameNet = edges.some((e) =>
-                                ((e.source === n.id && (e.sourceHandle === otherNicHandleT || e.sourceHandle === otherNicHandleB)) ||
-                                 (e.target === n.id && (e.targetHandle === otherNicHandleT || e.targetHandle === otherNicHandleB))) &&
-                                (e.source === netNode!.id || e.target === netNode!.id)
-                              );
-                              if (onSameNet) offset++;
-                            }
-                          }
-                          const predicted = `${parts[0]}.${parts[1]}.${parts[2]}.${parts[3] + offset}`;
-                          return predicted;
-                        })() : "";
                         return netNode ? (
                           <div className="props-field">
                             <label className="props-label">IP Address {netCidr ? `(${netCidr})` : ""}</label>
                             <input
                               className="props-input"
                               value={nicIp}
-                              placeholder={dhcpPreview ? `~${dhcpPreview} (DHCP)` : "DHCP (auto)"}
+                              placeholder="DHCP (auto)"
                               style={{ fontFamily: "monospace", fontSize: 11, borderColor: hasError ? "var(--troshka-red)" : undefined }}
                               onChange={(e) => {
                                 const updated = [...nics]; updated[i] = { ...nic, ip: e.target.value }; update("nics", updated);
