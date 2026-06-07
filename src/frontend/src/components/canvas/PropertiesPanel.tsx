@@ -1160,8 +1160,8 @@ export default function PropertiesPanel() {
                                 />
                               </div>
                             </div>
+                            <div style={{ textAlign: "center", color: "var(--troshka-text-dim)", fontSize: 10, lineHeight: 1, margin: "-2px 0" }}>↓</div>
                             <div className="props-row" style={{ alignItems: "end" }}>
-                              <span style={{ padding: "0 4px", color: "var(--troshka-text-dim)", fontSize: 12 }}>→</span>
                               <div className="props-field" style={{ flex: 1 }}>
                                 {i === 0 && <label className="props-label">Internal IP</label>}
                                 <input className="props-input" value={pf.intIp} placeholder="192.168.1.10" style={{ fontFamily: "monospace" }}

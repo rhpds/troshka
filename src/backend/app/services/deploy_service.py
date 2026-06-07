@@ -908,7 +908,9 @@ def deploy_project_async(project_id: str):
             from app.models.elastic_ip import ElasticIp
             from app.models.provider import Provider
 
-            provider = s.query(Provider).filter_by(id=project.provider_id).first()
+            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+            if not provider and host.provider_id:
+                provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if not provider:
                 project.state = "error"
                 project.deploy_error = "No provider configured for EIP allocation"
@@ -1129,7 +1131,9 @@ def start_project_async(project_id: str):
         if project_eips:
             from app.models.provider import Provider
             from app.services.eip_service import sync_security_group_rules
-            provider = s.query(Provider).filter_by(id=project.provider_id).first()
+            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+            if not provider and host.provider_id:
+                provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider:
                 topo = project.topology or {}
                 gw_node = next(

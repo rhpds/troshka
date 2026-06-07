@@ -352,9 +352,9 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                 priv_ip = pf.get("_private_ip", "")
                 if ext_port and int_ip and int_port:
                     if priv_ip:
-                        gateway_cmds.append(f"nft add rule inet nat prerouting ip daddr {priv_ip} tcp dport {ext_port} dnat to {int_ip}:{int_port}")
+                        gateway_cmds.append(f"nft add rule inet nat prerouting ip daddr {priv_ip} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
                     else:
-                        gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat to {int_ip}:{int_port}")
+                        gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
 
     if dhcp_cmds:
         dhcp_cmds.append("systemctl restart dnsmasq")

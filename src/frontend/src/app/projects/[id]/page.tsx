@@ -39,14 +39,20 @@ export default function ProjectCanvasPage() {
 
   const [deployError, setDeployError] = useState<string | null>(null);
 
+  const prevStateRef = React.useRef(projectState);
   const fetchProjectState = () => {
     fetch(`/api/v1/projects/${projectId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (data) {
+          const wasTransitional = ["reconfiguring", "deploying", "starting"].includes(prevStateRef.current);
           setProjectName(data.name);
           setProjectState(data.state);
           setDeployError(data.deploy_error || null);
+          prevStateRef.current = data.state;
+          if (wasTransitional && data.state === "active") {
+            loadProject(projectId);
+          }
         }
       })
       .catch(() => {});

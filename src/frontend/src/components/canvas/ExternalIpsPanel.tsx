@@ -64,15 +64,12 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
             const dot = statusDot(eip);
             return (
               <div key={eip.id} className="start-order-item">
-                <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "end" }}>
-                  <div style={{ display: "flex", alignItems: "center", paddingBottom: 6 }}>
-                    <span style={{
-                      width: 8, height: 8, borderRadius: "50%",
-                      backgroundColor: dot.color, display: "inline-block",
-                    }} title={dot.title} />
-                  </div>
-                  <div style={{ flex: "0 0 100px" }}>
-                    <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>Name</label>
+                <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "center" }}>
+                  <span style={{
+                    width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                    backgroundColor: dot.color, display: "inline-block",
+                  }} title={dot.title} />
+                  <div style={{ flex: 1 }}>
                     <input
                       className="props-input"
                       value={eip.name}
@@ -81,18 +78,13 @@ export default function ExternalIpsPanel({ projectId, onClose }: Props) {
                       style={{ fontSize: 12 }}
                     />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>IP Address</label>
-                    <input
-                      className="props-input"
-                      value={eip.ip}
-                      readOnly
-                      placeholder="Assigned on first deploy"
-                      style={{ fontFamily: "monospace", fontSize: 12, opacity: eip.ip ? 1 : 0.5 }}
-                    />
-                  </div>
+                  {eip.ip && (
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "var(--troshka-green)", flexShrink: 0 }}>
+                      {eip.ip}
+                    </span>
+                  )}
                   <button
-                    style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 14, padding: 4 }}
+                    style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 14, padding: 4, flexShrink: 0 }}
                     onClick={() => removeIp(i)}
                     title={eip.ip ? "Release and remove" : "Remove"}
                   >✕</button>

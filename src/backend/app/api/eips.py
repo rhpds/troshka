@@ -66,6 +66,93 @@ def list_project_eips(
     ]
 
 
+@router.post("/projects/{project_id}/eips/sync")
+def sync_project_eips(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Allocate/associate EIPs for a running project without redeploying VMs."""
+    from app.models.project import Project
+    from app.models.host import Host
+    from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
+    from app.services.vxlan import build_host_network_config, generate_setup_script
+    from app.services.deploy_service import run_ssh_script
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state != "active":
+        raise HTTPException(status_code=409, detail=f"Project must be active (currently {project.state})")
+    if not project.host_id:
+        raise HTTPException(status_code=409, detail="Project has no host assigned")
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host or not host.ip_address or not host.private_key:
+        raise HTTPException(status_code=503, detail="Host not reachable")
+
+    provider = db.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+    if not provider and host.provider_id:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=409, detail="No provider configured for EIP allocation")
+
+    topology = project.topology or {}
+    external_ips = topology.get("externalIps", [])
+    if not external_ips:
+        return {"status": "no_eips", "message": "No external IPs in topology"}
+
+    allocated = []
+    for ext_ip in external_ips:
+        canvas_id = ext_ip.get("id", "")
+        existing = db.query(ElasticIp).filter_by(
+            project_id=project_id, canvas_eip_id=canvas_id
+        ).first()
+        if existing:
+            eip = existing
+        else:
+            eip = allocate_eip(db, provider, project_id, canvas_id)
+
+        if eip.state != "associated":
+            associate_eip(db, eip, host)
+
+        ext_ip["ip"] = eip.public_ip
+        ext_ip["_private_ip"] = eip.private_ip
+        allocated.append({"name": ext_ip.get("name"), "ip": eip.public_ip})
+
+    project.topology = topology
+    db.commit()
+
+    # Re-run network setup to apply DNAT rules for the new EIPs
+    vni_map = project.vni_map or {}
+    all_hosts = db.query(Host).filter(Host.state == "active").all()
+    peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+    network_config = build_host_network_config(topology, vni_map, peer_ips)
+    net_script = generate_setup_script(network_config, host.ip_address)
+    result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
+    if not result["success"]:
+        logger.error("EIP sync network setup failed: %s", result["output"][-500:])
+
+    # Sync SG rules
+    gateway_node = next(
+        (n for n in topology.get("nodes", [])
+         if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
+         and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
+        None,
+    )
+    if gateway_node:
+        desired_sg = [
+            {"project_id": project_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
+            for pf in gateway_node.get("data", {}).get("portForwards", [])
+            if pf.get("extPort")
+        ]
+        sync_security_group_rules(db, provider, desired_sg)
+
+    return {"status": "synced", "eips": allocated}
+
+
 @router.post("/providers/{provider_id}/gc")
 def provider_gc(
     provider_id: str,
