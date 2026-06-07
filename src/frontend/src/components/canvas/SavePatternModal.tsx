@@ -189,7 +189,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
                 borderColor: "#4ade80", color: "#4ade80", opacity: saving ? 0.6 : 1,
               }}
             >
-              {saving ? (savingStatus || "Saving...") : "Save Pattern"}
+              {saving ? <><span className="project-btn-spinner" style={{ marginRight: 6 }} />{savingStatus || "Saving..."}</> : "Save Pattern"}
             </button>
           </div>
         </div>
