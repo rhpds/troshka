@@ -379,13 +379,11 @@ export default function PropertiesPanel() {
                               update("bootDevices", updated);
                             }}
                           >↓</button>
-                          {validDevices.length > 1 && (
-                            <button
-                              style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12 }}
-                              title="Remove from boot order"
-                              onClick={() => update("bootDevices", validDevices.filter((_, idx) => idx !== i))}
-                            >✕</button>
-                          )}
+                          <button
+                            style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12 }}
+                            title="Remove from boot order"
+                            onClick={() => update("bootDevices", validDevices.filter((_, idx) => idx !== i))}
+                          >✕</button>
                         </div>
                       ))}
                     </div>
