@@ -117,7 +117,7 @@ def place_project(db: Session, project: Project) -> dict:
         except Exception as e:
             logger.exception("Auto-provisioning failed: %s", e)
             return {
-                "error": f"No host has enough capacity (need {reqs['total_vcpus']} vCPUs, {reqs['total_ram_mb']}MB RAM) and auto-provisioning failed: {e}",
+                "error": f"No host has enough capacity (need {reqs['total_vcpus']} vCPUs, {reqs['total_ram_mb']}MB RAM) and auto-provisioning failed. Check server logs or contact an admin.",
                 "required": reqs,
             }
 
