@@ -1175,7 +1175,14 @@ export default function PropertiesPanel() {
                   <select
                     className="props-select"
                     value={(data as Record<string, unknown>).source as string || "blank"}
-                    onChange={(e) => update("source", e.target.value)}
+                    onChange={(e) => {
+                      update("source", e.target.value);
+                      if (e.target.value === "blank") {
+                        update("libraryItemId", undefined);
+                        update("libraryItemName", undefined);
+                        update("libraryItemSize", undefined);
+                      }
+                    }}
                   >
                     <option value="blank">Blank disk</option>
                     <option value="library">From library image...</option>

@@ -205,7 +205,7 @@ export default function ProjectCanvasPage() {
       const curData = n.data as Record<string, unknown>;
       const depData = depStorageMap[n.id];
       if (!depData) continue;
-      if ((curData.libraryItemId as string) === (depData.libraryItemId as string)) continue;
+      if ((curData.libraryItemId as string || null) === (depData.libraryItemId as string || null)) continue;
       const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
       const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
       const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
