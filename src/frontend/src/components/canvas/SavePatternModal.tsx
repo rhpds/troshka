@@ -11,7 +11,7 @@ interface SavePatternModalProps {
 }
 
 export default function SavePatternModal({ projectId, projectName, hasRunningVMs, onSaved, onClose }: SavePatternModalProps) {
-  const [name, setName] = useState(projectName);
+  const [name, setName] = useState(`${projectName}-pattern`);
   const [description, setDescription] = useState("");
   const [stopVMs, setStopVMs] = useState(hasRunningVMs);
   const [saving, setSaving] = useState(false);
