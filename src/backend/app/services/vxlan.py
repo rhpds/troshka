@@ -85,6 +85,7 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                 connected_vm_ids.add(edge["source"])
 
         connected_vms = []
+        dhcp_hosts = []
         for vm_node in nodes:
             if vm_node["id"] in connected_vm_ids and vm_node.get("type") == "vmNode":
                 vm_data = vm_node.get("data", {})
@@ -92,6 +93,23 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                     "vm_id": vm_node["id"],
                     "name": vm_data.get("name"),
                 })
+                for vm_nic in vm_data.get("nics", []):
+                    if vm_nic.get("ip") and vm_nic.get("mac"):
+                        nic_handle_top = f"nic-{vm_nic['id']}-top"
+                        nic_handle_bottom = f"nic-{vm_nic['id']}-bottom"
+                        on_this_net = any(
+                            ((e.get("source") == vm_node["id"] and e.get("target") == node_id and
+                              (e.get("sourceHandle") == nic_handle_top or e.get("sourceHandle") == nic_handle_bottom)) or
+                             (e.get("target") == vm_node["id"] and e.get("source") == node_id and
+                              (e.get("targetHandle") == nic_handle_top or e.get("targetHandle") == nic_handle_bottom)))
+                            for e in edges
+                        )
+                        if on_this_net:
+                            dhcp_hosts.append({
+                                "mac": vm_nic["mac"],
+                                "ip": vm_nic["ip"],
+                                "name": vm_data.get("name", ""),
+                            })
 
         net_config = {
             "node_id": node_id,
@@ -104,6 +122,7 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
             "dns_enabled": data.get("dns", False),
             "dns_domain": data.get("dnsDomain", ""),
             "connected_vms": connected_vms,
+            "dhcp_hosts": dhcp_hosts,
             "peers": peer_ips,
         }
 
@@ -270,6 +289,9 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                 dhcp_cmds.append(f"cat > {dnsmasq_conf} << 'DNSEOF'")
                 dhcp_cmds.append(f"interface={bridge}")
                 dhcp_cmds.append(f"dhcp-range={range_start},{range_end},{lease}")
+                for dh in net.get("dhcp_hosts", []):
+                    hostname_part = f",{dh['name']}" if dh.get("name") else ""
+                    dhcp_cmds.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
                 if net.get("dns_enabled") and net.get("dns_domain"):
                     dhcp_cmds.append(f"domain={net['dns_domain']}")
                 dhcp_cmds.append("DNSEOF")
