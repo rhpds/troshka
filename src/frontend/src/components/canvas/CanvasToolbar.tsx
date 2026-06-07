@@ -4,7 +4,11 @@ import React from "react";
 import { useReactFlow, useViewport } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 
-export default function CanvasToolbar() {
+interface CanvasToolbarProps {
+  onSavePattern?: () => void;
+}
+
+export default function CanvasToolbar({ onSavePattern }: CanvasToolbarProps) {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { zoom } = useViewport();
   const showMinimap = useCanvasStore((s) => s.showMinimap);
@@ -103,6 +107,19 @@ export default function CanvasToolbar() {
       >
         ⊟
       </button>
+
+      {onSavePattern && (
+        <>
+          <span className="tool-sep" />
+          <button
+            className="tool-btn"
+            onClick={onSavePattern}
+            title="Save as Pattern"
+          >
+            📋
+          </button>
+        </>
+      )}
     </div>
   );
 }

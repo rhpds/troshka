@@ -10,6 +10,7 @@ import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
+import SavePatternModal from "@/components/canvas/SavePatternModal";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -20,6 +21,7 @@ export default function ProjectCanvasPage() {
   const nodes = useCanvasStore((s) => s.nodes);
   const [showStartOrder, setShowStartOrder] = useState(false);
   const [showExternalIps, setShowExternalIps] = useState(false);
+  const [showPatternModal, setShowPatternModal] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [projectState, setProjectState] = useState("draft");
 
@@ -301,6 +303,11 @@ export default function ProjectCanvasPage() {
           </span>
         </div>
         <div className="project-action-bar-right">
+          {(projectState === "active" || projectState === "stopped" || projectState === "draft") && (
+            <button className="project-publish-btn" onClick={() => setShowPatternModal(true)} style={{ opacity: 0.85 }}>
+              Save as Pattern
+            </button>
+          )}
           {projectState === "draft" && (
             <button className="project-publish-btn" onClick={handlePublish}>
               ⚡ Deploy
@@ -419,7 +426,7 @@ export default function ProjectCanvasPage() {
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
         <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />
-        <Canvas />
+        <Canvas onSavePattern={() => setShowPatternModal(true)} />
         <PropertiesPanel />
         {toast && (
           <div style={{
@@ -442,6 +449,18 @@ export default function ProjectCanvasPage() {
           changes={reconfigWarnings}
           onConfirm={(restartVmIds) => doReconfigure(restartVmIds)}
           onCancel={() => setReconfigWarnings(null)}
+        />
+      )}
+      {showPatternModal && (
+        <SavePatternModal
+          projectId={projectId}
+          projectName={projectName}
+          hasRunningVMs={nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running")}
+          onSaved={() => {
+            setShowPatternModal(false);
+            showToast("Pattern saved successfully");
+          }}
+          onClose={() => setShowPatternModal(false)}
         />
       )}
     </ReactFlowProvider>

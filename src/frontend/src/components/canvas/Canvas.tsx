@@ -41,7 +41,11 @@ interface EdgeContextMenuState {
   y: number;
 }
 
-export default function Canvas() {
+interface CanvasProps {
+  onSavePattern?: () => void;
+}
+
+export default function Canvas({ onSavePattern }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -371,7 +375,7 @@ export default function Canvas() {
           size={1}
           color="rgba(255,255,255,0.06)"
         />
-        <CanvasToolbar />
+        <CanvasToolbar onSavePattern={onSavePattern} />
         {showMinimap && (
           <MiniMap
             nodeStrokeWidth={3}
