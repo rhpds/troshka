@@ -7,6 +7,7 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
+  useInternalNode,
   applyNodeChanges,
   type Node,
   type Edge,
@@ -17,7 +18,6 @@ import "@xyflow/react/dist/style.css";
 import VMNode from "./nodes/VMNode";
 import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
-import { useCanvasStore } from "@/stores/canvasStore";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -31,30 +31,64 @@ interface PatternPreviewModalProps {
   onClose: () => void;
 }
 
+function EdgeLine({ sourceId, targetId }: { sourceId: string; targetId: string }) {
+  const sourceNode = useInternalNode(sourceId);
+  const targetNode = useInternalNode(targetId);
+
+  if (!sourceNode || !targetNode) return null;
+
+  const sw = sourceNode.measured?.width || 200;
+  const sh = sourceNode.measured?.height || 80;
+  const tw = targetNode.measured?.width || 200;
+  const th = targetNode.measured?.height || 80;
+
+  const sx = sourceNode.internals.positionAbsolute.x + sw;
+  const sy = sourceNode.internals.positionAbsolute.y + sh / 2;
+  const tx = targetNode.internals.positionAbsolute.x;
+  const ty = targetNode.internals.positionAbsolute.y + th / 2;
+
+  const mx = (sx + tx) / 2;
+
+  return (
+    <path
+      d={`M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`}
+      fill="none"
+      stroke="rgba(251,191,36,0.6)"
+      strokeWidth={2}
+      strokeDasharray="6 4"
+    />
+  );
+}
+
+function EdgeOverlay({ edges }: { edges: Edge[] }) {
+  return (
+    <svg
+      className="react-flow__edge-overlay"
+      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}
+    >
+      <g>
+        {edges.map((edge, i) => (
+          <EdgeLine key={edge.id || `e-${i}`} sourceId={edge.source} targetId={edge.target} />
+        ))}
+      </g>
+    </svg>
+  );
+}
+
 function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; initialEdges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
+  const [nodes, setNodes] = useState<Node[]>(initialNodes);
+  const [showEdges, setShowEdges] = useState(false);
 
-  const nodes = useCanvasStore((s) => s.nodes);
-  const edges = useCanvasStore((s) => s.edges);
-  const onNodesChange = useCanvasStore((s) => s.onNodesChange);
-  const onEdgesChange = useCanvasStore((s) => s.onEdgesChange);
-
-  useEffect(() => {
-    const store = useCanvasStore.getState();
-    const prevNodes = store.nodes;
-    const prevEdges = store.edges;
-    useCanvasStore.setState({ nodes: initialNodes, edges: initialEdges });
-    return () => {
-      useCanvasStore.setState({ nodes: prevNodes, edges: prevEdges });
-    };
-  }, [initialNodes, initialEdges]);
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setNodes((nds) => applyNodeChanges(changes, nds));
+  }, []);
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={edges}
+      edges={[]}
       onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
       nodeTypes={stableNodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -63,9 +97,12 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
       zoomOnScroll={true}
       fitView
       fitViewOptions={{ padding: 0.2 }}
-      defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
+      onInit={() => {
+        setTimeout(() => setShowEdges(true), 300);
+      }}
     >
+      {showEdges && <EdgeOverlay edges={initialEdges} />}
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
       <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
     </ReactFlow>
