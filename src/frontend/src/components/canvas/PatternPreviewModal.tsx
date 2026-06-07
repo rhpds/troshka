@@ -30,11 +30,22 @@ interface PatternPreviewModalProps {
 
 function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setMounted(true), 500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const styledEdges = useMemo(() => edges.map((e) => ({
+    ...e,
+    style: e.style || { stroke: "rgba(148,163,184,0.6)", strokeWidth: 2 },
+  })), [edges]);
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={edges}
+      edges={mounted ? styledEdges : []}
       nodeTypes={stableNodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -43,6 +54,7 @@ function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
       zoomOnScroll={true}
       fitView
       fitViewOptions={{ padding: 0.2 }}
+      defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
