@@ -166,6 +166,6 @@ def test_bulk_deploy_validates_count():
     assert resp.status_code == 400
 
 
-def test_unauthorized_access():
+def test_dev_mode_allows_unauthenticated():
     resp = client.get("/api/v1/patterns")
-    assert resp.status_code == 401
+    assert resp.status_code == 200

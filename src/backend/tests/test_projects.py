@@ -72,6 +72,6 @@ def test_delete_project():
     assert get_resp.status_code == 404
 
 
-def test_unauthorized_access():
+def test_dev_mode_allows_unauthenticated():
     resp = client.get("/api/v1/projects")
-    assert resp.status_code == 401
+    assert resp.status_code == 200

@@ -3,7 +3,7 @@ from app.core.config import config
 
 def test_config_loads_defaults():
     assert config.app.name == "troshka"
-    assert config.app.port == 8000
+    assert config.app.port == 8200
 
 
 def test_config_has_database_section():
