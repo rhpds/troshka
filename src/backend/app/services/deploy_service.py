@@ -1117,7 +1117,8 @@ def destroy_project_sync(project_id: str):
             return
 
         vni_map = project.vni_map or {}
-        destroy_script = generate_destroy_script(project_id, project.topology, vni_map)
+        topo = project.deployed_topology or project.topology
+        destroy_script = generate_destroy_script(project_id, topo, vni_map)
         run_ssh_script(host.ip_address, host.private_key, destroy_script, timeout=120)
 
         # Release host capacity

@@ -379,7 +379,7 @@ def reconfigure_project(
         raise HTTPException(status_code=403, detail="Access denied")
     if project.state not in ("active", "stopped"):
         raise HTTPException(status_code=409, detail=f"Project is {project.state}, cannot reconfigure")
-    if not project.host_id or not project.vni_map:
+    if not project.host_id:
         raise HTTPException(status_code=400, detail="Project has no active deployment")
 
     host = db.query(Host).filter_by(id=project.host_id).first()
