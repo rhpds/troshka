@@ -291,7 +291,7 @@ export default function ImagesPage() {
                   {sourceMode === "file" ? (
                     <FileUpload
                       id="library-file-upload"
-                      value={selectedFile}
+                      value={selectedFile ?? undefined}
                       filename={selectedFileName}
                       onFileInputChange={(_e, file) => {
                         setSelectedFile(file);
