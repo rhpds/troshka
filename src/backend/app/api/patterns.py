@@ -110,6 +110,21 @@ def _remap_topology(topology: dict) -> dict:
             th = edge.get("targetHandle", "")
             edge["id"] = f"xy-edge__{src}{sh}-{tgt}{th}"
 
+    topo["startOrder"] = [
+        {**entry, "vmId": id_map.get(entry["vmId"], entry["vmId"]),
+         "waitForVm": id_map.get(entry["waitForVm"], entry["waitForVm"]) if entry.get("waitForVm") else None}
+        for entry in topo.get("startOrder", [])
+    ]
+
+    topo["externalIps"] = [
+        {**entry, "vmId": id_map.get(entry.get("vmId", ""), entry.get("vmId", ""))}
+        for entry in topo.get("externalIps", [])
+    ]
+
+    topo["hiddenNodeIds"] = [
+        id_map.get(nid, nid) for nid in topo.get("hiddenNodeIds", [])
+    ]
+
     return topo
 
 
