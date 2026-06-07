@@ -1,9 +1,17 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 
-export default function ConsolePage() {
+export default function ConsolePageWrapper() {
+  return (
+    <Suspense fallback={<div style={{ color: "#fff", padding: 20 }}>Loading console...</div>}>
+      <ConsolePage />
+    </Suspense>
+  );
+}
+
+function ConsolePage() {
   const searchParams = useSearchParams();
   const vmId = searchParams.get("vm") || "";
   const projectId = searchParams.get("project");
@@ -196,7 +204,7 @@ export default function ConsolePage() {
             onClick={() => {
               const next = !scaled;
               setScaled(next);
-              const r = rfbRef.current as Record<string, unknown> | null;
+              const r = rfbRef.current as Record<string, any> | null;
               if (r) r.scaleViewport = next;
             }}
             style={{ ...btnStyle, background: scaled ? "rgba(74,222,128,0.15)" : "none", borderColor: scaled ? "#4ade80" : "#555" }}
@@ -212,7 +220,7 @@ export default function ConsolePage() {
                 text = window.prompt("Paste text to send to VM:") || "";
               }
               if (!text) return;
-              const r = rfbRef.current as Record<string, unknown> | null;
+              const r = rfbRef.current as Record<string, any> | null;
               if (!r) return;
               const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
               if (!sendKey) return;

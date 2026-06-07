@@ -27,7 +27,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function VMProperties({ data }: { data: Record<string, unknown> }) {
+function VMProperties({ data }: { data: Record<string, any> }) {
   const nics = (data.nics as Array<Record<string, string>>) || [];
   const dcs = (data.diskControllers as Array<Record<string, string>>) || [];
 
@@ -47,7 +47,7 @@ function VMProperties({ data }: { data: Record<string, unknown> }) {
       {data.cloudInit && (
         <Section title="Cloud-Init">
           <PropRow label="Enabled" value="Yes" />
-          <PropRow label="Hostname" value={String((data as Record<string, unknown>).ciHostname || "—")} />
+          <PropRow label="Hostname" value={String((data as Record<string, any>).ciHostname || "—")} />
         </Section>
       )}
 
@@ -79,7 +79,7 @@ function VMProperties({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function NetworkProperties({ data }: { data: Record<string, unknown> }) {
+function NetworkProperties({ data }: { data: Record<string, any> }) {
   return (
     <>
       <Section title="Network">
@@ -105,7 +105,7 @@ function NetworkProperties({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-function StorageProperties({ data }: { data: Record<string, unknown> }) {
+function StorageProperties({ data }: { data: Record<string, any> }) {
   return (
     <Section title="Disk">
       <PropRow label="Size" value={`${data.size} GB`} />
@@ -117,7 +117,7 @@ function StorageProperties({ data }: { data: Record<string, unknown> }) {
 }
 
 export default function ReadOnlyPropertiesPanel({ node, onClose }: ReadOnlyPropertiesPanelProps) {
-  const data = node.data as Record<string, unknown>;
+  const data = node.data as Record<string, any>;
   const nodeType = node.type;
 
   const icon = nodeType === "vmNode"

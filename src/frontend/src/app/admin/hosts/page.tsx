@@ -74,7 +74,7 @@ export default function AdminHostsPage() {
     }).catch(() => setLoading(false));
     // Storage fetched separately — SSH calls can be slow and shouldn't block the page
     fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
-      if (d && typeof d === "object") setStorageInfo(d);
+      if (d && typeof d === "object") setStorageInfo(d as Record<string, { used_pct: number; free_gb: number; total_gb: number }>);
     }).catch(() => {});
   };
 
@@ -159,7 +159,7 @@ export default function AdminHostsPage() {
     setRemoving(null);
   };
 
-  const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, unknown> | undefined;
+  const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, any> | undefined;
   const selectedProviderHasAmi = selectedProvider ? !!selectedProvider.default_ami : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
   const selectedProviderReady = selectedProviderHasAmi && selectedProviderHasVpc;
@@ -373,15 +373,15 @@ export default function AdminHostsPage() {
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{s.active_hosts}<span style={{ fontSize: 14, opacity: 0.5 }}>/{s.total_hosts}</span></div>
                 <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts</div>
                 <div style={{ fontSize: 11, marginTop: 8 }}>
-                  <span>vCPU: {s.used_vcpus}/{(s as Record<string, number>).alloc_vcpus || s.total_vcpus} <span style={{ opacity: 0.4 }}>({s.total_vcpus} phys)</span></span>
-                  <span style={{ marginLeft: 12 }}>RAM: {Math.round(s.used_ram_mb / 1024)}/{Math.round(((s as Record<string, number>).alloc_ram_mb || s.total_ram_mb) / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(s.total_ram_mb / 1024)} phys)</span></span>
+                  <span>vCPU: {s.used_vcpus}/{(s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus} <span style={{ opacity: 0.4 }}>({s.total_vcpus} phys)</span></span>
+                  <span style={{ marginLeft: 12 }}>RAM: {Math.round(s.used_ram_mb / 1024)}/{Math.round(((s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb) / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(s.total_ram_mb / 1024)} phys)</span></span>
                 </div>
                 <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 4 }}>
                   <div style={{
                     height: 4,
                     borderRadius: 2,
-                    width: `${(s as Record<string, number>).alloc_vcpus ? (s.used_vcpus / (s as Record<string, number>).alloc_vcpus) * 100 : 0}%`,
-                    background: (s.used_vcpus / Math.max((s as Record<string, number>).alloc_vcpus || s.total_vcpus, 1)) > 0.8 ? "#f87171" : "#4ade80",
+                    width: `${(s as unknown as Record<string, number>).alloc_vcpus ? (s.used_vcpus / (s as unknown as Record<string, number>).alloc_vcpus) * 100 : 0}%`,
+                    background: (s.used_vcpus / Math.max((s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus, 1)) > 0.8 ? "#f87171" : "#4ade80",
                   }} />
                 </div>
               </CardBody>
@@ -470,7 +470,7 @@ export default function AdminHostsPage() {
                     if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
                     else parts.push("Network bridges: OK");
                     alert(parts.join("\n"));
-                    loadHosts();
+                    loadData();
                   } else {
                     alert("GC failed — check server logs");
                   }

@@ -114,8 +114,8 @@ function EdgeOverlay({ edges }: { edges: Edge[] }) {
             key={edge.id || `e-${i}`}
             sourceId={edge.source}
             targetId={edge.target}
-            sourceHandle={edge.sourceHandle}
-            targetHandle={edge.targetHandle}
+            sourceHandle={edge.sourceHandle ?? undefined}
+            targetHandle={edge.targetHandle ?? undefined}
           />
         ))}
       </g>

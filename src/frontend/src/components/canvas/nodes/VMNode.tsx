@@ -127,7 +127,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const hasStorage = connectedStorageIds.length > 0;
   const hasWritableDisk = connectedStorageIds.some((sid) => {
     const sn = nodes.find((n) => n.id === sid);
-    return sn && (sn.data as Record<string, unknown>).format !== "iso";
+    return sn && (sn.data as Record<string, any>).format !== "iso";
   });
   const hasNetwork = edges.some(
     (e) =>
@@ -138,7 +138,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const hasSharedDisk = connectedStorageIds.some((sid) => {
     const storageNode = nodes.find((n) => n.id === sid);
     if (!storageNode) return false;
-    const isIso = (storageNode.data as Record<string, unknown>).format === "iso";
+    const isIso = (storageNode.data as Record<string, any>).format === "iso";
     if (isIso) return false;
     return edges.filter((e) =>
       (e.source === sid || e.target === sid) &&
@@ -160,10 +160,10 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     >
       {/* Header */}
       <div className="vm-node-header">
-        <div className="vm-node-icon">{d.icon || "🖥"}</div>
+        <div className="vm-node-icon">{String(d.icon || "🖥")}</div>
         <span className="vm-node-title">{d.name}</span>
         {(actionPending || d.status === "redeploying") ? (
-          <span title={(d as Record<string, unknown>).redeployStep as string || ""} className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
+          <span title={d.redeployStep as string || ""} className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
         ) : (
         <span
           className="vm-node-status-dot"
@@ -180,9 +180,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       {/* Redeploy progress */}
-      {d.status === "redeploying" && (d as Record<string, unknown>).redeployStep && (
+      {d.status === "redeploying" && d.redeployStep && (
         <div style={{ fontSize: 9, color: "#fbbf24", textAlign: "center", padding: "2px 0" }}>
-          {(d as Record<string, unknown>).redeployStep as string}{(d as Record<string, unknown>).redeployDetail ? `: ${(d as Record<string, unknown>).redeployDetail}` : ""}
+          {d.redeployStep as string}{d.redeployDetail ? `: ${d.redeployDetail}` : ""}
         </div>
       )}
 
@@ -206,14 +206,14 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           }</span>
           <span className="vm-node-spec-label">Boot</span>
           <span className="vm-node-spec-val" style={{ fontSize: 10 }}>{(() => {
-            const bootDevs = (d as unknown as Record<string, unknown>).bootDevices as string[] | undefined;
+            const bootDevs = (d as unknown as Record<string, any>).bootDevices as string[] | undefined;
             if (!bootDevs || bootDevs.length === 0) return "None";
             const first = bootDevs[0];
             if (first === "network") return <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="16" rx="2" /><line x1="8" y1="18" x2="8" y2="22" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="16" y1="18" x2="16" y2="22" /><rect x="6" y="5" width="12" height="6" rx="1" /><line x1="9" y1="5" x2="9" y2="11" /><line x1="12" y1="5" x2="12" y2="11" /><line x1="15" y1="5" x2="15" y2="11" /></svg>Network (PXE)</span>;
             const sn = nodes.find((n) => n.id === first);
             if (!sn) return "hd";
-            const fmt = (sn.data as Record<string, unknown>).format as string;
-            const name = (sn.data as Record<string, unknown>).name as string;
+            const fmt = (sn.data as Record<string, any>).format as string;
+            const name = (sn.data as Record<string, any>).name as string;
             return fmt === "iso" ? `💿 ${name}` : `🛢 ${name}`;
           })()}</span>
         </div>

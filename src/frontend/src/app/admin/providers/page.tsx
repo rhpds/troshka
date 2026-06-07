@@ -18,6 +18,10 @@ interface ProviderInfo {
   name: string;
   type: string;
   default_region: string | null;
+  default_ami: string | null;
+  vpc_id: string | null;
+  subnet_id: string | null;
+  security_group_id: string | null;
   state: string;
   has_credentials: boolean;
   host_count: number;
@@ -335,13 +339,13 @@ export default function AdminProvidersPage() {
                       {p.default_region}
                       {p.type !== "s3" && <span> · {p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
                       {p.type !== "s3" && (
-                        (p as Record<string, unknown>).default_ami
-                          ? <span> · AMI: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).default_ami as string}</code></span>
+                        p.default_ami
+                          ? <span> · AMI: <code style={{ fontSize: 11 }}>{p.default_ami}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
                       )}
                       {p.type !== "s3" && (
-                        (p as Record<string, unknown>).vpc_id
-                          ? <span> · VPC: <code style={{ fontSize: 11 }}>{(p as Record<string, unknown>).vpc_id as string}</code></span>
+                        p.vpc_id
+                          ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
                       )}
                     </div>

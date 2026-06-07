@@ -25,6 +25,8 @@ class HostResponse(BaseModel):
     ip_address: str | None = None
     agent_status: str
     storage_size_gb: int = 500
+    max_eips: int = 0
+    used_eips: int = 0
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}

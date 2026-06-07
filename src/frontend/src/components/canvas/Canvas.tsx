@@ -185,7 +185,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
 
       const id = generateNodeId();
       const allNames = useCanvasStore.getState().nodes.map(
-        (n) => (n.data as Record<string, unknown>).name as string
+        (n) => (n.data as Record<string, any>).name as string
       ).filter(Boolean);
 
       const nextName = (prefix: string) => {
@@ -232,7 +232,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
         // Limit to one gateway per project
         if (item.type === "gateway") {
           const hasGateway = useCanvasStore.getState().nodes.some(
-            (n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "gateway"
+            (n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "gateway"
           );
           if (hasGateway) return;
         }
@@ -242,7 +242,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
 
         const existingCidrs = useCanvasStore.getState().nodes
           .filter((n) => n.type === "networkNode")
-          .map((n) => (n.data as Record<string, unknown>).cidr as string)
+          .map((n) => (n.data as Record<string, any>).cidr as string)
           .filter((c) => c && c.includes("/"));
 
         let newCidr = "10.0.0.0/24";
@@ -288,7 +288,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
           },
         };
       } else if (item.type === "snapshot") {
-        const snapshotId = (item.defaults as Record<string, unknown>)?.snapshotId as string;
+        const snapshotId = (item.defaults as Record<string, any>)?.snapshotId as string;
         if (!snapshotId) return;
         const projectId = useCanvasStore.getState().currentProjectId;
         if (!projectId) return;
@@ -332,8 +332,8 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
       const isRouterHandle = (h: string) => h === "left" || h === "right";
       const isVmNetHandle = (h: string) => h.startsWith("nic-") || h === "top" || h === "bottom";
 
-      const sSub = (sourceNode.data as Record<string, unknown>).subtype as string | undefined;
-      const tSub = (targetNode.data as Record<string, unknown>).subtype as string | undefined;
+      const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
+      const tSub = (targetNode.data as Record<string, any>).subtype as string | undefined;
       const sIsRouter = sourceNode.type === "networkNode" && sSub === "router";
       const tIsRouter = targetNode.type === "networkNode" && tSub === "router";
       const sIsGateway = sourceNode.type === "networkNode" && sSub === "gateway";
@@ -466,7 +466,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
           {hiddenNodeIds.map((nid) => {
             const n = nodes.find((node) => node.id === nid);
             if (!n) return null;
-            const name = (n.data as Record<string, unknown>).name as string || nid;
+            const name = (n.data as Record<string, any>).name as string || nid;
             return (
               <button key={nid} onClick={() => unhideNode(nid)} title={`Show ${name}`}>
                 {name}

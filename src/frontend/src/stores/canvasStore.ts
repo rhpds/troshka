@@ -19,6 +19,7 @@ export interface VMNic {
   name: string;
   mac: string;
   model: string;
+  ip?: string;
 }
 
 export interface VMDiskController {
@@ -33,14 +34,15 @@ export interface VMNodeData {
   vcpus: number;
   ram: number;
   os: string;
-  status: "running" | "stopped";
+  status: "running" | "stopped" | "redeploying";
   bootOrder?: number;
   bootMethod?: string;
   cloudInit?: boolean;
   icon: string;
   nics: VMNic[];
   diskControllers: VMDiskController[];
-  [key: string]: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
 export interface NetworkNodeData {
@@ -51,7 +53,8 @@ export interface NetworkNodeData {
   dhcp: boolean;
   dns: boolean;
   dnsDomain?: string;
-  [key: string]: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
 export interface StorageNodeData {
@@ -60,7 +63,8 @@ export interface StorageNodeData {
   size: number;
   format: "qcow2" | "raw" | "iso";
   icon: string;
-  [key: string]: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
 export type CanvasNodeData = VMNodeData | NetworkNodeData | StorageNodeData;
@@ -88,6 +92,11 @@ interface CanvasState {
   nodes: Node[];
   edges: Edge[];
   selectedNodeId: string | null;
+  currentProjectId: string | null;
+  topologyDirty: boolean;
+  projectState: string;
+  deployedVmIds: Set<string>;
+  deployedDiskSizes: Record<string, number>;
   showMinimap: boolean;
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
@@ -185,7 +194,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         const names = removals
           .map((r) => {
             const node = updatedNodes.find((n) => n.id === (r as { id: string }).id);
-            return node ? (node.data as Record<string, unknown>).name as string || node.id : (r as { id: string }).id;
+            return node ? (node.data as Record<string, any>).name as string || node.id : (r as { id: string }).id;
           })
           .join(", ");
         if (!window.confirm(`Delete ${removals.length > 1 ? `${removals.length} items` : names}?`)) {
@@ -226,8 +235,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
     const sType = sourceNode.type;
     const tType = targetNode.type;
-    const sSub = (sourceNode.data as Record<string, unknown>).subtype as string | undefined;
-    const tSub = (targetNode.data as Record<string, unknown>).subtype as string | undefined;
+    const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
+    const tSub = (targetNode.data as Record<string, any>).subtype as string | undefined;
 
     const sIsRouter = sType === "networkNode" && sSub === "router";
     const tIsRouter = tType === "networkNode" && tSub === "router";
@@ -267,7 +276,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const storageId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
     if (storageId) {
       const storageNode = get().nodes.find((n) => n.id === storageId);
-      const isIso = storageNode && (storageNode.data as Record<string, unknown>).format === "iso";
+      const isIso = storageNode && (storageNode.data as Record<string, any>).format === "iso";
       if (!isIso) {
         const alreadyConnected = get().edges.some(
           (e) => e.source === storageId || e.target === storageId
@@ -503,8 +512,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const source = get().nodes.find((n) => n.id === nodeId);
     if (!source) return;
 
-    const allNames = get().nodes.map((n) => (n.data as Record<string, unknown>).name as string).filter(Boolean);
-    const baseName = (source.data as Record<string, unknown>).name as string || "node";
+    const allNames = get().nodes.map((n) => (n.data as Record<string, any>).name as string).filter(Boolean);
+    const baseName = (source.data as Record<string, any>).name as string || "node";
 
     const trailingNum = baseName.match(/^(.*?)[-_]?(\d+)$/);
     let newName: string;
@@ -524,13 +533,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const newId = generateNodeId();
 
     // Generate new NIC IDs and MACs for VMs
-    let newData = { ...source.data, name: newName, label: newName };
+    let newData: Record<string, any> = { ...source.data, name: newName, label: newName };
     if (source.type === "vmNode") {
-      const nics = (source.data as Record<string, unknown>).nics as Array<{id: string; name: string; mac: string; model: string}> || [];
+      const nics = (source.data as Record<string, any>).nics as Array<{id: string; name: string; mac: string; model: string}> || [];
       newData = {
         ...newData,
         nics: nics.map((nic, i) => ({ ...nic, id: generateNicId(), mac: generateMac() })),
-        diskControllers: ((source.data as Record<string, unknown>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
+        diskControllers: ((source.data as Record<string, any>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
           .map((dc) => ({ ...dc, id: generateDiskControllerId() })),
       };
     }
@@ -549,10 +558,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
     if (source.type === "vmNode") {
       const sourceEdges = get().edges.filter((e) => e.source === nodeId || e.target === nodeId);
-      const oldNics = (source.data as Record<string, unknown>).nics as Array<{id: string}> || [];
-      const newNics = (newData as Record<string, unknown>).nics as Array<{id: string}> || [];
-      const oldDcs = (source.data as Record<string, unknown>).diskControllers as Array<{id: string}> || [];
-      const newDcs = (newData as Record<string, unknown>).diskControllers as Array<{id: string}> || [];
+      const oldNics = (source.data as Record<string, any>).nics as Array<{id: string}> || [];
+      const newNics = (newData as Record<string, any>).nics as Array<{id: string}> || [];
+      const oldDcs = (source.data as Record<string, any>).diskControllers as Array<{id: string}> || [];
+      const newDcs = (newData as Record<string, any>).diskControllers as Array<{id: string}> || [];
 
       for (const edge of sourceEdges) {
         const otherNodeId = edge.source === nodeId ? edge.target : edge.source;
@@ -589,7 +598,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           {
             // Clone the disk/ISO node visually (ISOs share the same backend image)
             const diskNewId = generateNodeId();
-            const diskName = (otherNode.data as Record<string, unknown>).name as string || "disk";
+            const diskName = (otherNode.data as Record<string, any>).name as string || "disk";
             const diskTrailing = diskName.match(/^(.*?)[-_]?(\d+)$/);
             let diskNewName: string;
             if (diskTrailing) {
@@ -654,9 +663,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const updated = new Map<string, { x: number; y: number }>();
 
     // Classify nodes
-    const networks = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "network");
-    const routers = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "router");
-    const gateways = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "gateway");
+    const networks = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network");
+    const routers = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "router");
+    const gateways = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "gateway");
     const vmNodes = nodes.filter((n) => n.type === "vmNode");
     const storageNodes = nodes.filter((n) => n.type === "storageNode");
 
@@ -749,8 +758,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const src = nodes.find((n) => n.id === e.source);
       const tgt = nodes.find((n) => n.id === e.target);
       if (!src || !tgt) continue;
-      const srcSub = (src.data as Record<string, unknown>).subtype as string;
-      const tgtSub = (tgt.data as Record<string, unknown>).subtype as string;
+      const srcSub = (src.data as Record<string, any>).subtype as string;
+      const tgtSub = (tgt.data as Record<string, any>).subtype as string;
       if (src.type === "networkNode" && tgt.type === "networkNode") {
         if (srcSub === "router" || srcSub === "gateway") {
           routerToNets.set(src.id, [...(routerToNets.get(src.id) || []), tgt.id]);
@@ -862,7 +871,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[]; startOrder: StartOrderEntry[]; externalIps: ExternalIp[] }) {
   const cleanNodes = state.nodes.map((n) => {
     if (n.type !== "vmNode") return n;
-    const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, unknown>;
+    const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, any>;
     return { ...n, data: rest };
   });
   const topology = {

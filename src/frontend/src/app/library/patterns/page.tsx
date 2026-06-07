@@ -33,6 +33,7 @@ interface Pattern {
   visibility: string;
   disk_count: number;
   total_size_gb: number;
+  total_size_bytes: number;
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;

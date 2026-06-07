@@ -156,7 +156,7 @@ export default function PropertiesPanel() {
     );
   }
 
-  const data = node.data as Record<string, unknown>;
+  const data = node.data as Record<string, any>;
   const nodeType = node.type;
 
   const update = (field: string, value: unknown) => {
@@ -316,16 +316,16 @@ export default function PropertiesPanel() {
 
                 const bootableDisks = connectedStorageIds
                   .map((sid) => nodes.find((n) => n.id === sid))
-                  .filter((n) => n && (n.data as Record<string, unknown>).bootable !== false)
+                  .filter((n) => n && (n.data as Record<string, any>).bootable !== false)
                   .map((n) => ({
                     id: n!.id,
-                    name: (n!.data as Record<string, unknown>).name as string,
-                    format: (n!.data as Record<string, unknown>).format as string,
-                    size: (n!.data as Record<string, unknown>).size as number,
-                    type: (n!.data as Record<string, unknown>).format === "iso" ? "cdrom" as const : "disk" as const,
+                    name: (n!.data as Record<string, any>).name as string,
+                    format: (n!.data as Record<string, any>).format as string,
+                    size: (n!.data as Record<string, any>).size as number,
+                    type: (n!.data as Record<string, any>).format === "iso" ? "cdrom" as const : "disk" as const,
                   }));
 
-                let bootDevices = (data as Record<string, unknown>).bootDevices as string[] | null;
+                let bootDevices = (data as Record<string, any>).bootDevices as string[] | null;
                 if (!bootDevices) {
                   bootDevices = [...bootableDisks.map((d) => d.id), "network"];
                   setTimeout(() => update("bootDevices", bootDevices!), 0);
@@ -451,12 +451,12 @@ export default function PropertiesPanel() {
               <>
                 <div className="props-field">
                   <label className="props-label">Hostname</label>
-                  <input className="props-input" value={(data as Record<string, unknown>).ciHostname as string || ""} onChange={(e) => update("ciHostname", e.target.value)} placeholder={`${(data as unknown as VMNodeData).name}`} />
+                  <input className="props-input" value={(data as Record<string, any>).ciHostname as string || ""} onChange={(e) => update("ciHostname", e.target.value)} placeholder={`${(data as unknown as VMNodeData).name}`} />
                 </div>
                 <div className="props-field">
                   <label className="props-label">root password</label>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, unknown>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, any>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
                     <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
                       {showPassword ? "🙈" : "👁"}
                     </button>
@@ -465,7 +465,7 @@ export default function PropertiesPanel() {
                 <div className="props-field">
                   <label className="props-label">cloud-user password</label>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, unknown>).ciCloudUserPassword as string || ""} onChange={(e) => update("ciCloudUserPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, any>).ciCloudUserPassword as string || ""} onChange={(e) => update("ciCloudUserPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
                     <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
                       {showPassword ? "🙈" : "👁"}
                     </button>
@@ -475,7 +475,7 @@ export default function PropertiesPanel() {
                   <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <input
                       type="checkbox"
-                      checked={(data as Record<string, unknown>).ciCloudUserSudo as boolean ?? true}
+                      checked={(data as Record<string, any>).ciCloudUserSudo as boolean ?? true}
                       onChange={(e) => update("ciCloudUserSudo", e.target.checked)}
                     />
                     cloud-user has sudo
@@ -486,7 +486,7 @@ export default function PropertiesPanel() {
                   {sshKeys.length > 0 ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {sshKeys.map((k) => {
-                        const selectedIds: number[] = (data as Record<string, unknown>).ciSshKeyIds as number[] || [];
+                        const selectedIds: number[] = (data as Record<string, any>).ciSshKeyIds as number[] || [];
                         const isSelected = selectedIds.includes(k.id);
                         return (
                           <label key={k.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
@@ -510,15 +510,15 @@ export default function PropertiesPanel() {
                   <textarea className="props-input" style={{
                     minHeight: 60, fontFamily: "monospace", fontSize: 11,
                     borderColor: (() => {
-                      const val = ((data as Record<string, unknown>).ciUserData as string || "").trim();
+                      const val = ((data as Record<string, any>).ciUserData as string || "").trim();
                       if (!val) return undefined;
                       const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
                       const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
                       return hasValidStructure ? undefined : "var(--troshka-red)";
                     })(),
-                  }} value={(data as Record<string, unknown>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
+                  }} value={(data as Record<string, any>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
                   {(() => {
-                    const val = ((data as Record<string, unknown>).ciUserData as string || "").trim();
+                    const val = ((data as Record<string, any>).ciUserData as string || "").trim();
                     if (!val) return null;
                     const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
                     const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
@@ -535,7 +535,7 @@ export default function PropertiesPanel() {
           <div className="props-section">
             <div className="props-section-title">Network Interfaces</div>
             {(() => {
-              let nics = ((data as unknown as VMNodeData).nics || []) as Array<{id: string; name: string; mac: string; model: string}>;
+              let nics = ((data as unknown as VMNodeData).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
               if (nics.length === 0) {
                 nics = [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }];
                 update("nics", nics);
@@ -584,8 +584,8 @@ export default function PropertiesPanel() {
                           (e.target === node!.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
                         );
                         const netNode = netEdge ? nodes.find((n) => n.id === (netEdge.source === node!.id ? netEdge.target : netEdge.source) && n.type === "networkNode") : null;
-                        const netCidr = netNode ? (netNode.data as Record<string, unknown>).cidr as string : "";
-                        const nicIp = (nic as Record<string, unknown>).ip as string || "";
+                        const netCidr = netNode ? (netNode.data as Record<string, any>).cidr as string : "";
+                        const nicIp = (nic as Record<string, any>).ip as string || "";
                         const ipInCidr = (ip: string, cidr: string) => {
                           if (!ip || !cidr) return true;
                           const [netAddr, bits] = cidr.split("/");
@@ -600,7 +600,7 @@ export default function PropertiesPanel() {
                         };
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
                         const ipConflict = nicIp ? (() => {
-                          const nd = netNode!.data as Record<string, unknown>;
+                          const nd = netNode!.data as Record<string, any>;
                           const gwIp = (nd.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
                           if (gwIp && gwIp === nicIp) return "gateway IP";
                           if (nd.dnsServerIp === nicIp) return "DNS server IP";
@@ -618,7 +618,7 @@ export default function PropertiesPanel() {
                           }
                           for (const n of nodes) {
                             if (n.type !== "vmNode") continue;
-                            const vmNics = ((n.data as Record<string, unknown>).nics || []) as Array<Record<string, unknown>>;
+                            const vmNics = ((n.data as Record<string, any>).nics || []) as Array<Record<string, unknown>>;
                             for (const otherNic of vmNics) {
                               if (n.id === node!.id && otherNic.id === nic.id) continue;
                               if (otherNic.ip === nicIp) return n.data.name as string;
@@ -724,7 +724,7 @@ export default function PropertiesPanel() {
       {nodeType === "networkNode" && (() => {
         const nd = data as unknown as NetworkNodeData;
         const subtype = nd.subtype || "network";
-        const portForwards = (data as Record<string, unknown>).portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string}> || [];
+        const portForwards = (data as Record<string, any>).portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string}> || [];
 
         return (
           <>
@@ -790,7 +790,7 @@ export default function PropertiesPanel() {
                           <label className="props-label">Range Start</label>
                           <input
                             className="props-input"
-                            value={(data as Record<string, unknown>).dhcpRangeStart as string || ""}
+                            value={(data as Record<string, any>).dhcpRangeStart as string || ""}
                             onChange={(e) => update("dhcpRangeStart", e.target.value)}
                             placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
                             style={{ fontFamily: "monospace" }}
@@ -800,7 +800,7 @@ export default function PropertiesPanel() {
                           <label className="props-label">Range End</label>
                           <input
                             className="props-input"
-                            value={(data as Record<string, unknown>).dhcpRangeEnd as string || ""}
+                            value={(data as Record<string, any>).dhcpRangeEnd as string || ""}
                             onChange={(e) => update("dhcpRangeEnd", e.target.value)}
                             placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
                             style={{ fontFamily: "monospace" }}
@@ -811,7 +811,7 @@ export default function PropertiesPanel() {
                         <label className="props-label">Gateway IP</label>
                         <input
                           className="props-input"
-                          value={(data as Record<string, unknown>).dhcpGateway as string || ""}
+                          value={(data as Record<string, any>).dhcpGateway as string || ""}
                           onChange={(e) => update("dhcpGateway", e.target.value)}
                           placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "x.x.x.1"}
                           style={{ fontFamily: "monospace" }}
@@ -820,10 +820,10 @@ export default function PropertiesPanel() {
                       {(() => {
                         const dhcpErrors = validateDhcpRangeFull(
                           nd.cidr,
-                          (data as Record<string, unknown>).dhcpRangeStart as string || "",
-                          (data as Record<string, unknown>).dhcpRangeEnd as string || "",
-                          (data as Record<string, unknown>).dhcpGateway as string || "",
-                          (data as Record<string, unknown>).dnsServerIp as string || "",
+                          (data as Record<string, any>).dhcpRangeStart as string || "",
+                          (data as Record<string, any>).dhcpRangeEnd as string || "",
+                          (data as Record<string, any>).dhcpGateway as string || "",
+                          (data as Record<string, any>).dnsServerIp as string || "",
                         );
                         return dhcpErrors.length > 0 ? (
                           <div className="props-field">
@@ -839,7 +839,7 @@ export default function PropertiesPanel() {
                         <label className="props-label">Lease Time</label>
                         <select
                           className="props-select"
-                          value={(data as Record<string, unknown>).dhcpLeaseTime as string || "24h"}
+                          value={(data as Record<string, any>).dhcpLeaseTime as string || "24h"}
                           onChange={(e) => update("dhcpLeaseTime", e.target.value)}
                         >
                           <option value="1h">1 hour</option>
@@ -855,19 +855,19 @@ export default function PropertiesPanel() {
                         <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <input
                             type="checkbox"
-                            checked={(data as Record<string, unknown>).pxeEnabled as boolean ?? false}
+                            checked={(data as Record<string, any>).pxeEnabled as boolean ?? false}
                             onChange={(e) => update("pxeEnabled", e.target.checked)}
                           />
                           Enable Network Boot
                         </label>
                       </div>
-                      {(data as Record<string, unknown>).pxeEnabled && (
+                      {(data as Record<string, any>).pxeEnabled && (
                         <>
                           <div className="props-field">
                             <label className="props-label">Boot Method</label>
                             <select
                               className="props-select"
-                              value={(data as Record<string, unknown>).pxeMethod as string || "legacy"}
+                              value={(data as Record<string, any>).pxeMethod as string || "legacy"}
                               onChange={(e) => update("pxeMethod", e.target.value)}
                             >
                               <option value="legacy">Legacy PXE (TFTP)</option>
@@ -877,8 +877,8 @@ export default function PropertiesPanel() {
                           </div>
 
                           {(() => {
-                            const method = (data as Record<string, unknown>).pxeMethod as string || "legacy";
-                            const isByo = (data as Record<string, unknown>).pxeServerMode === "custom";
+                            const method = (data as Record<string, any>).pxeMethod as string || "legacy";
+                            const isByo = (data as Record<string, any>).pxeServerMode === "custom";
 
                             return (
                               <>
@@ -886,7 +886,7 @@ export default function PropertiesPanel() {
                                 {method !== "uefi-http" ? (
                                   <div className="props-field">
                                     <label className="props-label">Firmware</label>
-                                    <select className="props-select" value={(data as Record<string, unknown>).pxeFirmware as string || "bios"} onChange={(e) => update("pxeFirmware", e.target.value)}>
+                                    <select className="props-select" value={(data as Record<string, any>).pxeFirmware as string || "bios"} onChange={(e) => update("pxeFirmware", e.target.value)}>
                                       <option value="bios">BIOS (SeaBIOS)</option>
                                       <option value="uefi">UEFI (OVMF)</option>
                                     </select>
@@ -901,7 +901,7 @@ export default function PropertiesPanel() {
                                 {method === "uefi-http" && (
                                   <div className="props-field">
                                     <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <input type="checkbox" checked={(data as Record<string, unknown>).uefiSecureBoot as boolean ?? false} onChange={(e) => update("uefiSecureBoot", e.target.checked)} />
+                                      <input type="checkbox" checked={(data as Record<string, any>).uefiSecureBoot as boolean ?? false} onChange={(e) => update("uefiSecureBoot", e.target.checked)} />
                                       Secure Boot
                                     </label>
                                   </div>
@@ -911,7 +911,7 @@ export default function PropertiesPanel() {
                                 <div className="props-section-title">Boot Server</div>
                                 <div className="props-field">
                                   <label className="props-label">Provider</label>
-                                  <select className="props-select" value={(data as Record<string, unknown>).pxeServerMode as string || "builtin"} onChange={(e) => update("pxeServerMode", e.target.value)}>
+                                  <select className="props-select" value={(data as Record<string, any>).pxeServerMode as string || "builtin"} onChange={(e) => update("pxeServerMode", e.target.value)}>
                                     <option value="builtin">Troshka managed</option>
                                     <option value="custom">User provided (BYO)</option>
                                   </select>
@@ -940,24 +940,24 @@ export default function PropertiesPanel() {
                                       <>
                                         <div className="props-field">
                                           <label className="props-label">Next Server (TFTP)</label>
-                                          <input className="props-input" value={(data as Record<string, unknown>).pxeNextServer as string || ""} onChange={(e) => update("pxeNextServer", e.target.value)} placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "TFTP server IP"} style={{ fontFamily: "monospace" }} />
+                                          <input className="props-input" value={(data as Record<string, any>).pxeNextServer as string || ""} onChange={(e) => update("pxeNextServer", e.target.value)} placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "TFTP server IP"} style={{ fontFamily: "monospace" }} />
                                         </div>
                                         <div className="props-field">
                                           <label className="props-label">Boot Filename</label>
-                                          <input className="props-input" value={(data as Record<string, unknown>).pxeBootFile as string || ""} onChange={(e) => update("pxeBootFile", e.target.value)} placeholder="pxelinux.0" style={{ fontFamily: "monospace" }} />
+                                          <input className="props-input" value={(data as Record<string, any>).pxeBootFile as string || ""} onChange={(e) => update("pxeBootFile", e.target.value)} placeholder="pxelinux.0" style={{ fontFamily: "monospace" }} />
                                         </div>
                                       </>
                                     )}
                                     {method === "ipxe" && (
                                       <div className="props-field">
                                         <label className="props-label">iPXE Script URL</label>
-                                        <input className="props-input" value={(data as Record<string, unknown>).ipxeScriptUrl as string || ""} onChange={(e) => update("ipxeScriptUrl", e.target.value)} placeholder="http://10.0.0.1/boot.ipxe" style={{ fontFamily: "monospace" }} />
+                                        <input className="props-input" value={(data as Record<string, any>).ipxeScriptUrl as string || ""} onChange={(e) => update("ipxeScriptUrl", e.target.value)} placeholder="http://10.0.0.1/boot.ipxe" style={{ fontFamily: "monospace" }} />
                                       </div>
                                     )}
                                     {method === "uefi-http" && (
                                       <div className="props-field">
                                         <label className="props-label">Boot URL</label>
-                                        <input className="props-input" value={(data as Record<string, unknown>).uefiBootUrl as string || ""} onChange={(e) => update("uefiBootUrl", e.target.value)} placeholder="http://10.0.0.1/boot/grubx64.efi" style={{ fontFamily: "monospace" }} />
+                                        <input className="props-input" value={(data as Record<string, any>).uefiBootUrl as string || ""} onChange={(e) => update("uefiBootUrl", e.target.value)} placeholder="http://10.0.0.1/boot/grubx64.efi" style={{ fontFamily: "monospace" }} />
                                       </div>
                                     )}
                                   </>
@@ -982,7 +982,7 @@ export default function PropertiesPanel() {
                         <label className="props-label">DNS Server IP</label>
                         <input
                           className="props-input"
-                          value={(data as Record<string, unknown>).dnsServerIp as string || ""}
+                          value={(data as Record<string, any>).dnsServerIp as string || ""}
                           onChange={(e) => update("dnsServerIp", e.target.value)}
                           placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
                           style={{ fontFamily: "monospace" }}
@@ -999,7 +999,7 @@ export default function PropertiesPanel() {
                         <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <input
                             type="checkbox"
-                            checked={(data as Record<string, unknown>).dnsUpstream as boolean ?? false}
+                            checked={(data as Record<string, any>).dnsUpstream as boolean ?? false}
                             onChange={(e) => update("dnsUpstream", e.target.checked)}
                           />
                           Forward to upstream (internet)
@@ -1030,7 +1030,7 @@ export default function PropertiesPanel() {
                     </p>
                     <div style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>
                       {(() => {
-                        const routes = (data as Record<string, unknown>).staticRoutes as Array<{dest: string; nextHop: string}> || [];
+                        const routes = (data as Record<string, any>).staticRoutes as Array<{dest: string; nextHop: string}> || [];
                         return routes.length === 0
                           ? <span>No static routes — only connected subnets are routed.</span>
                           : routes.map((r, i) => (
@@ -1050,7 +1050,7 @@ export default function PropertiesPanel() {
                       className="props-library-btn"
                       style={{ marginTop: 6 }}
                       onClick={() => {
-                        const routes = (data as Record<string, unknown>).staticRoutes as Array<{dest: string; nextHop: string}> || [];
+                        const routes = (data as Record<string, any>).staticRoutes as Array<{dest: string; nextHop: string}> || [];
                         update("staticRoutes", [...routes, { dest: "", nextHop: "" }]);
                       }}
                     >
@@ -1071,14 +1071,14 @@ export default function PropertiesPanel() {
                     <label className="props-label">Mode</label>
                     <select
                       className="props-select"
-                      value={(data as Record<string, unknown>).gatewayMode as string || "nat"}
+                      value={(data as Record<string, any>).gatewayMode as string || "nat"}
                       onChange={(e) => update("gatewayMode", e.target.value)}
                     >
                       <option value="nat">NAT (outbound only)</option>
                       <option value="nat-portforward">NAT + Port Forwarding</option>
                     </select>
                   </div>
-                  {(data as Record<string, unknown>).gatewayMode === "nat-portforward" && (() => {
+                  {(data as Record<string, any>).gatewayMode === "nat-portforward" && (() => {
                     const projectIps = useCanvasStore.getState().externalIps;
                     return projectIps.length === 0 ? (
                       <div className="props-field">
@@ -1097,19 +1097,19 @@ export default function PropertiesPanel() {
                     <label className="props-label">Outbound Policy</label>
                     <select
                       className="props-select"
-                      value={(data as Record<string, unknown>).outboundPolicy as string || "allow-all"}
+                      value={(data as Record<string, any>).outboundPolicy as string || "allow-all"}
                       onChange={(e) => update("outboundPolicy", e.target.value)}
                     >
                       <option value="allow-all">Allow all outbound</option>
                       <option value="restrict">Restrict by port</option>
                     </select>
                   </div>
-                  {(data as Record<string, unknown>).outboundPolicy === "restrict" && (
+                  {(data as Record<string, any>).outboundPolicy === "restrict" && (
                     <div className="props-field">
                       <label className="props-label">Allowed Ports</label>
                       <input
                         className="props-input"
-                        value={(data as Record<string, unknown>).outboundPorts as string || ""}
+                        value={(data as Record<string, any>).outboundPorts as string || ""}
                         onChange={(e) => update("outboundPorts", e.target.value)}
                         placeholder="e.g. 80,443,53/udp"
                         style={{ fontFamily: "monospace" }}
@@ -1121,7 +1121,7 @@ export default function PropertiesPanel() {
                   )}
                 </div>
 
-                {(data as Record<string, unknown>).gatewayMode === "nat-portforward" && (
+                {(data as Record<string, any>).gatewayMode === "nat-portforward" && (
                   <>
                     <div className="props-divider" />
                     <div className="props-section">
@@ -1277,9 +1277,9 @@ export default function PropertiesPanel() {
                   >
                     📚 Select from Library...
                   </button>
-                  {(data as Record<string, unknown>).libraryItemName ? (
+                  {(data as Record<string, any>).libraryItemName ? (
                     <span style={{ fontSize: 12, marginTop: 4, display: "block", color: "var(--troshka-green)" }}>
-                      💿 {(data as Record<string, unknown>).libraryItemName as string}
+                      💿 {(data as Record<string, any>).libraryItemName as string}
                     </span>
                   ) : (
                     <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
@@ -1287,11 +1287,11 @@ export default function PropertiesPanel() {
                     </span>
                   )}
                 </div>
-                {(data as Record<string, unknown>).libraryItemSize && (
+                {(data as Record<string, any>).libraryItemSize && (
                   <div className="props-field">
                     <label className="props-label">Size</label>
                     <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
-                      {(data as Record<string, unknown>).libraryItemSize as number} GB (read-only)
+                      {(data as Record<string, any>).libraryItemSize as number} GB (read-only)
                     </span>
                   </div>
                 )}
@@ -1303,7 +1303,7 @@ export default function PropertiesPanel() {
                   <label className="props-label">Source</label>
                   <select
                     className="props-select"
-                    value={(data as Record<string, unknown>).source as string || "blank"}
+                    value={(data as Record<string, any>).source as string || "blank"}
                     onChange={(e) => {
                       update("source", e.target.value);
                       if (e.target.value === "blank") {
@@ -1317,7 +1317,7 @@ export default function PropertiesPanel() {
                     <option value="library">From library image...</option>
                   </select>
                 </div>
-                {(data as Record<string, unknown>).source === "library" && (
+                {(data as Record<string, any>).source === "library" && (
                   <div className="props-field">
                     <button
                       className="props-library-btn"
@@ -1325,9 +1325,9 @@ export default function PropertiesPanel() {
                     >
                       📚 Select from Library...
                     </button>
-                    {(data as Record<string, unknown>).libraryItemName ? (
+                    {(data as Record<string, any>).libraryItemName ? (
                       <span style={{ fontSize: 12, marginTop: 4, display: "block", color: "var(--troshka-green)" }}>
-                        🛢 {(data as Record<string, unknown>).libraryItemName as string}
+                        🛢 {(data as Record<string, any>).libraryItemName as string}
                       </span>
                     ) : (
                       <span style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
@@ -1339,8 +1339,8 @@ export default function PropertiesPanel() {
                 <div className="props-row">
                   <div className="props-field">
                     {(() => {
-                      const isFromLibrary = (data as Record<string, unknown>).source === "library";
-                      const sourceImageSize = (data as Record<string, unknown>).libraryItemSize as number || 0;
+                      const isFromLibrary = (data as Record<string, any>).source === "library";
+                      const sourceImageSize = (data as Record<string, any>).libraryItemSize as number || 0;
                       const currentSize = sd.size;
                       const baseMin = isFromLibrary && sourceImageSize > 0 ? sourceImageSize : 1;
                       const deployedSize = (useCanvasStore.getState().deployedDiskSizes as Record<string, number>)[node.id] || 0;
@@ -1376,7 +1376,7 @@ export default function PropertiesPanel() {
                   <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <input
                       type="checkbox"
-                      checked={(data as Record<string, unknown>).bootable as boolean ?? true}
+                      checked={(data as Record<string, any>).bootable as boolean ?? true}
                       onChange={(e) => update("bootable", e.target.checked)}
                     />
                     Bootable
@@ -1442,7 +1442,7 @@ export default function PropertiesPanel() {
               libraryItemName: item.name,
               libraryItemSize: item.size_gb,
               source: "library",
-              size: Math.max(item.size_gb, (data as Record<string, unknown>).size as number || 0),
+              size: Math.max(item.size_gb, (data as Record<string, any>).size as number || 0),
               format: item.format === "iso" ? "iso" : item.format,
             });
           }}

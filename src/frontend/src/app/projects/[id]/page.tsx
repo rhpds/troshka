@@ -147,7 +147,7 @@ export default function ProjectCanvasPage() {
 
   // Poll vm-states when any VM is redeploying
   useEffect(() => {
-    const hasRedeploying = nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).status === "redeploying");
+    const hasRedeploying = nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).status === "redeploying");
     if (hasRedeploying) {
       const interval = setInterval(syncVmStates, 3000);
       return () => clearInterval(interval);
@@ -209,18 +209,18 @@ export default function ProjectCanvasPage() {
     const changes: { type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] = [];
     const runningVmIds = new Set<string>();
     for (const n of cur.nodes) {
-      if (n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running") runningVmIds.add(n.id);
+      if (n.type === "vmNode" && (n.data as Record<string, any>).status === "running") runningVmIds.add(n.id);
     }
     for (const n of cur.nodes) {
       if (n.type !== "storageNode") continue;
-      const curData = n.data as Record<string, unknown>;
+      const curData = n.data as Record<string, any>;
       const depData = depStorageMap[n.id];
       if (!depData) continue;
       if ((curData.libraryItemId as string || null) === (depData.libraryItemId as string || null)) continue;
       const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
       const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
       const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
-      const vmName = vmNode ? (vmNode.data as Record<string, unknown>).name as string : "a VM";
+      const vmName = vmNode ? (vmNode.data as Record<string, any>).name as string : "a VM";
       if (curData.format === "iso") {
         if (vmId && runningVmIds.has(vmId)) {
           changes.push({ type: "iso", storageName: curData.name as string, vmName, vmId });
@@ -245,7 +245,7 @@ export default function ProjectCanvasPage() {
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
-  const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "network").length;
+  const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network").length;
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
 
   const handlePublish = async () => {
@@ -500,7 +500,7 @@ export default function ProjectCanvasPage() {
         <SavePatternModal
           projectId={projectId}
           projectName={projectName}
-          hasRunningVMs={nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running")}
+          hasRunningVMs={nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).status === "running")}
           onSaved={() => {
             setShowPatternModal(false);
             showToast("Pattern saved successfully");

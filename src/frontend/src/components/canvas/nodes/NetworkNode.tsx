@@ -58,7 +58,7 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
           </div>
         )}
         {d.subtype === "gateway" && (() => {
-          const gw = d as unknown as Record<string, unknown>;
+          const gw = d as unknown as Record<string, any>;
           const isPortFwd = gw.gatewayMode === "nat-portforward";
           const portForwards = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string}>) || [];
           return (

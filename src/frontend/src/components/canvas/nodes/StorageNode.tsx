@@ -27,20 +27,23 @@ function StorageNodeComponent({ data, selected }: NodeProps) {
         <div className="storage-node-name">{d.name}</div>
         <div className="storage-node-size">
           {d.format === "iso"
-            ? (d as unknown as Record<string, unknown>).libraryItemName as string || ""
+            ? (d as unknown as Record<string, any>).libraryItemName as string || ""
             : `${d.size} GB`
           }
         </div>
-        {(d as unknown as Record<string, unknown>).source === "library" && (d as unknown as Record<string, unknown>).libraryItemName && d.format !== "iso" && (
-          <div style={{ fontSize: 10, color: "var(--troshka-green)", marginTop: 1 }}>
-            {(d as unknown as Record<string, unknown>).libraryItemName as string}
-          </div>
-        )}
+        {(() => {
+          const extra = d as unknown as Record<string, any>;
+          return extra.source === "library" && extra.libraryItemName && d.format !== "iso" ? (
+            <div style={{ fontSize: 10, color: "var(--troshka-green)", marginTop: 1 }}>
+              {String(extra.libraryItemName)}
+            </div>
+          ) : null;
+        })()}
         <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 1 }}>
           {d.format === "iso" ? "ISO" : formatLabel.toUpperCase()}
-          {(d as unknown as Record<string, unknown>).source === "library" ? " · library" : d.format !== "iso" ? " · blank" : ""}
+          {(d as unknown as Record<string, any>).source === "library" ? " · library" : d.format !== "iso" ? " · blank" : ""}
         </div>
-        {d.format === "iso" && !(d as unknown as Record<string, unknown>).libraryItemName && (
+        {d.format === "iso" && !(d as unknown as Record<string, any>).libraryItemName && (
           <div style={{ fontSize: 10, color: "var(--troshka-yellow)", marginTop: 2 }}>
             ⚠ Select ISO from library
           </div>

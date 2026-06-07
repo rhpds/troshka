@@ -23,9 +23,9 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
   const node = nodes.find((n) => n.id === nodeId);
   const isVm = node?.type === "vmNode";
   const isDeployed = isVm && deployedVmIds.has(nodeId);
-  const vmName = isVm ? (node?.data as Record<string, unknown>).name as string : "";
-  const isRunning = isVm && (node?.data as Record<string, unknown>).status === "running";
-  const isRedeploying = isVm && (node?.data as Record<string, unknown>).status === "redeploying";
+  const vmName = isVm ? (node?.data as Record<string, any>).name as string : "";
+  const isRunning = isVm && (node?.data as Record<string, any>).status === "running";
+  const isRedeploying = isVm && (node?.data as Record<string, any>).status === "redeploying";
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -61,7 +61,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
       )}
       {isDeployed && (
         <button onClick={() => {
-          window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${projectId.replace(/-/g, "")}_${nodeId.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
+          window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${(projectId ?? "").replace(/-/g, "")}_${nodeId.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
           onClose();
         }}>
           🖥 Console

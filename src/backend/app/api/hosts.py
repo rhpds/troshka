@@ -42,10 +42,12 @@ def list_hosts(
     if region:
         query = query.filter(Host.region == region)
     hosts = query.order_by(Host.region, Host.created_at).all()
-    # Add EIP usage to each host
+    results = []
     for host in hosts:
-        host.used_eips = get_host_eip_usage(db, host.id)
-    return hosts
+        resp = HostResponse.model_validate(host)
+        resp.used_eips = get_host_eip_usage(db, host.id)
+        results.append(resp)
+    return results
 
 
 @router.get("/storage")
