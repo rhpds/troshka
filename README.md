@@ -20,14 +20,14 @@ The name "troshka" evokes nesting — VMs inside VMs inside cloud infrastructure
 ### Key Features
 
 - **Visual topology editor** — Drag-and-drop VMs, networks, routers, gateways, and storage onto a Visio-like canvas
-- **Deep VM configuration** — NICs with model selection, disk controllers, boot device order, cloud-init, OS types matching QEMU/libvirt
-- **Network services** — DHCP, DNS, PXE boot (legacy, iPXE, UEFI HTTP), security rules per network
+- **Deep VM configuration** — NICs with model selection and static IP reservation, disk controllers, boot device order, cloud-init, OS types matching QEMU/libvirt
+- **Network services** — DHCP with static IP reservations (MAC→IP), DNS, PXE boot (legacy, iPXE, UEFI HTTP), security rules per network
 - **Routing & NAT** — L3 routers between subnets, NAT gateway with port forwarding and multiple external IPs
 - **Project sharing** — Publish environments as time-limited demo labs with guest console access
 - **Patterns** — Save entire projects as reusable patterns, stamp out hundreds of identical environments for labs and demos
-- **VM snapshots** — Capture individual VMs (config + disks) to the library, drag-and-drop into any project
+- **VM snapshots** — Capture individual VMs (config + disks) to the library, drag-and-drop into any project with auto-connected networks
 - **Bulk deployment** — Deploy 1-500 projects from a pattern with naming templates
-- **Host garbage collector** — Auto-sync capacity counters and clean orphaned resources on host reconnect
+- **Host garbage collector** — Auto-sync capacity counters, clean orphaned VMs/disks/bridges, repair missing networks, evict stale cache (configurable per type)
 - **API-first** — Full REST API with API key authentication, plus an Ansible collection for IaC
 - **Multi-provider** — Deploy to AWS EC2 (nested virtualization) or OCP Virtualization (KubeVirt)
 
@@ -186,8 +186,10 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 - [x] Phase 5: Host agent (libvirt, VM lifecycle, deploy, reconfigure)
 - [x] Phase 6: Console & power management (noVNC/SPICE proxy)
 - [x] Phase 7: Library system (S3 image registry, templates, upload/import)
-- [x] Patterns & VM snapshots (capture, deploy, bulk deploy)
-- [x] Host garbage collector (capacity sync, orphan cleanup)
+- [x] Patterns & VM snapshots (capture, deploy, bulk deploy, drag-import)
+- [x] Host garbage collector (capacity sync, orphan cleanup, network repair, cache eviction)
+- [x] Static IP reservations (NIC IP → dnsmasq dhcp-host, CIDR validation, conflict detection)
+- [x] Cloud-init improvements (unique instance-id per deploy, YAML validation, new chpasswd format)
 - [ ] Phase 8: Deployment & Ansible collection (OCP manifests, cron GC)
 
 ## License
