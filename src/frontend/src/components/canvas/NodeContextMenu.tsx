@@ -8,9 +8,10 @@ interface NodeContextMenuProps {
   x: number;
   y: number;
   onClose: () => void;
+  onSnapshotVM?: (nodeId: string, nodeName: string, isRunning: boolean) => void;
 }
 
-export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMenuProps) {
+export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }: NodeContextMenuProps) {
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const hideNode = useCanvasStore((s) => s.hideNode);
@@ -64,6 +65,11 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
           onClose();
         }}>
           🖥 Console
+        </button>
+      )}
+      {isVm && isDeployed && onSnapshotVM && (
+        <button onClick={() => { onSnapshotVM(nodeId, vmName, isRunning); onClose(); }}>
+          📸 Save VM Snapshot
         </button>
       )}
       <button onClick={() => { duplicateNode(nodeId); onClose(); }}>

@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 interface PaletteItemDef {
   type: string;
@@ -137,7 +137,36 @@ function onDragStart(
   event.dataTransfer.effectAllowed = "move";
 }
 
+interface SnapshotItem {
+  id: string;
+  name: string;
+  description: string;
+  size_bytes: number;
+}
+
 export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void }) {
+  const [snapshots, setSnapshots] = useState<SnapshotItem[]>([]);
+
+  useEffect(() => {
+    fetch("/api/v1/library/?type=snapshot")
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setSnapshots(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
+  const onSnapshotDragStart = (event: React.DragEvent<HTMLDivElement>, snapshot: SnapshotItem) => {
+    event.dataTransfer.setData(
+      "application/troshka-node",
+      JSON.stringify({
+        type: "snapshot",
+        label: snapshot.name,
+        icon: "📸",
+        defaults: { snapshotId: snapshot.id },
+      }),
+    );
+    event.dataTransfer.effectAllowed = "move";
+  };
+
   return (
     <div className="canvas-palette">
       {sections.map((section, sIdx) => (
@@ -162,6 +191,28 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
           </div>
         </React.Fragment>
       ))}
+      {snapshots.length > 0 && (
+        <>
+          <div className="palette-divider" />
+          <div className="palette-section">
+            <div className="palette-section-title">Snapshots</div>
+            {snapshots.map((snap) => (
+              <div
+                key={snap.id}
+                className="palette-item"
+                draggable
+                onDragStart={(e) => onSnapshotDragStart(e, snap)}
+              >
+                <div className="palette-icon" style={{ background: "rgba(74,222,128,0.15)" }}>📸</div>
+                <div>
+                  <div className="palette-item-label">{snap.name}</div>
+                  <div className="palette-item-desc">VM snapshot</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
       <div className="palette-divider" />
       <div className="palette-section">
         <div className="palette-section-title">Project</div>

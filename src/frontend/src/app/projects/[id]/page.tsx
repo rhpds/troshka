@@ -11,6 +11,7 @@ import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
+import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -22,6 +23,7 @@ export default function ProjectCanvasPage() {
   const [showStartOrder, setShowStartOrder] = useState(false);
   const [showExternalIps, setShowExternalIps] = useState(false);
   const [showPatternModal, setShowPatternModal] = useState(false);
+  const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectState, setProjectState] = useState("draft");
 
@@ -426,7 +428,10 @@ export default function ProjectCanvasPage() {
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
         <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />
-        <Canvas onSavePattern={() => setShowPatternModal(true)} />
+        <Canvas
+          onSavePattern={() => setShowPatternModal(true)}
+          onSnapshotVM={(vmId, vmName, isRunning) => setSnapshotTarget({ vmId, vmName, isRunning })}
+        />
         <PropertiesPanel />
         {toast && (
           <div style={{
@@ -461,6 +466,19 @@ export default function ProjectCanvasPage() {
             showToast("Pattern saved successfully");
           }}
           onClose={() => setShowPatternModal(false)}
+        />
+      )}
+      {snapshotTarget && (
+        <SnapshotVMModal
+          projectId={projectId}
+          vmId={snapshotTarget.vmId}
+          vmName={snapshotTarget.vmName}
+          isRunning={snapshotTarget.isRunning}
+          onSaved={() => {
+            setSnapshotTarget(null);
+            showToast("VM snapshot saved to library");
+          }}
+          onClose={() => setSnapshotTarget(null)}
         />
       )}
     </ReactFlowProvider>

@@ -43,9 +43,10 @@ interface EdgeContextMenuState {
 
 interface CanvasProps {
   onSavePattern?: () => void;
+  onSnapshotVM?: (nodeId: string, nodeName: string, isRunning: boolean) => void;
 }
 
-export default function Canvas({ onSavePattern }: CanvasProps) {
+export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -281,6 +282,24 @@ export default function Canvas({ onSavePattern }: CanvasProps) {
             icon: item.type === "iso" ? "💿" : "🛢",
           },
         };
+      } else if (item.type === "snapshot") {
+        const snapshotId = (item.defaults as Record<string, unknown>)?.snapshotId as string;
+        if (!snapshotId) return;
+        const projectId = useCanvasStore.getState().currentProjectId;
+        if (!projectId) return;
+        fetch(`/api/v1/projects/${projectId}/import-vm`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ snapshot_id: snapshotId, position: { x: position.x, y: position.y } }),
+        })
+          .then((r) => r.ok ? r.json() : null)
+          .then((data) => {
+            if (data?.topology) {
+              useCanvasStore.getState().loadProject(projectId);
+            }
+          })
+          .catch(() => {});
+        return; // Don't call addNode — the server handles topology updates
       } else {
         return;
       }
@@ -456,6 +475,7 @@ export default function Canvas({ onSavePattern }: CanvasProps) {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
+          onSnapshotVM={onSnapshotVM}
         />
       )}
       {edgeContextMenu && (
