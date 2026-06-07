@@ -418,6 +418,13 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
         lines.append(f"ip link del {vxlan_if} 2>/dev/null || true")
         lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
+    # Delete per-project nftables chains
+    pid = project_id[:8]
+    for chain_type, table in [("fwd", "filter"), ("post", "nat"), ("pre", "nat")]:
+        chain = f"troshka-{chain_type}-{pid}"
+        lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
+        lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
+
     lines.append("systemctl restart dnsmasq 2>/dev/null || true")
     lines.append("")
     lines.append('echo "=== Project destroyed ==="')
@@ -656,7 +663,7 @@ echo "{vm_name} reconfigured"
     return "\n".join(lines)
 
 
-def generate_network_teardown_script(vni_map: dict) -> str:
+def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str:
     """Generate a script to tear down only the network infrastructure."""
     lines = ["#!/bin/bash", "set -uo pipefail", ""]
 
@@ -664,6 +671,13 @@ def generate_network_teardown_script(vni_map: dict) -> str:
         lines.append(f"ip link del br-{vni} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
         lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
+
+    if project_id:
+        pid = project_id[:8]
+        for chain_type, table in [("fwd", "filter"), ("post", "nat"), ("pre", "nat")]:
+            chain = f"troshka-{chain_type}-{pid}"
+            lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
+            lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
 
     lines.append("systemctl restart dnsmasq 2>/dev/null || true")
     return "\n".join(lines)
@@ -888,7 +902,7 @@ def deploy_project_async(project_id: str):
         all_hosts = s.query(Host).filter(Host.state == "active").all()
         peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
         network_config = build_host_network_config(topology, vni_map, peer_ips)
-        net_script = generate_setup_script(network_config, host_ip)
+        net_script = generate_setup_script(network_config, host_ip, project_id)
 
         result = run_ssh_script(host_ip, private_key, net_script, timeout=120)
         if not result["success"]:
@@ -1048,7 +1062,7 @@ def stop_project_async(project_id: str):
         # Tear down networks
         vni_map = project.vni_map or {}
         if vni_map:
-            teardown_script = generate_network_teardown_script(vni_map)
+            teardown_script = generate_network_teardown_script(vni_map, project_id)
             run_ssh_script(host.ip_address, host.private_key, teardown_script, timeout=60)
 
         # Disassociate EIPs (but don't release — keep for redeploy)
@@ -1109,7 +1123,7 @@ def start_project_async(project_id: str):
             all_hosts = s.query(Host).filter(Host.state == "active").all()
             peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
             network_config = build_host_network_config(topology, vni_map, peer_ips)
-            net_script = generate_setup_script(network_config, host.ip_address)
+            net_script = generate_setup_script(network_config, host.ip_address, project_id)
             result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
             if not result["success"]:
                 project.state = "error"

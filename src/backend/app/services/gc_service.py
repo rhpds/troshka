@@ -314,7 +314,7 @@ def repair_networks(db: Session, host) -> dict:
             continue
         topo = p.deployed_topology or p.topology or {}
         config = build_host_network_config(topo, p.vni_map or {}, [])
-        script = generate_setup_script(config, host.ip_address)
+        script = generate_setup_script(config, host.ip_address, p.id)
         r = run_ssh_script(host.ip_address, host.private_key, script, timeout=30)
         if r["success"]:
             repaired += len(project_vnis.intersection(missing_vnis))

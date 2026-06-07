@@ -130,7 +130,7 @@ def sync_project_eips(
     all_hosts = db.query(Host).filter(Host.state == "active").all()
     peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
     network_config = build_host_network_config(topology, vni_map, peer_ips)
-    net_script = generate_setup_script(network_config, host.ip_address)
+    net_script = generate_setup_script(network_config, host.ip_address, project_id)
     result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
     if not result["success"]:
         logger.error("EIP sync network setup failed: %s", result["output"][-500:])

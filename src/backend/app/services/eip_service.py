@@ -39,8 +39,11 @@ def _detect_primary_iface(host_ip: str, private_key: str) -> str:
         "ip route show default | awk '{print $5}' | head -1",
         timeout=10,
     )
-    iface = result.get("output", "").strip().splitlines()
-    return iface[-1] if iface else "eth0"
+    lines = [
+        l.strip() for l in result.get("output", "").strip().splitlines()
+        if l.strip() and not l.strip().startswith("Warning:")
+    ]
+    return lines[0] if lines else "eth0"
 
 
 def allocate_eip(
@@ -134,17 +137,6 @@ def associate_eip(db: Session, eip: ElasticIp, host) -> None:
     association_id = assoc_resp["AssociationId"]
     logger.info(f"Associated EIP {eip.public_ip} to {private_ip} ({association_id})")
 
-    # Detect primary network interface
-    iface = _detect_primary_iface(host.ip_address, host.private_key)
-    logger.info(f"Primary interface on {host.ip_address}: {iface}")
-
-    # Configure IP on host
-    script = f"ip addr add {private_ip}/32 dev {iface}"
-    result = run_ssh_script(host.ip_address, host.private_key, script, timeout=10)
-    if not result["success"]:
-        logger.error(f"Failed to add {private_ip} to {iface}: {result['output']}")
-        # Don't fail — the association is complete, IP config is best-effort
-
     # Update DB
     eip.private_ip = private_ip
     eip.host_id = host.id
@@ -195,15 +187,6 @@ def disassociate_eip(db: Session, eip: ElasticIp, host) -> None:
             NetworkInterfaceId=eni_id, PrivateIpAddresses=[eip.private_ip]
         )
         logger.info(f"Unassigned private IP {eip.private_ip} from ENI {eni_id}")
-
-        # Remove IP from host
-        iface = _detect_primary_iface(host.ip_address, host.private_key)
-        script = f"ip addr del {eip.private_ip}/32 dev {iface}"
-        result = run_ssh_script(host.ip_address, host.private_key, script, timeout=10)
-        if not result["success"]:
-            logger.warning(
-                f"Failed to remove {eip.private_ip} from {iface}: {result['output']}"
-            )
 
     # Update DB
     eip.private_ip = None

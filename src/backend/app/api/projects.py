@@ -473,7 +473,7 @@ def reconfigure_project(
             all_hosts = s.query(Host).filter(Host.state == "active").all()
             peer_ips = [ho.ip_address for ho in all_hosts if ho.ip_address]
             net_config = build_host_network_config(current, vni_map, peer_ips)
-            net_script = generate_setup_script(net_config, h_ip)
+            net_script = generate_setup_script(net_config, h_ip, p_id)
             net_result = run_ssh_script(h_ip, h_key, net_script, timeout=120)
             if not net_result["success"]:
                 proj.state = "error"

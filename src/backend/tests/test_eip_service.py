@@ -124,10 +124,9 @@ def test_release_eip(mock_ec2_client, mock_ssh):
     db.close()
 
 
-@patch("app.services.eip_service.run_ssh_script")
 @patch("app.services.eip_service._get_ec2_client")
-def test_associate_eip(mock_ec2_client, mock_ssh):
-    """Test EIP association — mocks ENI lookup, assign, associate, SSH config."""
+def test_associate_eip(mock_ec2_client):
+    """Test EIP association — mocks ENI lookup, assign, associate."""
     mock_ec2 = MagicMock()
     mock_ec2.describe_instances.return_value = {
         "Reservations": [
@@ -150,7 +149,6 @@ def test_associate_eip(mock_ec2_client, mock_ssh):
     }
     mock_ec2.associate_address.return_value = {"AssociationId": "eipassoc-abc456"}
     mock_ec2_client.return_value = mock_ec2
-    mock_ssh.return_value = {"success": True, "output": "eth0\n"}
 
     db = TestSession()
     host = db.query(Host).filter_by(id=_host_id).first()
@@ -181,12 +179,6 @@ def test_associate_eip(mock_ec2_client, mock_ssh):
     assert assoc_call[1]["NetworkInterfaceId"] == "eni-primary123"
     assert assoc_call[1]["PrivateIpAddress"] == "10.0.1.50"
 
-    # Verify SSH call
-    assert mock_ssh.call_count == 2  # detect iface + ip addr add
-    ssh_calls = [call[0] for call in mock_ssh.call_args_list]
-    assert "ip route show default" in ssh_calls[0][2]
-    assert "ip addr add 10.0.1.50/32 dev eth0" in ssh_calls[1][2]
-
     # Verify DB state
     db.refresh(eip)
     assert eip.state == "associated"
@@ -197,9 +189,8 @@ def test_associate_eip(mock_ec2_client, mock_ssh):
     db.close()
 
 
-@patch("app.services.eip_service.run_ssh_script")
 @patch("app.services.eip_service._get_ec2_client")
-def test_disassociate_eip(mock_ec2_client, mock_ssh):
+def test_disassociate_eip(mock_ec2_client):
     """Test EIP disassociation — calls disassociate, unassign, SSH cleanup."""
     mock_ec2 = MagicMock()
     mock_ec2.describe_instances.return_value = {
@@ -219,7 +210,6 @@ def test_disassociate_eip(mock_ec2_client, mock_ssh):
         ]
     }
     mock_ec2_client.return_value = mock_ec2
-    mock_ssh.return_value = {"success": True, "output": "eth0\n"}
 
     db = TestSession()
     host = db.query(Host).filter_by(id=_host_id).first()
@@ -246,12 +236,6 @@ def test_disassociate_eip(mock_ec2_client, mock_ssh):
     unassign_call = mock_ec2.unassign_private_ip_addresses.call_args
     assert unassign_call[1]["NetworkInterfaceId"] == "eni-primary123"
     assert unassign_call[1]["PrivateIpAddresses"] == ["10.0.1.60"]
-
-    # Verify SSH cleanup
-    assert mock_ssh.call_count == 2  # detect iface + ip addr del
-    ssh_calls = [call[0] for call in mock_ssh.call_args_list]
-    assert "ip route show default" in ssh_calls[0][2]
-    assert "ip addr del 10.0.1.60/32 dev eth0" in ssh_calls[1][2]
 
     # Verify DB state
     db.refresh(eip)

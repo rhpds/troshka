@@ -251,8 +251,18 @@ echo "Network setup complete"
 """
 
 
-def generate_setup_script(config: dict, host_ip: str) -> str:
-    """Generate a shell script that sets up all networking on a host."""
+def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> str:
+    """Generate a shell script that sets up all networking on a host.
+
+    Uses per-project nftables chains so multiple projects on the same host
+    don't interfere with each other. Each project gets its own chain for
+    forward, postrouting, and prerouting rules.
+    """
+    pid = project_id[:8] if project_id else "default"
+    fwd_chain = f"troshka-fwd-{pid}"
+    post_chain = f"troshka-post-{pid}"
+    pre_chain = f"troshka-pre-{pid}"
+
     vxlan_cmds = []
     dhcp_cmds = []
     routing_cmds = []
@@ -263,9 +273,15 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
         "nft add table inet nat 2>/dev/null || true",
         "nft add chain inet nat postrouting '{ type nat hook postrouting priority 100; }' 2>/dev/null || true",
         "nft add chain inet nat prerouting '{ type nat hook prerouting priority -100; }' 2>/dev/null || true",
-        "nft flush chain inet filter forward 2>/dev/null || true",
-        "nft flush chain inet nat postrouting 2>/dev/null || true",
-        "nft flush chain inet nat prerouting 2>/dev/null || true",
+        f"nft add chain inet filter {fwd_chain} 2>/dev/null || true",
+        f"nft flush chain inet filter {fwd_chain}",
+        f"nft add chain inet nat {post_chain} 2>/dev/null || true",
+        f"nft flush chain inet nat {post_chain}",
+        f"nft add chain inet nat {pre_chain} 2>/dev/null || true",
+        f"nft flush chain inet nat {pre_chain}",
+        f"nft list chain inet filter forward 2>/dev/null | grep -q 'jump {fwd_chain}' || nft add rule inet filter forward jump {fwd_chain}",
+        f"nft list chain inet nat postrouting 2>/dev/null | grep -q 'jump {post_chain}' || nft add rule inet nat postrouting jump {post_chain}",
+        f"nft list chain inet nat prerouting 2>/dev/null | grep -q 'jump {pre_chain}' || nft add rule inet nat prerouting jump {pre_chain}",
     ]
 
     for net in config.get("networks", []):
@@ -314,9 +330,7 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                     dhcp_cmds.append(f"domain={net['dns_domain']}")
                 dhcp_cmds.append("DNSEOF")
 
-        # nftables: isolate this bridge from other project bridges
-        nft_cmds.append(f"# Network {net['name']} (VNI {vni})")
-        nft_cmds.append(f"nft add rule inet filter forward iifname \"{bridge}\" oifname \"{bridge}\" accept")
+        nft_cmds.append(f"nft add rule inet filter {fwd_chain} iifname \"{bridge}\" oifname \"{bridge}\" accept")
 
     # Router: enable forwarding between connected bridges
     for router in config.get("routers", []):
@@ -324,24 +338,18 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
             for vni_b in router["connected_vnis"][i + 1:]:
                 br_a = f"br-{vni_a}"
                 br_b = f"br-{vni_b}"
-                routing_cmds.append(f"nft add rule inet filter forward iifname \"{br_a}\" oifname \"{br_b}\" accept")
-                routing_cmds.append(f"nft add rule inet filter forward iifname \"{br_b}\" oifname \"{br_a}\" accept")
+                routing_cmds.append(f"nft add rule inet filter {fwd_chain} iifname \"{br_a}\" oifname \"{br_b}\" accept")
+                routing_cmds.append(f"nft add rule inet filter {fwd_chain} iifname \"{br_b}\" oifname \"{br_a}\" accept")
 
     # Gateway NAT
     gw = config.get("gateway")
     if gw and gw.get("mode") in ("nat", "nat-portforward"):
         gateway_cmds.append("sysctl -w net.ipv4.ip_forward=1")
 
-        # Add secondary private IPs for EIPs
-        for priv_ip in gw.get("eip_private_ips", []):
-            if priv_ip:
-                gateway_cmds.append(f"PRIMARY_IFACE=$(ip route show default | awk '{{print $5}}' | head -1)")
-                gateway_cmds.append(f"ip addr add {priv_ip}/32 dev $PRIMARY_IFACE 2>/dev/null || true")
-
         # Masquerade outbound from all project bridges
         for net in config.get("networks", []):
             bridge = net["bridge_name"]
-            gateway_cmds.append(f"nft add rule inet nat postrouting oifname != \"{bridge}\" iifname \"{bridge}\" masquerade")
+            gateway_cmds.append(f"nft add rule inet nat {post_chain} oifname != \"{bridge}\" iifname \"{bridge}\" masquerade")
 
         # Port forwards with EIP-specific DNAT
         if gw.get("mode") == "nat-portforward":
@@ -352,9 +360,9 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                 priv_ip = pf.get("_private_ip", "")
                 if ext_port and int_ip and int_port:
                     if priv_ip:
-                        gateway_cmds.append(f"nft add rule inet nat prerouting ip daddr {priv_ip} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
+                        gateway_cmds.append(f"nft add rule inet nat {pre_chain} ip daddr {priv_ip} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
                     else:
-                        gateway_cmds.append(f"nft add rule inet nat prerouting tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
+                        gateway_cmds.append(f"nft add rule inet nat {pre_chain} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
 
     if dhcp_cmds:
         dhcp_cmds.append("systemctl restart dnsmasq")
