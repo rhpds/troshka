@@ -303,6 +303,7 @@ def poweroff_host(host_id: str, user: User = Depends(require_role("admin")), db:
 
     host.state = "stopped"
     host.agent_status = "disconnected"
+    host.ip_address = None
     db.commit()
     return {"status": "stopped"}
 
