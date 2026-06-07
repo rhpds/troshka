@@ -56,6 +56,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [name, setName] = useState("");
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
   const [selectedPattern, setSelectedPattern] = useState<string | null>(null);
+  const [patternSearch, setPatternSearch] = useState("");
+  const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
@@ -157,27 +159,6 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {mode === "pattern" && (
-              <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
-                <div style={{ maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-                  {patterns.map((p) => (
-                    <div
-                      key={p.id}
-                      onClick={() => { setSelectedPattern(p.id); if (!name) setName(p.name); }}
-                      style={{
-                        padding: "8px 12px", borderRadius: 6, cursor: "pointer",
-                        border: `1px solid ${selectedPattern === p.id ? "#4ade80" : "var(--pf-t--global--border--color--default)"}`,
-                        background: selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent",
-                      }}
-                    >
-                      <div style={{ fontWeight: 500, fontSize: 13 }}>{p.name}</div>
-                      {p.description && <div style={{ fontSize: 11, opacity: 0.6 }}>{p.description}</div>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
             <div>
               <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Name</label>
               <input
@@ -185,10 +166,67 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="My Project"
-                autoFocus
+                autoFocus={mode === "blank"}
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
               />
             </div>
+            {mode === "pattern" && (
+              <div style={{ position: "relative" }}>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
+                <input
+                  style={{
+                    ...inputStyle,
+                    borderColor: selectedPattern ? "#4ade80" : inputStyle.border ? undefined : undefined,
+                    border: selectedPattern ? "1px solid #4ade80" : inputStyle.border,
+                  }}
+                  value={patternSearch}
+                  onChange={(e) => {
+                    setPatternSearch(e.target.value);
+                    setSelectedPattern(null);
+                    setPatternDropdownOpen(true);
+                  }}
+                  onFocus={() => setPatternDropdownOpen(true)}
+                  placeholder="Search patterns..."
+                  autoFocus
+                />
+                {patternDropdownOpen && (
+                  <div style={{
+                    position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10,
+                    maxHeight: 180, overflowY: "auto",
+                    background: "var(--pf-t--global--background--color--primary--default)",
+                    border: "1px solid var(--pf-t--global--border--color--default)",
+                    borderTop: "none", borderRadius: "0 0 6px 6px",
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                  }}>
+                    {patterns
+                      .filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase()))
+                      .map((p) => (
+                        <div
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedPattern(p.id);
+                            setPatternSearch(p.name);
+                            setPatternDropdownOpen(false);
+                            if (!name) setName(p.name);
+                          }}
+                          style={{
+                            padding: "8px 12px", cursor: "pointer",
+                            background: selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent",
+                          }}
+                          onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.05)"; }}
+                          onMouseLeave={(e) => { (e.target as HTMLElement).style.background = selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent"; }}
+                        >
+                          <div style={{ fontWeight: 500, fontSize: 13 }}>{p.name}</div>
+                          {p.description && <div style={{ fontSize: 11, opacity: 0.6 }}>{p.description}</div>}
+                        </div>
+                      ))}
+                    {patterns.filter((p) => !patternSearch || p.name.toLowerCase().includes(patternSearch.toLowerCase())).length === 0 && (
+                      <div style={{ padding: "8px 12px", fontSize: 13, opacity: 0.5 }}>No patterns found</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
               <button onClick={() => { setMode("choose"); setSelectedPattern(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
