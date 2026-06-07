@@ -381,6 +381,11 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
             result = deploy_agent(h.ip_address, h.private_key, h.id)
             h.agent_status = "connected" if result["success"] else "install_failed"
             s.commit()
+
+            if result["success"]:
+                from app.services.gc_service import reconcile_host
+                gc_report = reconcile_host(host_id)
+                logger.info("Host %s GC on connect: %s", host_id[:8], gc_report.get("orphans_found", 0))
         except Exception:
             logger.exception("Power on failed for host %s", host_id)
             try:
@@ -516,3 +521,27 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
             s.close()
 
     threading.Thread(target=_wait_terminated, daemon=True).start()
+
+
+@router.get("/{host_id}/gc/preview")
+def gc_preview(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Dry-run garbage collection — show what would be cleaned."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    from app.services.gc_service import reconcile_host
+    return reconcile_host(host_id, dry_run=True)
+
+
+@router.post("/{host_id}/gc")
+def gc_run(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Run garbage collection on a host."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.ip_address or host.agent_status != "connected":
+        raise HTTPException(status_code=400, detail="Host must be active with agent connected")
+
+    from app.services.gc_service import reconcile_host
+    return reconcile_host(host_id, dry_run=False)

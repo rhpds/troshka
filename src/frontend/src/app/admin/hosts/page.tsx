@@ -442,6 +442,28 @@ export default function AdminHostsPage() {
                   Installing...
                 </Button>
               )}
+              {h.state === "active" && h.agent_status === "connected" && (
+                <Button variant="secondary" onClick={async () => {
+                  const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
+                  if (resp.ok) {
+                    const report = await resp.json();
+                    const cap = report.capacity || {};
+                    const orphans = report.orphans_found || 0;
+                    const cleaned = report.cleanup?.cleaned || 0;
+                    const parts = [];
+                    if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
+                    else parts.push("Capacity: already in sync");
+                    if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                    else parts.push("No orphans found");
+                    alert(parts.join("\n"));
+                    loadHosts();
+                  } else {
+                    alert("GC failed — check server logs");
+                  }
+                }}>
+                  Clean
+                </Button>
+              )}
               {h.state === "active" && (
                 <Button variant="secondary" onClick={() => {
                   if (h.used_vcpus > 0 && !window.confirm("This host has projects allocated. Powering off will make them unavailable until the host is powered back on. Continue?")) return;
