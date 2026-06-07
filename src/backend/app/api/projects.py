@@ -702,8 +702,9 @@ def redeploy_project(
     if project.host_id:
         destroy_project_sync(project.id)
 
-    # Reset for fresh deploy — keep host_id so we reuse the same host
+    # Reset for fresh deploy
     project.state = "deploying"
+    project.host_id = None
     project.vni_map = None
     project.deploy_error = None
     db.commit()
