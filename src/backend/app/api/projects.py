@@ -541,12 +541,8 @@ def reconfigure_project(
             finally:
                 conn.close()
 
-            added_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["added_vms"])
-            added_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["added_vms"])
-            removed_vcpus = sum(n.get("data", {}).get("vcpus", 2) for n in diff["removed_vms"])
-            removed_ram = sum(n.get("data", {}).get("ram", 4) * 1024 for n in diff["removed_vms"])
-            h.used_vcpus = max(0, h.used_vcpus + added_vcpus - removed_vcpus)
-            h.used_ram_mb = max(0, h.used_ram_mb + added_ram - removed_ram)
+            from app.services.placement import sync_host_capacity
+            sync_host_capacity(s, h)
 
             proj.state = "active"
             if not errors:

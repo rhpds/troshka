@@ -51,6 +51,23 @@ def get_allocatable(host: Host) -> tuple[int, int]:
     return int(host.total_vcpus * cpu_ratio), int(host.total_ram_mb * ram_ratio)
 
 
+def sync_host_capacity(db: Session, host: Host):
+    """Recalculate host capacity from all assigned projects."""
+    from app.models.project import Project
+    projects = db.query(Project).filter(
+        Project.host_id == host.id,
+        Project.state.in_(("active", "stopped", "deploying", "reconfiguring", "starting", "stopping")),
+    ).all()
+    total_vcpus = 0
+    total_ram_mb = 0
+    for p in projects:
+        reqs = calculate_project_requirements(p.topology or {})
+        total_vcpus += reqs["total_vcpus"]
+        total_ram_mb += reqs["total_ram_mb"]
+    host.used_vcpus = total_vcpus
+    host.used_ram_mb = total_ram_mb
+
+
 def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int) -> Host | None:
     """Find an active host with enough free capacity (with overcommit)."""
     hosts = db.query(Host).filter(
@@ -115,8 +132,7 @@ def place_project(db: Session, project: Project) -> dict:
     network_config = build_host_network_config(project.topology, vni_map, peer_ips)
 
     # Update host capacity
-    host.used_vcpus += reqs["total_vcpus"]
-    host.used_ram_mb += reqs["total_ram_mb"]
+    sync_host_capacity(db, host)
     project.host_id = host.id
     project.state = "deploying"
     db.commit()

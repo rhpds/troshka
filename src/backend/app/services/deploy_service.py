@@ -1048,7 +1048,6 @@ def destroy_project_sync(project_id: str):
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
-    from app.services.placement import calculate_project_requirements
 
     s = SessionLocal()
     try:
@@ -1065,10 +1064,8 @@ def destroy_project_sync(project_id: str):
         destroy_script = generate_destroy_script(project_id, topo, vni_map)
         run_ssh_script(host.ip_address, host.private_key, destroy_script, timeout=120)
 
-        # Release host capacity
-        reqs = calculate_project_requirements(project.topology)
-        host.used_vcpus = max(0, host.used_vcpus - reqs["total_vcpus"])
-        host.used_ram_mb = max(0, host.used_ram_mb - reqs["total_ram_mb"])
+        from app.services.placement import sync_host_capacity
+        sync_host_capacity(s, host)
         s.commit()
 
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
