@@ -7,7 +7,6 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
-  useUpdateNodeInternals,
   type Node,
   type Edge,
 } from "@xyflow/react";
@@ -32,11 +31,15 @@ interface PatternPreviewModalProps {
 function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
   const [liveEdges, setLiveEdges] = useState<Edge[]>([]);
-  const updateNodeInternals = useUpdateNodeInternals();
 
-  const styledEdges = useMemo(() => edges.map((e) => ({
-    ...e,
+  const styledEdges = useMemo(() => edges.map((e, i) => ({
+    id: e.id || `preview-edge-${i}`,
+    source: e.source,
+    target: e.target,
+    type: "smoothstep",
     style: e.style || { stroke: "rgba(148,163,184,0.6)", strokeWidth: 2 },
+    animated: e.animated,
+    className: e.className,
   })), [edges]);
 
   return (
@@ -54,11 +57,7 @@ function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
       defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
       onInit={() => {
-        setTimeout(() => {
-          const nodeIds = nodes.map((n) => n.id);
-          nodeIds.forEach((id) => updateNodeInternals(id));
-          setTimeout(() => setLiveEdges(styledEdges), 100);
-        }, 300);
+        setTimeout(() => setLiveEdges(styledEdges), 100);
       }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
