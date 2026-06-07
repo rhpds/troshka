@@ -456,7 +456,8 @@ export default function AdminHostsPage() {
                     if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
                     else parts.push("No orphans found");
                     const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
-                    if (cacheOrphans > 0) parts.push(`Stale cache entries cleaned: ${cacheOrphans}`);
+                    const staleCache = report.orphans?.stale_cache?.length || 0;
+                    if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
                     const repaired = report.network_repair?.repaired || 0;
                     if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
                     else parts.push("Network bridges: OK");

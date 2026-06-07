@@ -38,3 +38,6 @@ defaults:
 overcommit:
   cpu_ratio: 4.0
   ram_ratio: 1.5
+
+gc:
+  cache_stale_hours: 1

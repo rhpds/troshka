@@ -61,6 +61,18 @@ echo "=== CACHED_PATTERNS ==="
 ls -1 /var/lib/troshka/cache/patterns/ 2>/dev/null || true
 echo "=== CACHED_SNAPSHOTS ==="
 ls -1 /var/lib/troshka/cache/snapshots/ 2>/dev/null || true
+echo "=== CACHE_ATIME ==="
+for d in /var/lib/troshka/cache/patterns/*/  /var/lib/troshka/cache/snapshots/*/; do
+    [ -d "$d" ] || continue
+    LATEST=0
+    for f in "$d"*; do
+        [ -f "$f" ] || continue
+        AT=$(stat -c %X "$f" 2>/dev/null || echo 0)
+        [ "$AT" -gt "$LATEST" ] && LATEST=$AT
+    done
+    TYPE=$(echo "$d" | grep -oP '(patterns|snapshots)')
+    echo "$TYPE/$(basename $d) $LATEST"
+done
 echo "=== END ==="
 """
     result = run_ssh_script(host.ip_address, host.private_key, script, timeout=30)
@@ -136,19 +148,41 @@ echo "=== END ==="
     cached_patterns = sections.get("CACHED_PATTERNS", [])
     cached_snapshots = sections.get("CACHED_SNAPSHOTS", [])
 
+    cache_atimes = {}
+    for entry in sections.get("CACHE_ATIME", []):
+        parts = entry.split()
+        if len(parts) == 2:
+            cache_atimes[parts[0]] = int(parts[1])
+
+    from app.core.config import config
+    stale_hours = getattr(getattr(config, "gc", None), "cache_stale_hours", 1)
+    stale_threshold = now - (stale_hours * 3600)
+
     orphaned_cache = []
+    stale_cache = []
     for pid in cached_patterns:
         if not db.query(Pattern).filter_by(id=pid).first():
             orphaned_cache.append(f"patterns/{pid}")
+        else:
+            atime = cache_atimes.get(f"patterns/{pid}", 0)
+            if atime > 0 and atime < stale_threshold:
+                hours_ago = (now - atime) // 3600
+                stale_cache.append({"path": f"patterns/{pid}", "last_accessed_hours_ago": hours_ago})
     for sid in cached_snapshots:
         if not db.query(LibraryItem).filter_by(id=sid, type="snapshot").first():
             orphaned_cache.append(f"snapshots/{sid}")
+        else:
+            atime = cache_atimes.get(f"snapshots/{sid}", 0)
+            if atime > 0 and atime < stale_threshold:
+                hours_ago = (now - atime) // 3600
+                stale_cache.append({"path": f"snapshots/{sid}", "last_accessed_hours_ago": hours_ago})
 
     return {
         "orphaned_projects": orphaned_projects,
         "orphaned_domains": orphaned_domains,
         "orphaned_bridges": orphaned_bridges,
         "orphaned_cache": orphaned_cache,
+        "stale_cache": stale_cache,
         "host_dirs": len(host_dirs),
         "host_domains": len(host_domains),
         "host_bridges": len(host_bridges),
@@ -184,6 +218,10 @@ def clean_orphans(host, orphans: dict) -> dict:
     for cache_path in orphans.get("orphaned_cache", []):
         lines.append(f'echo "Removing orphaned cache: {cache_path}"')
         lines.append(f"rm -rf /var/lib/troshka/cache/{cache_path}")
+
+    for entry in orphans.get("stale_cache", []):
+        lines.append(f'echo "Evicting stale cache ({entry["last_accessed_hours_ago"]}h old): {entry["path"]}"')
+        lines.append(f"rm -rf /var/lib/troshka/cache/{entry['path']}")
 
     if len(lines) <= 3:
         return {"cleaned": 0, "output": "Nothing to clean"}
@@ -281,6 +319,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             + len(orphans.get("orphaned_domains", []))
             + len(orphans.get("orphaned_bridges", []))
             + len(orphans.get("orphaned_cache", []))
+            + len(orphans.get("stale_cache", []))
         )
         report["orphans_found"] = total_orphans
 
