@@ -7,6 +7,8 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
+  useReactFlow,
+  useUpdateNodeInternals,
   applyNodeChanges,
   applyEdgeChanges,
   type Node,
@@ -36,6 +38,8 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
   const stableNodeTypes = useMemo(() => nodeTypes, []);
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const { setEdges: rfSetEdges } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
 
   const styledEdges = useMemo(() => initialEdges.map((e) => ({
     ...e,
@@ -67,7 +71,13 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
       defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
       onInit={() => {
-        setTimeout(() => setEdges(styledEdges), 500);
+        setTimeout(() => {
+          initialNodes.forEach((n) => updateNodeInternals(n.id));
+          setTimeout(() => {
+            rfSetEdges(styledEdges);
+            setEdges(styledEdges);
+          }, 200);
+        }, 500);
       }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
