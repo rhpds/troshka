@@ -1,14 +1,18 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ReactFlow,
   Background,
   BackgroundVariant,
   MiniMap,
   ReactFlowProvider,
+  applyNodeChanges,
+  applyEdgeChanges,
   type Node,
   type Edge,
+  type NodeChange,
+  type EdgeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -28,19 +32,30 @@ interface PatternPreviewModalProps {
   onClose: () => void;
 }
 
-function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
+function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; initialEdges: Edge[] }) {
   const stableNodeTypes = useMemo(() => nodeTypes, []);
-  const [liveEdges, setLiveEdges] = useState<Edge[]>([]);
+  const [nodes, setNodes] = useState<Node[]>(initialNodes);
+  const [edges, setEdges] = useState<Edge[]>([]);
 
-  const styledEdges = useMemo(() => edges.map((e) => ({
+  const styledEdges = useMemo(() => initialEdges.map((e) => ({
     ...e,
     style: e.style || { stroke: "rgba(148,163,184,0.6)", strokeWidth: 2 },
-  })), [edges]);
+  })), [initialEdges]);
+
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setNodes((nds) => applyNodeChanges(changes, nds));
+  }, []);
+
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    setEdges((eds) => applyEdgeChanges(changes, eds));
+  }, []);
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={liveEdges}
+      edges={edges}
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
       nodeTypes={stableNodeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -52,7 +67,7 @@ function PreviewCanvas({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) {
       defaultEdgeOptions={{ type: "smoothstep" }}
       proOptions={{ hideAttribution: true }}
       onInit={() => {
-        setTimeout(() => setLiveEdges(styledEdges), 1000);
+        setTimeout(() => setEdges(styledEdges), 500);
       }}
     >
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
@@ -116,7 +131,7 @@ export default function PatternPreviewModal({ patternId, patternName, onClose }:
             </div>
           ) : topology ? (
             <ReactFlowProvider>
-              <PreviewCanvas nodes={topology.nodes} edges={topology.edges} />
+              <PreviewCanvas initialNodes={topology.nodes} initialEdges={topology.edges} />
             </ReactFlowProvider>
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", opacity: 0.5 }}>
