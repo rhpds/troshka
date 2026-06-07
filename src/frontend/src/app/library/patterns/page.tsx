@@ -130,7 +130,20 @@ export default function PatternsPage() {
                 <CardTitle>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <strong>{pattern.name}</strong>
-                    <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
+                      <span
+                        style={{ color: "var(--pf-t--global--color--status--danger--default)", cursor: "pointer", padding: "0 4px", fontSize: 14 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Delete pattern "${pattern.name}"? This cannot be undone.`)) return;
+                          fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" })
+                            .then((r) => {
+                              if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
+                            });
+                        }}
+                      >✕</span>
+                    </div>
                   </div>
                 </CardTitle>
                 <CardBody>
