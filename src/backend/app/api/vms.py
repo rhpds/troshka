@@ -106,9 +106,9 @@ def snapshot_vm(
         "autoStart": vm_data.get("autoStart"),
     }
 
-    lib = db.query(Library).filter_by(owner_id=user.id, type="user").first()
+    lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()
     if not lib:
-        lib = Library(type="user", owner_id=user.id)
+        lib = Library(type="personal", owner_id=user.id)
         db.add(lib)
         db.commit()
         db.refresh(lib)
