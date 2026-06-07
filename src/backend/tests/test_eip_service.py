@@ -261,3 +261,34 @@ def test_disassociate_eip(mock_ec2_client, mock_ssh):
     assert eip.association_id is None
 
     db.close()
+
+
+@patch("app.services.eip_service._get_ec2_client")
+def test_sync_security_group_rules(mock_get_client):
+    """Test SG rule reconciliation — adds missing, removes stale, leaves non-troshka rules alone."""
+    mock_ec2 = MagicMock()
+    mock_ec2.describe_security_groups.return_value = {
+        "SecurityGroups": [{"IpPermissions": [
+            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
+            {"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
+             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "troshka-pf:proj-old:8080"}]},
+        ]}]
+    }
+    mock_get_client.return_value = mock_ec2
+
+    db = TestSession()
+    provider = db.query(Provider).filter_by(id=_provider_id).first()
+    provider.security_group_id = "sg-test123"
+    db.commit()
+
+    desired = [{"project_id": "proj-new", "ext_port": 443, "protocol": "tcp"}]
+
+    from app.services.eip_service import sync_security_group_rules
+    result = sync_security_group_rules(db, provider, desired)
+
+    assert result["added"] == 1
+    assert result["removed"] == 1
+    mock_ec2.authorize_security_group_ingress.assert_called_once()
+    mock_ec2.revoke_security_group_ingress.assert_called_once()
+    db.close()

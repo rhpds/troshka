@@ -287,3 +287,67 @@ def get_host_eip_usage(db: Session, host_id: str) -> int:
         .filter(ElasticIp.host_id == host_id, ElasticIp.state == "associated")
         .scalar()
     )
+
+
+def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) -> dict:
+    """Reconcile SG ingress rules. Only touches rules with 'troshka-pf:' description prefix."""
+    if not provider.security_group_id:
+        return {"added": 0, "removed": 0, "error": "No security group configured"}
+
+    ec2 = _get_ec2_client(provider)
+    sg_id = provider.security_group_id
+
+    sg = ec2.describe_security_groups(GroupIds=[sg_id])
+    current_perms = sg["SecurityGroups"][0]["IpPermissions"]
+
+    current_pf_rules = {}
+    for perm in current_perms:
+        for ip_range in perm.get("IpRanges", []):
+            desc = ip_range.get("Description", "")
+            if desc.startswith("troshka-pf:"):
+                key = f"{perm['IpProtocol']}:{perm['FromPort']}"
+                current_pf_rules[key] = {
+                    "protocol": perm["IpProtocol"],
+                    "port": perm["FromPort"],
+                    "description": desc,
+                }
+
+    desired_set = {}
+    for rule in desired_rules:
+        key = f"{rule.get('protocol', 'tcp')}:{rule['ext_port']}"
+        desired_set[key] = {
+            "protocol": rule.get("protocol", "tcp"),
+            "port": rule["ext_port"],
+            "description": f"troshka-pf:{rule['project_id']}:{rule['ext_port']}",
+        }
+
+    to_add = {k: v for k, v in desired_set.items() if k not in current_pf_rules}
+    to_remove = {k: v for k, v in current_pf_rules.items() if k not in desired_set}
+
+    if to_add:
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[{
+                "IpProtocol": r["protocol"],
+                "FromPort": r["port"],
+                "ToPort": r["port"],
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
+            } for r in to_add.values()],
+        )
+
+    if to_remove:
+        ec2.revoke_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[{
+                "IpProtocol": r["protocol"],
+                "FromPort": r["port"],
+                "ToPort": r["port"],
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
+            } for r in to_remove.values()],
+        )
+
+    added = len(to_add)
+    removed = len(to_remove)
+    if added or removed:
+        logger.info("SG %s sync: +%d -%d rules", sg_id, added, removed)
+    return {"added": added, "removed": removed}
