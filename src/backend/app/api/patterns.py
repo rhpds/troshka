@@ -116,10 +116,18 @@ def _remap_topology(topology: dict) -> dict:
         for entry in topo.get("startOrder", [])
     ]
 
-    topo["externalIps"] = [
-        {**entry, "vmId": id_map.get(entry.get("vmId", ""), entry.get("vmId", ""))}
-        for entry in topo.get("externalIps", [])
-    ]
+    eip_id_map = {}
+    new_eips = []
+    for entry in topo.get("externalIps", []):
+        new_id = f"eip-{uuid.uuid4().hex[:12]}"
+        eip_id_map[entry["id"]] = new_id
+        new_eips.append({"id": new_id, "name": entry.get("name", ""), "ip": ""})
+    topo["externalIps"] = new_eips
+    for node in topo.get("nodes", []):
+        for pf in node.get("data", {}).get("portForwards", []):
+            old_eip_id = pf.get("extIpId", "")
+            if old_eip_id in eip_id_map:
+                pf["extIpId"] = eip_id_map[old_eip_id]
 
     topo["hiddenNodeIds"] = [
         id_map.get(nid, nid) for nid in topo.get("hiddenNodeIds", [])
