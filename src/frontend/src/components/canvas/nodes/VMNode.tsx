@@ -27,6 +27,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   }, [id, nicCount, dcCount, updateNodeInternals]);
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const isDeployed = (projectState === "active" || projectState === "stopped") && deployedVmIds.has(id);
+  const startOrder = useCanvasStore((s) => s.startOrder);
+  const autoStart = (() => { const e = startOrder.find((o) => o.vmId === id); return e ? e.autoStart : true; })();
 
   const [actionPending, setActionPending] = useState<string | null>(null);
 
@@ -202,7 +204,26 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           }</span>
         </div>
 
-        {/* Boot order badge */}
+        <label className="vm-node-autostart" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 0" }} onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={autoStart}
+            onChange={(e) => {
+              e.stopPropagation();
+              const store = useCanvasStore.getState();
+              const order = [...store.startOrder];
+              const idx = order.findIndex((o) => o.vmId === id);
+              if (idx >= 0) {
+                order[idx] = { ...order[idx], autoStart: e.target.checked };
+              } else {
+                order.push({ vmId: id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
+              }
+              store.setStartOrder(order);
+            }}
+            style={{ width: 12, height: 12 }}
+          />
+          Auto-start
+        </label>
         {/* Warnings */}
         {(!hasStorage || !hasWritableDisk || !hasNetwork || hasSharedDisk) && (
           <div className="vm-node-warnings">

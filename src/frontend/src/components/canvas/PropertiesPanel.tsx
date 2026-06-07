@@ -384,6 +384,29 @@ export default function PropertiesPanel() {
                 Cloud-init enabled
               </label>
             </div>
+            <div className="props-field">
+              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={(() => {
+                    const entry = useCanvasStore.getState().startOrder.find((e) => e.vmId === node.id);
+                    return entry ? entry.autoStart : true;
+                  })()}
+                  onChange={(e) => {
+                    const store = useCanvasStore.getState();
+                    const order = [...store.startOrder];
+                    const idx = order.findIndex((o) => o.vmId === node.id);
+                    if (idx >= 0) {
+                      order[idx] = { ...order[idx], autoStart: e.target.checked };
+                    } else {
+                      order.push({ vmId: node.id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
+                    }
+                    store.setStartOrder(order);
+                  }}
+                />
+                Power on at deploy
+              </label>
+            </div>
             {(data as unknown as VMNodeData).cloudInit && useCanvasStore.getState().deployedVmIds.has(node.id) && (
               <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
                 Cloud-init runs on first boot only. Changes here require Republish to take effect.
