@@ -18,6 +18,7 @@ import {
   ToolbarItem,
 } from "@patternfly/react-core";
 import BulkDeployModal from "@/components/canvas/BulkDeployModal";
+import PatternPreviewModal from "@/components/canvas/PatternPreviewModal";
 
 interface PatternDisk {
   id: string;
@@ -43,6 +44,7 @@ export default function PatternsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [bulkPatternId, setBulkPatternId] = useState<string | null>(null);
+  const [previewPattern, setPreviewPattern] = useState<{ id: string; name: string } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
 
   const loadPatterns = () => {
@@ -124,7 +126,7 @@ export default function PatternsPage() {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
             {filtered.map((pattern) => (
-              <Card key={pattern.id} isCompact>
+              <Card key={pattern.id} isCompact style={{ cursor: "pointer" }} onClick={() => setPreviewPattern({ id: pattern.id, name: pattern.name })}>
                 <CardTitle>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <strong>{pattern.name}</strong>
@@ -140,7 +142,7 @@ export default function PatternsPage() {
                     {" · "}{formatSize(pattern.total_size_bytes)}
                     {" · "}{new Date(pattern.created_at).toLocaleDateString()}
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 8 }} onClick={(e) => e.stopPropagation()}>
                     <Button
                       variant="primary"
                       size="sm"
@@ -164,6 +166,14 @@ export default function PatternsPage() {
           </div>
         )}
       </PageSection>
+
+      {previewPattern && (
+        <PatternPreviewModal
+          patternId={previewPattern.id}
+          patternName={previewPattern.name}
+          onClose={() => setPreviewPattern(null)}
+        />
+      )}
 
       {bulkPatternId && (
         <BulkDeployModal
