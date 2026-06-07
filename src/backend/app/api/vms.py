@@ -113,6 +113,10 @@ def snapshot_vm(
         db.commit()
         db.refresh(lib)
 
+    existing = db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"You already have a snapshot named \"{body.name}\"")
+
     item = LibraryItem(
         library_id=lib.id,
         name=body.name,
