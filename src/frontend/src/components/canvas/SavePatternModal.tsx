@@ -48,6 +48,8 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
         if (!stopped) {
           setSavingStatus("Force powering off...");
           await fetch(`/api/v1/projects/${projectId}/force-stop`, { method: "POST" });
+          // Wait briefly for state to propagate
+          await new Promise((r) => setTimeout(r, 2000));
           for (let i = 0; i < 10; i++) {
             await new Promise((r) => setTimeout(r, 2000));
             const stateResp = await fetch(`/api/v1/projects/${projectId}`);

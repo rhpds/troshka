@@ -182,6 +182,37 @@ def stop_project(
     return {"status": "stopping"}
 
 
+@router.post("/{project_id}/force-stop")
+def force_stop_project(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host or not host.ip_address:
+        raise HTTPException(status_code=503, detail="Host not available")
+
+    topo = project.deployed_topology or project.topology or {}
+    vms = [n for n in topo.get("nodes", []) if n.get("type") == "vmNode"]
+    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
+    try:
+        for vm in vms:
+            dom = _domain_name(project_id, vm["id"])
+            libvirt_mgr.destroy_vm(conn, dom)
+    finally:
+        conn.close()
+
+    project.state = "stopped"
+    db.commit()
+    return {"status": "stopped"}
+
+
 @router.post("/{project_id}/start")
 def start_project(
     project_id: str,

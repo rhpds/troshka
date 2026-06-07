@@ -48,7 +48,7 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
         }
         if (!stopped) {
           setSavingStatus("Force powering off...");
-          await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/force-stop`, { method: "POST" });
+          await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/forcestop`, { method: "POST" });
           for (let i = 0; i < 10; i++) {
             await new Promise((r) => setTimeout(r, 2000));
             const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
