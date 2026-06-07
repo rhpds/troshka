@@ -34,20 +34,27 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
     setError("");
     try {
       if (hasRunningVMs && stopVMs) {
-        setSavingStatus("Stopping VMs...");
-        const stopResp = await fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" });
-        if (!stopResp.ok) {
-          setError("Failed to stop VMs");
-          setSaving(false);
-          return;
-        }
-        // Poll until stopped
-        for (let i = 0; i < 60; i++) {
+        setSavingStatus("Graceful shutdown...");
+        await fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" });
+        let stopped = false;
+        for (let i = 0; i < 10; i++) {
           await new Promise((r) => setTimeout(r, 3000));
           const stateResp = await fetch(`/api/v1/projects/${projectId}`);
           if (stateResp.ok) {
             const proj = await stateResp.json();
-            if (proj.state === "stopped") break;
+            if (proj.state === "stopped") { stopped = true; break; }
+          }
+        }
+        if (!stopped) {
+          setSavingStatus("Force powering off...");
+          await fetch(`/api/v1/projects/${projectId}/force-stop`, { method: "POST" });
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const stateResp = await fetch(`/api/v1/projects/${projectId}`);
+            if (stateResp.ok) {
+              const proj = await stateResp.json();
+              if (proj.state === "stopped") break;
+            }
           }
         }
       }

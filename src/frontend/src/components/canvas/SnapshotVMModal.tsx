@@ -35,14 +35,27 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
     setError("");
     try {
       if (isRunning && stopVM) {
-        setSavingStatus("Shutting down VM...");
+        setSavingStatus("Graceful shutdown...");
         await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/stop`, { method: "POST" });
-        for (let i = 0; i < 60; i++) {
+        let stopped = false;
+        for (let i = 0; i < 10; i++) {
           await new Promise((r) => setTimeout(r, 3000));
           const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
           if (stateResp.ok) {
             const st = await stateResp.json();
-            if (st.state === "shut off") break;
+            if (st.state === "shut off") { stopped = true; break; }
+          }
+        }
+        if (!stopped) {
+          setSavingStatus("Force powering off...");
+          await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/force-stop`, { method: "POST" });
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const stateResp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`);
+            if (stateResp.ok) {
+              const st = await stateResp.json();
+              if (st.state === "shut off") break;
+            }
           }
         }
       }
