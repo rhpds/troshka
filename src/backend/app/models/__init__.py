@@ -5,7 +5,7 @@ from app.models.project import Project, ProjectShare
 from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.network import Network, SecurityRule
 from app.models.disk import Disk
-from app.models.library import Library, LibraryItem, LibraryShare, ImageCache
+from app.models.library import Library, LibraryItem, LibraryItemDisk, LibraryShare, ImageCache
 from app.models.api_key import ApiKey
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 
@@ -15,7 +15,7 @@ __all__ = [
     "VM", "BootPrereq", "VMInterface",
     "Network", "SecurityRule",
     "Disk",
-    "Library", "LibraryItem", "LibraryShare", "ImageCache",
+    "Library", "LibraryItem", "LibraryItemDisk", "LibraryShare", "ImageCache",
     "ApiKey",
     "Pattern", "PatternDisk", "PatternShare",
 ]

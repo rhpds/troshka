@@ -13,7 +13,7 @@ from app.models.project import Project, ProjectShare
 from app.models.vm import VM, BootPrereq, VMInterface
 from app.models.network import Network, SecurityRule
 from app.models.disk import Disk
-from app.models.library import Library, LibraryItem
+from app.models.library import Library, LibraryItem, LibraryItemDisk
 
 engine = create_engine("sqlite:///./test_models.db", connect_args={"check_same_thread": False})
 Base.metadata.drop_all(bind=engine)
@@ -94,7 +94,7 @@ def test_all_tables_created():
         "vms", "boot_prereqs", "vm_interfaces",
         "networks", "security_rules",
         "disks",
-        "libraries", "library_items", "library_shares", "image_caches",
+        "libraries", "library_items", "library_item_disks", "library_shares", "image_caches",
         "patterns", "pattern_disks", "pattern_shares",
     ]
     for name in expected:
@@ -191,5 +191,49 @@ def test_create_pattern_share():
     assert share.pattern_id == pattern.id
     assert len(pattern.shares) == 1
     db.delete(pattern)
+    db.commit()
+    db.close()
+
+
+def test_create_library_item_disk():
+    db = Session()
+    user = db.query(User).first()
+    lib = db.query(Library).filter_by(owner_id=user.id).first()
+    if not lib:
+        lib = Library(type="user", owner_id=user.id)
+        db.add(lib)
+        db.commit()
+        db.refresh(lib)
+
+    item = LibraryItem(
+        library_id=lib.id,
+        name="Snapshot VM",
+        type="snapshot",
+        format="qcow2",
+        state="uploading",
+        vm_config={"vcpus": 4, "ram": 8192, "nics": []},
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    assert item.vm_config["vcpus"] == 4
+
+    disk = LibraryItemDisk(
+        library_item_id=item.id,
+        s3_key="snapshots/test/disk1.qcow2",
+        format="qcow2",
+        size_bytes=1073741824,
+        virtual_size_bytes=21474836480,
+        boot_order=0,
+        checksum_sha256="def456",
+        state="uploading",
+    )
+    db.add(disk)
+    db.commit()
+    db.refresh(disk)
+    assert disk.id is not None
+    assert disk.library_item_id == item.id
+    assert len(item.item_disks) == 1
+    db.delete(item)
     db.commit()
     db.close()

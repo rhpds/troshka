@@ -36,13 +36,14 @@ class LibraryItem(Base):
     os_variant: Mapped[str | None] = mapped_column(String(50))
     state: Mapped[str] = mapped_column(String(20), default="uploading")
     source_vm_id: Mapped[str | None] = mapped_column(String(36))
-    source_project_id: Mapped[str | None] = mapped_column(String(36))
+    vm_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     library: Mapped["Library"] = relationship(back_populates="items")
+    item_disks: Mapped[list["LibraryItemDisk"]] = relationship(back_populates="library_item", cascade="all, delete-orphan")
 
 
 class LibraryShare(Base):
@@ -52,6 +53,22 @@ class LibraryShare(Base):
     item_id: Mapped[str] = mapped_column(ForeignKey("library_items.id", ondelete="CASCADE"))
     shared_with_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     permission: Mapped[str] = mapped_column(String(10), default="use")
+
+
+class LibraryItemDisk(Base):
+    __tablename__ = "library_item_disks"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    library_item_id: Mapped[str] = mapped_column(ForeignKey("library_items.id", ondelete="CASCADE"))
+    s3_key: Mapped[str] = mapped_column(String(500))
+    format: Mapped[str] = mapped_column(String(10))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    virtual_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    boot_order: Mapped[int] = mapped_column(Integer, default=0)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(20), default="uploading")
+
+    library_item: Mapped["LibraryItem"] = relationship(back_populates="item_disks")
 
 
 class ImageCache(Base):
