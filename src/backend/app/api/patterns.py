@@ -364,6 +364,10 @@ def pattern_progress(
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
         raise HTTPException(status_code=404, detail="Pattern not found")
+    if pattern.owner_id != user.id and user.role != "admin" and pattern.visibility != "public":
+        shared = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+        if not shared:
+            raise HTTPException(status_code=404, detail="Pattern not found")
 
     progress = get_capture_progress(pattern_id)
     if progress is None:
