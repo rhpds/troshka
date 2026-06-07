@@ -75,6 +75,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
             disk_path = f"/var/lib/troshka/vms/{project_id}/{vm_id[:8]}-{disk_id[:8]}.{fmt}"
             presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
 
+            virtual_gb = int(disk_node.get("data", {}).get("size", 0))
             script = f'''set -e
 DISK_PATH="{disk_path}"
 FLAT_PATH="{disk_path}.flat.qcow2"
@@ -82,6 +83,13 @@ UPLOAD_URL='{presigned}'
 
 if [ ! -f "$DISK_PATH" ]; then
     echo "ERROR: disk not found at $DISK_PATH"
+    exit 1
+fi
+
+FREE_KB=$(df --output=avail /var/lib/troshka | tail -1)
+NEED_KB=$(( {virtual_gb} * 1048576 ))
+if [ "$FREE_KB" -lt "$NEED_KB" ]; then
+    echo "ERROR: not enough disk space to flatten. Need ~{virtual_gb}GB, have $(( FREE_KB / 1048576 ))GB free"
     exit 1
 fi
 
