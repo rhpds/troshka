@@ -42,4 +42,4 @@ overcommit:
 gc:
   cache_stale_hours_patterns: 24
   cache_stale_hours_snapshots: 1
-  cache_stale_hours_images: 1
+  cache_stale_hours_images: 5
