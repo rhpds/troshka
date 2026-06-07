@@ -10,10 +10,7 @@ VNI ranges:
 """
 import logging
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
-
-from app.models.network import Network
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +18,14 @@ VNI_MIN = 1000
 VNI_MAX = 16_777_000
 
 
-def allocate_vni(db: Session) -> int:
-    """Allocate the next available VNI."""
-    max_vni = db.query(func.max(Network.vni)).scalar()
-    next_vni = max(VNI_MIN, (max_vni or VNI_MIN - 1) + 1)
-    if next_vni > VNI_MAX:
-        raise ValueError("VNI pool exhausted")
-    return next_vni
+def _get_all_used_vnis(db: Session) -> set[int]:
+    """Collect all VNIs currently in use across all projects."""
+    from app.models.project import Project
+    used = set()
+    for project in db.query(Project).filter(Project.vni_map.isnot(None)).all():
+        for vni in (project.vni_map or {}).values():
+            used.add(int(vni))
+    return used
 
 
 def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
@@ -43,11 +41,19 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
         and n.get("data", {}).get("subtype") == "network"
     ]
 
+    used_vnis = _get_all_used_vnis(db)
+    next_vni = VNI_MIN
+
     vni_map = {}
     for node in network_nodes:
-        vni = allocate_vni(db)
-        vni_map[node["id"]] = vni
-        logger.info("Allocated VNI %d for network %s", vni, node["data"].get("name"))
+        while next_vni in used_vnis:
+            next_vni += 1
+        if next_vni > VNI_MAX:
+            raise ValueError("VNI pool exhausted")
+        vni_map[node["id"]] = next_vni
+        used_vnis.add(next_vni)
+        logger.info("Allocated VNI %d for network %s", next_vni, node["data"].get("name"))
+        next_vni += 1
 
     return vni_map
 

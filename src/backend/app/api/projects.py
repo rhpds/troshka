@@ -427,10 +427,18 @@ def reconfigure_project(
     vni_map = dict(project.vni_map or {})
     diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
     if diff["added_networks"]:
-        from app.services.vxlan import allocate_vni
+        from app.services.vxlan import _get_all_used_vnis, VNI_MIN, VNI_MAX
+        used_vnis = _get_all_used_vnis(db) | set(vni_map.values())
+        next_vni = VNI_MIN
         for net_node in diff["added_networks"]:
             if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
-                vni_map[net_node["id"]] = allocate_vni(db)
+                while next_vni in used_vnis:
+                    next_vni += 1
+                if next_vni > VNI_MAX:
+                    raise HTTPException(status_code=507, detail="VNI pool exhausted")
+                vni_map[net_node["id"]] = next_vni
+                used_vnis.add(next_vni)
+                next_vni += 1
     project.vni_map = vni_map
     project.state = "reconfiguring"
     db.commit()
