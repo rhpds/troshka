@@ -507,7 +507,25 @@ export default function PropertiesPanel() {
                 </div>
                 <div className="props-field">
                   <label className="props-label">Custom User-Data (YAML)</label>
-                  <textarea className="props-input" style={{ minHeight: 60, fontFamily: "monospace", fontSize: 11 }} value={(data as Record<string, unknown>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
+                  <textarea className="props-input" style={{
+                    minHeight: 60, fontFamily: "monospace", fontSize: 11,
+                    borderColor: (() => {
+                      const val = ((data as Record<string, unknown>).ciUserData as string || "").trim();
+                      if (!val) return undefined;
+                      const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+                      const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
+                      return hasValidStructure ? undefined : "var(--troshka-red)";
+                    })(),
+                  }} value={(data as Record<string, unknown>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
+                  {(() => {
+                    const val = ((data as Record<string, unknown>).ciUserData as string || "").trim();
+                    if (!val) return null;
+                    const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+                    const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
+                    return hasValidStructure ? null : (
+                      <span style={{ fontSize: 10, color: "var(--troshka-red)" }}>Invalid YAML — must be cloud-config key-value pairs</span>
+                    );
+                  })()}
                 </div>
               </>
             )}

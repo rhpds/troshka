@@ -74,13 +74,21 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append("  - eject /dev/sr0 2>/dev/null || true")
     lines.append("  - eject /dev/sr1 2>/dev/null || true")
 
-    # Custom user-data
+    # Custom user-data — validate YAML before appending
     custom = vm_data.get("ciUserData", "").strip()
     if custom:
-        for line in custom.split("\n"):
-            if line.strip().startswith("#cloud-config"):
-                continue
-            lines.append(line)
+        import yaml
+        try:
+            parsed = yaml.safe_load(custom)
+            if isinstance(parsed, dict):
+                for line in custom.split("\n"):
+                    if line.strip().startswith("#cloud-config"):
+                        continue
+                    lines.append(line)
+            elif parsed is not None:
+                logger.warning("Custom user-data is not a YAML mapping, skipping: %s", repr(custom)[:100])
+        except yaml.YAMLError as e:
+            logger.warning("Invalid YAML in custom user-data, skipping: %s", e)
 
     return "\n".join(lines)
 
