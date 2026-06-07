@@ -78,6 +78,14 @@ def _remap_topology(topology: dict) -> dict:
             handle_id_map[old_dc_id] = new_dc_id
             dc["id"] = new_dc_id
 
+    for node in topo.get("nodes", []):
+        data = node.get("data", {})
+        if "bootDevices" in data:
+            data["bootDevices"] = [
+                id_map.get(d, d) if d != "network" else d
+                for d in data["bootDevices"]
+            ]
+
     def _remap_handle(handle: str) -> str:
         if not handle:
             return handle

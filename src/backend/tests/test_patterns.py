@@ -129,7 +129,7 @@ def test_deploy_pattern_regenerates_macs():
     list_resp = client.get("/api/v1/patterns", headers=HEADERS)
     patterns = [p for p in list_resp.json() if p["name"] == "Deploy Test"]
     pattern_id = patterns[0]["id"]
-    resp = client.post(f"/api/v1/patterns/{pattern_id}/deploy", json={}, headers=HEADERS)
+    resp = client.post(f"/api/v1/patterns/{pattern_id}/deploy", json={"name": "MAC Test Deploy"}, headers=HEADERS)
     data = resp.json()
     vm_node = [n for n in data["topology"]["nodes"] if n["type"] == "vmNode"][0]
     # MAC should be regenerated (not the original)
