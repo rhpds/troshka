@@ -94,6 +94,28 @@ def snapshot_vm(
         raise HTTPException(status_code=404, detail="VM not found in topology")
 
     vm_data = vm_node.get("data", {})
+
+    edges = topology.get("edges", [])
+    connected_disks = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        connected = any(
+            (e.get("source") == vm_id and e.get("target") == node["id"])
+            or (e.get("target") == vm_id and e.get("source") == node["id"])
+            for e in edges
+        )
+        if connected:
+            d = node.get("data", {})
+            connected_disks.append({
+                "name": d.get("name", "disk"),
+                "size": d.get("size", 20),
+                "format": d.get("format", "qcow2"),
+                "source": d.get("source"),
+                "libraryItemId": d.get("libraryItemId"),
+                "libraryItemName": d.get("libraryItemName"),
+            })
+
     vm_config = {
         "vcpus": vm_data.get("vcpus"),
         "ram": vm_data.get("ram"),
@@ -104,6 +126,7 @@ def snapshot_vm(
         "cloudInit": vm_data.get("cloudInit"),
         "consoleType": vm_data.get("consoleType"),
         "autoStart": vm_data.get("autoStart"),
+        "disks": connected_disks,
     }
 
     lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()

@@ -901,7 +901,64 @@ def import_vm_from_snapshot(
 
     topology = dict(project.topology or {"nodes": [], "edges": []})
     topology["nodes"] = list(topology.get("nodes", []))
+    topology["edges"] = list(topology.get("edges", []))
+
+    existing_names = {n.get("data", {}).get("name", "") for n in topology["nodes"]}
+
+    def _unique_name(base: str) -> str:
+        if base not in existing_names:
+            existing_names.add(base)
+            return base
+        i = 1
+        while f"{base}-{i}" in existing_names:
+            i += 1
+        name = f"{base}-{i}"
+        existing_names.add(name)
+        return name
+
     topology["nodes"].append(vm_node)
+
+    disks = vm_config.get("disks", [])
+    dc_list = vm_node["data"]["diskControllers"]
+    boot_devices = []
+
+    for idx, disk_info in enumerate(disks):
+        disk_id = str(uuid_mod.uuid4())
+        disk_name = _unique_name(disk_info.get("name", "disk"))
+        disk_node = {
+            "id": disk_id,
+            "type": "storageNode",
+            "position": {"x": body.position_x - 250, "y": body.position_y + idx * 150},
+            "data": {
+                "label": disk_name,
+                "name": disk_name,
+                "size": disk_info.get("size", 20),
+                "format": disk_info.get("format", "qcow2"),
+                "source": "snapshot",
+                "snapshotItemId": item.id,
+                "icon": "\U0001f6e2" if disk_info.get("format") != "iso" else "\U0001f4bf",
+            },
+        }
+        topology["nodes"].append(disk_node)
+
+        target_handle = ""
+        if dc_list and idx < len(dc_list):
+            target_handle = f"dp-{dc_list[idx]['id']}-left"
+
+        edge = {
+            "id": f"xy-edge__{disk_id}right-{vm_id}{target_handle}",
+            "source": disk_id,
+            "target": vm_id,
+            "sourceHandle": "right",
+            "targetHandle": target_handle or None,
+            "type": "smoothstep",
+            "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        }
+        topology["edges"].append(edge)
+        boot_devices.append(disk_id)
+
+    if boot_devices:
+        vm_node["data"]["bootDevices"] = boot_devices
 
     project.topology = topology
     from sqlalchemy.orm.attributes import flag_modified
