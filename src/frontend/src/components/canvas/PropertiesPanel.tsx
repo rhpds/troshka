@@ -126,6 +126,8 @@ export default function PropertiesPanel() {
   const edges = useCanvasStore((s) => s.edges);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const panelLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
   const [showLibraryPicker, setShowLibraryPicker] = useState<"iso" | "image" | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
@@ -162,7 +164,13 @@ export default function PropertiesPanel() {
   };
 
   return (
-    <div className="canvas-properties">
+    <div className="canvas-properties" style={{ position: "relative" }}>
+      {panelLocked && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 10,
+          background: "rgba(0,0,0,0.15)", cursor: "not-allowed",
+        }} title="Cannot edit while operation is in progress" />
+      )}
       {/* Header */}
       <div className="props-header">
         <div
