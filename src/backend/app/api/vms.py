@@ -3,9 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.models.library import Library, LibraryItem
 from app.models.project import Project
 from app.models.user import User
 from app.models.vm import VM
+from app.schemas.library import SnapshotCreate, SnapshotResponse
 from app.schemas.vm import VMCreate, VMResponse, VMUpdate
 
 router = APIRouter(prefix="/projects/{project_id}/vms", tags=["vms"])
@@ -66,3 +68,76 @@ def delete_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user
         raise HTTPException(status_code=404, detail="VM not found")
     db.delete(vm)
     db.commit()
+
+
+@router.post("/{vm_id}/snapshot", response_model=SnapshotResponse, status_code=201)
+def snapshot_vm(
+    project_id: str,
+    vm_id: str,
+    body: SnapshotCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    topology = project.topology or {"nodes": [], "edges": []}
+    vm_node = None
+    for node in topology.get("nodes", []):
+        if node["id"] == vm_id and node.get("type") == "vmNode":
+            vm_node = node
+            break
+    if not vm_node:
+        raise HTTPException(status_code=404, detail="VM not found in topology")
+
+    vm_data = vm_node.get("data", {})
+    vm_config = {
+        "vcpus": vm_data.get("vcpus"),
+        "ram": vm_data.get("ram"),
+        "os": vm_data.get("os"),
+        "nics": vm_data.get("nics", []),
+        "diskControllers": vm_data.get("diskControllers", []),
+        "bootMethod": vm_data.get("bootMethod"),
+        "cloudInit": vm_data.get("cloudInit"),
+        "consoleType": vm_data.get("consoleType"),
+        "autoStart": vm_data.get("autoStart"),
+    }
+
+    lib = db.query(Library).filter_by(owner_id=user.id, type="user").first()
+    if not lib:
+        lib = Library(type="user", owner_id=user.id)
+        db.add(lib)
+        db.commit()
+        db.refresh(lib)
+
+    item = LibraryItem(
+        library_id=lib.id,
+        name=body.name,
+        description=body.description,
+        type="snapshot",
+        format="qcow2",
+        state="uploading",
+        source_vm_id=vm_id,
+        vm_config=vm_config,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    if project.state in ("active", "stopped"):
+        import threading
+        from app.services.snapshot_service import capture_vm_disks
+
+        threading.Thread(
+            target=capture_vm_disks,
+            args=(item.id, project.id, vm_id),
+            daemon=True,
+        ).start()
+    else:
+        item.state = "available"
+        db.commit()
+
+    return item

@@ -1,6 +1,8 @@
 import logging
+import uuid as uuid_mod
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -786,3 +788,81 @@ def delete_project(
 
     db.delete(project)
     db.commit()
+
+
+class ImportVMRequest(PydanticBaseModel):
+    snapshot_id: str
+    position_x: float = 100.0
+    position_y: float = 100.0
+
+
+@router.post("/{project_id}/import-vm", response_model=ProjectResponse)
+def import_vm_from_snapshot(
+    project_id: str,
+    body: ImportVMRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    from app.models.library import LibraryItem
+
+    item = db.query(LibraryItem).filter_by(id=body.snapshot_id, type="snapshot").first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    vm_config = item.vm_config or {}
+    vm_id = str(uuid_mod.uuid4())
+
+    import random
+
+    def _gen_mac():
+        return "52:54:00:%02x:%02x:%02x" % (
+            random.randint(0, 255),
+            random.randint(0, 255),
+            random.randint(0, 255),
+        )
+
+    vm_node = {
+        "id": vm_id,
+        "type": "vmNode",
+        "position": {"x": body.position_x, "y": body.position_y},
+        "data": {
+            "label": item.name,
+            "name": item.name,
+            "vcpus": vm_config.get("vcpus", 2),
+            "ram": vm_config.get("ram", 4096),
+            "os": vm_config.get("os", ""),
+            "status": "stopped",
+            "icon": "\U0001f5a5",
+            "nics": [
+                {**nic, "id": f"nic-{uuid_mod.uuid4()}", "mac": _gen_mac()}
+                for nic in vm_config.get("nics", [])
+            ],
+            "diskControllers": [
+                {**dc, "id": f"dp-{uuid_mod.uuid4()}"}
+                for dc in vm_config.get("diskControllers", [])
+            ],
+            "bootMethod": vm_config.get("bootMethod"),
+            "cloudInit": vm_config.get("cloudInit"),
+            "consoleType": vm_config.get("consoleType"),
+            "autoStart": vm_config.get("autoStart"),
+            "snapshotItemId": item.id,
+        },
+    }
+
+    topology = dict(project.topology or {"nodes": [], "edges": []})
+    topology["nodes"] = list(topology.get("nodes", []))
+    topology["nodes"].append(vm_node)
+
+    project.topology = topology
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(project, "topology")
+    db.commit()
+    db.refresh(project)
+    return project
