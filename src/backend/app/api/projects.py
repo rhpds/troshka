@@ -323,6 +323,34 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
 @router.post("/{project_id}/vms/{vm_id}/start")
 def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
+    # Ensure bridges exist before starting VM
+    vni_map = project.vni_map or {}
+    if vni_map:
+        from app.services.vxlan import build_host_network_config
+        from app.services.deploy_service import run_ssh_script
+        check = run_ssh_script(host.ip_address, host.private_key,
+            "ip -o link show type bridge 2>/dev/null | grep -oP 'br-\\d+' || true", timeout=10)
+        existing = set(check.get("output", "").strip().splitlines()) if check["success"] else set()
+        missing = any(f"br-{vni}" not in existing for vni in vni_map.values())
+        if missing:
+            topo = project.deployed_topology or project.topology or {}
+            all_hosts = db.query(Host).filter(Host.state == "active").all()
+            peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+            net_config = build_host_network_config(topo, vni_map, peer_ips)
+            net_script = generate_setup_script(net_config, host.ip_address, project_id)
+            run_ssh_script(host.ip_address, host.private_key, net_script, timeout=60)
+    if project.state == "stopped":
+        # Re-associate EIPs
+        from app.models.elastic_ip import ElasticIp
+        from app.services.eip_service import associate_eip
+        project_eips = db.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+        for eip in project_eips:
+            try:
+                associate_eip(db, eip, host)
+            except Exception:
+                logger.warning("Failed to re-associate EIP %s on VM start", eip.public_ip)
+        project.state = "active"
+        db.commit()
     dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
