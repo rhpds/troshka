@@ -97,7 +97,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const navItems = [
     { label: "Projects", path: "/projects" },
-    { label: "Library", path: "/library" },
+    { label: "Images", path: "/library/images" },
+    { label: "Patterns", path: "/library/patterns" },
     { label: "Settings", path: "/settings" },
   ];
 
