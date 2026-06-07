@@ -240,16 +240,19 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
 
         const existingCidrs = useCanvasStore.getState().nodes
           .filter((n) => n.type === "networkNode")
-          .map((n) => (n.data as Record<string, unknown>).cidr as string);
+          .map((n) => (n.data as Record<string, unknown>).cidr as string)
+          .filter((c) => c && c.includes("/"));
 
         let newCidr = "10.0.0.0/24";
         if (existingCidrs.length > 0) {
-          const last = existingCidrs[existingCidrs.length - 1];
-          const match = last.match(/^(\d+\.\d+\.)(\d+)(\.0\/\d+)$/);
-          if (match) {
-            let octet3 = parseInt(match[2], 10) + 1;
-            while (existingCidrs.includes(`${match[1]}${octet3}${match[3]}`)) octet3++;
-            newCidr = `${match[1]}${octet3}${match[3]}`;
+          for (let i = existingCidrs.length - 1; i >= 0; i--) {
+            const match = existingCidrs[i].match(/^(\d+\.\d+\.)(\d+)(\.0\/\d+)$/);
+            if (match) {
+              let octet3 = parseInt(match[2], 10) + 1;
+              while (existingCidrs.includes(`${match[1]}${octet3}${match[3]}`)) octet3++;
+              newCidr = `${match[1]}${octet3}${match[3]}`;
+              break;
+            }
           }
         }
 
