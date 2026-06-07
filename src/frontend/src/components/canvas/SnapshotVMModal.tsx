@@ -78,6 +78,26 @@ export default function SnapshotVMModal({ projectId, vmId, vmName, isRunning, on
         body: JSON.stringify({ name, description }),
       });
       if (resp.ok) {
+        const snapData = await resp.json();
+        // Wait for disk capture to complete (flatten + S3 upload)
+        setSavingStatus("Capturing disk...");
+        for (let i = 0; i < 120; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const stateResp = await fetch(`/api/v1/library/${snapData.id}`);
+          if (stateResp.ok) {
+            const item = await stateResp.json();
+            if (item.state === "ready") break;
+            if (item.state === "error") {
+              setError("Disk capture failed");
+              if (isRunning && stopVM) {
+                setSavingStatus("Restarting VM...");
+                await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" });
+              }
+              setSaving(false);
+              return;
+            }
+          }
+        }
         if (isRunning && stopVM) {
           setSavingStatus("Restarting VM...");
           await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/start`, { method: "POST" });

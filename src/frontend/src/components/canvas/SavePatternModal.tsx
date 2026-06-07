@@ -85,6 +85,27 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
       });
       if (resp.ok) {
         const data = await resp.json();
+        // Wait for disk capture to complete (flatten + S3 upload)
+        if (data.state !== "available") {
+          setSavingStatus("Capturing disks...");
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const stateResp = await fetch(`/api/v1/patterns/${data.id}`);
+            if (stateResp.ok) {
+              const pat = await stateResp.json();
+              if (pat.state === "available") break;
+              if (pat.state === "error") {
+                setError("Disk capture failed");
+                if (hasRunningVMs && stopVMs) {
+                  setSavingStatus("Restarting VMs...");
+                  await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
+                }
+                setSaving(false);
+                return;
+              }
+            }
+          }
+        }
         if (hasRunningVMs && stopVMs) {
           setSavingStatus("Restarting VMs...");
           await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
