@@ -207,7 +207,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           <span className="vm-node-spec-label">Boot</span>
           <span className="vm-node-spec-val" style={{ fontSize: 10 }}>{(() => {
             const bootDevs = (d as unknown as Record<string, unknown>).bootDevices as string[] | undefined;
-            if (!bootDevs || bootDevs.length === 0) return "hd";
+            if (!bootDevs || bootDevs.length === 0) return "None";
             const first = bootDevs[0];
             if (first === "network") return "PXE";
             const sn = nodes.find((n) => n.id === first);
