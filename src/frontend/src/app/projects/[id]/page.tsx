@@ -326,7 +326,7 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
-          {(projectState === "draft" || projectState === "stopped") && (
+          {projectState !== "deploying" && projectState !== "reconfiguring" && (
             <button
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
