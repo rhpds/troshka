@@ -556,6 +556,47 @@ export default function PropertiesPanel() {
                           const updated = [...nics]; updated[i] = { ...nic, mac: e.target.value }; update("nics", updated);
                         }} />
                       </div>
+                      {(() => {
+                        const nicHandleTop = `nic-${nic.id}-top`;
+                        const nicHandleBottom = `nic-${nic.id}-bottom`;
+                        const netEdge = edges.find((e) =>
+                          (e.source === node!.id && (e.sourceHandle === nicHandleTop || e.sourceHandle === nicHandleBottom)) ||
+                          (e.target === node!.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
+                        );
+                        const netNode = netEdge ? nodes.find((n) => n.id === (netEdge.source === node!.id ? netEdge.target : netEdge.source) && n.type === "networkNode") : null;
+                        const netCidr = netNode ? (netNode.data as Record<string, unknown>).cidr as string : "";
+                        const nicIp = (nic as Record<string, unknown>).ip as string || "";
+                        const ipInCidr = (ip: string, cidr: string) => {
+                          if (!ip || !cidr) return true;
+                          const [netAddr, bits] = cidr.split("/");
+                          if (!netAddr || !bits) return true;
+                          const ipParts = ip.split(".").map(Number);
+                          const netParts = netAddr.split(".").map(Number);
+                          if (ipParts.length !== 4 || ipParts.some(isNaN)) return false;
+                          const mask = ~((1 << (32 - parseInt(bits))) - 1) >>> 0;
+                          const ipNum = ((ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3]) >>> 0;
+                          const netNum = ((netParts[0] << 24) | (netParts[1] << 16) | (netParts[2] << 8) | netParts[3]) >>> 0;
+                          return (ipNum & mask) === (netNum & mask);
+                        };
+                        const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
+                        return netNode ? (
+                          <div className="props-field">
+                            <label className="props-label">IP Address {netCidr ? `(${netCidr})` : ""}</label>
+                            <input
+                              className="props-input"
+                              value={nicIp}
+                              placeholder="DHCP (auto)"
+                              style={{ fontFamily: "monospace", fontSize: 11, borderColor: nicIp && !ipValid ? "var(--troshka-red)" : undefined }}
+                              onChange={(e) => {
+                                const updated = [...nics]; updated[i] = { ...nic, ip: e.target.value }; update("nics", updated);
+                              }}
+                            />
+                            {nicIp && !ipValid && (
+                              <span style={{ fontSize: 10, color: "var(--troshka-red)" }}>IP not in {netCidr}</span>
+                            )}
+                          </div>
+                        ) : null;
+                      })()}
                     </div>
                   ))}
                   {nics.length < 8 && (
