@@ -771,7 +771,7 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                 if status != "DONE":
                     all_done = False
 
-        if progress_callback:
+        if progress_callback and not all_done:
             progress_callback(total_downloaded, total_expected)
 
         if total_downloaded == last_total:
