@@ -47,15 +47,16 @@ def _remap_topology(topology: dict) -> dict:
     """Clone a topology dict with all-new UUIDs, MACs, and controller IDs.
 
     - Every node gets a new UUID-based ``id``
-    - Edges are updated to reference the new node IDs
+    - Edges are updated to reference the new node IDs and handle IDs
     - NIC MAC addresses are regenerated
     - NIC ids and diskController ids are regenerated
     - Network CIDRs, DHCP ranges, DNS domains are preserved
     """
     topo = copy.deepcopy(topology)
 
-    # Build old-id -> new-id mapping for nodes
     id_map: dict[str, str] = {}
+    handle_id_map: dict[str, str] = {}
+
     for node in topo.get("nodes", []):
         old_id = node["id"]
         new_id = str(uuid.uuid4())
@@ -64,24 +65,42 @@ def _remap_topology(topology: dict) -> dict:
 
         data = node.get("data", {})
 
-        # Regenerate NIC IDs and MAC addresses
         for nic in data.get("nics", []):
-            nic["id"] = str(uuid.uuid4())
+            old_nic_id = nic["id"]
+            new_nic_id = f"nic-{uuid.uuid4()}"
+            handle_id_map[old_nic_id] = new_nic_id
+            nic["id"] = new_nic_id
             nic["mac"] = _generate_mac()
 
-        # Regenerate disk controller IDs
         for dc in data.get("diskControllers", []):
-            dc["id"] = str(uuid.uuid4())
+            old_dc_id = dc["id"]
+            new_dc_id = f"dp-{uuid.uuid4()}"
+            handle_id_map[old_dc_id] = new_dc_id
+            dc["id"] = new_dc_id
 
-    # Remap edges
+    def _remap_handle(handle: str) -> str:
+        if not handle:
+            return handle
+        for old_id, new_id in handle_id_map.items():
+            if old_id in handle:
+                handle = handle.replace(old_id, new_id)
+        return handle
+
     for edge in topo.get("edges", []):
         if edge.get("source") in id_map:
             edge["source"] = id_map[edge["source"]]
         if edge.get("target") in id_map:
             edge["target"] = id_map[edge["target"]]
-        # Regenerate edge id if present
+        if edge.get("sourceHandle"):
+            edge["sourceHandle"] = _remap_handle(edge["sourceHandle"])
+        if edge.get("targetHandle"):
+            edge["targetHandle"] = _remap_handle(edge["targetHandle"])
         if "id" in edge:
-            edge["id"] = str(uuid.uuid4())
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            sh = edge.get("sourceHandle", "")
+            th = edge.get("targetHandle", "")
+            edge["id"] = f"xy-edge__{src}{sh}-{tgt}{th}"
 
     return topo
 
