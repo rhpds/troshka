@@ -56,6 +56,8 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
   const allNodes = useCanvasStore((s) => s.nodes);
   const allEdges = useCanvasStore((s) => s.edges);
   const hiddenNodeIds = useCanvasStore((s) => s.hiddenNodeIds);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const canvasLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
   const nodes = allNodes;
 
   // Ctrl+Z / Ctrl+Shift+Z for undo/redo
@@ -367,20 +369,22 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
       <ReactFlow
         nodes={visibleNodes}
         edges={visibleEdges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        isValidConnection={isValidConnection}
+        onNodesChange={canvasLocked ? undefined : onNodesChange}
+        onEdgesChange={canvasLocked ? undefined : onEdgesChange}
+        onConnect={canvasLocked ? undefined : onConnect}
+        isValidConnection={canvasLocked ? () => false : isValidConnection}
         onNodeClick={onNodeClick}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onNodeContextMenu={onNodeContextMenu}
-        onEdgeContextMenu={onEdgeContextMenu}
+        onNodeDoubleClick={canvasLocked ? undefined : onNodeDoubleClick}
+        onNodeContextMenu={canvasLocked ? undefined : onNodeContextMenu}
+        onEdgeContextMenu={canvasLocked ? undefined : onEdgeContextMenu}
         onPaneClick={onPaneClick}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
+        onDragOver={canvasLocked ? undefined : onDragOver}
+        onDrop={canvasLocked ? undefined : onDrop}
         nodeTypes={stableNodeTypes}
         onSelectionChange={onSelectionChange}
         selectionMode={SelectionMode.Partial}
+        nodesDraggable={!canvasLocked}
+        nodesConnectable={!canvasLocked}
         panOnDrag={panMode}
         selectionOnDrag={!panMode}
         multiSelectionKeyCode="Shift"
@@ -388,7 +392,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
         defaultEdgeOptions={{ type: "smoothstep" }}
         connectionLineType={ConnectionLineType.SmoothStep}
         fitView
-        deleteKeyCode={["Backspace", "Delete"]}
+        deleteKeyCode={canvasLocked ? null : ["Backspace", "Delete"]}
         proOptions={{ hideAttribution: true }}
       >
         <Background
