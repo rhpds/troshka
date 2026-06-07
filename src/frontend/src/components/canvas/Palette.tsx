@@ -195,54 +195,63 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
                 </div>
               </div>
             ))}
+            {section.title === "Networking" && (
+              <div className="palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer" }}>
+                <div className="palette-icon palette-icon-gateway">🌍</div>
+                <div>
+                  <div className="palette-item-label">External IPs</div>
+                  <div className="palette-item-desc">Public IP pool</div>
+                </div>
+              </div>
+            )}
+            {section.title === "Compute" && (
+              <>
+                <div
+                  className="palette-item"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => {
+                    if (!snapshotsLoaded) loadSnapshots();
+                    setShowSnapshots(!showSnapshots);
+                  }}
+                >
+                  <div className="palette-icon" style={{ background: "rgba(74,222,128,0.15)" }}>📸</div>
+                  <div>
+                    <div className="palette-item-label">VM Snapshots</div>
+                    <div className="palette-item-desc">Drag to canvas</div>
+                  </div>
+                </div>
+                {showSnapshots && (
+                  <div style={{ paddingLeft: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                    {!snapshotsLoaded ? (
+                      <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>Loading...</div>
+                    ) : snapshots.length === 0 ? (
+                      <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>No snapshots available</div>
+                    ) : (
+                      snapshots.map((snap) => (
+                        <div
+                          key={snap.id}
+                          className="palette-item"
+                          draggable
+                          onDragStart={(e) => onSnapshotDragStart(e, snap)}
+                          style={{ padding: "4px 8px", fontSize: 12 }}
+                        >
+                          <div style={{ fontSize: 14 }}>🖥</div>
+                          <div>
+                            <div className="palette-item-label" style={{ fontSize: 12 }}>{snap.name}</div>
+                            <div className="palette-item-desc" style={{ fontSize: 10 }}>
+                              {snap.vm_config ? `${snap.vm_config.vcpus} vCPU · ${snap.vm_config.ram} GB` : "VM snapshot"}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </React.Fragment>
       ))}
-      <div className="palette-divider" />
-      <div className="palette-section">
-        <div className="palette-section-title">Library</div>
-        <div
-          className="palette-item"
-          style={{ cursor: "pointer" }}
-          onClick={() => {
-            if (!snapshotsLoaded) loadSnapshots();
-            setShowSnapshots(!showSnapshots);
-          }}
-        >
-          <div className="palette-icon" style={{ background: "rgba(74,222,128,0.15)" }}>📸</div>
-          <div>
-            <div className="palette-item-label">VM Snapshots</div>
-            <div className="palette-item-desc">Drag to canvas</div>
-          </div>
-        </div>
-        {showSnapshots && (
-          <div style={{ paddingLeft: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-            {!snapshotsLoaded ? (
-              <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>Loading...</div>
-            ) : snapshots.length === 0 ? (
-              <div style={{ fontSize: 11, opacity: 0.5, padding: "4px 8px" }}>No snapshots available</div>
-            ) : (
-              snapshots.map((snap) => (
-                <div
-                  key={snap.id}
-                  className="palette-item"
-                  draggable
-                  onDragStart={(e) => onSnapshotDragStart(e, snap)}
-                  style={{ padding: "4px 8px", fontSize: 12 }}
-                >
-                  <div style={{ fontSize: 14 }}>🖥</div>
-                  <div>
-                    <div className="palette-item-label" style={{ fontSize: 12 }}>{snap.name}</div>
-                    <div className="palette-item-desc" style={{ fontSize: 10 }}>
-                      {snap.vm_config ? `${snap.vm_config.vcpus} vCPU · ${snap.vm_config.ram} GB` : "VM snapshot"}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
       <div className="palette-divider" />
       <div className="palette-section">
         <div className="palette-section-title">Project</div>
@@ -251,13 +260,6 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
           <div>
             <div className="palette-item-label">Start Order</div>
             <div className="palette-item-desc">VM boot sequence</div>
-          </div>
-        </div>
-        <div className="palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer" }}>
-          <div className="palette-icon palette-icon-gateway">🌍</div>
-          <div>
-            <div className="palette-item-label">External IPs</div>
-            <div className="palette-item-desc">Public IP pool</div>
           </div>
         </div>
       </div>
