@@ -19,6 +19,7 @@ import "@xyflow/react/dist/style.css";
 import VMNode from "./nodes/VMNode";
 import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
+import ReadOnlyPropertiesPanel from "./ReadOnlyPropertiesPanel";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -126,33 +127,49 @@ function PreviewCanvas({ initialNodes, initialEdges }: { initialNodes: Node[]; i
   const stableNodeTypes = useMemo(() => nodeTypes, []);
   const [nodes, setNodes] = useState<Node[]>(initialNodes);
   const [showEdges, setShowEdges] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds));
   }, []);
 
+  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    setSelectedNode(node);
+  }, []);
+
+  const onPaneClick = useCallback(() => {
+    setSelectedNode(null);
+  }, []);
+
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={[]}
-      onNodesChange={onNodesChange}
-      nodeTypes={stableNodeTypes}
-      nodesDraggable={false}
-      nodesConnectable={false}
-      elementsSelectable={false}
-      panOnDrag={true}
-      zoomOnScroll={true}
-      fitView
-      fitViewOptions={{ padding: 0.2 }}
-      proOptions={{ hideAttribution: true }}
-      onInit={() => {
-        setTimeout(() => setShowEdges(true), 300);
-      }}
-    >
-      {showEdges && <EdgeOverlay edges={initialEdges} />}
-      <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
-      <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
-    </ReactFlow>
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <ReactFlow
+        nodes={nodes}
+        edges={[]}
+        onNodesChange={onNodesChange}
+        onNodeClick={onNodeClick}
+        onPaneClick={onPaneClick}
+        nodeTypes={stableNodeTypes}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={true}
+        panOnDrag={true}
+        zoomOnScroll={true}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        proOptions={{ hideAttribution: true }}
+        onInit={() => {
+          setTimeout(() => setShowEdges(true), 300);
+        }}
+      >
+        {showEdges && <EdgeOverlay edges={initialEdges} />}
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} />
+        <MiniMap pannable={false} zoomable={false} style={{ height: 80, width: 120 }} />
+      </ReactFlow>
+      {selectedNode && (
+        <ReadOnlyPropertiesPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+      )}
+    </div>
   );
 }
 
