@@ -61,6 +61,8 @@ echo "=== CACHED_PATTERNS ==="
 ls -1 /var/lib/troshka/cache/patterns/ 2>/dev/null || true
 echo "=== CACHED_SNAPSHOTS ==="
 ls -1 /var/lib/troshka/cache/snapshots/ 2>/dev/null || true
+echo "=== CACHED_IMAGES ==="
+ls -1 /var/lib/troshka/images/ 2>/dev/null | sed 's/\\.[^.]*$//' | sort -u || true
 echo "=== CACHE_ATIME ==="
 for d in /var/lib/troshka/cache/patterns/*/  /var/lib/troshka/cache/snapshots/*/; do
     [ -d "$d" ] || continue
@@ -72,6 +74,12 @@ for d in /var/lib/troshka/cache/patterns/*/  /var/lib/troshka/cache/snapshots/*/
     done
     TYPE=$(echo "$d" | grep -oP '(patterns|snapshots)')
     echo "$TYPE/$(basename $d) $LATEST"
+done
+for f in /var/lib/troshka/images/*; do
+    [ -f "$f" ] || continue
+    BASENAME=$(basename "$f" | sed 's/\\.[^.]*$//')
+    AT=$(stat -c %X "$f" 2>/dev/null || echo 0)
+    echo "images/$BASENAME $AT"
 done
 echo "=== END ==="
 """
@@ -155,8 +163,15 @@ echo "=== END ==="
             cache_atimes[parts[0]] = int(parts[1])
 
     from app.core.config import config
-    stale_hours = getattr(getattr(config, "gc", None), "cache_stale_hours", 1)
-    stale_threshold = now - (stale_hours * 3600)
+    gc_cfg = getattr(config, "gc", None)
+    stale_hours_patterns = getattr(gc_cfg, "cache_stale_hours_patterns", 24) if gc_cfg else 24
+    stale_hours_snapshots = getattr(gc_cfg, "cache_stale_hours_snapshots", 1) if gc_cfg else 1
+    stale_hours_images = getattr(gc_cfg, "cache_stale_hours_images", 1) if gc_cfg else 1
+    stale_thresholds = {
+        "patterns": now - (stale_hours_patterns * 3600),
+        "snapshots": now - (stale_hours_snapshots * 3600),
+        "images": now - (stale_hours_images * 3600),
+    }
 
     orphaned_cache = []
     stale_cache = []
@@ -165,7 +180,7 @@ echo "=== END ==="
             orphaned_cache.append(f"patterns/{pid}")
         else:
             atime = cache_atimes.get(f"patterns/{pid}", 0)
-            if atime > 0 and atime < stale_threshold:
+            if atime > 0 and atime < stale_thresholds["patterns"]:
                 hours_ago = (now - atime) // 3600
                 stale_cache.append({"path": f"patterns/{pid}", "last_accessed_hours_ago": hours_ago})
     for sid in cached_snapshots:
@@ -173,9 +188,19 @@ echo "=== END ==="
             orphaned_cache.append(f"snapshots/{sid}")
         else:
             atime = cache_atimes.get(f"snapshots/{sid}", 0)
-            if atime > 0 and atime < stale_threshold:
+            if atime > 0 and atime < stale_thresholds["snapshots"]:
                 hours_ago = (now - atime) // 3600
                 stale_cache.append({"path": f"snapshots/{sid}", "last_accessed_hours_ago": hours_ago})
+
+    cached_images = sections.get("CACHED_IMAGES", [])
+    for iid in cached_images:
+        if not db.query(LibraryItem).filter_by(id=iid).first():
+            orphaned_cache.append(f"images/{iid}")
+        else:
+            atime = cache_atimes.get(f"images/{iid}", 0)
+            if atime > 0 and atime < stale_thresholds["images"]:
+                hours_ago = (now - atime) // 3600
+                stale_cache.append({"path": f"images/{iid}", "last_accessed_hours_ago": hours_ago})
 
     return {
         "orphaned_projects": orphaned_projects,
@@ -217,11 +242,20 @@ def clean_orphans(host, orphans: dict) -> dict:
 
     for cache_path in orphans.get("orphaned_cache", []):
         lines.append(f'echo "Removing orphaned cache: {cache_path}"')
-        lines.append(f"rm -rf /var/lib/troshka/cache/{cache_path}")
+        if cache_path.startswith("images/"):
+            item_id = cache_path.split("/")[1]
+            lines.append(f"rm -f /var/lib/troshka/images/{item_id}.* 2>/dev/null || true")
+        else:
+            lines.append(f"rm -rf /var/lib/troshka/cache/{cache_path}")
 
     for entry in orphans.get("stale_cache", []):
-        lines.append(f'echo "Evicting stale cache ({entry["last_accessed_hours_ago"]}h old): {entry["path"]}"')
-        lines.append(f"rm -rf /var/lib/troshka/cache/{entry['path']}")
+        path = entry["path"]
+        lines.append(f'echo "Evicting stale cache ({entry["last_accessed_hours_ago"]}h old): {path}"')
+        if path.startswith("images/"):
+            item_id = path.split("/")[1]
+            lines.append(f"rm -f /var/lib/troshka/images/{item_id}.* 2>/dev/null || true")
+        else:
+            lines.append(f"rm -rf /var/lib/troshka/cache/{path}")
 
     if len(lines) <= 3:
         return {"cleaned": 0, "output": "Nothing to clean"}
