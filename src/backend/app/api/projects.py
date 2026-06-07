@@ -507,7 +507,7 @@ def reconfigure_project(
                         cdrom_list.append(_seed_path(p_id, vm["node_id"]))
                     if any_disk_changed:
                         if needs_library_download:
-                            _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                            _deploy_progress[p_id] = {"step": "checking images", "detail": ""}
                             cache_library_images(current, h_ip, h_key, s)
                         run_ssh_script(h_ip, h_key, f"mkdir -p {vm_dir}\n" + "\n".join(disk_cmds), timeout=300)
 
