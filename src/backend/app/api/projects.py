@@ -462,6 +462,14 @@ def reconfigure_project(
                     vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
                     nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
 
+                    # Build map of deployed disk library items for change detection
+                    dep_disk_libs = {}
+                    dep_vm_node = next((n for n in deployed.get("nodes", []) if n["id"] == vm["node_id"]), None)
+                    if dep_vm_node:
+                        dep_disks = _find_vm_disks(vm["node_id"], deployed)
+                        for dd in dep_disks:
+                            dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
+
                     disk_list = []
                     cdrom_list = []
                     new_disk_cmds = []
@@ -472,6 +480,11 @@ def reconfigure_project(
                             continue
                         path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"])
                         disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
+                        old_lib = dep_disk_libs.get(d["node_id"])
+                        new_lib = d.get("library_item_id")
+                        disk_image_changed = old_lib != new_lib and (old_lib or new_lib)
+                        if disk_image_changed:
+                            new_disk_cmds.append(f"rm -f {path}")
                         if d.get("source") == "library" and d.get("library_item_id"):
                             cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
                             new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{d['library_item_id']})\"")
