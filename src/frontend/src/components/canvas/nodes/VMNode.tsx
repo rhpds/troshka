@@ -204,6 +204,18 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               win2022: "WinSrv 2022", win2019: "WinSrv 2019",
             }[d.os] || d.os
           }</span>
+          <span className="vm-node-spec-label">Boot</span>
+          <span className="vm-node-spec-val" style={{ fontSize: 10 }}>{(() => {
+            const bootDevs = (d as unknown as Record<string, unknown>).bootDevices as string[] | undefined;
+            if (!bootDevs || bootDevs.length === 0) return "hd";
+            const first = bootDevs[0];
+            if (first === "network") return "PXE";
+            const sn = nodes.find((n) => n.id === first);
+            if (!sn) return "hd";
+            const fmt = (sn.data as Record<string, unknown>).format as string;
+            const name = (sn.data as Record<string, unknown>).name as string;
+            return fmt === "iso" ? `💿 ${name}` : `🛢 ${name}`;
+          })()}</span>
         </div>
 
         <label className="vm-node-autostart" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 0" }} onClick={(e) => e.stopPropagation()}>
@@ -233,7 +245,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               <span className="vm-node-warning" title="No storage attached">⚠ No disk</span>
             )}
             {hasStorage && !hasWritableDisk && (
-              <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No install disk</span>
+              <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No installable disk device</span>
             )}
             {!hasNetwork && (
               <span className="vm-node-warning" title="No network connected">⚠ No network</span>
