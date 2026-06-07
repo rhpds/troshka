@@ -323,22 +323,27 @@ def generate_start_script(project_id: str, topology: dict) -> str:
         "",
     ]
 
-    # Build ordered groups
+    # Build ordered groups — skip VMs with autoStart=false
     ordered_vm_ids = set()
+    no_start_ids = set()
     if start_order:
         for entry in start_order:
             vm_id = entry.get("vmId", "")
             vm = next((v for v in vms if v["node_id"] == vm_id), None)
             if vm:
+                ordered_vm_ids.add(vm_id)
+                if entry.get("autoStart", True) is False:
+                    no_start_ids.add(vm_id)
+                    lines.append(f'echo "Skipping {prefix}-{vm["name"]} (auto-start disabled)"')
+                    continue
                 vm_name = f"{prefix}-{vm['name']}"
                 delay = entry.get("delaySeconds", 0)
                 if delay > 0:
                     lines.append(f"sleep {delay}")
                 lines.append(f"virsh start {vm_name} || true")
                 lines.append(f'echo "Started {vm_name}"')
-                ordered_vm_ids.add(vm_id)
 
-    # Start remaining VMs not in start order
+    # Start remaining VMs not in start order (default: auto-start)
     for vm in vms:
         if vm["node_id"] not in ordered_vm_ids:
             vm_name = f"{prefix}-{vm['name']}"
@@ -419,6 +424,7 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
 def generate_reconfigure_script(project_id: str, topology: dict, vni_map: dict) -> str:
     """Update VM definitions in-place without destroying disks."""
     prefix = f"troshka-{project_id[:8]}"
+    no_auto_start = {e["vmId"] for e in topology.get("startOrder", []) if e.get("autoStart") is False}
     vms = _extract_vms(topology)
     lines = [
         "#!/bin/bash",
@@ -479,8 +485,8 @@ open('$TMPXML', 'w').write(xml)
 
 virsh define $TMPXML
 rm -f $TMPXML
-virsh start {vm_name}
-echo "{vm_name} reconfigured and started"
+{"virsh start " + vm_name if vm["node_id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"}
+echo "{vm_name} reconfigured"
 """)
 
     lines.append('echo "=== Reconfiguration complete ==="')
@@ -539,6 +545,7 @@ def generate_incremental_script(
 ) -> str:
     """Generate script for incremental changes — add/remove/update without touching untouched VMs."""
     prefix = f"troshka-{project_id[:8]}"
+    no_auto_start = {e["vmId"] for e in topology.get("startOrder", []) if e.get("autoStart") is False}
     lines = [
         "#!/bin/bash",
         "set -uo pipefail",
@@ -610,7 +617,7 @@ open('$TMPXML', 'w').write(xml)
 
 virsh define $TMPXML
 rm -f $TMPXML
-virsh start {vm_name}
+{"virsh start " + vm_name if node["id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"}
 echo "{vm_name} reconfigured"
 """)
 
@@ -688,8 +695,11 @@ echo "{vm_name} reconfigured"
             cmd_parts.append("--network none")
 
         lines.append(" \\\n  ".join(cmd_parts))
-        lines.append(f"virsh start {vm_name}")
-        lines.append(f'echo "VM {vm_name} created and started"')
+        if node["id"] not in no_auto_start:
+            lines.append(f"virsh start {vm_name}")
+            lines.append(f'echo "VM {vm_name} created and started"')
+        else:
+            lines.append(f'echo "VM {vm_name} created (auto-start disabled)"')
         lines.append("")
 
     lines.append('echo "=== Incremental changes applied ==="')

@@ -20,14 +20,14 @@ export default function StartOrderPanel({ onClose }: Props) {
   useEffect(() => {
     if (startOrder.length > 0) {
       const validIds = new Set(vmNodes.map((v) => v.id));
-      const existing = startOrder.filter((e) => validIds.has(e.vmId));
+      const existing = startOrder.filter((e) => validIds.has(e.vmId)).map((e) => ({ ...e, autoStart: e.autoStart ?? true }));
       const missing = vmNodes.filter((v) => !existing.some((e) => e.vmId === v.id));
       setOrder([
         ...existing,
-        ...missing.map((v) => ({ vmId: v.id, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })),
+        ...missing.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })),
       ]);
     } else {
-      setOrder(vmNodes.map((v) => ({ vmId: v.id, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })));
+      setOrder(vmNodes.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })));
     }
   }, []);
 
@@ -88,13 +88,21 @@ export default function StartOrderPanel({ onClose }: Props) {
         </div>
         <div className="start-order-body">
           <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", marginBottom: 12 }}>
-            Drag to reorder. VMs start top-to-bottom. Configure prerequisites before each VM starts.
+            Drag to reorder. VMs start top-to-bottom. Uncheck a VM to keep it powered off at deploy.
           </p>
           {order.map((entry, i) => (
             <div key={entry.vmId} className="start-order-item">
               <div className="start-order-item-header">
                 <span className="start-order-num">{i + 1}</span>
-                <span className="start-order-name">🖥 {getVmName(entry.vmId)}</span>
+                <label className="start-order-name" style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={entry.autoStart}
+                    onChange={(e) => updateEntry(i, { autoStart: e.target.checked })}
+                    title="Power on at project start"
+                  />
+                  🖥 {getVmName(entry.vmId)}
+                </label>
                 <div className="start-order-arrows">
                   <button onClick={() => moveUp(i)} title="Move up" disabled={i === 0}>↑</button>
                   <button onClick={() => moveDown(i)} title="Move down" disabled={i === order.length - 1}>↓</button>

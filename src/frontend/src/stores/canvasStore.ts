@@ -73,6 +73,7 @@ export interface ExternalIp {
 
 export interface StartOrderEntry {
   vmId: string;
+  autoStart: boolean;
   waitForVm: string | null;
   waitForService: string;
   waitForPort: string;
