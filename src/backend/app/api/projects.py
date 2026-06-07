@@ -474,7 +474,9 @@ def reconfigure_project(
 
                     disk_list = []
                     cdrom_list = []
-                    new_disk_cmds = []
+                    disk_cmds = []
+                    any_disk_changed = False
+                    needs_library_download = False
                     for d in vm_disks:
                         if d["format"] == "iso":
                             if d.get("library_item_id"):
@@ -484,25 +486,30 @@ def reconfigure_project(
                         disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
                         old_lib = dep_disk_libs.get(d["node_id"])
                         new_lib = d.get("library_item_id")
-                        disk_image_changed = old_lib != new_lib and (old_lib or new_lib)
-                        if disk_image_changed:
-                            new_disk_cmds.append(f"rm -f {path}")
-                        if d.get("source") == "library" and d.get("library_item_id"):
-                            cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
-                            new_disk_cmds.append(f"test -f {cache_path} || curl -sfL -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{d['library_item_id']})\"")
-                            new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
-                        else:
-                            new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+                        image_changed = old_lib != new_lib and (old_lib or new_lib)
                         old_size = dep_disk_sizes.get(d["node_id"], 0)
-                        if d["size_gb"] > old_size and old_size > 0 and not disk_image_changed:
-                            new_disk_cmds.append(f"qemu-img resize {path} {d['size_gb']}G")
+                        size_grew = d["size_gb"] > old_size and old_size > 0
+                        is_new_disk = d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
+                        if image_changed or size_grew or is_new_disk:
+                            any_disk_changed = True
+                        if image_changed:
+                            disk_cmds.append(f"rm -f {path}")
+                        if d.get("source") == "library" and d.get("library_item_id"):
+                            needs_library_download = True
+                            cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                            disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
+                        else:
+                            disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+                        if size_grew and not image_changed:
+                            disk_cmds.append(f"qemu-img resize {path} {d['size_gb']}G")
                     if vm.get("cloud_init"):
                         from app.services.deploy_service import _seed_path
                         cdrom_list.append(_seed_path(p_id, vm["node_id"]))
-                    if new_disk_cmds:
-                        _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
-                        cache_library_images(current, h_ip, h_key, s)
-                        run_ssh_script(h_ip, h_key, f"mkdir -p {vm_dir}\n" + "\n".join(new_disk_cmds), timeout=300)
+                    if any_disk_changed:
+                        if needs_library_download:
+                            _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                            cache_library_images(current, h_ip, h_key, s)
+                        run_ssh_script(h_ip, h_key, f"mkdir -p {vm_dir}\n" + "\n".join(disk_cmds), timeout=300)
 
                     current_cfg = libvirt_mgr.get_vm_config(conn, dom)
                     if not current_cfg:
