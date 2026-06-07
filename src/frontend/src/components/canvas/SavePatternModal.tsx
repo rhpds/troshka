@@ -13,8 +13,9 @@ interface SavePatternModalProps {
 export default function SavePatternModal({ projectId, projectName, hasRunningVMs, onSaved, onClose }: SavePatternModalProps) {
   const [name, setName] = useState(projectName);
   const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<"private" | "public">("private");
+  const [stopVMs, setStopVMs] = useState(hasRunningVMs);
   const [saving, setSaving] = useState(false);
+  const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
 
   const inputStyle = {
@@ -32,25 +33,55 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
     setSaving(true);
     setError("");
     try {
+      if (hasRunningVMs && stopVMs) {
+        setSavingStatus("Stopping VMs...");
+        const stopResp = await fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" });
+        if (!stopResp.ok) {
+          setError("Failed to stop VMs");
+          setSaving(false);
+          return;
+        }
+        // Poll until stopped
+        for (let i = 0; i < 60; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const stateResp = await fetch(`/api/v1/projects/${projectId}`);
+          if (stateResp.ok) {
+            const proj = await stateResp.json();
+            if (proj.state === "stopped") break;
+          }
+        }
+      }
+
+      setSavingStatus("Creating pattern...");
       const resp = await fetch("/api/v1/patterns/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
           description,
-          visibility,
+          visibility: "private",
           source_project_id: projectId,
         }),
       });
       if (resp.ok) {
         const data = await resp.json();
+        if (hasRunningVMs && stopVMs) {
+          setSavingStatus("Restarting VMs...");
+          await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
+        }
         onSaved(data.id);
       } else {
         const err = await resp.json().catch(() => ({ detail: "Failed to save pattern" }));
         setError(err.detail || "Failed to save pattern");
+        if (hasRunningVMs && stopVMs) {
+          await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
+        }
       }
     } catch {
       setError("Failed to connect to server");
+      if (hasRunningVMs && stopVMs) {
+        await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" }).catch(() => {});
+      }
     }
     setSaving(false);
   };
@@ -75,7 +106,11 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)",
             color: "#fbbf24", fontSize: 13,
           }}>
-            For best results, stop all VMs before creating a pattern. Running VMs may have inconsistent disk state.
+            <div>For best results, stop all VMs before creating a pattern. Running VMs may have inconsistent disk state.</div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} />
+              Stop VMs before capture, restart after
+            </label>
           </div>
         )}
 
@@ -93,14 +128,6 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
               placeholder="Optional description"
             />
           </div>
-          <div>
-            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Visibility</label>
-            <select style={inputStyle} value={visibility} onChange={(e) => setVisibility(e.target.value as "private" | "public")}>
-              <option value="private">Private</option>
-              <option value="public">Public</option>
-            </select>
-          </div>
-
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
@@ -119,7 +146,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
                 borderColor: "#4ade80", color: "#4ade80", opacity: saving ? 0.6 : 1,
               }}
             >
-              {saving ? "Saving..." : "Save Pattern"}
+              {saving ? (savingStatus || "Saving...") : "Save Pattern"}
             </button>
           </div>
         </div>
