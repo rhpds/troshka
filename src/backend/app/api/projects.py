@@ -746,11 +746,14 @@ def redeploy_project(
     # Destroy existing and release capacity
     if project.host_id:
         old_host_id = project.host_id
-        destroy_project_sync(project.id)
-        from app.services.gc_service import sync_host_capacity
         old_host = db.query(Host).filter_by(id=old_host_id).first()
-        if old_host:
-            sync_host_capacity(db, old_host)
+        if not old_host or not old_host.ip_address:
+            raise HTTPException(status_code=503, detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.")
+        destroy_project_sync(project.id)
+        project.host_id = None
+        db.commit()
+        from app.services.gc_service import sync_host_capacity
+        sync_host_capacity(db, old_host)
 
     # Reset for fresh deploy
     project.state = "deploying"
