@@ -261,9 +261,6 @@ export default function PropertiesPanel() {
                   <option value="generic">Generic OS</option>
                 </optgroup>
               </select>
-              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                Sets QEMU hardware defaults (virtio, display, etc.)
-              </span>
             </div>
           </div>
           <div className="props-divider" />

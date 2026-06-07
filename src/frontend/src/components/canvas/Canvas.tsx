@@ -195,9 +195,7 @@ export default function Canvas() {
         item.type.startsWith("template-")
       ) {
         const defaults = item.defaults || {};
-        const isWindows =
-          item.type === "vm-windows" || item.type === "template-windows";
-        const name = nextName(isWindows ? "win-vm" : "vm");
+        const name = nextName("vm");
         newNode = {
           id,
           type: "vmNode",
@@ -205,14 +203,14 @@ export default function Canvas() {
           data: {
             label: name,
             name,
-            vcpus: (defaults.vcpus as number) || (isWindows ? 4 : 2),
-            ram: (defaults.ram as number) || (isWindows ? 8 : 4),
-            os: (defaults.os as string) || (isWindows ? "Win Server 2025" : "RHEL 9"),
+            vcpus: (defaults.vcpus as number) || 2,
+            ram: (defaults.ram as number) || 4,
+            os: (defaults.os as string) || "rhel10",
             status: "stopped" as const,
             bootOrder: undefined,
             bootMethod: "disk",
-            cloudInit: !isWindows,
-            icon: isWindows ? "💻" : "🖥",
+            cloudInit: true,
+            icon: "🖥",
             nics: [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }],
             diskControllers: [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }],
           },
