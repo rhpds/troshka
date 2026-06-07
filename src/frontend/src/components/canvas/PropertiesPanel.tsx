@@ -579,10 +579,22 @@ export default function PropertiesPanel() {
                           return (ipNum & mask) === (netNum & mask);
                         };
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
-                        const ipDuplicate = nicIp ? (() => {
+                        const ipConflict = nicIp ? (() => {
                           const nd = netNode!.data as Record<string, unknown>;
-                          if (nd.gateway === nicIp) return "gateway";
-                          if (nd.dhcpStart === nicIp || nd.dhcpEnd === nicIp) return "DHCP range";
+                          if (nd.gateway === nicIp) return "gateway IP";
+                          if (nd.dnsIp === nicIp) return "DNS server IP";
+                          const ipToNum = (ip: string) => {
+                            const p = ip.split(".").map(Number);
+                            return p.length === 4 ? ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0 : 0;
+                          };
+                          const dhcpStart = nd.dhcpStart as string;
+                          const dhcpEnd = nd.dhcpEnd as string;
+                          if (dhcpStart && dhcpEnd) {
+                            const ipN = ipToNum(nicIp);
+                            const startN = ipToNum(dhcpStart);
+                            const endN = ipToNum(dhcpEnd);
+                            if (ipN >= startN && ipN <= endN) return "DHCP range";
+                          }
                           for (const n of nodes) {
                             if (n.type !== "vmNode") continue;
                             const vmNics = ((n.data as Record<string, unknown>).nics || []) as Array<Record<string, unknown>>;
@@ -593,6 +605,7 @@ export default function PropertiesPanel() {
                           }
                           return null;
                         })() : null;
+                        const ipDuplicate = ipConflict;
                         const hasError = nicIp && (!ipValid || ipDuplicate);
                         return netNode ? (
                           <div className="props-field">
