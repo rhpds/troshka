@@ -44,31 +44,180 @@ const stateColors: Record<string, string> = {
   error: "#ef4444",
 };
 
+interface PatternSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+  const [mode, setMode] = useState<"choose" | "blank" | "pattern">("choose");
+  const [name, setName] = useState("");
+  const [patterns, setPatterns] = useState<PatternSummary[]>([]);
+  const [selectedPattern, setSelectedPattern] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/v1/patterns/`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setPatterns(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
+  const inputStyle = {
+    width: "100%",
+    padding: "6px 10px",
+    borderRadius: 6,
+    border: "1px solid var(--pf-t--global--border--color--default)",
+    background: "var(--pf-t--global--background--color--primary--default)",
+    color: "var(--pf-t--global--text--color--regular)",
+    fontSize: 13,
+  };
+
+  const handleCreate = async () => {
+    if (!name.trim()) return;
+    setCreating(true);
+    try {
+      if (mode === "pattern" && selectedPattern) {
+        const resp = await fetch(`${API_BASE}/api/v1/patterns/${selectedPattern}/deploy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          onCreated(data.id);
+        }
+      } else {
+        const resp = await fetch(`${API_BASE}/api/v1/projects/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          onCreated(data.id);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setCreating(false);
+  };
+
+  const optionStyle = (active: boolean) => ({
+    flex: 1,
+    padding: "16px",
+    borderRadius: 8,
+    border: `2px solid ${active ? "#4ade80" : "var(--pf-t--global--border--color--default)"}`,
+    background: active ? "rgba(74,222,128,0.08)" : "transparent",
+    cursor: "pointer" as const,
+    textAlign: "center" as const,
+  });
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 10000,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "rgba(0,0,0,0.6)",
+    }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: "var(--pf-t--global--background--color--primary--default)",
+        borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        border: "1px solid var(--pf-t--global--border--color--default)",
+      }}>
+        <h2 style={{ marginTop: 0, marginBottom: 16 }}>New Project</h2>
+
+        {mode === "choose" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={optionStyle(false)} onClick={() => setMode("blank")}>
+                <div style={{ fontSize: 28, marginBottom: 4 }}>📄</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>Blank Project</div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Start from scratch</div>
+              </div>
+              <div
+                style={{ ...optionStyle(false), opacity: patterns.length === 0 ? 0.4 : 1, pointerEvents: patterns.length === 0 ? "none" : "auto" }}
+                onClick={() => setMode("pattern")}
+              >
+                <div style={{ fontSize: 28, marginBottom: 4 }}>🧩</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>From Pattern</div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+                  {patterns.length > 0 ? `${patterns.length} pattern${patterns.length > 1 ? "s" : ""} available` : "No patterns yet"}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {mode === "pattern" && (
+              <div>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
+                <div style={{ maxHeight: 180, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {patterns.map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => { setSelectedPattern(p.id); if (!name) setName(p.name); }}
+                      style={{
+                        padding: "8px 12px", borderRadius: 6, cursor: "pointer",
+                        border: `1px solid ${selectedPattern === p.id ? "#4ade80" : "var(--pf-t--global--border--color--default)"}`,
+                        background: selectedPattern === p.id ? "rgba(74,222,128,0.08)" : "transparent",
+                      }}
+                    >
+                      <div style={{ fontWeight: 500, fontSize: 13 }}>{p.name}</div>
+                      {p.description && <div style={{ fontSize: 11, opacity: 0.6 }}>{p.description}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Name</label>
+              <input
+                style={inputStyle}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My Project"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => { setMode("choose"); setSelectedPattern(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+                Back
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern)}
+                style={{
+                  ...inputStyle, width: "auto", padding: "6px 16px",
+                  cursor: creating ? "wait" : "pointer",
+                  background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) ? 0.4 : 1,
+                }}
+              >
+                {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : "Create Project"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ProjectsPage() {
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-
-  const createProject = async () => {
-    const name = window.prompt("Project name:");
-    if (!name) return;
-    try {
-      const resp = await fetch(`${API_BASE}/api/v1/projects/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (!resp.ok) {
-        const err = await resp.json();
-        alert(err.detail || "Failed to create project");
-        return;
-      }
-      const project = await resp.json();
-      router.push(`/projects/${project.id}`);
-    } catch {
-      alert("Failed to connect to server");
-    }
-  };
+  const [showNewModal, setShowNewModal] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/projects/`)
@@ -104,10 +253,13 @@ export default function ProjectsPage() {
           <EmptyStateBody>
             Create your first VM environment to get started.
           </EmptyStateBody>
-          <Button variant="primary" icon={<PlusCircleIcon />} onClick={createProject}>
+          <Button variant="primary" icon={<PlusCircleIcon />} onClick={() => setShowNewModal(true)}>
             New Project
           </Button>
         </EmptyState>
+        {showNewModal && (
+          <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />
+        )}
       </PageSection>
     );
   }
@@ -121,7 +273,7 @@ export default function ProjectsPage() {
               <Title headingLevel="h1">Projects</Title>
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="primary" icon={<PlusCircleIcon />} onClick={createProject}>
+              <Button variant="primary" icon={<PlusCircleIcon />} onClick={() => setShowNewModal(true)}>
                 New Project
               </Button>
             </ToolbarItem>
@@ -175,6 +327,9 @@ export default function ProjectsPage() {
           ))}
         </Gallery>
       </PageSection>
+      {showNewModal && (
+        <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />
+      )}
     </>
   );
 }

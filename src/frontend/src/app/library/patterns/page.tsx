@@ -85,9 +85,11 @@ export default function PatternsPage() {
     }
   };
 
-  const formatSize = (gb: number) => {
-    if (gb < 1) return `${Math.round(gb * 1024)} MB`;
-    return `${gb.toFixed(1)} GB`;
+  const formatSize = (bytes: number) => {
+    if (!bytes) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
   };
 
   if (loading) return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
@@ -135,7 +137,7 @@ export default function PatternsPage() {
                   )}
                   <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
                     {pattern.disk_count} disk{pattern.disk_count !== 1 ? "s" : ""}
-                    {" · "}{formatSize(pattern.total_size_gb)}
+                    {" · "}{formatSize(pattern.total_size_bytes)}
                     {" · "}{new Date(pattern.created_at).toLocaleDateString()}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
