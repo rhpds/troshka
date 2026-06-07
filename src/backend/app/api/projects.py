@@ -1,9 +1,4 @@
-import re
-import shlex
-
 from fastapi import APIRouter, Depends, HTTPException
-
-VM_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$')
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -238,10 +233,9 @@ def _check_library_items_ready(topology: dict, db: Session):
                     raise HTTPException(status_code=400, detail=f"'{lib_item.name}' is still {lib_item.state}. Wait for it to finish.")
 
 
-def _validate_vm_name(vm_name: str) -> str:
-    if not VM_NAME_RE.match(vm_name):
-        raise HTTPException(status_code=400, detail="Invalid VM name")
-    return vm_name
+def _domain_name(project_id: str, vm_id: str) -> str:
+    from app.services.deploy_service import _vm_domain_name
+    return _vm_domain_name(project_id, vm_id)
 
 
 @router.get("/{project_id}/vm-states")
@@ -259,7 +253,6 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
     if not host or not host.private_key or not host.ip_address:
         return {"states": {}}
 
-    prefix = f"troshka-{project_id[:8]}"
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
         states = {}
@@ -267,99 +260,92 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
         for node in project.topology.get("nodes", []):
             if node.get("type") != "vmNode":
                 continue
-            vm_name = f"{prefix}-{node['data']['name']}"
-            if vm_name in _redeploy_progress:
+            dom_name = _domain_name(project_id, node["id"])
+            if dom_name in _redeploy_progress:
                 states[node["id"]] = "redeploying"
-                progress[node["id"]] = _redeploy_progress[vm_name]
+                progress[node["id"]] = _redeploy_progress[dom_name]
             else:
-                state = libvirt_mgr.get_vm_state(conn, vm_name)
+                state = libvirt_mgr.get_vm_state(conn, dom_name)
                 states[node["id"]] = "running" if state == "running" else "stopped" if state in ("shut_off", "not_found") else state
         return {"states": states, "progress": progress}
     finally:
         conn.close()
 
 
-@router.post("/{project_id}/vms/{vm_name}/start")
-def start_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.post("/{project_id}/vms/{vm_id}/start")
+def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"vm": full_name, "action": "start", "success": libvirt_mgr.start_vm(conn, full_name)}
+        return {"action": "start", "success": libvirt_mgr.start_vm(conn, dom)}
     finally:
         conn.close()
 
 
-@router.post("/{project_id}/vms/{vm_name}/stop")
-def stop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.post("/{project_id}/vms/{vm_id}/stop")
+def stop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"vm": full_name, "action": "stop", "success": libvirt_mgr.shutdown_vm(conn, full_name)}
+        return {"action": "stop", "success": libvirt_mgr.shutdown_vm(conn, dom)}
     finally:
         conn.close()
 
 
-@router.get("/{project_id}/vms/{vm_name}/status")
-def get_vm_status(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.get("/{project_id}/vms/{vm_id}/status")
+def get_vm_status(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        state = libvirt_mgr.get_vm_state(conn, full_name)
-        return {"vm": full_name, "state": state}
+        state = libvirt_mgr.get_vm_state(conn, dom)
+        return {"state": state}
     finally:
         conn.close()
 
 
-@router.post("/{project_id}/vms/{vm_name}/forcestop")
-def forcestop_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.post("/{project_id}/vms/{vm_id}/forcestop")
+def forcestop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"vm": full_name, "action": "forcestop", "success": libvirt_mgr.destroy_vm(conn, full_name)}
+        return {"action": "forcestop", "success": libvirt_mgr.destroy_vm(conn, dom)}
     finally:
         conn.close()
 
 
-@router.post("/{project_id}/vms/{vm_name}/restart")
-def restart_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.post("/{project_id}/vms/{vm_id}/restart")
+def restart_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"vm": full_name, "action": "restart", "success": libvirt_mgr.reboot_vm(conn, full_name)}
+        return {"action": "restart", "success": libvirt_mgr.reboot_vm(conn, dom)}
     finally:
         conn.close()
 
 
-@router.get("/{project_id}/vms/{vm_name}/console")
-def get_vm_console(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    _validate_vm_name(vm_name)
+@router.get("/{project_id}/vms/{vm_id}/console")
+def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
-    full_name = f"troshka-{project_id[:8]}-{vm_name}"
+    dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        vnc_port = libvirt_mgr.get_vnc_port(conn, full_name)
+        vnc_port = libvirt_mgr.get_vnc_port(conn, dom)
     finally:
         conn.close()
 
     if not vnc_port:
-        return {"vm": full_name, "error": "VNC not available"}
+        return {"error": "VNC not available"}
 
-    proxy = get_or_create_proxy(full_name, host.ip_address, host.private_key, vnc_port)
+    proxy = get_or_create_proxy(dom, host.ip_address, host.private_key, vnc_port)
     if "error" in proxy:
-        return {"vm": full_name, "error": proxy["error"]}
+        return {"error": proxy["error"]}
 
     return {
-        "vm": full_name,
         "ws_port": proxy["ws_port"],
         "ws_url": proxy["ws_url"],
     }
@@ -416,50 +402,37 @@ def reconfigure_project(
         run_ssh_script(host.ip_address, host.private_key, meta_script, timeout=30)
 
     # Use libvirt to reconfigure all existing VMs and add/remove as needed
-    prefix = f"troshka-{project_id[:8]}"
+    from app.services.deploy_service import _vm_domain_name, _vm_dir, _disk_path
+    vm_dir = _vm_dir(project_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     errors = []
     try:
-        # Remove deleted VMs
+        # Remove deleted VMs (ignore if already gone)
         for node in diff["removed_vms"]:
-            vm_name = f"{prefix}-{node['data']['name']}"
-            if not libvirt_mgr.undefine_vm(conn, vm_name):
-                errors.append(f"Failed to remove {vm_name}")
+            dom = _vm_domain_name(project_id, node["id"])
+            libvirt_mgr.undefine_vm(conn, dom)
+            run_ssh_script(host.ip_address, host.private_key, f"rm -f {vm_dir}/{node['id'][:8]}-*", timeout=15)
 
         # Reconfigure all existing VMs (force sync boot order, CPU, RAM)
+        from app.services.deploy_service import _resolve_boot_devs
         vms = _extract_vms(current)
         added_ids = {n["id"] for n in diff["added_vms"]}
         removed_ids = {n["id"] for n in diff["removed_vms"]}
         for vm in vms:
             if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
                 continue
-            vm_name = f"{prefix}-{vm['name']}"
-            raw_boot = vm.get("boot_devices") or None
-            vm_disks_for_boot = _find_vm_disks(vm["node_id"], current)
-            has_iso = any(d["format"] == "iso" for d in vm_disks_for_boot)
-            has_disk = any(d["format"] != "iso" for d in vm_disks_for_boot)
-            if raw_boot is None or (raw_boot == ["hd"] and has_iso):
-                if has_iso and has_disk:
-                    boot_devs = ["cdrom", "hd"]
-                elif has_iso:
-                    boot_devs = ["cdrom"]
-                elif has_disk:
-                    boot_devs = ["hd"]
-                else:
-                    boot_devs = ["network"]
-            else:
-                boot_devs = libvirt_mgr.resolve_boot_devs(raw_boot, current)
+            dom = _vm_domain_name(project_id, vm["node_id"])
+            vm_disks = _find_vm_disks(vm["node_id"], current)
+            boot_devs = _resolve_boot_devs(vm, vm_disks, current)
             vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
             nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
 
-            # Build disk list — create new qcow2 files if needed
-            vm_disks_raw = _find_vm_disks(vm["node_id"], current)
             disk_list = []
             new_disk_cmds = []
-            for d in vm_disks_raw:
+            for d in vm_disks:
                 if d["format"] == "iso":
                     continue
-                path = f"/var/lib/troshka/vms/{vm_name}-{d['name']}.{d['format']}"
+                path = _disk_path(project_id, vm["node_id"], d["node_id"], d["format"])
                 disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
                 if d.get("source") == "library" and d.get("library_item_id"):
                     cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
@@ -467,14 +440,12 @@ def reconfigure_project(
                     new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
                 else:
                     new_disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
-            # Prepare library downloads and create disk images
             if new_disk_cmds:
                 from app.services.deploy_service import _prepare_library_downloads
                 _prepare_library_downloads(current, host.ip_address, host.private_key, db)
-                run_ssh_script(host.ip_address, host.private_key, "\n".join(new_disk_cmds), timeout=300)
+                run_ssh_script(host.ip_address, host.private_key, f"mkdir -p {vm_dir}\n" + "\n".join(new_disk_cmds), timeout=300)
 
-            # Skip reconfigure if nothing changed (avoids unnecessary VM restart)
-            current_cfg = libvirt_mgr.get_vm_config(conn, vm_name)
+            current_cfg = libvirt_mgr.get_vm_config(conn, dom)
             desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
             desired_disks = [d["path"] for d in disk_list]
             if current_cfg and (
@@ -486,8 +457,8 @@ def reconfigure_project(
             ):
                 continue
 
-            if not libvirt_mgr.reconfigure_vm(conn, vm_name, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list):
-                errors.append(f"Failed to reconfigure {vm_name}")
+            if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list):
+                errors.append(f"Failed to reconfigure {dom}")
 
         # Add new VMs via SSH (virt-install not available via libvirt API)
         if diff["added_vms"]:
@@ -519,23 +490,22 @@ def reconfigure_project(
     return {"status": "reconfigured"}
 
 
-@router.post("/{project_id}/vms/{vm_name}/redeploy")
-def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.post("/{project_id}/vms/{vm_id}/redeploy")
+def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Destroy and recreate a single VM in a background thread."""
-    _validate_vm_name(vm_name)
     project, host = _get_project_and_host(project_id, user, db, check_disk=True)
     _check_library_items_ready(project.topology, db)
 
-    # Capture values for the background thread
     p_id = project.id
     host_id = host.id
     host_ip = host.ip_address
     private_key = host.private_key
+    target_vm_id = vm_id
 
     import threading
     def _do_redeploy():
         from app.core.database import SessionLocal
-        from app.services.deploy_service import _prepare_library_downloads, generate_incremental_script, run_ssh_script
+        from app.services.deploy_service import generate_incremental_script, run_ssh_script, _vm_domain_name, _vm_dir
         from app.services.cloud_init import generate_seed_iso_script
 
         s = SessionLocal()
@@ -545,53 +515,51 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
             if not proj or not h:
                 return
 
-            prefix = f"troshka-{p_id[:8]}"
-            full_name = f"{prefix}-{vm_name}"
+            dom = _vm_domain_name(p_id, target_vm_id)
+            vm_dir = _vm_dir(p_id)
             topology = proj.topology
             vni_map = proj.vni_map or {}
 
-            # Check state and undefine
             conn = libvirt_mgr.connect(host_ip, private_key)
             was_running = False
             try:
-                was_running = libvirt_mgr.get_vm_state(conn, full_name) == "running"
-                libvirt_mgr.undefine_vm(conn, full_name, remove_storage=False)
+                was_running = libvirt_mgr.get_vm_state(conn, dom) == "running"
+                libvirt_mgr.undefine_vm(conn, dom, remove_storage=False)
             finally:
                 conn.close()
 
-            _redeploy_progress[full_name] = {"step": "preparing", "detail": ""}
-            run_ssh_script(host_ip, private_key, f"rm -f /var/lib/troshka/vms/{full_name}-*", timeout=15)
+            _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
+            run_ssh_script(host_ip, private_key, f"rm -f {vm_dir}/{target_vm_id[:8]}-*", timeout=15)
 
-            vm_node = next((n for n in topology.get("nodes", []) if n.get("type") == "vmNode" and n.get("data", {}).get("name") == vm_name), None)
+            vm_node = next((n for n in topology.get("nodes", []) if n["id"] == target_vm_id and n.get("type") == "vmNode"), None)
             if not vm_node:
-                logger.warning("Redeploy %s: vm_node not found in topology", vm_name)
-                _redeploy_progress.pop(full_name, None)
+                logger.warning("Redeploy %s: node not found in topology", target_vm_id[:8])
+                _redeploy_progress.pop(dom, None)
                 return
 
-            # Build a filtered topology with only this VM's connected nodes
             edges = topology.get("edges", [])
             vm_connected_ids = set()
             for edge in edges:
                 src, tgt = edge.get("source"), edge.get("target")
-                if src == vm_node["id"]:
+                if src == target_vm_id:
                     vm_connected_ids.add(tgt)
-                elif tgt == vm_node["id"]:
+                elif tgt == target_vm_id:
                     vm_connected_ids.add(src)
             vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_connected_ids]}
 
-            _redeploy_progress[full_name] = {"step": "downloading", "detail": "0%"}
+            _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
             from app.services.deploy_service import cache_library_images
             def _progress(downloaded, total):
                 pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-                _redeploy_progress[full_name] = {"step": "downloading", "detail": pct}
+                _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
             cache_library_images(vm_topo, host_ip, private_key, s, progress_callback=_progress)
 
             seed_script = generate_seed_iso_script(p_id, topology)
             if seed_script:
-                _redeploy_progress[full_name] = {"step": "creating", "detail": "cloud-init seed ISO"}
+                _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
                 run_ssh_script(host_ip, private_key, seed_script, timeout=15)
 
-            _redeploy_progress[full_name] = {"step": "creating", "detail": "VM definition"}
+            _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
             diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
             script = generate_incremental_script(p_id, topology, diff, vni_map)
             run_ssh_script(host_ip, private_key, script, timeout=7200)
@@ -599,18 +567,18 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
             if was_running:
                 conn = libvirt_mgr.connect(host_ip, private_key)
                 try:
-                    libvirt_mgr.start_vm(conn, full_name)
+                    libvirt_mgr.start_vm(conn, dom)
                 finally:
                     conn.close()
 
-            _redeploy_progress[full_name] = {"step": "starting", "detail": ""}
+            _redeploy_progress[dom] = {"step": "starting", "detail": ""}
             proj.deployed_topology = topology
             s.commit()
-            _redeploy_progress.pop(full_name, None)
-            logger.info("Redeploy %s complete", full_name)
+            _redeploy_progress.pop(dom, None)
+            logger.info("Redeploy %s complete", dom)
         except Exception:
-            logger.exception("Redeploy %s failed", vm_name)
-            _redeploy_progress.pop(full_name, None)
+            logger.exception("Redeploy %s failed", target_vm_id[:8])
+            _redeploy_progress.pop(_vm_domain_name(p_id, target_vm_id), None)
         finally:
             s.close()
 
@@ -618,19 +586,17 @@ def redeploy_vm(project_id: str, vm_name: str, user: User = Depends(get_current_
     return {"status": "redeploying"}
 
 
-@router.post("/{project_id}/vms/{vm_name}/cancel-redeploy")
-def cancel_redeploy(project_id: str, vm_name: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.post("/{project_id}/vms/{vm_id}/cancel-redeploy")
+def cancel_redeploy(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Cancel a stuck redeploy by clearing the progress tracker."""
-    _validate_vm_name(vm_name)
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    prefix = f"troshka-{project_id[:8]}"
-    full_name = f"{prefix}-{vm_name}"
-    _redeploy_progress.pop(full_name, None)
+    dom = _domain_name(project_id, vm_id)
+    _redeploy_progress.pop(dom, None)
     return {"status": "cancelled"}
 
 

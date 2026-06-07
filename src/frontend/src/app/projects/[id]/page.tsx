@@ -235,6 +235,13 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={async () => {
                 setApplyingChanges(true);
                 try {
+                  // Save current topology first so reconfigure sees the latest state
+                  const s = useCanvasStore.getState();
+                  await fetch(`/api/v1/projects/${projectId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
+                  });
                   const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
                   const data = await resp.json();
                   if (data.status === "reconfigured" || data.status === "no_changes") {
@@ -273,6 +280,12 @@ export default function ProjectCanvasPage() {
                 ▶ Start
               </button>
               <button className="project-publish-btn" onClick={async () => {
+                const s = useCanvasStore.getState();
+                await fetch(`/api/v1/projects/${projectId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
+                });
                 const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
                 const data = await resp.json();
                 if (data.status === "reconfigured") {

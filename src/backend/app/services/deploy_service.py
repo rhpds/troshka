@@ -178,6 +178,7 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
                     break
 
         disks.append({
+            "node_id": storage_node_id,
             "name": sdata.get("name", "disk"),
             "size_gb": sdata.get("size", 10),
             "format": sdata.get("format", "qcow2"),
@@ -191,72 +192,84 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
 
 # ── Script generators ──
 
+def _vm_domain_name(project_id: str, node_id: str) -> str:
+    return f"troshka-{project_id[:8]}-{node_id[:8]}"
+
+
+def _vm_dir(project_id: str) -> str:
+    return f"/var/lib/troshka/vms/{project_id}"
+
+
+def _disk_path(project_id: str, vm_node_id: str, disk_node_id: str, fmt: str) -> str:
+    return f"{_vm_dir(project_id)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"
+
+
+def _seed_path(project_id: str, vm_node_id: str) -> str:
+    return f"{_vm_dir(project_id)}/{vm_node_id[:8]}-seed.iso"
+
+
+def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[str]:
+    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
+    all_nodes = topology.get("nodes", [])
+    storage_nodes = {n["id"]: n for n in all_nodes if n.get("type") == "storageNode"}
+
+    raw_boot_devs = vm.get("boot_devices") or None
+    has_iso = any(d["format"] == "iso" for d in vm_disks)
+    has_disk = any(d["format"] != "iso" for d in vm_disks)
+    if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
+        if has_iso and has_disk:
+            return ["cdrom", "hd"]
+        elif has_iso:
+            return ["cdrom"]
+        elif has_disk:
+            return ["hd"]
+        else:
+            return ["network"]
+    boot_devs = []
+    seen = set()
+    for d in raw_boot_devs:
+        if d in boot_type_map:
+            dev = boot_type_map[d]
+        elif d in storage_nodes:
+            dev = "cdrom" if storage_nodes[d].get("data", {}).get("format") == "iso" else "hd"
+        else:
+            continue
+        if dev not in seen:
+            boot_devs.append(dev)
+            seen.add(dev)
+    return boot_devs or ["hd"]
+
+
 def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
     """Generate a bash script to create libvirt VMs from topology."""
-    prefix = f"troshka-{project_id[:8]}"
     vms = _extract_vms(topology)
+    vm_dir = _vm_dir(project_id)
     lines = [
         "#!/bin/bash",
         "set -uo pipefail",
+        f"mkdir -p {vm_dir}",
         f'echo "=== Creating {len(vms)} VM(s) for project {project_id[:8]} ==="',
         "",
     ]
 
     for vm in vms:
-        vm_name = f"{prefix}-{vm['name']}"
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
         vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
         vm_disks = _find_vm_disks(vm["node_id"], topology)
 
-        lines.append(f'echo "Creating VM: {vm_name}"')
+        lines.append(f'echo "Creating VM: {vm_name} ({vm["name"]})"')
 
-        # Create/download disk images
-        if vm_disks:
-            for disk in vm_disks:
-                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-                if disk["format"] == "iso":
-                    if disk.get("library_item_id"):
-                        cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                    continue
-                if disk.get("source") == "library" and disk.get("library_item_id"):
-                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
-                    lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
-                else:
-                    lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
-
-        # Boot devices can be type strings or node IDs (for storage nodes)
-        boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
-        all_nodes = topology.get("nodes", [])
-        storage_nodes = {n["id"]: n for n in all_nodes if n.get("type") == "storageNode"}
-
-        raw_boot_devs = vm.get("boot_devices") or None
-        has_iso = any(d["format"] == "iso" for d in vm_disks)
-        has_disk = any(d["format"] != "iso" for d in vm_disks)
-        # Auto-detect if no boot devices set, or if default ["hd"] but ISO is connected
-        if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
-            if has_iso and has_disk:
-                boot_devs = ["cdrom", "hd"]
-            elif has_iso:
-                boot_devs = ["cdrom"]
-            elif has_disk:
-                boot_devs = ["hd"]
+        for disk in vm_disks:
+            if disk["format"] == "iso":
+                continue
+            dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+            if disk.get("source") == "library" and disk.get("library_item_id"):
+                cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+                lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
             else:
-                boot_devs = ["network"]
-        else:
-            boot_devs = []
-            seen = set()
-            for d in raw_boot_devs:
-                if d in boot_type_map:
-                    dev = boot_type_map[d]
-                elif d in storage_nodes:
-                    dev = "cdrom" if storage_nodes[d].get("data", {}).get("format") == "iso" else "hd"
-                else:
-                    continue
-                if dev not in seen:
-                    boot_devs.append(dev)
-                    seen.add(dev)
-            if not boot_devs:
-                boot_devs = ["hd"]
-        boot_arg = ",".join(boot_devs)
+                lines.append(f"qemu-img create -f {disk['format']} {dp} {disk['size_gb']}G")
+
+        boot_devs = _resolve_boot_devs(vm, vm_disks, topology)
 
         cmd_parts = [
             "virt-install",
@@ -265,12 +278,11 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             f"--memory {vm['ram_gb'] * 1024}",
             "--os-variant detect=on,name=linux2022",
             "--graphics vnc,listen=127.0.0.1",
-            f"--boot {boot_arg}",
+            f"--boot {','.join(boot_devs)}",
             "--noautoconsole",
             "--noreboot",
         ]
 
-        # Add disks and ISOs
         has_disk = False
         for disk in vm_disks:
             if disk["format"] == "iso":
@@ -278,23 +290,16 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
                     cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
                     cmd_parts.append(f"--disk path={cache_path},device=cdrom,readonly=on")
                 continue
-            if disk.get("source") == "library" and disk.get("library_item_id"):
-                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-                cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
-            else:
-                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-                cmd_parts.append(f"--disk path={disk_path},format={disk['format']},bus={disk['bus']}")
+            dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+            cmd_parts.append(f"--disk path={dp},format={disk['format']},bus={disk['bus']}")
             has_disk = True
 
         if not has_disk:
             cmd_parts.append("--disk none")
 
-        # Add cloud-init seed ISO if cloud-init is enabled
         if vm.get("cloud_init"):
-            seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
-            cmd_parts.append(f"--disk path={seed_iso},device=cdrom,readonly=on")
+            cmd_parts.append(f"--disk path={_seed_path(project_id, vm['node_id'])},device=cdrom,readonly=on")
 
-        # Add networks
         if vm_networks:
             for net in vm_networks:
                 mac_arg = f",mac={net['mac']}" if net["mac"] else ""
@@ -312,7 +317,6 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
 
 def generate_start_script(project_id: str, topology: dict) -> str:
     """Generate a bash script to start VMs, respecting start order."""
-    prefix = f"troshka-{project_id[:8]}"
     vms = _extract_vms(topology)
     start_order = topology.get("startOrder", [])
 
@@ -323,32 +327,28 @@ def generate_start_script(project_id: str, topology: dict) -> str:
         "",
     ]
 
-    # Build ordered groups — skip VMs with autoStart=false
     ordered_vm_ids = set()
-    no_start_ids = set()
     if start_order:
         for entry in start_order:
             vm_id = entry.get("vmId", "")
             vm = next((v for v in vms if v["node_id"] == vm_id), None)
             if vm:
                 ordered_vm_ids.add(vm_id)
+                vm_name = _vm_domain_name(project_id, vm["node_id"])
                 if entry.get("autoStart", True) is False:
-                    no_start_ids.add(vm_id)
-                    lines.append(f'echo "Skipping {prefix}-{vm["name"]} (auto-start disabled)"')
+                    lines.append(f'echo "Skipping {vm_name} ({vm["name"]}) (auto-start disabled)"')
                     continue
-                vm_name = f"{prefix}-{vm['name']}"
                 delay = entry.get("delaySeconds", 0)
                 if delay > 0:
                     lines.append(f"sleep {delay}")
                 lines.append(f"virsh start {vm_name} || true")
-                lines.append(f'echo "Started {vm_name}"')
+                lines.append(f'echo "Started {vm_name} ({vm["name"]})"')
 
-    # Start remaining VMs not in start order (default: auto-start)
     for vm in vms:
         if vm["node_id"] not in ordered_vm_ids:
-            vm_name = f"{prefix}-{vm['name']}"
+            vm_name = _vm_domain_name(project_id, vm["node_id"])
             lines.append(f"virsh start {vm_name} || true")
-            lines.append(f'echo "Started {vm_name}"')
+            lines.append(f'echo "Started {vm_name} ({vm["name"]})"')
 
     lines.append("")
     lines.append('echo "=== All VMs started ==="')
@@ -357,7 +357,6 @@ def generate_start_script(project_id: str, topology: dict) -> str:
 
 def generate_stop_script(project_id: str, topology: dict) -> str:
     """Generate a bash script to gracefully stop all VMs."""
-    prefix = f"troshka-{project_id[:8]}"
     vms = _extract_vms(topology)
 
     lines = [
@@ -367,18 +366,15 @@ def generate_stop_script(project_id: str, topology: dict) -> str:
         "",
     ]
 
-    # Graceful shutdown
     for vm in vms:
-        vm_name = f"{prefix}-{vm['name']}"
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
         lines.append(f"virsh shutdown {vm_name} 2>/dev/null || true")
 
-    # Wait for graceful shutdown
     lines.append('echo "Waiting for VMs to shut down..."')
     lines.append("sleep 15")
 
-    # Force destroy any still running
     for vm in vms:
-        vm_name = f"{prefix}-{vm['name']}"
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
 
     lines.append("")
@@ -388,7 +384,6 @@ def generate_stop_script(project_id: str, topology: dict) -> str:
 
 def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> str:
     """Generate a bash script to destroy VMs and tear down networks."""
-    prefix = f"troshka-{project_id[:8]}"
     vms = _extract_vms(topology)
 
     lines = [
@@ -398,14 +393,12 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
         "",
     ]
 
-    # Stop and undefine VMs
     for vm in vms:
-        vm_name = f"{prefix}-{vm['name']}"
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
         lines.append(f"virsh undefine {vm_name} --remove-all-storage 2>/dev/null || true")
 
-    # Remove any remaining disk images
-    lines.append(f"rm -f /var/lib/troshka/vms/{prefix}-* 2>/dev/null || true")
+    lines.append(f"rm -rf {_vm_dir(project_id)}")
 
     # Tear down networks
     for vni in vni_map.values():
@@ -423,9 +416,9 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
 
 def generate_reconfigure_script(project_id: str, topology: dict, vni_map: dict) -> str:
     """Update VM definitions in-place without destroying disks."""
-    prefix = f"troshka-{project_id[:8]}"
     no_auto_start = {e["vmId"] for e in topology.get("startOrder", []) if e.get("autoStart") is False}
     vms = _extract_vms(topology)
+    vm_disks_map = {vm["node_id"]: _find_vm_disks(vm["node_id"], topology) for vm in vms}
     lines = [
         "#!/bin/bash",
         "set -uo pipefail",
@@ -433,36 +426,17 @@ def generate_reconfigure_script(project_id: str, topology: dict, vni_map: dict) 
         "",
     ]
 
-    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
-    all_nodes = topology.get("nodes", [])
-    storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
-
     for vm in vms:
-        vm_name = f"{prefix}-{vm['name']}"
-        vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
-
-        boot_devs = []
-        seen = set()
-        for d in vm.get("boot_devices", ["hd"]):
-            if d in boot_type_map:
-                dev = boot_type_map[d]
-            elif d in storage_node_ids:
-                dev = "hd"
-            else:
-                continue
-            if dev not in seen:
-                boot_devs.append(dev)
-                seen.add(dev)
-        if not boot_devs:
-            boot_devs = ["hd"]
-
-        boot_xml = "".join(f"<boot dev='{d}'/>" for d in boot_devs)
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        vm_disks = vm_disks_map[vm["node_id"]]
+        boot_devs = _resolve_boot_devs(vm, vm_disks, topology)
 
         boot_xml_lines = "".join(f"    <boot dev=\\'{d}\\'/>\n" for d in boot_devs)
         mem_kib = vm['ram_gb'] * 1024 * 1024
 
-        lines.append(f'echo "Reconfiguring {vm_name}"')
+        lines.append(f'echo "Reconfiguring {vm_name} ({vm["name"]})"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
+        start_cmd = f"virsh start {vm_name}" if vm["node_id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"
         lines.append(f"""
 TMPXML=$(mktemp)
 virsh dumpxml --inactive {vm_name} > $TMPXML
@@ -470,14 +444,10 @@ virsh dumpxml --inactive {vm_name} > $TMPXML
 python3 -c "
 import re, sys
 xml = open('$TMPXML').read()
-# Remove existing boot lines
 xml = re.sub(r'\\s*<boot dev=[^/]*/>', '', xml)
-# Insert new boot lines after <type...>...</type>
 boot = '''{boot_xml_lines}'''
 xml = re.sub(r'(</type>)', r'\\1\\n' + boot, xml, count=1)
-# Update vcpus
 xml = re.sub(r'<vcpu[^>]*>[^<]*</vcpu>', '<vcpu placement=\"static\">{vm['vcpus']}</vcpu>', xml)
-# Update memory
 xml = re.sub(r'<memory[^>]*>[^<]*</memory>', '<memory unit=\"KiB\">{mem_kib}</memory>', xml)
 xml = re.sub(r'<currentMemory[^>]*>[^<]*</currentMemory>', '<currentMemory unit=\"KiB\">{mem_kib}</currentMemory>', xml)
 open('$TMPXML', 'w').write(xml)
@@ -485,7 +455,7 @@ open('$TMPXML', 'w').write(xml)
 
 virsh define $TMPXML
 rm -f $TMPXML
-{"virsh start " + vm_name if vm["node_id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"}
+{start_cmd}
 echo "{vm_name} reconfigured"
 """)
 
@@ -544,23 +514,23 @@ def generate_incremental_script(
     vni_map: dict,
 ) -> str:
     """Generate script for incremental changes — add/remove/update without touching untouched VMs."""
-    prefix = f"troshka-{project_id[:8]}"
+    vm_dir = _vm_dir(project_id)
     no_auto_start = {e["vmId"] for e in topology.get("startOrder", []) if e.get("autoStart") is False}
     lines = [
         "#!/bin/bash",
         "set -uo pipefail",
+        f"mkdir -p {vm_dir}",
         f'echo "=== Applying incremental changes for {project_id[:8]} ==="',
         "",
     ]
 
-    # Remove VMs that were deleted from canvas
     for node in diff["removed_vms"]:
-        vm_name = f"{prefix}-{node['data']['name']}"
+        vm_name = _vm_domain_name(project_id, node["id"])
         lines.append(f'echo "Removing VM: {vm_name}"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
         lines.append(f"virsh undefine {vm_name} --remove-all-storage 2>/dev/null || true")
+        lines.append(f"rm -f {vm_dir}/{node['id'][:8]}-*")
 
-    # Remove networks that were deleted
     for node in diff["removed_networks"]:
         nid = node["id"]
         if nid in vni_map:
@@ -569,36 +539,19 @@ def generate_incremental_script(
             lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
             lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
-    # Reconfigure changed VMs (boot order, CPU, RAM)
-    all_nodes = topology.get("nodes", [])
-    storage_node_ids = {n["id"] for n in all_nodes if n.get("type") == "storageNode"}
-    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
-
     for node in diff["changed_vms"]:
         d = node.get("data", {})
-        vm_name = f"{prefix}-{d['name']}"
-        boot_devs = []
-        seen = set()
-        for bd in d.get("bootDevices", ["hd"]):
-            if bd in boot_type_map:
-                dev = boot_type_map[bd]
-            elif bd in storage_node_ids:
-                dev = "hd"
-            else:
-                continue
-            if dev not in seen:
-                boot_devs.append(dev)
-                seen.add(dev)
-        if not boot_devs:
-            boot_devs = ["hd"]
-        boot_xml = "".join(f"<boot dev='{bd}'/>" for bd in boot_devs)
+        vm_name = _vm_domain_name(project_id, node["id"])
+        vm_disks = _find_vm_disks(node["id"], topology)
+        vm_data = {"boot_devices": d.get("bootDevices", ["hd"])}
+        boot_devs = _resolve_boot_devs(vm_data, vm_disks, topology)
+        boot_xml_lines = "".join(f"    <boot dev=\\'{bd}\\'/>\n" for bd in boot_devs)
+        mem_kib = d.get('ram', 4) * 1024 * 1024
+        vcpus = d.get('vcpus', 2)
 
-        boot_xml_lines2 = "".join(f"    <boot dev=\\'{bd}\\'/>\n" for bd in boot_devs)
-        mem_kib2 = d.get('ram', 4) * 1024 * 1024
-        vcpus2 = d.get('vcpus', 2)
-
-        lines.append(f'echo "Reconfiguring {vm_name}"')
+        lines.append(f'echo "Reconfiguring {vm_name} ({d.get("name", "")})"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
+        start_cmd = f"virsh start {vm_name}" if node["id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"
         lines.append(f"""
 TMPXML=$(mktemp)
 virsh dumpxml --inactive {vm_name} > $TMPXML
@@ -607,63 +560,46 @@ python3 -c "
 import re
 xml = open('$TMPXML').read()
 xml = re.sub(r'\\s*<boot dev=[^/]*/>', '', xml)
-boot = '''{boot_xml_lines2}'''
+boot = '''{boot_xml_lines}'''
 xml = re.sub(r'(</type>)', r'\\1\\n' + boot, xml, count=1)
-xml = re.sub(r'<vcpu[^>]*>[^<]*</vcpu>', '<vcpu placement=\"static\">{vcpus2}</vcpu>', xml)
-xml = re.sub(r'<memory[^>]*>[^<]*</memory>', '<memory unit=\"KiB\">{mem_kib2}</memory>', xml)
-xml = re.sub(r'<currentMemory[^>]*>[^<]*</currentMemory>', '<currentMemory unit=\"KiB\">{mem_kib2}</currentMemory>', xml)
+xml = re.sub(r'<vcpu[^>]*>[^<]*</vcpu>', '<vcpu placement=\"static\">{vcpus}</vcpu>', xml)
+xml = re.sub(r'<memory[^>]*>[^<]*</memory>', '<memory unit=\"KiB\">{mem_kib}</memory>', xml)
+xml = re.sub(r'<currentMemory[^>]*>[^<]*</currentMemory>', '<currentMemory unit=\"KiB\">{mem_kib}</currentMemory>', xml)
 open('$TMPXML', 'w').write(xml)
 "
 
 virsh define $TMPXML
 rm -f $TMPXML
-{"virsh start " + vm_name if node["id"] not in no_auto_start else "echo 'Skipping start (auto-start disabled)'"}
+{start_cmd}
 echo "{vm_name} reconfigured"
 """)
 
-    # Add new VMs
     for node in diff["added_vms"]:
         d = node.get("data", {})
-        vm_name = f"{prefix}-{d.get('name', 'vm')}"
-        vm_data = {
-            "node_id": node["id"],
-            "name": d.get("name", "vm"),
-            "vcpus": d.get("vcpus", 2),
-            "ram_gb": d.get("ram", 4),
-            "boot_devices": d.get("bootDevices", ["hd"]),
-        }
-
+        vm_name = _vm_domain_name(project_id, node["id"])
         vm_disks = _find_vm_disks(node["id"], topology)
         vm_networks = _find_vm_networks(node["id"], topology, vni_map)
 
-        lines.append(f'echo "Adding new VM: {vm_name}"')
+        lines.append(f'echo "Adding new VM: {vm_name} ({d.get("name", "")})"')
 
-        # Create disks
-        if vm_disks:
-            for disk in vm_disks:
-                if disk["format"] == "iso":
-                    if disk.get("library_item_id"):
-                        cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                        lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{disk['library_item_id']})\"")
-                    continue
-                disk_path = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
-                if disk.get("source") == "library" and disk.get("library_item_id"):
-                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
-                    lines.append(f"curl -sfL -C - -o {cache_path} \"$(cat /var/lib/troshka/tmp/presigned-{disk['library_item_id']})\"")
-                    lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {disk_path} {disk['size_gb']}G")
-                else:
-                    lines.append(f"qemu-img create -f {disk['format']} {disk_path} {disk['size_gb']}G")
+        for disk in vm_disks:
+            if disk["format"] == "iso":
+                continue
+            dp = _disk_path(project_id, node["id"], disk["node_id"], disk["format"])
+            if disk.get("source") == "library" and disk.get("library_item_id"):
+                cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+                lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
+            else:
+                lines.append(f"qemu-img create -f {disk['format']} {dp} {disk['size_gb']}G")
 
-        boot_devs = [boot_type_map[bd] for bd in vm_data.get("boot_devices", ["hd"]) if bd in boot_type_map]
-        boot_devs += ["hd" for bd in vm_data.get("boot_devices", []) if bd in storage_node_ids and "hd" not in boot_devs]
-        if not boot_devs:
-            boot_devs = ["hd"]
+        vm_data = {"boot_devices": d.get("bootDevices", ["hd"])}
+        boot_devs = _resolve_boot_devs(vm_data, vm_disks, topology)
 
         cmd_parts = [
             "virt-install",
             f"--name {vm_name}",
-            f"--vcpus {vm_data['vcpus']}",
-            f"--memory {vm_data['ram_gb'] * 1024}",
+            f"--vcpus {d.get('vcpus', 2)}",
+            f"--memory {d.get('ram', 4) * 1024}",
             "--os-variant detect=on,name=linux2022",
             "--graphics vnc,listen=127.0.0.1",
             f"--boot {','.join(boot_devs)}",
@@ -674,18 +610,19 @@ echo "{vm_name} reconfigured"
         has_disk = False
         for disk in vm_disks:
             if disk["format"] == "iso":
+                if disk.get("library_item_id"):
+                    cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                    cmd_parts.append(f"--disk path={cache_path},device=cdrom,readonly=on")
                 continue
-            dp = f"/var/lib/troshka/vms/{vm_name}-{disk['name']}.{disk['format']}"
+            dp = _disk_path(project_id, node["id"], disk["node_id"], disk["format"])
             cmd_parts.append(f"--disk path={dp},format={disk['format']},bus={disk['bus']}")
             has_disk = True
 
         if not has_disk:
             cmd_parts.append("--disk none")
 
-        # Cloud-init seed ISO
         if d.get("cloudInit"):
-            seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
-            cmd_parts.append(f"--disk path={seed_iso},device=cdrom,readonly=on")
+            cmd_parts.append(f"--disk path={_seed_path(project_id, node['id'])},device=cdrom,readonly=on")
 
         if vm_networks:
             for net in vm_networks:

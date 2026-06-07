@@ -42,25 +42,25 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
     >
       {isDeployed && isRunning && !isRedeploying && (
         <>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/stop`, { method: "POST" }); onClose(); }}>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
           </button>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/forcestop`, { method: "POST" }); onClose(); }}>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/forcestop`, { method: "POST" }); onClose(); }}>
             ⏻ Force Power Off
           </button>
-          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/restart`, { method: "POST" }); onClose(); }}>
+          <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/restart`, { method: "POST" }); onClose(); }}>
             ↻ Restart
           </button>
         </>
       )}
       {isDeployed && !isRunning && !isRedeploying && (
-        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/start`, { method: "POST" }); onClose(); }}>
+        <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>
       )}
       {isDeployed && (
         <button onClick={() => {
-          window.open(`/console?vm=${encodeURIComponent(vmName)}&project=${projectId}`, `console_${projectId.replace(/-/g, "")}_${vmName.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
+          window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${projectId.replace(/-/g, "")}_${nodeId.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
           onClose();
         }}>
           🖥 Console
@@ -74,7 +74,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
       </button>
       {isDeployed && isRedeploying && (
         <button className="danger" onClick={async () => {
-          await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/cancel-redeploy`, { method: "POST" });
+          await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/cancel-redeploy`, { method: "POST" });
           const updateNodeData = useCanvasStore.getState().updateNodeData;
           updateNodeData(nodeId, { status: "stopped", redeployStep: null, redeployDetail: null });
           onClose();
@@ -89,7 +89,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose }: NodeContextMe
           setTimeout(async () => {
             if (!window.confirm(`Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`)) return;
             updateNodeData(nodeId, { status: "redeploying" });
-            const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
+            const resp = await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/redeploy`, { method: "POST" });
             const result = await resp.json();
             if (result.status === "redeploying") {
               updateNodeData(nodeId, { status: "redeploying" });

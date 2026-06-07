@@ -132,17 +132,16 @@ const _undoStack: HistoryEntry[] = [];
 const _redoStack: HistoryEntry[] = [];
 const MAX_HISTORY = 50;
 
-let nodeIdCounter = 1;
 export function generateNodeId(): string {
-  return `node-${Date.now()}-${nodeIdCounter++}`;
+  return crypto.randomUUID();
 }
 
 export function generateNicId(): string {
-  return `nic-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  return `nic-${crypto.randomUUID()}`;
 }
 
 export function generateDiskControllerId(): string {
-  return `dp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  return `dp-${crypto.randomUUID()}`;
 }
 
 export function generateMac(): string {

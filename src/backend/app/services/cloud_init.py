@@ -92,9 +92,9 @@ def generate_metadata(vm_name: str, mac: str = "") -> str:
 
 def generate_seed_iso_script(project_id: str, topology: dict) -> str:
     """Generate a script to create NoCloud seed ISOs for each VM with cloud-init enabled."""
-    prefix = f"troshka-{project_id[:8]}"
     nodes = topology.get("nodes", [])
-    lines = ["#!/bin/bash", ""]
+    vm_dir = f"/var/lib/troshka/vms/{project_id}"
+    lines = ["#!/bin/bash", f"mkdir -p {vm_dir}", ""]
 
     for node in nodes:
         if node.get("type") != "vmNode":
@@ -103,12 +103,15 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
         if not data.get("cloudInit"):
             continue
 
-        vm_name = f"{prefix}-{data.get('name', 'vm')}"
+        node_id = node["id"]
+        vm_label = data.get("name", "vm")
+        from app.services.deploy_service import _vm_domain_name
+        vm_name = _vm_domain_name(project_id, node_id)
         userdata = generate_userdata(data)
-        metadata = generate_metadata(vm_name)
+        metadata = generate_metadata(vm_label)
 
-        seed_dir = f"/var/lib/troshka/tmp/seed-{vm_name}"
-        seed_iso = f"/var/lib/troshka/vms/{vm_name}-seed.iso"
+        seed_dir = f"/var/lib/troshka/tmp/seed-{node_id[:8]}"
+        seed_iso = f"{vm_dir}/{node_id[:8]}-seed.iso"
 
         lines.append(f"mkdir -p {seed_dir}")
         lines.append(f"cat > {seed_dir}/user-data << 'USERDATA'")
@@ -133,11 +136,9 @@ def generate_metadata_service_script(project_id: str, topology: dict, vni_map: d
     The service listens on 169.254.169.254:80 and serves per-VM
     user-data and meta-data based on the requesting IP (mapped via DHCP lease).
     """
-    prefix = f"troshka-{project_id[:8]}"
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
 
-    # Build VM data map: MAC → user-data
     vm_configs = {}
     for node in nodes:
         if node.get("type") != "vmNode":
@@ -146,16 +147,16 @@ def generate_metadata_service_script(project_id: str, topology: dict, vni_map: d
         if not data.get("cloudInit"):
             continue
 
-        vm_name = f"{prefix}-{data.get('name', 'vm')}"
+        vm_label = data.get("name", "vm")
         userdata = generate_userdata(data)
-        metadata = generate_metadata(vm_name)
+        metadata = generate_metadata(vm_label)
 
         # Find MAC addresses for this VM
         for nic in data.get("nics", []):
             mac = nic.get("mac", "").lower()
             if mac:
                 vm_configs[mac] = {
-                    "vm_name": vm_name,
+                    "vm_name": vm_label,
                     "userdata": userdata,
                     "metadata": metadata,
                 }

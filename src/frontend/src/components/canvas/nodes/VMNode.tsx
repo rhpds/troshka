@@ -33,7 +33,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const [actionPending, setActionPending] = useState<string | null>(null);
 
   const pollVmStatus = async (): Promise<string> => {
-    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/status`);
+    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${id}/status`);
     const data = await resp.json();
     return data.state || "";
   };
@@ -52,7 +52,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     if (!projectId || actionPending) return;
     setActionPending(action);
     try {
-      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/${action}`, { method: "POST" });
+      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${id}/${action}`, { method: "POST" });
       const result = await resp.json();
       if (action === "stop") {
         if (result.success) {
@@ -107,11 +107,11 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
 
   const openConsole = async () => {
     if (!projectId) return;
-    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${d.name}/console`);
+    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${id}/console`);
     const info = await resp.json();
     window.open(
-      `/console?vm=${encodeURIComponent(d.name)}&project=${projectId}`,
-      `console_${projectId?.replace(/-/g, "")}_${d.name.replace(/-/g, "")}`,
+      `/console?vm=${encodeURIComponent(id)}&project=${projectId}&name=${encodeURIComponent(d.name)}`,
+      `console_${projectId?.replace(/-/g, "")}_${id.replace(/-/g, "")}`,
       "width=1024,height=768,menubar=no,toolbar=no,location=no",
     );
   };

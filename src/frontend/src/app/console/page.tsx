@@ -5,8 +5,9 @@ import { useSearchParams } from "next/navigation";
 
 export default function ConsolePage() {
   const searchParams = useSearchParams();
-  const vmName = searchParams.get("vm") || "VM";
+  const vmId = searchParams.get("vm") || "";
   const projectId = searchParams.get("project");
+  const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
   const [wsPort, setWsPort] = useState<number | null>(null);
@@ -50,14 +51,14 @@ export default function ConsolePage() {
 
   // Fetch WebSocket port from API, retry if VM not running
   const fetchConsolePort = useCallback(async (): Promise<number | null> => {
-    if (!projectId || !vmName) return null;
+    if (!projectId || !vmId) return null;
     try {
-      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/console`);
+      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console`);
       const data = await resp.json();
       if (data.ws_port) return data.ws_port;
     } catch { /* ignore */ }
     return null;
-  }, [projectId, vmName]);
+  }, [projectId, vmId]);
 
   const pollForPort = useCallback(() => {
     if (!mountedRef.current) return;
