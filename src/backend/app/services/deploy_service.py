@@ -908,11 +908,11 @@ def deploy_project_async(project_id: str):
             run_ssh_script(host_ip, private_key, seed_script, timeout=30)
 
         # Step 3: Cache library images on host
-        _deploy_progress[project_id] = {"step": "downloading", "detail": "0%"}
+        _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
         logger.info("Deploy %s: caching library images", project_id[:8])
         def _deploy_dl_progress(downloaded, total):
             pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-            _deploy_progress[project_id] = {"step": "downloading", "detail": pct}
+            _deploy_progress[project_id] = {"step": "downloading images", "detail": pct}
         cache_library_images(topology, host_ip, private_key, s, progress_callback=_deploy_dl_progress)
 
         # Step 4: Create VMs
