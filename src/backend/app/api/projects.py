@@ -361,6 +361,7 @@ def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current
 @router.post("/{project_id}/reconfigure")
 def reconfigure_project(
     project_id: str,
+    body: dict | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -393,6 +394,7 @@ def reconfigure_project(
     project.state = "reconfiguring"
     db.commit()
 
+    restart_vm_ids = set((body or {}).get("restart_vm_ids", []))
     p_id = project.id
     h_id = host.id
     h_ip = host.ip_address
@@ -500,7 +502,8 @@ def reconfigure_project(
                         continue
 
                     _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
-                    if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list, cdroms=cdrom_list):
+                    needs_restart = vm["node_id"] in restart_vm_ids or current_cfg["boot_devs"] != boot_devs or current_cfg["vcpus"] != vm["vcpus"] or current_cfg["ram_mb"] != vm["ram_gb"] * 1024 or current_cfg["nics"] != desired_nics or current_cfg["disks"] != desired_disks
+                    if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list, cdroms=cdrom_list, restart=needs_restart):
                         errors.append(f"Failed to reconfigure {dom}")
 
                 if diff["added_vms"]:

@@ -183,6 +183,7 @@ def reconfigure_vm(
     disks: list[dict] | None = None,
     cdroms: list[str] | None = None,
     vnc_listen: str = "127.0.0.1",
+    restart: bool = True,
 ) -> bool:
     """Reconfigure a VM without wiping existing disks.
 
@@ -198,7 +199,7 @@ def reconfigure_vm(
     try:
         dom = conn.lookupByName(name)
         was_active = dom.isActive()
-        if was_active:
+        if restart and was_active:
             dom.destroy()
 
         xml_str = dom.XMLDesc(libvirt.VIR_DOMAIN_XML_INACTIVE)
@@ -352,11 +353,14 @@ def reconfigure_vm(
         new_xml = ET.tostring(root, encoding="unicode")
         conn.defineXML(new_xml)
 
-        if was_active:
+        if restart and was_active:
             dom2 = conn.lookupByName(name)
             dom2.create()
-
-        logger.info("Reconfigured %s", name)
+            logger.info("Reconfigured and restarted %s", name)
+        elif was_active:
+            logger.info("Reconfigured %s (changes apply on next boot)", name)
+        else:
+            logger.info("Reconfigured %s", name)
         return True
     except libvirt.libvirtError as e:
         logger.error("Failed to reconfigure %s: %s", name, e)

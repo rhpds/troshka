@@ -9,6 +9,7 @@ import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore } from "@/stores/canvasStore";
+import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -148,6 +149,75 @@ export default function ProjectCanvasPage() {
     }
   }, [projectState, setAllVmStatus]);
 
+  const [reconfigWarnings, setReconfigWarnings] = useState<{ type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] | null>(null);
+
+  const doReconfigure = async (restartVmIds?: string[]) => {
+    setReconfigWarnings(null);
+    setApplyingChanges(true);
+    try {
+      const s = useCanvasStore.getState();
+      await fetch(`/api/v1/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
+      });
+      const body: Record<string, unknown> = {};
+      if (restartVmIds) body.restart_vm_ids = restartVmIds;
+      const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (data.status === "reconfiguring") {
+        setProjectState("reconfiguring");
+        useCanvasStore.setState({ topologyDirty: false });
+      } else {
+        alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "unknown error"}`);
+      }
+    } catch { alert("Failed to connect to server"); }
+    setApplyingChanges(false);
+  };
+
+  const handleApplyChanges = async () => {
+    const projResp = await fetch(`/api/v1/projects/${projectId}`);
+    const projData = await projResp.json();
+    const deployed = projData?.deployed_topology || {};
+    const cur = useCanvasStore.getState();
+    const depStorageMap: Record<string, Record<string, unknown>> = {};
+    for (const n of (deployed.nodes || [])) {
+      if (n.type === "storageNode") depStorageMap[n.id] = n.data;
+    }
+    const changes: { type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] = [];
+    const runningVmIds = new Set<string>();
+    for (const n of cur.nodes) {
+      if (n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running") runningVmIds.add(n.id);
+    }
+    for (const n of cur.nodes) {
+      if (n.type !== "storageNode") continue;
+      const curData = n.data as Record<string, unknown>;
+      const depData = depStorageMap[n.id];
+      if (!depData) continue;
+      if ((curData.libraryItemId as string) === (depData.libraryItemId as string)) continue;
+      const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
+      const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
+      const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
+      const vmName = vmNode ? (vmNode.data as Record<string, unknown>).name as string : "a VM";
+      if (curData.format === "iso") {
+        if (vmId && runningVmIds.has(vmId)) {
+          changes.push({ type: "iso", storageName: curData.name as string, vmName, vmId });
+        }
+      } else {
+        if (vmId) changes.push({ type: "disk", storageName: curData.name as string, vmName, vmId: vmId });
+      }
+    }
+    if (changes.length > 0) {
+      setReconfigWarnings(changes);
+    } else {
+      doReconfigure();
+    }
+  };
+
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
 
@@ -242,64 +312,7 @@ export default function ProjectCanvasPage() {
               }}>
                 ■ Stop
               </button>
-              <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={async () => {
-                // Check for ISO/disk changes that require restart or cause data loss
-                const projResp = await fetch(`/api/v1/projects/${projectId}`);
-                const projData = await projResp.json();
-                const deployed = projData?.deployed_topology || {};
-                const cur = useCanvasStore.getState();
-                const depStorageMap: Record<string, Record<string, unknown>> = {};
-                for (const n of (deployed.nodes || [])) {
-                  if (n.type === "storageNode") depStorageMap[n.id] = n.data;
-                }
-                const warnings: string[] = [];
-                const runningVmIds = new Set<string>();
-                for (const n of cur.nodes) {
-                  if (n.type === "vmNode" && (n.data as Record<string, unknown>).status === "running") runningVmIds.add(n.id);
-                }
-                for (const n of cur.nodes) {
-                  if (n.type !== "storageNode") continue;
-                  const curData = n.data as Record<string, unknown>;
-                  const depData = depStorageMap[n.id];
-                  if (!depData) continue;
-                  const curLib = curData.libraryItemId as string | undefined;
-                  const depLib = depData.libraryItemId as string | undefined;
-                  if (curLib === depLib) continue;
-                  const connectedVm = cur.edges.find((e) => e.source === n.id || e.target === n.id);
-                  const vmId = connectedVm ? (connectedVm.source === n.id ? connectedVm.target : connectedVm.source) : null;
-                  const vmNode = vmId ? cur.nodes.find((v) => v.id === vmId && v.type === "vmNode") : null;
-                  const vmName = vmNode ? (vmNode.data as Record<string, unknown>).name as string : "a VM";
-                  if (curData.format === "iso") {
-                    if (vmId && runningVmIds.has(vmId)) {
-                      warnings.push(`ISO "${curData.name}" changed on running VM "${vmName}". This will restart the VM.`);
-                    }
-                  } else {
-                    warnings.push(`Disk "${curData.name}" backing image changed on "${vmName}". The disk will be recreated and all data on it will be lost.`);
-                  }
-                }
-                if (warnings.length > 0) {
-                  if (!window.confirm(warnings.join("\n\n") + "\n\nContinue?")) return;
-                }
-
-                setApplyingChanges(true);
-                try {
-                  const s = useCanvasStore.getState();
-                  await fetch(`/api/v1/projects/${projectId}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
-                  });
-                  const resp = await fetch(`/api/v1/projects/${projectId}/reconfigure`, { method: "POST" });
-                  const data = await resp.json();
-                  if (data.status === "reconfiguring") {
-                    setProjectState("reconfiguring");
-                    useCanvasStore.setState({ topologyDirty: false });
-                  } else {
-                    alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "unknown error"}`);
-                  }
-                } catch { alert("Failed to connect to server"); }
-                setApplyingChanges(false);
-              }}>
+              <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
               <button className="project-publish-btn" onClick={() => {
@@ -410,6 +423,13 @@ export default function ProjectCanvasPage() {
       </div>
       {showStartOrder && <StartOrderPanel onClose={() => setShowStartOrder(false)} />}
       {showExternalIps && <ExternalIpsPanel onClose={() => setShowExternalIps(false)} />}
+      {reconfigWarnings && (
+        <ReconfigureWarningModal
+          changes={reconfigWarnings}
+          onConfirm={(restartVmIds) => doReconfigure(restartVmIds)}
+          onCancel={() => setReconfigWarnings(null)}
+        />
+      )}
     </ReactFlowProvider>
   );
 }
