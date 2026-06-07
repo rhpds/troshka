@@ -116,6 +116,25 @@ def snapshot_vm(
                 "libraryItemName": d.get("libraryItemName"),
             })
 
+    connected_networks = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        connected_edge = None
+        for e in edges:
+            if (e.get("source") == vm_id and e.get("target") == node["id"]) or \
+               (e.get("target") == vm_id and e.get("source") == node["id"]):
+                connected_edge = e
+                break
+        if connected_edge:
+            d = node.get("data", {})
+            nic_handle = connected_edge.get("sourceHandle") if connected_edge.get("source") == vm_id else connected_edge.get("targetHandle")
+            connected_networks.append({
+                "name": d.get("name", "network"),
+                "cidr": d.get("cidr", ""),
+                "nicHandle": nic_handle,
+            })
+
     vm_config = {
         "vcpus": vm_data.get("vcpus"),
         "ram": vm_data.get("ram"),
@@ -127,6 +146,7 @@ def snapshot_vm(
         "consoleType": vm_data.get("consoleType"),
         "autoStart": vm_data.get("autoStart"),
         "disks": connected_disks,
+        "networks": connected_networks,
     }
 
     lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()

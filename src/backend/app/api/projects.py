@@ -960,6 +960,35 @@ def import_vm_from_snapshot(
     if boot_devices:
         vm_node["data"]["bootDevices"] = boot_devices
 
+    networks_info = vm_config.get("networks", [])
+    nic_list = vm_node["data"]["nics"]
+    canvas_networks = {
+        n.get("data", {}).get("name", ""): n
+        for n in topology["nodes"]
+        if n.get("type") == "networkNode"
+    }
+
+    for net_info in networks_info:
+        net_name = net_info.get("name", "")
+        matching_net = canvas_networks.get(net_name)
+        if not matching_net:
+            continue
+        if not nic_list:
+            continue
+        nic = nic_list[0]
+        src_handle = f"nic-{nic['id']}-top"
+        edge = {
+            "id": f"xy-edge__{vm_id}{src_handle}-{matching_net['id']}bottom",
+            "source": vm_id,
+            "target": matching_net["id"],
+            "sourceHandle": src_handle,
+            "targetHandle": "bottom",
+            "type": "smoothstep",
+            "style": {"stroke": "rgba(56,189,248,0.6)", "strokeWidth": 2, "strokeDasharray": "6 4"},
+        }
+        topology["edges"].append(edge)
+        nic_list = nic_list[1:]
+
     project.topology = topology
     from sqlalchemy.orm.attributes import flag_modified
 
