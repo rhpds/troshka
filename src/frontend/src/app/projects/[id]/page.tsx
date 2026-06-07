@@ -488,7 +488,7 @@ export default function ProjectCanvasPage() {
         )}
       </div>
       {showStartOrder && <StartOrderPanel onClose={() => setShowStartOrder(false)} />}
-      {showExternalIps && <ExternalIpsPanel onClose={() => setShowExternalIps(false)} />}
+      {showExternalIps && <ExternalIpsPanel projectId={projectId} onClose={() => setShowExternalIps(false)} />}
       {reconfigWarnings && (
         <ReconfigureWarningModal
           changes={reconfigWarnings}

@@ -69,6 +69,8 @@ export interface ExternalIp {
   id: string;
   name: string;
   ip: string;
+  _private_ip?: string;
+  state?: "pending" | "allocated" | "associated";
 }
 
 export interface StartOrderEntry {

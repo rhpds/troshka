@@ -5,10 +5,11 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import type { ExternalIp } from "@/stores/canvasStore";
 
 interface Props {
+  projectId?: string;
   onClose: () => void;
 }
 
-export default function ExternalIpsPanel({ onClose }: Props) {
+export default function ExternalIpsPanel({ projectId, onClose }: Props) {
   const externalIps = useCanvasStore((s) => s.externalIps);
   const setExternalIps = useCanvasStore((s) => s.setExternalIps);
 
@@ -26,8 +27,21 @@ export default function ExternalIpsPanel({ onClose }: Props) {
     setExternalIps(updated);
   };
 
-  const removeIp = (i: number) => {
+  const removeIp = async (i: number) => {
+    const eip = externalIps[i];
+    if (eip.ip && projectId) {
+      try {
+        await fetch(`/api/v1/projects/${projectId}/eips/${eip.id}`, { method: "DELETE" });
+      } catch {}
+    }
     setExternalIps(externalIps.filter((_, idx) => idx !== i));
+  };
+
+  const statusDot = (eip: ExternalIp) => {
+    if (eip.state === "associated") return { color: "#4caf50", title: "Associated (active)" };
+    if (eip.state === "allocated") return { color: "#ff9800", title: "Allocated (not associated)" };
+    if (eip.ip) return { color: "#4caf50", title: "Assigned" };
+    return { color: "#666", title: "Not yet allocated" };
   };
 
   return (
@@ -39,43 +53,53 @@ export default function ExternalIpsPanel({ onClose }: Props) {
         </div>
         <div className="start-order-body">
           <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", marginBottom: 12 }}>
-            Allocate external IPs for this project. These can be assigned to gateway port forwarding rules. Leave the IP blank to auto-assign when deployed.
+            Allocate external IPs for this project. EIPs are assigned on first deploy and remain stable across redeploys.
           </p>
           {externalIps.length === 0 && (
             <p style={{ fontSize: 12, color: "var(--troshka-text-dim)", textAlign: "center", padding: 20 }}>
               No external IPs allocated. Click below to add one.
             </p>
           )}
-          {externalIps.map((eip, i) => (
-            <div key={eip.id} className="start-order-item">
-              <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "end" }}>
-                <div style={{ flex: "0 0 100px" }}>
-                  <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>Name</label>
-                  <input
-                    className="props-input"
-                    value={eip.name}
-                    onChange={(e) => updateIp(i, { name: e.target.value })}
-                    placeholder="e.g. Primary"
-                    style={{ fontSize: 12 }}
-                  />
+          {externalIps.map((eip, i) => {
+            const dot = statusDot(eip);
+            return (
+              <div key={eip.id} className="start-order-item">
+                <div style={{ padding: 10, display: "flex", gap: 8, alignItems: "end" }}>
+                  <div style={{ display: "flex", alignItems: "center", paddingBottom: 6 }}>
+                    <span style={{
+                      width: 8, height: 8, borderRadius: "50%",
+                      backgroundColor: dot.color, display: "inline-block",
+                    }} title={dot.title} />
+                  </div>
+                  <div style={{ flex: "0 0 100px" }}>
+                    <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>Name</label>
+                    <input
+                      className="props-input"
+                      value={eip.name}
+                      onChange={(e) => updateIp(i, { name: e.target.value })}
+                      placeholder="e.g. Primary"
+                      style={{ fontSize: 12 }}
+                    />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>IP Address</label>
+                    <input
+                      className="props-input"
+                      value={eip.ip}
+                      readOnly
+                      placeholder="Assigned on first deploy"
+                      style={{ fontFamily: "monospace", fontSize: 12, opacity: eip.ip ? 1 : 0.5 }}
+                    />
+                  </div>
+                  <button
+                    style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 14, padding: 4 }}
+                    onClick={() => removeIp(i)}
+                    title={eip.ip ? "Release and remove" : "Remove"}
+                  >✕</button>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 11, color: "var(--troshka-text-dim)", display: "block", marginBottom: 3 }}>IP Address</label>
-                  <input
-                    className="props-input"
-                    value={eip.ip}
-                    onChange={(e) => updateIp(i, { ip: e.target.value })}
-                    placeholder="auto-assigned on deploy"
-                    style={{ fontFamily: "monospace", fontSize: 12 }}
-                  />
-                </div>
-                <button
-                  style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 14, padding: 4 }}
-                  onClick={() => removeIp(i)}
-                >✕</button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <div className="start-order-footer">
           <button className="start-order-btn cancel" onClick={addIp}>+ Add IP</button>
