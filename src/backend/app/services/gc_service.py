@@ -57,6 +57,10 @@ echo "=== DIR_TIMES ==="
 for d in /var/lib/troshka/vms/*/; do
     [ -d "$d" ] && echo "$(basename $d) $(stat -c %Y $d 2>/dev/null || echo 0)"
 done
+echo "=== CACHED_PATTERNS ==="
+ls -1 /var/lib/troshka/cache/patterns/ 2>/dev/null || true
+echo "=== CACHED_SNAPSHOTS ==="
+ls -1 /var/lib/troshka/cache/snapshots/ 2>/dev/null || true
 echo "=== END ==="
 """
     result = run_ssh_script(host.ip_address, host.private_key, script, timeout=30)
@@ -126,10 +130,25 @@ echo "=== END ==="
         if vni not in active_vni_values:
             orphaned_bridges.append(bridge)
 
+    from app.models.pattern import Pattern
+    from app.models.library import LibraryItem
+
+    cached_patterns = sections.get("CACHED_PATTERNS", [])
+    cached_snapshots = sections.get("CACHED_SNAPSHOTS", [])
+
+    orphaned_cache = []
+    for pid in cached_patterns:
+        if not db.query(Pattern).filter_by(id=pid).first():
+            orphaned_cache.append(f"patterns/{pid}")
+    for sid in cached_snapshots:
+        if not db.query(LibraryItem).filter_by(id=sid, type="snapshot").first():
+            orphaned_cache.append(f"snapshots/{sid}")
+
     return {
         "orphaned_projects": orphaned_projects,
         "orphaned_domains": orphaned_domains,
         "orphaned_bridges": orphaned_bridges,
+        "orphaned_cache": orphaned_cache,
         "host_dirs": len(host_dirs),
         "host_domains": len(host_domains),
         "host_bridges": len(host_bridges),
@@ -161,6 +180,10 @@ def clean_orphans(host, orphans: dict) -> dict:
         lines.append(f"ip link del {bridge} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
         lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
+
+    for cache_path in orphans.get("orphaned_cache", []):
+        lines.append(f'echo "Removing orphaned cache: {cache_path}"')
+        lines.append(f"rm -rf /var/lib/troshka/cache/{cache_path}")
 
     if len(lines) <= 3:
         return {"cleaned": 0, "output": "Nothing to clean"}
@@ -257,6 +280,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             len(orphans.get("orphaned_projects", []))
             + len(orphans.get("orphaned_domains", []))
             + len(orphans.get("orphaned_bridges", []))
+            + len(orphans.get("orphaned_cache", []))
         )
         report["orphans_found"] = total_orphans
 
