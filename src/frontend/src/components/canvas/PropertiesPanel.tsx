@@ -345,20 +345,27 @@ export default function PropertiesPanel() {
                       {validDevices.map((dev, i) => (
                         <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <span style={{ fontSize: 11, color: "var(--troshka-accent)", fontWeight: 700, width: 16 }}>{i + 1}.</span>
-                          <select
+                          <div
                             className="props-select"
-                            value={dev}
-                            onChange={(e) => {
+                            style={{ flex: 1, fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", padding: "4px 8px" }}
+                            onClick={() => {
+                              const currentIdx = options.findIndex((o) => o.value === dev);
+                              const nextIdx = (currentIdx + 1) % options.length;
                               const updated = [...validDevices];
-                              updated[i] = e.target.value;
+                              updated[i] = options[nextIdx].value;
                               update("bootDevices", updated);
                             }}
-                            style={{ flex: 1, fontSize: 12 }}
+                            title="Click to change"
                           >
-                            {options.map((o) => (
-                              <option key={o.value} value={o.value}>{o.label}</option>
-                            ))}
-                          </select>
+                            {dev === "network" ? (
+                              <>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="16" rx="2" /><line x1="8" y1="18" x2="8" y2="22" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="16" y1="18" x2="16" y2="22" /><rect x="6" y="5" width="12" height="6" rx="1" /><line x1="9" y1="5" x2="9" y2="11" /><line x1="12" y1="5" x2="12" y2="11" /><line x1="15" y1="5" x2="15" y2="11" /></svg>
+                                Network (PXE)
+                              </>
+                            ) : (
+                              <>{options.find((o) => o.value === dev)?.label || dev}</>
+                            )}
+                          </div>
                           <button
                             style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", fontSize: 14 }}
                             title="Move up"
