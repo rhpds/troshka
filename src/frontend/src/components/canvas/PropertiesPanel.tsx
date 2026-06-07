@@ -581,14 +581,15 @@ export default function PropertiesPanel() {
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
                         const ipConflict = nicIp ? (() => {
                           const nd = netNode!.data as Record<string, unknown>;
-                          if (nd.gateway === nicIp) return "gateway IP";
-                          if (nd.dnsIp === nicIp) return "DNS server IP";
+                          const gwIp = (nd.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
+                          if (gwIp && gwIp === nicIp) return "gateway IP";
+                          if (nd.dnsServerIp === nicIp) return "DNS server IP";
                           const ipToNum = (ip: string) => {
                             const p = ip.split(".").map(Number);
                             return p.length === 4 ? ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0 : 0;
                           };
-                          const dhcpStart = nd.dhcpStart as string;
-                          const dhcpEnd = nd.dhcpEnd as string;
+                          const dhcpStart = (nd.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".100") : "");
+                          const dhcpEnd = (nd.dhcpRangeEnd as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".200") : "");
                           if (dhcpStart && dhcpEnd) {
                             const ipN = ipToNum(nicIp);
                             const startN = ipToNum(dhcpStart);
