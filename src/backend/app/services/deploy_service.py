@@ -270,7 +270,10 @@ def generate_vm_script(project_id: str, topology: dict, vni_map: dict) -> str:
             if disk["format"] == "iso":
                 continue
             dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
-            if disk.get("source") == "library" and disk.get("library_item_id"):
+            if disk.get("source") == "pattern" and disk.get("patternId"):
+                cache_path = f"/var/lib/troshka/cache/patterns/{disk['patternId']}/{disk['patternDiskId']}.{disk['format']}"
+                lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
+            elif disk.get("source") == "library" and disk.get("library_item_id"):
                 cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
                 lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
             else:
@@ -593,7 +596,10 @@ echo "{vm_name} reconfigured"
             if disk["format"] == "iso":
                 continue
             dp = _disk_path(project_id, node["id"], disk["node_id"], disk["format"])
-            if disk.get("source") == "library" and disk.get("library_item_id"):
+            if disk.get("source") == "pattern" and disk.get("patternId"):
+                cache_path = f"/var/lib/troshka/cache/patterns/{disk['patternId']}/{disk['patternDiskId']}.{disk['format']}"
+                lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
+            elif disk.get("source") == "library" and disk.get("library_item_id"):
                 cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
                 lines.append(f"qemu-img create -f {disk['format']} -b {cache_path} -F {disk['format']} {dp} {disk['size_gb']}G")
             else:
@@ -664,38 +670,69 @@ def generate_network_teardown_script(vni_map: dict) -> str:
 
 
 def cache_library_images(topology: dict, host_ip: str, private_key: str, db_session, progress_callback=None):
-    """Download all library images to host cache with progress tracking.
+    """Download all library images and pattern disks to host cache with progress tracking.
 
     Starts downloads in background on the host, polls until complete.
     progress_callback(downloaded_bytes, total_bytes, item_name) called periodically.
     """
     from app.models.library import LibraryItem
+    from app.models.pattern import PatternDisk
     from app.services import s3_storage
     import time as _time
 
     nodes = topology.get("nodes", [])
     items_to_cache = []
+
+    # Collect library items
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
         item_id = node.get("data", {}).get("libraryItemId")
-        if not item_id:
+        if item_id:
+            item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+            if item and item.s3_key:
+                fmt = node.get("data", {}).get("format", "qcow2")
+                cache_path = f"/var/lib/troshka/images/{item_id}.{fmt}"
+                items_to_cache.append({
+                    "item_id": item_id,
+                    "name": item.name,
+                    "s3_key": item.s3_key,
+                    "cache_path": cache_path,
+                    "expected_size": item.size_bytes,
+                })
+
+    # Collect pattern disks
+    for node in nodes:
+        if node.get("type") != "storageNode":
             continue
-        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
-        if not item or not item.s3_key:
-            continue
-        fmt = node.get("data", {}).get("format", "qcow2")
-        cache_path = f"/var/lib/troshka/images/{item_id}.{fmt}"
-        items_to_cache.append({
-            "item_id": item_id,
-            "name": item.name,
-            "s3_key": item.s3_key,
-            "cache_path": cache_path,
-            "expected_size": item.size_bytes,
-        })
+        data = node.get("data", {})
+        pattern_id = data.get("patternId")
+        pattern_disk_id = data.get("patternDiskId")
+        if pattern_id and pattern_disk_id:
+            pd = db_session.query(PatternDisk).filter_by(id=pattern_disk_id, pattern_id=pattern_id).first()
+            if pd and pd.s3_key:
+                cache_dir = f"/var/lib/troshka/cache/patterns/{pattern_id}"
+                cache_path = f"{cache_dir}/{pattern_disk_id}.{pd.format}"
+                items_to_cache.append({
+                    "item_id": pattern_disk_id,
+                    "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
+                    "s3_key": pd.s3_key,
+                    "cache_path": cache_path,
+                    "expected_size": pd.size_bytes,
+                    "cache_dir": cache_dir,
+                })
 
     if not items_to_cache:
         return
+
+    # Create cache directories for pattern disks
+    cache_dirs = set()
+    for ic in items_to_cache:
+        if "cache_dir" in ic:
+            cache_dirs.add(ic["cache_dir"])
+    if cache_dirs:
+        mkdir_script = "\n".join([f"mkdir -p {d}" for d in cache_dirs])
+        run_ssh_script(host_ip, private_key, mkdir_script, timeout=15)
 
     # Generate presigned URLs
     for ic in items_to_cache:

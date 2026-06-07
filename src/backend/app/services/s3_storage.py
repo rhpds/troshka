@@ -101,6 +101,17 @@ def generate_presigned_url(key: str, expires: int = 3600) -> str:
     return url
 
 
+def generate_presigned_upload_url(key: str, expires: int = 3600) -> str:
+    """Generate a presigned upload URL for a file in S3."""
+    s3 = _get_s3_client()
+    cfg = _get_s3_config()
+    return s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": cfg["bucket"], "Key": key},
+        ExpiresIn=expires,
+    )
+
+
 def file_exists(key: str) -> bool:
     """Check if a file exists in S3."""
     client = _get_s3_client()
