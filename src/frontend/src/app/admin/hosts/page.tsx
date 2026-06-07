@@ -455,6 +455,9 @@ export default function AdminHostsPage() {
                     else parts.push("Capacity: already in sync");
                     if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
                     else parts.push("No orphans found");
+                    const repaired = report.network_repair?.repaired || 0;
+                    if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
+                    else parts.push("Network bridges: OK");
                     alert(parts.join("\n"));
                     loadHosts();
                   } else {
