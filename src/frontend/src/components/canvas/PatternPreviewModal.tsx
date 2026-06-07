@@ -32,29 +32,68 @@ interface PatternPreviewModalProps {
   onClose: () => void;
 }
 
-function EdgeLine({ sourceId, targetId }: { sourceId: string; targetId: string }) {
+function getAnchorPoint(
+  node: { internals: { positionAbsolute: { x: number; y: number } }; measured?: { width?: number; height?: number } },
+  handle: string | undefined,
+  role: "source" | "target",
+  otherNode: { internals: { positionAbsolute: { x: number; y: number } } },
+) {
+  const w = node.measured?.width || 200;
+  const h = node.measured?.height || 100;
+  const x = node.internals.positionAbsolute.x;
+  const y = node.internals.positionAbsolute.y;
+
+  if (handle?.includes("-top")) return { px: x + w / 2, py: y, dir: "top" as const };
+  if (handle?.includes("-bottom")) return { px: x + w / 2, py: y + h, dir: "bottom" as const };
+  if (handle?.includes("-left") || handle === "left") return { px: x, py: y + h / 2, dir: "left" as const };
+  if (handle?.includes("-right") || handle === "right") return { px: x + w, py: y + h / 2, dir: "right" as const };
+  if (handle === "top") return { px: x + w / 2, py: y, dir: "top" as const };
+  if (handle === "bottom") return { px: x + w / 2, py: y + h, dir: "bottom" as const };
+
+  const ox = otherNode.internals.positionAbsolute.x;
+  const oy = otherNode.internals.positionAbsolute.y;
+  const dx = ox - x;
+  const dy = oy - y;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return dx > 0
+      ? { px: x + w, py: y + h / 2, dir: "right" as const }
+      : { px: x, py: y + h / 2, dir: "left" as const };
+  }
+  return dy > 0
+    ? { px: x + w / 2, py: y + h, dir: "bottom" as const }
+    : { px: x + w / 2, py: y, dir: "top" as const };
+}
+
+function EdgeLine({ sourceId, targetId, sourceHandle, targetHandle }: {
+  sourceId: string; targetId: string; sourceHandle?: string; targetHandle?: string;
+}) {
   const sourceNode = useInternalNode(sourceId);
   const targetNode = useInternalNode(targetId);
 
   if (!sourceNode || !targetNode) return null;
 
-  const sw = sourceNode.measured?.width || 200;
-  const sh = sourceNode.measured?.height || 80;
-  const tw = targetNode.measured?.width || 200;
-  const th = targetNode.measured?.height || 80;
+  const src = getAnchorPoint(sourceNode, sourceHandle, "source", targetNode);
+  const tgt = getAnchorPoint(targetNode, targetHandle, "target", sourceNode);
 
-  const sx = sourceNode.internals.positionAbsolute.x + sw;
-  const sy = sourceNode.internals.positionAbsolute.y + sh / 2;
-  const tx = targetNode.internals.positionAbsolute.x;
-  const ty = targetNode.internals.positionAbsolute.y + th / 2;
+  const isNic = sourceHandle?.includes("nic-") || targetHandle?.includes("nic-");
+  const stroke = isNic ? "rgba(56,189,248,0.6)" : "rgba(251,191,36,0.6)";
 
-  const mx = (sx + tx) / 2;
+  const offset = 60;
+  let c1x = src.px, c1y = src.py, c2x = tgt.px, c2y = tgt.py;
+  if (src.dir === "right") c1x += offset;
+  if (src.dir === "left") c1x -= offset;
+  if (src.dir === "top") c1y -= offset;
+  if (src.dir === "bottom") c1y += offset;
+  if (tgt.dir === "right") c2x += offset;
+  if (tgt.dir === "left") c2x -= offset;
+  if (tgt.dir === "top") c2y -= offset;
+  if (tgt.dir === "bottom") c2y += offset;
 
   return (
     <path
-      d={`M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`}
+      d={`M ${src.px} ${src.py} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${tgt.px} ${tgt.py}`}
       fill="none"
-      stroke="rgba(251,191,36,0.6)"
+      stroke={stroke}
       strokeWidth={2}
       strokeDasharray="6 4"
     />
@@ -70,7 +109,13 @@ function EdgeOverlay({ edges }: { edges: Edge[] }) {
     >
       <g transform={`translate(${x}, ${y}) scale(${zoom})`}>
         {edges.map((edge, i) => (
-          <EdgeLine key={edge.id || `e-${i}`} sourceId={edge.source} targetId={edge.target} />
+          <EdgeLine
+            key={edge.id || `e-${i}`}
+            sourceId={edge.source}
+            targetId={edge.target}
+            sourceHandle={edge.sourceHandle}
+            targetHandle={edge.targetHandle}
+          />
         ))}
       </g>
     </svg>
