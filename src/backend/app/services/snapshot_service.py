@@ -60,6 +60,7 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
 
             script = f'''set -e
 DISK_PATH="{disk_path}"
+FLAT_PATH="{disk_path}.flat.qcow2"
 UPLOAD_URL='{presigned}'
 
 if [ ! -f "$DISK_PATH" ]; then
@@ -67,9 +68,13 @@ if [ ! -f "$DISK_PATH" ]; then
     exit 1
 fi
 
-SIZE=$(stat -c %s "$DISK_PATH" 2>/dev/null || echo 0)
-echo "Uploading $DISK_PATH ($SIZE bytes)"
-curl -s -X PUT -T "$DISK_PATH" "$UPLOAD_URL"
+echo "Flattening disk (merging backing chain)..."
+qemu-img convert -O qcow2 "$DISK_PATH" "$FLAT_PATH"
+SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
+echo "Flattened size: $SIZE bytes"
+echo "Uploading flattened disk..."
+curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
+rm -f "$FLAT_PATH"
 echo "SIZE:$SIZE"
 echo "UPLOAD_COMPLETE"
 '''

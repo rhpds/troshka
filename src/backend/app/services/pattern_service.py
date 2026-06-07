@@ -77,6 +77,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
 
             script = f'''set -e
 DISK_PATH="{disk_path}"
+FLAT_PATH="{disk_path}.flat.qcow2"
 UPLOAD_URL='{presigned}'
 
 if [ ! -f "$DISK_PATH" ]; then
@@ -84,10 +85,21 @@ if [ ! -f "$DISK_PATH" ]; then
     exit 1
 fi
 
-curl -s -X PUT -T "$DISK_PATH" "$UPLOAD_URL"
+echo "Flattening disk (merging backing chain)..."
+qemu-img convert -O qcow2 "$DISK_PATH" "$FLAT_PATH"
+SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
+echo "Uploading flattened disk ($SIZE bytes)..."
+curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
+rm -f "$FLAT_PATH"
+echo "SIZE:$SIZE"
 echo "UPLOAD_COMPLETE"
 '''
             result = run_ssh_script(host.ip_address, host.private_key, script, timeout=3600)
+
+            size_bytes = 0
+            for line in result.get("output", "").splitlines():
+                if line.startswith("SIZE:"):
+                    size_bytes = int(line.split(":")[1])
 
             pd = PatternDisk(
                 pattern_id=pattern_id,
@@ -95,7 +107,7 @@ echo "UPLOAD_COMPLETE"
                 source_vm_id=vm_id,
                 s3_key=s3_key,
                 format=fmt,
-                size_bytes=0,
+                size_bytes=size_bytes,
                 virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
                 state="available" if result["success"] else "error",
             )
