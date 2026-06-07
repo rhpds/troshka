@@ -38,6 +38,60 @@ interface Pattern {
   owner_id: string;
 }
 
+function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
+  patternName: string; deploying: boolean; onDeploy: (name: string) => void; onClose: () => void;
+}) {
+  const [name, setName] = useState(patternName);
+  const inputStyle = {
+    width: "100%", padding: "6px 10px", borderRadius: 6,
+    border: "1px solid var(--pf-t--global--border--color--default)",
+    background: "var(--pf-t--global--background--color--primary--default)",
+    color: "var(--pf-t--global--text--color--regular)", fontSize: 13,
+  };
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 10000,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: "rgba(0,0,0,0.6)",
+    }} onClick={(e) => { if (e.target === e.currentTarget && !deploying) onClose(); }}>
+      <div style={{
+        background: "var(--pf-t--global--background--color--primary--default)",
+        borderRadius: 12, padding: 24, width: 420, maxWidth: "90vw",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        border: "1px solid var(--pf-t--global--border--color--default)",
+      }}>
+        <h2 style={{ marginTop: 0, marginBottom: 16 }}>Create Project from Pattern</h2>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Name</label>
+          <input
+            style={inputStyle}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Project name"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name); }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={deploying}
+            style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
+            Cancel
+          </button>
+          <button onClick={() => onDeploy(name)} disabled={!name.trim() || deploying}
+            style={{
+              ...inputStyle, width: "auto", cursor: deploying ? "wait" : "pointer",
+              padding: "6px 16px", background: "rgba(74,222,128,0.15)",
+              borderColor: "#4ade80", color: "#4ade80",
+              opacity: !name.trim() || deploying ? 0.4 : 1,
+            }}>
+            {deploying ? "Creating..." : "Create Project"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PatternsPage() {
   const router = useRouter();
   const [patterns, setPatterns] = useState<Pattern[]>([]);
@@ -45,6 +99,7 @@ export default function PatternsPage() {
   const [search, setSearch] = useState("");
   const [bulkPatternId, setBulkPatternId] = useState<string | null>(null);
   const [previewPattern, setPreviewPattern] = useState<{ id: string; name: string } | null>(null);
+  const [deployPattern, setDeployPattern] = useState<{ id: string; name: string } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
 
   const loadPatterns = () => {
@@ -62,13 +117,13 @@ export default function PatternsPage() {
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
 
-  const handleDeploy = async (patternId: string) => {
+  const handleDeploy = async (patternId: string, projectName: string) => {
     setDeploying(patternId);
     try {
       const resp = await fetch(`/api/v1/patterns/${patternId}/deploy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ name: projectName }),
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -163,9 +218,7 @@ export default function PatternsPage() {
                     <Button
                       variant="primary"
                       size="sm"
-                      onClick={() => handleDeploy(pattern.id)}
-                      isLoading={deploying === pattern.id}
-                      isDisabled={deploying === pattern.id}
+                      onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name })}
                     >
                       Create Project
                     </Button>
@@ -202,6 +255,13 @@ export default function PatternsPage() {
           }}
         />
       )}
+
+      {deployPattern && <DeployNameModal
+        patternName={deployPattern.name}
+        deploying={deploying === deployPattern.id}
+        onDeploy={(name) => handleDeploy(deployPattern.id, name)}
+        onClose={() => { if (!deploying) setDeployPattern(null); }}
+      />}
     </>
   );
 }
