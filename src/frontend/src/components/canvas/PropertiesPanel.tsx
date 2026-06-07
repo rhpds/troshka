@@ -164,13 +164,7 @@ export default function PropertiesPanel() {
   };
 
   return (
-    <div className="canvas-properties" style={{ position: "relative" }}>
-      {panelLocked && (
-        <div style={{
-          position: "absolute", inset: 0, zIndex: 10,
-          background: "rgba(0,0,0,0.15)", cursor: "not-allowed",
-        }} title="Cannot edit while operation is in progress" />
-      )}
+    <div className="canvas-properties" style={panelLocked ? { pointerEvents: "none", opacity: 0.6 } : {}}>
       {/* Header */}
       <div className="props-header">
         <div
