@@ -347,15 +347,7 @@ export default function PropertiesPanel() {
                           <span style={{ fontSize: 11, color: "var(--troshka-accent)", fontWeight: 700, width: 16 }}>{i + 1}.</span>
                           <div
                             className="props-select"
-                            style={{ flex: 1, fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", padding: "4px 8px" }}
-                            onClick={() => {
-                              const currentIdx = options.findIndex((o) => o.value === dev);
-                              const nextIdx = (currentIdx + 1) % options.length;
-                              const updated = [...validDevices];
-                              updated[i] = options[nextIdx].value;
-                              update("bootDevices", updated);
-                            }}
-                            title="Click to change"
+                            style={{ flex: 1, fontSize: 12, display: "flex", alignItems: "center", gap: 4, padding: "4px 8px" }}
                           >
                             {dev === "network" ? (
                               <>
