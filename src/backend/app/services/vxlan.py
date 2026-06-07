@@ -296,7 +296,8 @@ def generate_setup_script(config: dict, host_ip: str) -> str:
                 dhcp_cmds.append(f"interface={bridge}")
                 dhcp_cmds.append(f"dhcp-range={range_start},{range_end},{lease}")
                 for dh in net.get("dhcp_hosts", []):
-                    hostname_part = f",{dh['name']}" if dh.get("name") else ""
+                    safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
+                    hostname_part = f",{safe_name}" if safe_name else ""
                     dhcp_cmds.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
                 if net.get("dns_enabled") and net.get("dns_domain"):
                     dhcp_cmds.append(f"domain={net['dns_domain']}")
