@@ -69,7 +69,7 @@ cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
 DOMAIN=$1
 ACTION=$2
 if [ "$ACTION" = "started" ]; then
-    PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\([a-f0-9]*\)-.*/\1/p')
+    PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\\([a-f0-9]*\\)-.*/\\1/p')
     [ -z "$PID" ] && exit 0
     NS="troshka-$PID"
     ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
@@ -77,7 +77,7 @@ if [ "$ACTION" = "started" ]; then
     [ -z "$BRIDGE" ] && exit 0
     # Read domain XML from stdin, extract TAP device names
     XML=$(cat)
-    for TAP in $(echo "$XML" | grep -oP "dev='\K(vnet|tap)[^']*"); do
+    for TAP in $(echo "$XML" | grep -oP "dev='\\K(vnet|tap)[^']*"); do
         ip link set "$TAP" netns "$NS" 2>/dev/null
         ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
         ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null
