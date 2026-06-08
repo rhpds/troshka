@@ -339,12 +339,9 @@ export default function ProjectCanvasPage() {
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
               onClick={() => {
                 if (!window.confirm(`Delete project "${projectName}"? This cannot be undone.`)) return;
-                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then((r) => {
-                  if (r.ok) {
-                    localStorage.removeItem(`troshka-canvas-${projectId}`);
-                    router.push("/projects");
-                  }
-                });
+                localStorage.removeItem(`troshka-canvas-${projectId}`);
+                router.push("/projects");
+                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" });
               }}
             >
               Delete

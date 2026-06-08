@@ -992,9 +992,11 @@ def delete_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Clean up infrastructure if deployed
+    # Clean up infrastructure in background, delete DB record immediately
     if project.host_id and project.state in ("active", "stopped", "error"):
-        destroy_project_sync(project.id)
+        import threading
+        p_id = project.id
+        threading.Thread(target=destroy_project_sync, args=(p_id,), daemon=True).start()
 
     db.delete(project)
     db.commit()
