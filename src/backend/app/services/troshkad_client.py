@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 TROSHKAD_PORT = 31337
 DEFAULT_TIMEOUT = 30
 
+_DRAIN_RETRY_INTERVAL = 5  # seconds between retries during drain
+_DRAIN_RETRY_TIMEOUT = 330  # max seconds to wait (slightly > troshkad's 300s drain timeout)
+
 
 class TroshkadError(Exception):
     """Error communicating with troshkad."""
@@ -125,6 +128,9 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
 def start_job(host, path, params):
     """Start an operation on a host. Returns job_id.
 
+    If troshkad is draining (503), waits and retries until it comes back up
+    or the timeout expires.
+
     Args:
         host: Host model instance
         path: Operation path (e.g., /vms/create)
@@ -133,8 +139,23 @@ def start_job(host, path, params):
     Returns:
         job_id string
     """
-    result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=30)
-    return result["job_id"]
+    deadline = time.time() + _DRAIN_RETRY_TIMEOUT
+
+    while True:
+        try:
+            result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=30)
+            return result["job_id"]
+        except TroshkadError as e:
+            if e.status_code == 503 and e.response and e.response.get("status") == "draining":
+                if time.time() >= deadline:
+                    raise TroshkadError(
+                        f"troshkad on {host.ip_address} still draining after {_DRAIN_RETRY_TIMEOUT}s",
+                        status_code=503,
+                    )
+                logger.info("troshkad %s is draining, retrying in %ds...", host.ip_address, _DRAIN_RETRY_INTERVAL)
+                time.sleep(_DRAIN_RETRY_INTERVAL)
+                continue
+            raise  # Non-draining errors propagate immediately
 
 
 def poll_job(host, job_id):

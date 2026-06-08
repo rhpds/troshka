@@ -101,6 +101,42 @@ class TestTroshkadClient(unittest.TestCase):
         result = check_disk_usage(FakeHost())
         self.assertEqual(result["used_pct"], 24)
 
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_start_job_retries_during_drain(self, mock_https_cls):
+        """start_job retries when troshkad is draining, succeeds when it comes back."""
+        from app.services.troshkad_client import TroshkadError
+
+        call_count = 0
+        def mock_conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                # First 2 calls: draining
+                return _mock_conn({"status": "draining", "error": "draining for update"}, status=503)
+            else:
+                # 3rd call: back up
+                return _mock_conn({"job_id": "new-job-123", "status": "running"}, status=202)
+
+        mock_https_cls.side_effect = mock_conn_factory
+
+        # Patch sleep to avoid waiting
+        with patch("app.services.troshkad_client.time.sleep"):
+            job_id = start_job(FakeHost(), "/vms/create", {"domain_name": "test"})
+
+        self.assertEqual(job_id, "new-job-123")
+        self.assertEqual(call_count, 3)
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_start_job_does_not_retry_max_concurrent(self, mock_https_cls):
+        """start_job does NOT retry on max_concurrent_jobs 503."""
+        from app.services.troshkad_client import TroshkadError
+
+        mock_conn = _mock_conn({"error": "max_concurrent_jobs reached"}, status=503)
+        mock_https_cls.return_value = mock_conn
+
+        with self.assertRaises(TroshkadError):
+            start_job(FakeHost(), "/vms/create", {"domain_name": "test"})
+
 
 if __name__ == "__main__":
     unittest.main()
