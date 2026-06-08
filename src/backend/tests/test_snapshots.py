@@ -18,7 +18,7 @@ _user = User(
     auth_source="local",
     password_hash=hash_password("pass"),
 )
-_lib = Library(type="user", owner_id=_user.id)
+_lib = Library(type="personal", owner_id=_user.id)
 _db.add(_user)
 _db.add(_lib)
 _db.commit()
@@ -65,14 +65,16 @@ def _create_project_with_vm():
             {"source": "vm-1", "target": "disk-1"},
         ],
     }
+    import uuid as _uuid
     resp = client.post(
         "/api/v1/projects",
         json={
-            "name": "Snap Project",
+            "name": f"Snap Project {_uuid.uuid4().hex[:6]}",
             "description": "For snapshot testing",
         },
         headers=HEADERS,
     )
+    assert resp.status_code == 201, f"Project create failed: {resp.status_code} {resp.json()}"
     project_id = resp.json()["id"]
     client.patch(
         f"/api/v1/projects/{project_id}",
