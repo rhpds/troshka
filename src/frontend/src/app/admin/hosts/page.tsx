@@ -478,6 +478,12 @@ export default function AdminHostsPage() {
                   }}>
                     Update Agent
                   </Button>
+                  <Button variant="secondary" onClick={() => {
+                    if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
+                    installAgent(h.id);
+                  }}>
+                    Reinstall Agent
+                  </Button>
                   <Button variant="secondary" onClick={async () => {
                     const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
                     if (resp.ok) {
