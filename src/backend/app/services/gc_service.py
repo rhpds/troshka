@@ -81,6 +81,8 @@ for f in /var/lib/troshka/images/*; do
     AT=$(stat -c %X "$f" 2>/dev/null || echo 0)
     echo "images/$BASENAME $AT"
 done
+echo "=== NAMESPACES ==="
+ip netns list 2>/dev/null | grep '^troshka-' | awk '{print $1}' || true
 echo "=== END ==="
 """
     result = run_ssh_script(host.ip_address, host.private_key, script, timeout=30)
@@ -202,10 +204,19 @@ echo "=== END ==="
                 hours_ago = (now - atime) // 3600
                 stale_cache.append({"path": f"images/{iid}", "last_accessed_hours_ago": hours_ago})
 
+    namespaces = sections.get("NAMESPACES", [])
+    orphaned_namespaces = []
+    for ns_name in namespaces:
+        ns_pid = ns_name.replace("troshka-", "")
+        matched = any(pid.startswith(ns_pid) for pid in active_project_ids)
+        if not matched:
+            orphaned_namespaces.append(ns_name)
+
     return {
         "orphaned_projects": orphaned_projects,
         "orphaned_domains": orphaned_domains,
         "orphaned_bridges": orphaned_bridges,
+        "orphaned_namespaces": orphaned_namespaces,
         "orphaned_cache": orphaned_cache,
         "stale_cache": stale_cache,
         "host_dirs": len(host_dirs),
@@ -242,6 +253,12 @@ def clean_orphans(host, orphans: dict) -> dict:
         lines.append(f"ip route flush table {vni} 2>/dev/null || true")
         lines.append(f"ip link del {bridge} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
+
+    for ns_name in orphans.get("orphaned_namespaces", []):
+        pid = ns_name.replace("troshka-", "")
+        lines.append(f'echo "Removing orphaned namespace: {ns_name}"')
+        lines.append(f"ip netns del {ns_name} 2>/dev/null || true")
+        lines.append(f"ip link del veth-{pid}-h 2>/dev/null || true")
 
     for cache_path in orphans.get("orphaned_cache", []):
         lines.append(f'echo "Removing orphaned cache: {cache_path}"')
@@ -354,6 +371,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             len(orphans.get("orphaned_projects", []))
             + len(orphans.get("orphaned_domains", []))
             + len(orphans.get("orphaned_bridges", []))
+            + len(orphans.get("orphaned_namespaces", []))
             + len(orphans.get("orphaned_cache", []))
             + len(orphans.get("stale_cache", []))
         )

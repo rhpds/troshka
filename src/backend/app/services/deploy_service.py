@@ -419,23 +419,14 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
 
     lines.append(f"rm -rf {_vm_dir(project_id)}")
 
-    # Tear down networks
-    for vni in vni_map.values():
-        bridge = f"br-{vni}"
-        vxlan_if = f"vxlan-{vni}"
-        lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
-        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
-        lines.append(f"ip rule del iif {bridge} table {vni} 2>/dev/null || true")
-        lines.append(f"ip route flush table {vni} 2>/dev/null || true")
-        lines.append(f"ip link del {bridge} 2>/dev/null || true")
-        lines.append(f"ip link del {vxlan_if} 2>/dev/null || true")
-
-    # Delete per-project nftables chains
+    # Delete namespace (cleans up bridges, VXLAN, dnsmasq, nftables)
     pid = project_id[:8]
-    for chain_type, table in [("fwd", "filter"), ("post", "nat"), ("pre", "nat")]:
-        chain = f"troshka-{chain_type}-{pid}"
-        lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
-        lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
+    ns = f"troshka-{pid}"
+    veth_h = f"veth-{pid}-h"
+    lines.append(f"ip netns del {ns} 2>/dev/null || true")
+    lines.append(f"ip link del {veth_h} 2>/dev/null || true")
+    for vni in vni_map.values():
+        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
     lines.append("")
     lines.append('echo "=== Project destroyed ==="')
     return "\n".join(lines)
@@ -562,12 +553,10 @@ def generate_incremental_script(
         nid = node["id"]
         if nid in vni_map:
             vni = vni_map[nid]
-            lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
+            ns = f"troshka-{project_id[:8]}"
+            lines.append(f"ip netns exec {ns} ip link del br-{vni} 2>/dev/null || true")
+            lines.append(f"ip netns exec {ns} ip link del vxlan-{vni} 2>/dev/null || true")
             lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
-            lines.append(f"ip rule del iif br-{vni} table {vni} 2>/dev/null || true")
-            lines.append(f"ip route flush table {vni} 2>/dev/null || true")
-            lines.append(f"ip link del br-{vni} 2>/dev/null || true")
-            lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
 
     for node in diff["changed_vms"]:
         d = node.get("data", {})
@@ -677,23 +666,19 @@ echo "{vm_name} reconfigured"
 
 
 def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str:
-    """Generate a script to tear down only the network infrastructure."""
+    """Generate a script to tear down project networking by deleting the namespace."""
+    pid = project_id[:8] if project_id else ""
     lines = ["#!/bin/bash", "set -uo pipefail", ""]
 
-    for vni in vni_map.values():
-        lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
-        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
-        lines.append(f"ip rule del iif br-{vni} table {vni} 2>/dev/null || true")
-        lines.append(f"ip route flush table {vni} 2>/dev/null || true")
-        lines.append(f"ip link del br-{vni} 2>/dev/null || true")
-        lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
+    if pid:
+        ns = f"troshka-{pid}"
+        veth_h = f"veth-{pid}-h"
+        lines.append(f"ip netns del {ns} 2>/dev/null || true")
+        lines.append(f"ip link del {veth_h} 2>/dev/null || true")
 
-    if project_id:
-        pid = project_id[:8]
-        for chain_type, table in [("fwd", "filter"), ("post", "nat"), ("pre", "nat")]:
-            chain = f"troshka-{chain_type}-{pid}"
-            lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
-            lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
+    for vni in vni_map.values():
+        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
+
     return "\n".join(lines)
 
 
