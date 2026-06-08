@@ -481,7 +481,11 @@ def _handle_vm_create(job, params):
     for disk in disks:
         path = _validate_path(disk["path"])
         bus = _validate_bus(disk.get("bus", "virtio"))
-        cmd.extend(["--disk", f"path={path},bus={bus}"])
+        device = disk.get("device", "disk")
+        disk_arg = f"path={path},bus={bus}"
+        if device == "cdrom":
+            disk_arg += ",device=cdrom"
+        cmd.extend(["--disk", disk_arg])
     for net in networks:
         bridge = _validate_bridge_name(net.get("bridge", "br-troshka-00000000"))
         model = _validate_net_model(net.get("model", "virtio"))

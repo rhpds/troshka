@@ -508,8 +508,6 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
         "disks": disks,
         "networks": networks,
     }
-    if vm.get("cloud_init"):
-        params["seed_iso"] = _seed_path(project_id, vm["node_id"])
 
     job_id = start_job(host, "/vms/create", params)
     job = wait_for_job(host, job_id, timeout=600)
