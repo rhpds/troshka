@@ -632,7 +632,7 @@ def wipe_host(host_id: str, user: User = Depends(require_role("admin")), db: Ses
                     "orphan_domains": orphans.get("orphan_domains", []),
                     "orphan_bridges": orphans.get("orphan_bridges", []),
                     "orphan_namespaces": orphans.get("orphan_namespaces", []),
-                    "cache_items": [c.get("path", c) if isinstance(c, dict) else c for c in orphans.get("cache_items", [])],
+                    "cache_items": [],  # preserve image/pattern cache — only regular GC cleans stale cache
                 })
                 cleanup_job = wait_for_job(host, job_id, timeout=120)
                 results["cleanup"] = cleanup_job.get("result", {})
