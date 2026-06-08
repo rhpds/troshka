@@ -675,17 +675,8 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
     with open(troshkad_path, "rb") as f:
         script_bytes = f.read()
 
-    # Generate version: git hash if available, otherwise content hash
-    import hashlib, subprocess
-    try:
-        git_hash = subprocess.run(
-            ["git", "log", "-1", "--format=%h", "--", troshkad_path],
-            capture_output=True, text=True, timeout=5,
-            cwd=os.path.dirname(troshkad_path),
-        ).stdout.strip()
-    except Exception:
-        git_hash = ""
-    version = git_hash or hashlib.sha256(script_bytes).hexdigest()[:8]
+    import hashlib
+    version = hashlib.sha256(script_bytes).hexdigest()[:8]
 
     # Stamp the version into the script before pushing
     script_text = script_bytes.decode()
