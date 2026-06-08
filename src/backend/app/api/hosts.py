@@ -583,6 +583,61 @@ def gc_run(host_id: str, user: User = Depends(require_role("admin")), db: Sessio
     return reconcile_host(host_id, dry_run=False)
 
 
+@router.post("/{host_id}/wipe")
+def wipe_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Destroy all projects on a host and clean up all resources. Nuclear option."""
+    from app.models.project import Project
+    from app.services.deploy_service import destroy_project_sync
+    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    results = {"projects_reset": 0, "projects_destroyed": 0, "cleanup": {}}
+
+    projects = db.query(Project).filter_by(host_id=host_id).all()
+    for p in projects:
+        if p.state in ("active", "stopped"):
+            try:
+                destroy_project_sync(p.id)
+                results["projects_destroyed"] += 1
+            except Exception:
+                logger.warning("Failed to destroy project %s during wipe", p.id[:8])
+        p.state = "draft"
+        p.deploy_error = None
+        p.deployed_topology = None
+        results["projects_reset"] += 1
+    db.commit()
+
+    if host.agent_status == "connected" and host.agent_token:
+        try:
+            job_id = start_job(host, "/gc/discover", {
+                "known_project_ids": [],
+                "known_domains": [],
+            })
+            job = wait_for_job(host, job_id, timeout=30)
+            if job["status"] == "completed":
+                orphans = job["result"]
+                job_id = start_job(host, "/gc/clean", {
+                    "orphan_dirs": orphans.get("orphan_dirs", []),
+                    "orphan_domains": orphans.get("orphan_domains", []),
+                    "orphan_bridges": orphans.get("orphan_bridges", []),
+                    "orphan_namespaces": orphans.get("orphan_namespaces", []),
+                    "cache_items": [c.get("path", c) if isinstance(c, dict) else c for c in orphans.get("cache_items", [])],
+                })
+                cleanup_job = wait_for_job(host, job_id, timeout=120)
+                results["cleanup"] = cleanup_job.get("result", {})
+        except TroshkadError as e:
+            results["cleanup"] = {"error": str(e)}
+
+    from app.services.placement import sync_host_capacity
+    sync_host_capacity(db, host)
+    db.commit()
+
+    return results
+
+
 @router.post("/{host_id}/update-agent")
 def update_agent(host_id: str, force: bool = False, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Push a troshkad update to a host."""

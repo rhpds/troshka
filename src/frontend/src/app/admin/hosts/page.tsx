@@ -510,6 +510,20 @@ export default function AdminHostsPage() {
                   }}>
                     Clean
                   </Button>
+                  <Button variant="danger" onClick={async () => {
+                    if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
+                    if (!window.confirm("This cannot be undone. Type YES to confirm.")) return;
+                    const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
+                    if (resp.ok) {
+                      const data = await resp.json();
+                      alert(`Wiped: ${data.projects_destroyed} projects destroyed, ${data.projects_reset} reset to draft`);
+                      loadData();
+                    } else {
+                      alert("Wipe failed — check server logs");
+                    }
+                  }}>
+                    Wipe Host
+                  </Button>
                 </>
               )}
               {h.state === "active" && (
