@@ -2227,6 +2227,45 @@ def _drain_and_update(script_path, new_path, force):
     _do_update_restart(script_path, new_path)
 
 
+@route("GET", "/host/diag")
+def handle_diag(handler, params):
+    """Diagnostic endpoint — returns nftables, routes, interfaces, namespaces."""
+    diag = {}
+    for name, cmd in [
+        ("nftables", ["nft", "list", "ruleset"]),
+        ("routes", ["ip", "route", "show"]),
+        ("interfaces", ["ip", "-o", "link", "show"]),
+        ("namespaces", ["ip", "netns", "list"]),
+        ("vxlan", ["ip", "-d", "link", "show", "type", "vxlan"]),
+    ]:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            diag[name] = proc.stdout.strip()
+        except Exception as e:
+            diag[name] = f"error: {e}"
+    handler._send_json(200, diag)
+
+
+def _handle_nft_reset(job, params):
+    """Flush all troshka nftables chains and delete them. Nuclear reset."""
+    flushed = 0
+    proc = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True, timeout=5)
+    for line in proc.stdout.split("\n"):
+        line = line.strip()
+        if line.startswith("chain troshka-"):
+            chain_name = line.split()[1]
+            table_type = "filter" if "fwd" in chain_name else "nat"
+            try:
+                _run_cmd(job, ["nft", "flush", "chain", "inet", table_type, chain_name], timeout=5)
+                _run_cmd(job, ["nft", "delete", "chain", "inet", table_type, chain_name], timeout=5)
+                flushed += 1
+            except RuntimeError:
+                pass
+    return {"flushed_chains": flushed}
+
+COMMAND_HANDLERS["host/nft-reset"] = _handle_nft_reset
+
+
 @route("POST", "/admin/update")
 def handle_update(handler, params):
     """Accept a new script, validate syntax, drain, and restart."""
