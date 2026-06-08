@@ -763,6 +763,26 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
         url = s3_storage.generate_presigned_url(ic["s3_key"], expires=7200)
         ic["url"] = url
 
+    # Pre-check: skip items already cached at full size on the host
+    check_cmds = [f"echo \"{ic['item_id']}:$(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0)\"" for ic in items_to_cache]
+    if check_cmds:
+        check_result = run_ssh_script(host_ip, private_key, "\n".join(check_cmds), timeout=15)
+        if check_result["success"]:
+            for line in check_result.get("output", "").strip().splitlines():
+                if ":" not in line or line.startswith("Warning:"):
+                    continue
+                parts = line.strip().split(":")
+                if len(parts) == 2 and parts[1].isdigit():
+                    item_id, size = parts[0], int(parts[1])
+                    for ic in items_to_cache:
+                        if ic["item_id"] == item_id and size >= ic["expected_size"] - 1024 and ic["expected_size"] > 0:
+                            logger.info("cache: %s already cached (%d bytes), skipping", ic["name"], size)
+                            ic["_skip"] = True
+        items_to_cache = [ic for ic in items_to_cache if not ic.get("_skip")]
+        if not items_to_cache:
+            logger.info("cache_library_images: all items already cached")
+            return
+
     # Start all downloads in background on host using python3
     import base64 as _b64
     for ic in items_to_cache:
