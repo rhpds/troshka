@@ -136,6 +136,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         key_pair_name=result.get("key_pair_name"),
         private_key=result.get("private_key"),
         storage_size_gb=result.get("storage_size_gb", 500),
+        max_eips=result.get("max_eips", 0),
     )
     db.add(host)
     db.commit()
