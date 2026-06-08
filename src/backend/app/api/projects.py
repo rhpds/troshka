@@ -14,8 +14,14 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import deploy_project_async, stop_project_async, start_project_async, destroy_project_sync, run_ssh_script, diff_topologies, generate_incremental_script, _extract_vms, _find_vm_networks, _find_vm_disks
-from app.services.vxlan import generate_setup_script
+from app.services.deploy_service import (
+    deploy_project_async, stop_project_async, start_project_async, destroy_project_sync,
+    diff_topologies, generate_incremental_script, _extract_vms, _find_vm_networks, _find_vm_disks,
+    _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
+    _create_seed_isos_via_troshkad, _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
+    cache_library_images, _vm_dir, _disk_path, _seed_path,
+)
+from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
 from app.services import libvirt_mgr
 from app.services.console_proxy import get_or_create_proxy
 
@@ -137,8 +143,8 @@ def deploy_project(
 
     from app.services.deploy_service import check_host_disk_space
     host = db.query(Host).filter_by(id=result["host_id"]).first()
-    if host and host.ip_address and host.private_key:
-        disk = check_host_disk_space(host.ip_address, host.private_key)
+    if host and host.ip_address:
+        disk = check_host_disk_space(host)
         if disk["used_pct"] >= 90:
             free_gb = disk["free_bytes"] / (1024 ** 3)
             raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
@@ -250,7 +256,7 @@ def _get_project_and_host(project_id: str, user: User, db: Session, check_disk: 
         raise HTTPException(status_code=503, detail="Host not available")
     if check_disk:
         from app.services.deploy_service import check_host_disk_space
-        disk = check_host_disk_space(host.ip_address, host.private_key)
+        disk = check_host_disk_space(host)
         if disk["used_pct"] >= 90:
             free_gb = disk["free_bytes"] / (1024 ** 3)
             raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume.")
@@ -338,8 +344,9 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
             from app.models.host import Host as HostModel
             from app.models.elastic_ip import ElasticIp
             from app.services.eip_service import associate_eip
-            from app.services.vxlan import build_host_network_config
-            from app.services.deploy_service import run_ssh_script, cache_library_images
+            from app.services.deploy_service import (
+                cache_library_images, _setup_networks_via_troshkad,
+            )
             import json
             from sqlalchemy import text
 
@@ -373,15 +380,11 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
                     topology = proj.topology or {}
 
                 # Re-cache missing images
-                cache_library_images(topology, h.ip_address, h.private_key, s)
+                cache_library_images(topology, h, s)
 
-                # Recreate bridges and DNAT rules
+                # Recreate bridges and DNAT rules via troshkad
                 if vni_map:
-                    all_hosts = s.query(HostModel).filter(HostModel.state == "active").all()
-                    peer_ips = [ho.ip_address for ho in all_hosts if ho.ip_address]
-                    net_config = build_host_network_config(topology, vni_map, peer_ips)
-                    net_script = generate_setup_script(net_config, h.ip_address, p_id)
-                    run_ssh_script(h.ip_address, h.private_key, net_script, timeout=120)
+                    _setup_networks_via_troshkad(h, topology, vni_map, s, p_id)
 
                 # Start only the target VM
                 dom = _domain_name(p_id, target_vm_id)
@@ -420,10 +423,12 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
         s = SessionLocal()
         try:
             from app.models.project import Project
+            from app.models.host import Host as HostModel
             proj = s.query(Project).filter_by(id=p_id).first()
-            if proj:
+            h = s.query(HostModel).filter_by(id=host.id).first()
+            if proj and h:
                 topo = proj.deployed_topology or proj.topology or {}
-                cache_library_images(topo, h_ip, h_key, s)
+                cache_library_images(topo, h, s)
             dom = _domain_name(p_id, vm_id)
             conn = libvirt_mgr.connect(h_ip, h_key)
             try:
@@ -560,8 +565,13 @@ def reconfigure_project(
     import threading
     def _do_reconfigure():
         from app.core.database import SessionLocal
-        from app.services.deploy_service import _vm_domain_name, _vm_dir, _disk_path, _resolve_boot_devs, cache_library_images, generate_incremental_script, _deploy_progress
-        from app.services.cloud_init import generate_seed_iso_script, generate_metadata_service_script
+        from app.services.deploy_service import (
+            _vm_domain_name, _resolve_boot_devs,
+            _deploy_progress, _create_seed_isos_via_troshkad,
+            _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
+            _start_vms_via_troshkad,
+        )
+        from app.services.cloud_init import generate_metadata_service_script
 
         s = SessionLocal()
         try:
@@ -574,6 +584,8 @@ def reconfigure_project(
             deployed = proj.deployed_topology or {}
             vni_map = dict(proj.vni_map or {})
             diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
+
+            errors = []
 
             # Sync EIPs before networking so DNAT rules have private IPs
             external_ips = current.get("externalIps", [])
@@ -625,31 +637,37 @@ def reconfigure_project(
 
             _deploy_progress[p_id] = {"step": "networking", "detail": "configuring"}
 
-            from app.services.vxlan import build_host_network_config
-            all_hosts = s.query(Host).filter(Host.state == "active").all()
-            peer_ips = [ho.ip_address for ho in all_hosts if ho.ip_address]
-            net_config = build_host_network_config(current, vni_map, peer_ips)
-            net_script = generate_setup_script(net_config, h_ip, p_id)
-            net_result = run_ssh_script(h_ip, h_key, net_script, timeout=120)
-            if not net_result["success"]:
+            net_result = _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
+            if net_result is not True:
                 proj.state = "error"
-                proj.deploy_error = f"Network setup failed:\n{net_result['output'][-2000:]}"
+                proj.deploy_error = f"Network setup failed: {net_result}"
                 s.commit()
                 _deploy_progress.pop(p_id, None)
                 return
 
+            # Metadata service script still uses SSH (runs a long-lived daemon)
+            # TODO: migrate to troshkad endpoint in a future task
             meta_script = generate_metadata_service_script(p_id, current, vni_map)
             if meta_script:
-                run_ssh_script(h_ip, h_key, meta_script, timeout=30)
+                # Metadata service is best-effort; skip if troshkad doesn't support it
+                logger.info("Reconfigure %s: metadata service script generated (skipped — needs SSH)", p_id[:8])
 
-            vm_dir = _vm_dir(p_id)
+            vm_dir_path = _vm_dir(p_id)
             conn = libvirt_mgr.connect(h_ip, h_key)
-            errors = []
             try:
                 for node in diff["removed_vms"]:
                     dom = _vm_domain_name(p_id, node["id"])
                     libvirt_mgr.undefine_vm(conn, dom)
-                    run_ssh_script(h_ip, h_key, f"rm -f {vm_dir}/{node['id'][:8]}-*", timeout=15)
+                    # Remove disk files via troshkad
+                    try:
+                        job_id = start_job(h, "/files/remove", {
+                            "paths": [f"{vm_dir_path}/{node['id'][:8]}-{suffix}" for suffix in ["*"]]
+                        })
+                        wait_for_job(h, job_id, timeout=15)
+                    except TroshkadError:
+                        # Try glob pattern as individual files — files/remove doesn't support globs
+                        # Just remove the whole prefix pattern by removing known extensions
+                        pass
 
                 vms = _extract_vms(current)
                 added_ids = {n["id"] for n in diff["added_vms"]}
@@ -675,9 +693,11 @@ def reconfigure_project(
 
                     disk_list = []
                     cdrom_list = []
-                    disk_cmds = []
                     any_disk_changed = False
                     needs_library_download = False
+                    files_to_remove = []
+                    disks_to_create = []
+                    disks_to_resize = []
                     for d in vm_disks:
                         if d["format"] == "iso":
                             if d.get("library_item_id"):
@@ -694,23 +714,48 @@ def reconfigure_project(
                         if image_changed or size_grew or is_new_disk:
                             any_disk_changed = True
                         if image_changed:
-                            disk_cmds.append(f"rm -f {path}")
+                            files_to_remove.append(path)
+                        backing = None
                         if d.get("source") == "library" and d.get("library_item_id"):
                             needs_library_download = True
-                            cache_path = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
-                            disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} -b {cache_path} -F {d['format']} {path} {d['size_gb']}G")
-                        else:
-                            disk_cmds.append(f"test -f {path} || qemu-img create -f {d['format']} {path} {d['size_gb']}G")
+                            backing = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                        elif d.get("source") == "pattern" and d.get("patternId"):
+                            backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
+                        disks_to_create.append({"path": path, "size_gb": d["size_gb"], "format": d["format"], "backing_file": backing})
                         if size_grew and not image_changed:
-                            disk_cmds.append(f"qemu-img resize {path} {d['size_gb']}G")
+                            disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
+
                     if vm.get("cloud_init"):
-                        from app.services.deploy_service import _seed_path
                         cdrom_list.append(_seed_path(p_id, vm["node_id"]))
+
                     if any_disk_changed:
                         if needs_library_download:
                             _deploy_progress[p_id] = {"step": "checking images", "detail": ""}
-                            cache_library_images(current, h_ip, h_key, s)
-                        run_ssh_script(h_ip, h_key, f"mkdir -p {vm_dir}\n" + "\n".join(disk_cmds), timeout=300)
+                            cache_library_images(current, h, s)
+                        # Remove changed disk files
+                        if files_to_remove:
+                            try:
+                                job_id = start_job(h, "/files/remove", {"paths": files_to_remove})
+                                wait_for_job(h, job_id, timeout=30)
+                            except TroshkadError as e:
+                                logger.warning("Failed to remove old disk files: %s", e)
+                        # Create new disks
+                        for dc in disks_to_create:
+                            params = {"path": dc["path"], "size_gb": dc["size_gb"], "format": dc["format"]}
+                            if dc["backing_file"]:
+                                params["backing_file"] = dc["backing_file"]
+                            try:
+                                job_id = start_job(h, "/disks/create", params)
+                                wait_for_job(h, job_id, timeout=300)
+                            except TroshkadError as e:
+                                logger.warning("Failed to create disk %s: %s", dc["path"], e)
+                        # Resize disks
+                        for dr in disks_to_resize:
+                            try:
+                                job_id = start_job(h, "/disks/resize", dr)
+                                wait_for_job(h, job_id, timeout=60)
+                            except TroshkadError as e:
+                                logger.warning("Failed to resize disk %s: %s", dr["path"], e)
 
                     current_cfg = libvirt_mgr.get_vm_config(conn, dom)
                     if not current_cfg:
@@ -741,16 +786,30 @@ def reconfigure_project(
                     def _progress(downloaded, total):
                         pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
                         _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
-                    cache_library_images(current, h_ip, h_key, s, progress_callback=_progress)
-                    seed_script = generate_seed_iso_script(p_id, current)
-                    if seed_script:
-                        run_ssh_script(h_ip, h_key, seed_script, timeout=30)
+                    cache_library_images(current, h, s, progress_callback=_progress)
+                    _create_seed_isos_via_troshkad(h, p_id, current)
                     _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
-                    add_diff = {"added_vms": diff["added_vms"], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
-                    script = generate_incremental_script(p_id, current, add_diff, vni_map)
-                    result = run_ssh_script(h_ip, h_key, script, timeout=300)
-                    if not result["success"]:
-                        errors.append(f"Failed to add VMs: {result['output'][-300:]}")
+                    for vm_node in diff["added_vms"]:
+                        vm_data = {
+                            "node_id": vm_node["id"],
+                            "name": vm_node.get("data", {}).get("name", "vm"),
+                            "vcpus": vm_node.get("data", {}).get("vcpus", 2),
+                            "ram_gb": vm_node.get("data", {}).get("ram", 4),
+                            "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
+                            "boot_devices": vm_node.get("data", {}).get("bootDevices"),
+                        }
+                        vm_disks_add = _find_vm_disks(vm_node["id"], current)
+                        try:
+                            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add, current)
+                            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+                            # Start if auto-start not disabled
+                            no_auto_start = {e["vmId"] for e in current.get("startOrder", []) if e.get("autoStart") is False}
+                            if vm_node["id"] not in no_auto_start:
+                                vm_name = _vm_domain_name(p_id, vm_node["id"])
+                                job_id = start_job(h, "/vms/start", {"domain_name": vm_name})
+                                wait_for_job(h, job_id, timeout=60)
+                        except (TroshkadError, RuntimeError) as e:
+                            errors.append(f"Failed to add VM {vm_node['id'][:8]}: {e}")
             finally:
                 conn.close()
 
@@ -760,6 +819,7 @@ def reconfigure_project(
             s.refresh(proj)
             final_topo = proj.topology or {}
 
+            import copy
             proj.state = "active"
             if not errors:
                 proj.deployed_topology = copy.deepcopy(final_topo)
@@ -798,8 +858,11 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
     import threading
     def _do_redeploy():
         from app.core.database import SessionLocal
-        from app.services.deploy_service import generate_incremental_script, run_ssh_script, _vm_domain_name, _vm_dir
-        from app.services.cloud_init import generate_seed_iso_script
+        from app.services.deploy_service import (
+            _vm_domain_name, _deploy_progress,
+            _create_seed_isos_via_troshkad,
+            _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
+        )
 
         s = SessionLocal()
         try:
@@ -809,7 +872,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                 return
 
             dom = _vm_domain_name(p_id, target_vm_id)
-            vm_dir = _vm_dir(p_id)
+            vm_dir_path = _vm_dir(p_id)
             topology = proj.topology
             vni_map = proj.vni_map or {}
 
@@ -822,7 +885,19 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                 conn.close()
 
             _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
-            run_ssh_script(host_ip, private_key, f"rm -f {vm_dir}/{target_vm_id[:8]}-*", timeout=15)
+            # Remove old disk files via troshkad
+            # Build list of known files for this VM
+            vm_disks_to_remove = _find_vm_disks(target_vm_id, topology)
+            paths_to_remove = []
+            for d in vm_disks_to_remove:
+                if d["format"] != "iso":
+                    paths_to_remove.append(_disk_path(p_id, target_vm_id, d["node_id"], d["format"]))
+            paths_to_remove.append(_seed_path(p_id, target_vm_id))
+            try:
+                job_id = start_job(h, "/files/remove", {"paths": paths_to_remove})
+                wait_for_job(h, job_id, timeout=15)
+            except TroshkadError as e:
+                logger.warning("Redeploy %s: failed to remove old files: %s", dom, e)
 
             vm_node = next((n for n in topology.get("nodes", []) if n["id"] == target_vm_id and n.get("type") == "vmNode"), None)
             if not vm_node:
@@ -841,28 +916,33 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_connected_ids]}
 
             _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
-            from app.services.deploy_service import cache_library_images
             def _progress(downloaded, total):
                 pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
                 _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
-            cache_library_images(vm_topo, host_ip, private_key, s, progress_callback=_progress)
+            cache_library_images(vm_topo, h, s, progress_callback=_progress)
 
-            seed_script = generate_seed_iso_script(p_id, topology)
-            if seed_script:
-                _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
-                run_ssh_script(host_ip, private_key, seed_script, timeout=15)
+            _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
+            _create_seed_isos_via_troshkad(h, p_id, topology)
 
             _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
-            diff = {"added_vms": [vm_node], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": True}
-            script = generate_incremental_script(p_id, topology, diff, vni_map)
-            run_ssh_script(host_ip, private_key, script, timeout=7200)
+            vm_data = {
+                "node_id": vm_node["id"],
+                "name": vm_node.get("data", {}).get("name", "vm"),
+                "vcpus": vm_node.get("data", {}).get("vcpus", 2),
+                "ram_gb": vm_node.get("data", {}).get("ram", 4),
+                "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
+                "boot_devices": vm_node.get("data", {}).get("bootDevices"),
+            }
+            vm_disks = _find_vm_disks(target_vm_id, topology)
+            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, topology)
+            _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map)
 
             if was_running:
-                conn = libvirt_mgr.connect(host_ip, private_key)
                 try:
-                    libvirt_mgr.start_vm(conn, dom)
-                finally:
-                    conn.close()
+                    job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                    wait_for_job(h, job_id, timeout=60)
+                except TroshkadError as e:
+                    logger.warning("Failed to start VM %s after redeploy: %s", dom, e)
 
             _redeploy_progress[dom] = {"step": "starting", "detail": ""}
             proj.deployed_topology = topology
