@@ -300,7 +300,7 @@ export default function AdminHostsPage() {
                     }}
                   >
                     <option value="">Select provider...</option>
-                    {providers.map((p) => (
+                    {providers.filter((p) => p.type === "ec2").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
