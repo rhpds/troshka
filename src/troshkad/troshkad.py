@@ -1499,7 +1499,28 @@ def _handle_network_full_teardown(job, params):
     ns = f"troshka-{pid}"
     veth_host = f"ve{pid}h"
 
-    # Delete namespace (removes bridges, VXLAN, nftables inside)
+    # Delete VXLAN interfaces inside namespace BEFORE deleting the namespace.
+    # ip netns del destroys the interfaces but does NOT release VNI registrations
+    # from the kernel, causing "A VXLAN device with the specified VNI already exists"
+    # on the next deploy. Explicitly deleting them first releases the VNIs.
+    for vni in vni_list:
+        vxlan_if = f"vxlan-{vni}"
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if], timeout=10)
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
+        except RuntimeError:
+            pass
+
+    # Kill dnsmasq processes inside namespace
+    try:
+        _run_cmd(job, ["ip", "netns", "exec", ns, "pkill", "-9", "dnsmasq"], timeout=10)
+    except RuntimeError:
+        pass
+
+    # Delete namespace
     try:
         _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
     except RuntimeError:

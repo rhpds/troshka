@@ -604,6 +604,14 @@ def wipe_host(host_id: str, user: User = Depends(require_role("admin")), db: Ses
                 results["projects_destroyed"] += 1
             except Exception:
                 logger.warning("Failed to destroy project %s during wipe", p.id[:8])
+        elif p.state in ("deploying", "error") and p.vni_map:
+            try:
+                from app.services.deploy_service import _teardown_networks_via_troshkad
+                _teardown_networks_via_troshkad(host, p.id, p.vni_map)
+                jid = start_job(host, "/files/remove", {"paths": [f"/var/lib/troshka/vms/{p.id}"]})
+                wait_for_job(host, jid, timeout=15)
+            except Exception:
+                logger.warning("Failed to teardown project %s during wipe", p.id[:8])
         p.state = "draft"
         p.deploy_error = None
         p.deployed_topology = None
