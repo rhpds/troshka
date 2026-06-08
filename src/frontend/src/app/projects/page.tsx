@@ -341,6 +341,31 @@ export default function ProjectsPage() {
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {p.state === "draft" && (
+                    <Button
+                      variant="secondary"
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }).then(r => r.json()).then(d => {
+                          if (d.status === "deploying") {
+                            const poll = setInterval(() => {
+                              fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
+                                if (d.state === "active" || d.state === "error") {
+                                  clearInterval(poll);
+                                  setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
+                                }
+                              }).catch(() => {});
+                            }, 3000);
+                          } else {
+                            alert(d.detail || "Deploy failed");
+                            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr));
+                          }
+                        });
+                      }}
+                    >Deploy</Button>
+                  )}
                   {p.state === "active" && (
                     <Button
                       variant="secondary"
