@@ -74,7 +74,15 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         }
       } else if (action === "start") {
         if (result.success || result.output?.includes("already active")) {
-          updateNodeData(id, { status: "running" });
+          const start = Date.now();
+          while (Date.now() - start < 120000) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const state = await pollVmStatus();
+            if (state === "running") {
+              updateNodeData(id, { status: "running" });
+              break;
+            }
+          }
         } else {
           alert(`Start failed: ${result.output?.slice(-200) || "unknown error"}`);
         }
