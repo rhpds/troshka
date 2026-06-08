@@ -113,6 +113,77 @@ class TestTroshkadServer(unittest.TestCase):
         status, _ = _make_request("/health", method="POST")
         self.assertEqual(status, 405)
 
+    def test_job_dispatch_and_poll(self):
+        """Test job dispatch, polling until completion, and result retrieval."""
+        # Register a test handler
+        def test_echo_handler(job, params):
+            time.sleep(0.2)
+            return {"echo": params.get("msg")}
+        troshkad.COMMAND_HANDLERS["_test/echo"] = test_echo_handler
+
+        try:
+            # Dispatch job
+            status, body = _make_request("/commands/_test/echo", method="POST", body={"msg": "hello"})
+            self.assertEqual(status, 202)
+            self.assertIn("job_id", body)
+            self.assertEqual(body["status"], "running")
+            job_id = body["job_id"]
+
+            # Poll until completed
+            for _ in range(20):
+                time.sleep(0.1)
+                status, job = _make_request(f"/jobs/{job_id}")
+                self.assertEqual(status, 200)
+                if job["status"] == "completed":
+                    break
+
+            self.assertEqual(job["status"], "completed")
+            self.assertIsNotNone(job["result"])
+            self.assertEqual(job["result"]["echo"], "hello")
+        finally:
+            del troshkad.COMMAND_HANDLERS["_test/echo"]
+
+    def test_max_concurrent_jobs_returns_503(self):
+        """Test that max_concurrent_jobs limit is enforced."""
+        barrier = threading.Event()
+
+        def slow_handler(job, params):
+            barrier.wait()
+            return {"done": True}
+
+        troshkad.COMMAND_HANDLERS["_test/slow"] = slow_handler
+
+        try:
+            # Fill up 2 slots (max_concurrent_jobs=2 in test config)
+            status1, body1 = _make_request("/commands/_test/slow", method="POST", body={})
+            self.assertEqual(status1, 202)
+            status2, body2 = _make_request("/commands/_test/slow", method="POST", body={})
+            self.assertEqual(status2, 202)
+
+            # Third should return 503
+            status3, body3 = _make_request("/commands/_test/slow", method="POST", body={})
+            self.assertEqual(status3, 503)
+            self.assertIn("max_concurrent_jobs", body3["error"])
+        finally:
+            barrier.set()
+            del troshkad.COMMAND_HANDLERS["_test/slow"]
+
+    def test_draining_rejects_new_jobs(self):
+        """Test that draining status rejects new jobs."""
+        def test_handler(job, params):
+            return {"done": True}
+
+        troshkad.COMMAND_HANDLERS["_test/drain"] = test_handler
+
+        try:
+            troshkad._draining = True
+            status, body = _make_request("/commands/_test/drain", method="POST", body={})
+            self.assertEqual(status, 503)
+            self.assertEqual(body["status"], "draining")
+        finally:
+            troshkad._draining = False
+            del troshkad.COMMAND_HANDLERS["_test/drain"]
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,47 @@ def _get_capacity():
     return capacity
 
 
+# ── Job dispatch framework ──
+
+COMMAND_HANDLERS = {}  # command_path -> handler_func(job, params)
+
+
+def _run_job_worker(job, handler):
+    """Worker thread: runs handler, updates job status."""
+    try:
+        result = handler(job, job["params"])
+        _complete_job(job, "completed", result)
+    except Exception as e:
+        logger.exception("Job %s failed: %s", job["job_id"], e)
+        _complete_job(job, "failed", {"error": str(e)})
+
+
+def _dispatch_job(command, params):
+    """Dispatch a job: checks limits, creates job, spawns worker thread.
+
+    Returns (status_code, response_body).
+    """
+    if _draining:
+        return 503, {"status": "draining", "error": "server is draining"}
+
+    max_jobs = _config.get("max_concurrent_jobs", 10)
+    if _running_job_count() >= max_jobs:
+        return 503, {"error": f"max_concurrent_jobs ({max_jobs}) reached"}
+
+    handler = COMMAND_HANDLERS.get(command)
+    if not handler:
+        return 404, {"error": f"no handler for command: {command}"}
+
+    job = _create_job(command, params)
+    worker = threading.Thread(target=_run_job_worker, args=(job, handler), daemon=True)
+    worker.start()
+
+    return 202, {
+        "job_id": job["job_id"],
+        "status": job["status"],
+    }
+
+
 # ── HTTP routing ──
 
 ROUTES = {}  # (method, path_pattern) -> handler_func
@@ -175,6 +216,12 @@ def route(method, path):
 
 def _match_route(method, path):
     """Match a request to a route, supporting /jobs/{job_id} style paths."""
+    # Special handling for /commands/* paths
+    if path.startswith("/commands/") and method == "POST":
+        handler = ROUTES.get(("POST", "/commands/{command_path}"))
+        if handler:
+            return handler, {"command_path": path[len("/commands/"):]}
+
     handler = ROUTES.get((method, path))
     if handler:
         return handler, {}
@@ -285,6 +332,15 @@ def handle_get_job(handler, params):
         "started_at": job["started_at"],
         "completed_at": job["completed_at"],
     })
+
+
+@route("POST", "/commands/{command_path}")
+def handle_dispatch_command(handler, params):
+    """Dispatch a command job and return job_id + status."""
+    command_path = params["command_path"]
+    body = handler._read_body()
+    status, response = _dispatch_job(command_path, body)
+    handler._send_json(status, response)
 
 
 # ── Server factory ──
