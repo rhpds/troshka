@@ -1117,40 +1117,37 @@ def start_project_async(project_id: str):
         topology = project.topology
         vni_map = project.vni_map or {}
 
-        # Recreate networks (they were torn down on stop)
-        if vni_map:
-            all_hosts = s.query(Host).filter(Host.state == "active").all()
-            peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-            network_config = build_host_network_config(topology, vni_map, peer_ips)
-            net_script = generate_setup_script(network_config, host.ip_address, project_id)
-            result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
-            if not result["success"]:
-                project.state = "error"
-                project.deploy_error = f"Network setup failed on restart:\n{result['output'][-2000:]}"
-                s.commit()
-                return
-
-        # Re-associate EIPs for this project
+        # Re-associate EIPs first so topology has _private_ip for DNAT rules
         from app.models.elastic_ip import ElasticIp
         from app.services.eip_service import associate_eip
         project_eips = s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
         for eip in project_eips:
             try:
                 associate_eip(s, eip, host)
+                for ext_ip in (topology or {}).get("externalIps", []):
+                    if ext_ip.get("id") == eip.canvas_eip_id:
+                        ext_ip["_private_ip"] = eip.private_ip
+                        ext_ip["ip"] = eip.public_ip
             except Exception:
                 logger.warning("Failed to re-associate EIP %s on start", eip.public_ip)
 
-        # Re-sync SG rules
         if project_eips:
+            import copy, json
+            from sqlalchemy import text
+            s.execute(text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+                      {"topo": json.dumps(topology), "pid": project_id})
+            s.commit()
+            s.refresh(project)
+            topology = project.topology
+
             from app.models.provider import Provider
             from app.services.eip_service import sync_security_group_rules
             provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
             if not provider and host.provider_id:
                 provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider:
-                topo = project.topology or {}
                 gw_node = next(
-                    (n for n in topo.get("nodes", [])
+                    (n for n in (topology or {}).get("nodes", [])
                      if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
                      and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
                     None,
@@ -1162,6 +1159,19 @@ def start_project_async(project_id: str):
                         if pf.get("extPort")
                     ]
                     sync_security_group_rules(s, provider, desired_sg)
+
+        # Recreate networks (with correct EIP private IPs for DNAT)
+        if vni_map:
+            all_hosts = s.query(Host).filter(Host.state == "active").all()
+            peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+            network_config = build_host_network_config(topology, vni_map, peer_ips)
+            net_script = generate_setup_script(network_config, host.ip_address, project_id)
+            result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
+            if not result["success"]:
+                project.state = "error"
+                project.deploy_error = f"Network setup failed on restart:\n{result['output'][-2000:]}"
+                s.commit()
+                return
 
         # Start VMs
         start_script = generate_start_script(project_id, topology)

@@ -348,8 +348,17 @@ export default function ProjectsPage() {
                       style={{ fontSize: 11, padding: "2px 8px" }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" })
-                          .then(() => window.location.reload());
+                        if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down and EIPs disassociated.`)) return;
+                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" });
+                        const poll = setInterval(() => {
+                          fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
+                            if (d.state === "stopped" || d.state === "error") {
+                              clearInterval(poll);
+                              window.location.reload();
+                            }
+                          });
+                        }, 2000);
                       }}
                     >Stop</Button>
                   )}
@@ -359,10 +368,22 @@ export default function ProjectsPage() {
                       style={{ fontSize: 11, padding: "2px 8px" }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" })
-                          .then(() => window.location.reload());
+                        if (!window.confirm(`Start project "${p.name}"? This will boot all VMs and associate EIPs.`)) return;
+                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" });
+                        const poll = setInterval(() => {
+                          fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
+                            if (d.state === "active" || d.state === "error") {
+                              clearInterval(poll);
+                              window.location.reload();
+                            }
+                          });
+                        }, 2000);
                       }}
                     >Start</Button>
+                  )}
+                  {(p.state === "stopping" || p.state === "starting") && (
+                    <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
                   )}
                   <Button
                     variant="plain"
