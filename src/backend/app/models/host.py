@@ -29,6 +29,9 @@ class Host(Base):
     storage_size_gb: Mapped[int] = mapped_column(Integer, default=500)
     max_eips: Mapped[int] = mapped_column(Integer, default=0)
     last_health_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    agent_token: Mapped[str | None] = mapped_column(Text)
+    agent_cert_fingerprint: Mapped[str | None] = mapped_column(String(100))
+    agent_version: Mapped[str | None] = mapped_column(String(50))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

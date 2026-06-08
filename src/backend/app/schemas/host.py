@@ -27,6 +27,7 @@ class HostResponse(BaseModel):
     storage_size_gb: int = 500
     max_eips: int = 0
     used_eips: int = 0
+    agent_version: str | None = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}

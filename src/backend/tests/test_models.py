@@ -237,3 +237,28 @@ def test_create_library_item_disk():
     db.delete(item)
     db.commit()
     db.close()
+
+
+def test_host_troshkad_fields():
+    """Host model has agent_token, agent_cert_fingerprint, agent_version."""
+    db = Session()
+    provider = db.query(Provider).first()
+    if not provider:
+        provider = Provider(name="test-aws", type="aws", default_region="us-east-1")
+        db.add(provider)
+        db.commit()
+    host = Host(
+        provider_id=provider.id,
+        state="active",
+        agent_status="connected",
+        agent_token="a" * 64,
+        agent_cert_fingerprint="sha256:abcdef1234567890",
+        agent_version="2026.06.08.1",
+    )
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+    assert host.agent_token == "a" * 64
+    assert host.agent_cert_fingerprint == "sha256:abcdef1234567890"
+    assert host.agent_version == "2026.06.08.1"
+    db.close()
