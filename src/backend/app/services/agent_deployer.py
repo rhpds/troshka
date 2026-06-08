@@ -152,6 +152,25 @@ json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
     chmod 600 /opt/troshka/troshkad.conf
     echo "troshkad: config generated"
 else
+    # Validate existing config is valid JSON, fix if corrupted
+    python3 -c "import json; json.load(open('/opt/troshka/troshkad.conf'))" 2>/dev/null || {
+        echo "troshkad: config corrupted, regenerating"
+        TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+        python3 -c "
+import json, sys
+conf = {
+    'port': 31337,
+    'token': sys.argv[1],
+    'tls_cert': '/opt/troshka/tls/server.crt',
+    'tls_key': '/opt/troshka/tls/server.key',
+    'host_id': '{host_id}',
+    'max_concurrent_jobs': 4,
+    'drain_timeout_seconds': 300,
+}
+json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+" "$TROSHKAD_TOKEN"
+        chmod 600 /opt/troshka/troshkad.conf
+    }
     echo "troshkad: config already exists"
 fi
 
@@ -183,10 +202,11 @@ fi
 
 echo "troshkad: service started"
 
-# Output credentials for backend to capture
+# Output credentials for backend to capture (tab-separated to avoid colon ambiguity)
 CERT_FP=$(openssl x509 -in /opt/troshka/tls/server.crt -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//')
 TOKEN=$(python3 -c "import json; print(json.load(open('/opt/troshka/troshkad.conf'))['token'])")
-echo "TROSHKAD_CREDENTIALS:$TOKEN:$CERT_FP"
+echo "TROSHKAD_TOKEN=$TOKEN"
+echo "TROSHKAD_FINGERPRINT=$CERT_FP"
 
 # Report status
 echo "=== Agent installation complete ==="
@@ -299,13 +319,11 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
         # Extract troshkad credentials from output
         troshkad_credentials = {}
         for line in output.splitlines():
-            if line.startswith("TROSHKAD_CREDENTIALS:"):
-                rest = line.split(":", 1)[1]
-                troshkad_credentials = {
-                    "token": rest[:64],
-                    "fingerprint": rest[65:]
-                }
-                break
+            line = line.strip()
+            if line.startswith("TROSHKAD_TOKEN="):
+                troshkad_credentials["token"] = line.split("=", 1)[1]
+            elif line.startswith("TROSHKAD_FINGERPRINT="):
+                troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
 
         logger.info("Agent deploy %s on %s (exit %d)", "succeeded" if success else "failed", host_ip, result.returncode)
 
