@@ -469,19 +469,33 @@ export default function AdminHostsPage() {
                     setUpdating(h.id);
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
-                      if (resp.ok) {
-                        const data = await resp.json();
-                        alert(`Update initiated → v${data.version}${force ? " (forced)" : ""}`);
-                        loadData();
-                      } else {
+                      if (!resp.ok) {
                         const data = await resp.json();
                         alert(data.detail || "Update failed");
+                        return;
                       }
+                      const data = await resp.json();
+                      const targetVersion = data.version;
+                      // Poll until host comes back with new version
+                      for (let i = 0; i < 60; i++) {
+                        await new Promise(r => setTimeout(r, 3000));
+                        const hostsResp = await fetch("/api/v1/hosts/");
+                        if (hostsResp.ok) {
+                          const hostsList = await hostsResp.json();
+                          const updated = hostsList.find((x: Host) => x.id === h.id);
+                          if (updated?.agent_version === targetVersion) {
+                            alert(`Updated → v${targetVersion}`);
+                            loadData();
+                            return;
+                          }
+                        }
+                      }
+                      alert("Update timed out — check host status");
                     } finally {
                       setUpdating(null);
                     }
                   }}>
-                    Update Agent
+                    {updating === h.id ? "Updating..." : "Update Agent"}
                   </Button>
                   <Button variant="secondary" onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
