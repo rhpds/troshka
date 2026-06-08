@@ -285,13 +285,14 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
     veth_host = f"ve{pid}h"
     veth_ns = f"ve{pid}n"
 
-    # Derive transit subnet from the first VNI (one transit per project)
+    # Derive transit subnet from the first VNI
+    # Use /24 to allow multiple transit IPs (one per EIP port forward)
     all_vnis = [net["vni"] for net in config.get("networks", [])]
     first_vni = all_vnis[0] if all_vnis else 1000
-    transit = _transit_subnet(first_vni)
-    transit_host_ip = transit["host_ip"]
-    transit_ns_ip = transit["ns_ip"]
-    transit_cidr = transit["cidr"]
+    transit_octet3 = first_vni & 0xFF
+    transit_host_ip = f"172.30.{transit_octet3}.1"
+    transit_ns_ip = f"172.30.{transit_octet3}.2"
+    transit_cidr = f"172.30.{transit_octet3}.0/24"
 
     # ── Namespace + veth ──
     ns_cmds = [
@@ -300,9 +301,9 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
         f"ip netns add {ns}",
         f"ip link add {veth_host} type veth peer name {veth_ns}",
         f"ip link set {veth_ns} netns {ns}",
-        f"ip addr add {transit_host_ip}/30 dev {veth_host}",
+        f"ip addr add {transit_host_ip}/24 dev {veth_host}",
         f"ip link set {veth_host} up",
-        f"ip netns exec {ns} ip addr add {transit_ns_ip}/30 dev {veth_ns}",
+        f"ip netns exec {ns} ip addr add {transit_ns_ip}/24 dev {veth_ns}",
         f"ip netns exec {ns} ip link set {veth_ns} up",
         f"ip netns exec {ns} ip link set lo up",
         f"ip netns exec {ns} ip route add default via {transit_host_ip}",
@@ -412,16 +413,18 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
         bridge = net["bridge_name"]
         nft_cmds.append(f"ip netns exec {ns} nft add rule inet filter forward iifname \"{bridge}\" oifname \"{veth_ns}\" accept")
 
-    # Port forward DNAT inside namespace
+    # Port forward DNAT inside namespace — each EIP gets a unique transit IP
     gw = config.get("gateway")
     if gw and gw.get("mode") == "nat-portforward":
-        for pf in gw.get("port_forwards", []):
+        for pf_idx, pf in enumerate(gw.get("port_forwards", [])):
             ext_port = pf.get("extPort", "")
             int_ip = pf.get("intIp", "")
             int_port = pf.get("intPort", "")
             if ext_port and int_ip and int_port:
-                nft_cmds.append(f"ip netns exec {ns} nft add rule inet nat prerouting tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
-                # Allow forwarded traffic from veth into bridge
+                pf_transit_ip = f"172.30.{transit_octet3}.{10 + pf_idx}"
+                pf["_transit_ip"] = pf_transit_ip
+                ns_cmds.append(f"ip netns exec {ns} ip addr add {pf_transit_ip}/24 dev {veth_ns} 2>/dev/null || true")
+                nft_cmds.append(f"ip netns exec {ns} nft add rule inet nat prerouting ip daddr {pf_transit_ip} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
                 nft_cmds.append(f"ip netns exec {ns} nft add rule inet filter forward iifname \"{veth_ns}\" tcp dport {int_port} accept")
 
     # ── nftables in HOST namespace ──
@@ -453,18 +456,19 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
             f"nft add rule inet nat {post_chain} ip saddr {transit_cidr} masquerade",
         ])
 
-        # EIP-specific port forward DNAT in host namespace → transit NS IP
+        # EIP-specific port forward DNAT in host namespace → per-EIP transit IP
         if gw.get("mode") == "nat-portforward":
             for pf in gw.get("port_forwards", []):
                 ext_port = pf.get("extPort", "")
                 int_ip = pf.get("intIp", "")
                 int_port = pf.get("intPort", "")
                 priv_ip = pf.get("_private_ip", "")
+                pf_transit_ip = pf.get("_transit_ip", transit_ns_ip)
                 if ext_port and int_ip and int_port:
                     if priv_ip:
-                        host_nft_cmds.append(f"nft add rule inet nat {pre_chain} ip daddr {priv_ip} tcp dport {ext_port} dnat ip to {transit_ns_ip}:{ext_port}")
+                        host_nft_cmds.append(f"nft add rule inet nat {pre_chain} ip daddr {priv_ip} tcp dport {ext_port} dnat ip to {pf_transit_ip}:{ext_port}")
                     else:
-                        host_nft_cmds.append(f"nft add rule inet nat {pre_chain} tcp dport {ext_port} dnat ip to {transit_ns_ip}:{ext_port}")
+                        host_nft_cmds.append(f"nft add rule inet nat {pre_chain} tcp dport {ext_port} dnat ip to {pf_transit_ip}:{ext_port}")
 
     return AGENT_SETUP_SCRIPT.format(
         namespace_commands="\n".join(ns_cmds) or "# No namespace setup",
