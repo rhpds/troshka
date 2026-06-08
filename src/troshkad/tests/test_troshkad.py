@@ -466,5 +466,190 @@ class TestHostEndpoints(unittest.TestCase):
         self.assertIn("/var/lib/troshka", str(ctx.exception))
 
 
+class TestGcEndpoints(unittest.TestCase):
+    """Unit tests for garbage collection endpoints."""
+
+    @patch("troshkad.subprocess.run")
+    @patch("troshkad.os.listdir")
+    @patch("troshkad.os.path.exists")
+    @patch("troshkad.os.path.isdir")
+    def test_gc_discover_finds_orphans(self, mock_isdir, mock_exists, mock_listdir, mock_run):
+        """Test gc/discover scans and finds orphaned resources."""
+        # Mock filesystem
+        mock_exists.return_value = True
+        mock_isdir.return_value = True
+        mock_listdir.return_value = ["known-uuid", "orphan-uuid"]
+
+        # Mock virsh list
+        def run_side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            if "virsh" in cmd and "list" in cmd:
+                result.stdout = "troshka-aabb-1122\ntroshka-dead-beef\n"
+            elif "ip" in cmd and "link" in cmd:
+                result.stdout = "2: br-troshka-aabb: <BROADCAST,MULTICAST> mtu 1500\n"
+            elif "ip" in cmd and "netns" in cmd:
+                result.stdout = "troshka-deadbeef\n"
+            return result
+
+        mock_run.side_effect = run_side_effect
+
+        job = troshkad._create_job("gc/discover", {
+            "known_project_ids": ["known-uuid"],
+            "known_domains": ["troshka-aabb-1122"],
+        })
+        result = troshkad._handle_gc_discover(job, job["params"])
+
+        # Check orphan dirs found
+        self.assertIn("/var/lib/troshka/vms/orphan-uuid/", result["orphan_dirs"])
+        # Check orphan domains found
+        self.assertIn("troshka-dead-beef", result["orphan_domains"])
+        # Check orphan bridges found
+        self.assertIn("br-troshka-aabb", result["orphan_bridges"])
+        # Check orphan namespaces found
+        self.assertIn("troshka-deadbeef", result["orphan_namespaces"])
+
+    @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.shutil.rmtree")
+    @patch("troshkad.os.path.isdir")
+    def test_gc_clean_removes_items(self, mock_isdir, mock_rmtree, mock_popen):
+        """Test gc/clean removes specified orphaned resources."""
+        mock_popen.return_value = _mock_popen()
+        mock_isdir.return_value = True
+
+        job = troshkad._create_job("gc/clean", {
+            "orphan_dirs": ["/var/lib/troshka/vms/dead-uuid/"],
+            "orphan_domains": ["troshka-dead-beef"],
+            "orphan_bridges": ["br-troshka-dead"],
+            "orphan_namespaces": ["troshka-deadbeef"],
+            "cache_items": [],
+        })
+        result = troshkad._handle_gc_clean(job, job["params"])
+
+        # Check that rmtree was called for orphan dirs
+        mock_rmtree.assert_called()
+        self.assertGreaterEqual(result["removed_dirs"], 0)
+        self.assertGreaterEqual(result["removed_domains"], 0)
+
+
+class TestLibraryImportEndpoint(unittest.TestCase):
+    """Unit tests for library/import endpoint."""
+
+    @patch("troshkad.os.path.getsize")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_import_download_only(self, mock_popen, mock_makedirs, mock_getsize):
+        """Test import with download only (no flatten, no S3 multipart)."""
+        mock_popen.return_value = _mock_popen()
+        mock_getsize.return_value = 1024
+
+        job = troshkad._create_job("library/import", {
+            "download_url": "https://example.com/image.qcow2",
+            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+        })
+        result = troshkad._handle_library_import(job, job["params"])
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["size_bytes"], 1024)
+        # curl should have been called
+        cmd = mock_popen.call_args_list[0][0][0]
+        self.assertEqual(cmd[0], "curl")
+
+    @patch("troshkad.os.rename")
+    @patch("troshkad.os.path.getsize")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_import_with_flatten(self, mock_popen, mock_makedirs, mock_getsize, mock_rename):
+        """Test import with flatten=true runs qemu-img convert."""
+        mock_popen.return_value = _mock_popen()
+        mock_getsize.return_value = 2048
+
+        job = troshkad._create_job("library/import", {
+            "download_url": "https://example.com/image.qcow2",
+            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+            "flatten": True,
+        })
+        result = troshkad._handle_library_import(job, job["params"])
+
+        # Check that qemu-img convert was called
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        self.assertTrue(any(c[0] == "qemu-img" for c in cmds if c))
+
+    def test_import_rejects_bad_url(self):
+        """Test that import rejects non-http(s) URLs."""
+        job = troshkad._create_job("library/import", {
+            "download_url": "file:///etc/passwd",
+            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+        })
+        with self.assertRaises(ValueError):
+            troshkad._handle_library_import(job, job["params"])
+
+
+class TestCaptureEndpoints(unittest.TestCase):
+    """Unit tests for snapshot/pattern capture endpoints."""
+
+    @patch("troshkad.shutil.copy")
+    @patch("troshkad.os.path.getsize")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    @patch("troshkad.subprocess.Popen")
+    def test_snapshot_capture(self, mock_popen, mock_run, mock_makedirs, mock_getsize, mock_copy):
+        """Test snapshot capture: get disk path, flatten, upload, cache."""
+        mock_popen.return_value = _mock_popen()
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Type  Device  Target  Source\nfile  disk    vda     /var/lib/troshka/vms/proj/disk.qcow2\n",
+            stderr="",
+        )
+        mock_getsize.return_value = 12345
+
+        with patch("tempfile.TemporaryDirectory") as mock_tempdir:
+            mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
+
+            job = troshkad._create_job("snapshots/capture", {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "disk_index": 0,
+                "presigned_url": "https://s3.example.com/upload",
+                "cache_path": "/var/lib/troshka/cache/snapshots/item/disk.qcow2",
+            })
+            result = troshkad._handle_snapshot_capture(job, job["params"])
+
+        self.assertEqual(result["status"], "uploaded")
+        self.assertEqual(result["size_bytes"], 12345)
+
+    @patch("troshkad.shutil.copy")
+    @patch("troshkad.os.path.getsize")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    @patch("troshkad.subprocess.Popen")
+    def test_pattern_capture(self, mock_popen, mock_run, mock_makedirs, mock_getsize, mock_copy):
+        """Test pattern capture: capture multiple disks."""
+        mock_popen.return_value = _mock_popen()
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Type  Device  Target  Source\nfile  disk    vda     /var/lib/troshka/vms/proj/disk.qcow2\n",
+            stderr="",
+        )
+        mock_getsize.return_value = 54321
+
+        with patch("tempfile.TemporaryDirectory") as mock_tempdir:
+            mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
+
+            job = troshkad._create_job("patterns/capture", {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "disks": [{
+                    "disk_index": 0,
+                    "presigned_url": "https://s3.example.com/upload",
+                    "cache_path": "/var/lib/troshka/cache/patterns/pat/disk.qcow2",
+                }],
+            })
+            result = troshkad._handle_pattern_capture(job, job["params"])
+
+        self.assertEqual(result["status"], "uploaded")
+        self.assertEqual(len(result["disks"]), 1)
+        self.assertEqual(result["disks"][0]["size_bytes"], 54321)
+
+
 if __name__ == "__main__":
     unittest.main()

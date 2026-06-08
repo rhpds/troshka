@@ -5,6 +5,7 @@ Single-file Python daemon managing QEMU/libvirt on the host.
 Exposes a structured HTTPS REST API for the Troshka backend.
 Requires only Python 3.9+ stdlib — no pip dependencies.
 """
+import glob
 import hashlib
 import hmac
 import json
@@ -612,6 +613,97 @@ def _handle_image_cache(job, params):
 COMMAND_HANDLERS["images/cache"] = _handle_image_cache
 
 
+def _handle_library_import(job, params):
+    """Download image, optionally flatten, optionally upload to S3 multipart."""
+    download_url = _validate_url(params["download_url"])
+    cache_path = _validate_path(params["cache_path"])
+    flatten = params.get("flatten", False)
+    s3_multipart = params.get("s3_multipart")
+
+    temp_files = []
+    try:
+        # 1. Download the file
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        job["output"].append(f"Downloading from {download_url}...")
+        _run_cmd(job, ["curl", "-fSL", "-o", cache_path, download_url], timeout=7200)
+
+        # 2. Flatten if requested
+        if flatten:
+            job["output"].append("Flattening QCOW2 chain...")
+            flat_path = cache_path + ".flat"
+            temp_files.append(flat_path)
+            _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", cache_path, flat_path], timeout=3600)
+            os.rename(flat_path, cache_path)
+            temp_files.remove(flat_path)
+            job["output"].append("Flattening complete")
+
+        # 3. S3 multipart upload if requested
+        etags = []
+        if s3_multipart:
+            part_size_bytes = s3_multipart["part_size_bytes"]
+            upload_parts = s3_multipart["upload_parts"]
+            job["output"].append(f"Splitting file into {len(upload_parts)} parts...")
+
+            # Split file
+            import tempfile as _tf
+            with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+                tmp_prefix = os.path.join(tmpdir, "part-")
+                _run_cmd(job, ["split", "-b", str(part_size_bytes), "-d", cache_path, tmp_prefix], timeout=600)
+
+                # Upload each part
+                part_files = sorted(glob.glob(f"{tmp_prefix}*"))
+                for idx, part_file in enumerate(part_files):
+                    part_num = idx + 1
+                    if part_num > len(upload_parts):
+                        job["output"].append(f"Warning: more parts than presigned URLs, skipping part {part_num}")
+                        continue
+
+                    presigned_url = upload_parts[idx]["presigned_url"]
+                    job["output"].append(f"Uploading part {part_num}/{len(upload_parts)}...")
+
+                    # Use curl to upload and capture response headers
+                    proc = subprocess.Popen(
+                        ["curl", "-sfL", "-X", "PUT", "-T", part_file, "-D-", "-o", "/dev/null", presigned_url],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    stdout, stderr = proc.communicate(timeout=600)
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"Part {part_num} upload failed: {stderr}")
+
+                    # Extract ETag from response headers
+                    etag = ""
+                    for line in stdout.split("\n"):
+                        if line.lower().startswith("etag:"):
+                            etag = line.split(":", 1)[1].strip()
+                            break
+
+                    if not etag:
+                        raise RuntimeError(f"No ETag in response for part {part_num}")
+
+                    etags.append({"part": part_num, "etag": etag})
+                    job["output"].append(f"Part {part_num} uploaded, ETag: {etag}")
+
+        # Get final file size
+        size_bytes = os.path.getsize(cache_path)
+
+        result = {"status": "completed", "size_bytes": size_bytes}
+        if etags:
+            result["etags"] = etags
+
+        return result
+
+    finally:
+        # Cleanup any temp files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except Exception:
+                pass
+
+COMMAND_HANDLERS["library/import"] = _handle_library_import
+
+
 # ── Network handlers ──
 
 def _handle_network_setup(job, params):
@@ -676,22 +768,200 @@ COMMAND_HANDLERS["eips/configure"] = _handle_eip_configure
 
 # ── Operations handlers ──
 
-def _handle_gc_run(job, params):
-    job["output"].append("Running garbage collection...")
+def _handle_gc_discover(job, params):
+    """Scan host for orphaned resources (dirs, domains, bridges, namespaces, cache items)."""
+    known_project_ids = params.get("known_project_ids", [])
+    known_domains = params.get("known_domains", [])
 
-    # Orphan domain cleanup
-    result = subprocess.run(
-        ["virsh", "list", "--all", "--name"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode == 0:
-        domains = [d.strip() for d in result.stdout.strip().split("\n") if d.strip()]
-        troshka_domains = [d for d in domains if d.startswith("troshka-")]
-        job["output"].append(f"Found {len(troshka_domains)} troshka domains")
+    orphan_dirs = []
+    orphan_domains = []
+    orphan_bridges = []
+    orphan_namespaces = []
+    cache_items = []
 
-    return {"status": "completed"}
+    # 1. Scan /var/lib/troshka/vms/ for orphan project dirs
+    vms_dir = "/var/lib/troshka/vms"
+    if os.path.exists(vms_dir):
+        try:
+            for entry in os.listdir(vms_dir):
+                if entry not in known_project_ids:
+                    full_path = os.path.join(vms_dir, entry)
+                    if os.path.isdir(full_path):
+                        orphan_dirs.append(full_path + "/")
+                        job["output"].append(f"Orphan dir: {full_path}/")
+        except Exception as e:
+            job["output"].append(f"Failed to scan {vms_dir}: {e}")
 
-COMMAND_HANDLERS["gc/run"] = _handle_gc_run
+    # 2. List all virsh domains starting with troshka-
+    try:
+        result = subprocess.run(
+            ["virsh", "list", "--all", "--name"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            for domain in result.stdout.strip().split("\n"):
+                domain = domain.strip()
+                if domain.startswith("troshka-") and domain not in known_domains:
+                    orphan_domains.append(domain)
+                    job["output"].append(f"Orphan domain: {domain}")
+    except Exception as e:
+        job["output"].append(f"Failed to list virsh domains: {e}")
+
+    # 3. List bridges matching br-troshka-*
+    try:
+        result = subprocess.run(
+            ["ip", "-o", "link", "show", "type", "bridge"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if "br-troshka-" in line:
+                    parts = line.split(":", 2)
+                    if len(parts) >= 2:
+                        bridge_name = parts[1].strip().split("@")[0]
+                        if bridge_name.startswith("br-troshka-"):
+                            orphan_bridges.append(bridge_name)
+                            job["output"].append(f"Orphan bridge: {bridge_name}")
+    except Exception as e:
+        job["output"].append(f"Failed to list bridges: {e}")
+
+    # 4. List namespaces matching troshka-*
+    try:
+        result = subprocess.run(
+            ["ip", "netns", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                if line.startswith("troshka-"):
+                    ns_name = line.split()[0]
+                    orphan_namespaces.append(ns_name)
+                    job["output"].append(f"Orphan namespace: {ns_name}")
+    except Exception as e:
+        job["output"].append(f"Failed to list namespaces: {e}")
+
+    # 5. Scan cache dirs for staleness (report all items, backend will decide eviction)
+    cache_dirs = [
+        ("/var/lib/troshka/cache/patterns", "pattern"),
+        ("/var/lib/troshka/cache/snapshots", "snapshot"),
+        ("/var/lib/troshka/images", "image"),
+    ]
+    for cache_dir, item_type in cache_dirs:
+        if os.path.exists(cache_dir):
+            try:
+                for entry in os.listdir(cache_dir):
+                    full_path = os.path.join(cache_dir, entry)
+                    try:
+                        stat = os.stat(full_path)
+                        age_hours = (time.time() - stat.st_atime) / 3600
+                        cache_items.append({
+                            "path": full_path,
+                            "type": item_type,
+                            "age_hours": int(age_hours),
+                        })
+                    except Exception:
+                        pass
+            except Exception as e:
+                job["output"].append(f"Failed to scan {cache_dir}: {e}")
+
+    return {
+        "orphan_dirs": orphan_dirs,
+        "orphan_domains": orphan_domains,
+        "orphan_bridges": orphan_bridges,
+        "orphan_namespaces": orphan_namespaces,
+        "cache_items": cache_items,
+    }
+
+COMMAND_HANDLERS["gc/discover"] = _handle_gc_discover
+
+
+def _handle_gc_clean(job, params):
+    """Remove specific orphaned resources provided by the backend."""
+    orphan_dirs = params.get("orphan_dirs", [])
+    orphan_domains = params.get("orphan_domains", [])
+    orphan_bridges = params.get("orphan_bridges", [])
+    orphan_namespaces = params.get("orphan_namespaces", [])
+    cache_items = params.get("cache_items", [])
+
+    removed_dirs = 0
+    removed_domains = 0
+    removed_bridges = 0
+    removed_namespaces = 0
+    removed_cache = 0
+
+    # 1. Remove orphan dirs (validated under /var/lib/troshka/)
+    for path in orphan_dirs:
+        try:
+            validated = _validate_path(path)
+            if os.path.isdir(validated):
+                shutil.rmtree(validated)
+                job["output"].append(f"Removed dir: {validated}")
+                removed_dirs += 1
+        except Exception as e:
+            job["output"].append(f"Failed to remove {path}: {e}")
+
+    # 2. Remove orphan domains (virsh destroy + undefine)
+    for domain in orphan_domains:
+        try:
+            _validate_domain_name(domain)
+            # Try to destroy (force stop) — may fail if already stopped
+            try:
+                _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+            except RuntimeError:
+                job["output"].append(f"Domain {domain} may already be stopped")
+            _run_cmd(job, ["virsh", "undefine", domain, "--nvram"], timeout=30)
+            job["output"].append(f"Removed domain: {domain}")
+            removed_domains += 1
+        except Exception as e:
+            job["output"].append(f"Failed to remove domain {domain}: {e}")
+
+    # 3. Remove orphan bridges
+    for bridge in orphan_bridges:
+        try:
+            _validate_bridge_name(bridge)
+            _run_cmd(job, ["ip", "link", "delete", bridge], timeout=10)
+            job["output"].append(f"Removed bridge: {bridge}")
+            removed_bridges += 1
+        except Exception as e:
+            job["output"].append(f"Failed to remove bridge {bridge}: {e}")
+
+    # 4. Remove orphan namespaces
+    for ns in orphan_namespaces:
+        try:
+            # Validate it starts with troshka-
+            if not ns.startswith("troshka-"):
+                raise ValueError(f"Invalid namespace name: {ns}")
+            _run_cmd(job, ["ip", "netns", "delete", ns], timeout=10)
+            job["output"].append(f"Removed namespace: {ns}")
+            removed_namespaces += 1
+        except Exception as e:
+            job["output"].append(f"Failed to remove namespace {ns}: {e}")
+
+    # 5. Remove cache items (validated paths)
+    for path in cache_items:
+        try:
+            validated = _validate_path(path)
+            if os.path.isdir(validated):
+                shutil.rmtree(validated)
+                job["output"].append(f"Removed cache dir: {validated}")
+            else:
+                os.remove(validated)
+                job["output"].append(f"Removed cache file: {validated}")
+            removed_cache += 1
+        except FileNotFoundError:
+            job["output"].append(f"Cache item not found (skipped): {path}")
+        except Exception as e:
+            job["output"].append(f"Failed to remove cache item {path}: {e}")
+
+    return {
+        "removed_dirs": removed_dirs,
+        "removed_domains": removed_domains,
+        "removed_bridges": removed_bridges,
+        "removed_namespaces": removed_namespaces,
+        "removed_cache": removed_cache,
+    }
+
+COMMAND_HANDLERS["gc/clean"] = _handle_gc_clean
 
 
 def _handle_snapshot_create(job, params):
@@ -735,6 +1005,101 @@ def _handle_snapshot_create(job, params):
     return {"domain": domain, "output_path": output_path, "status": "created"}
 
 COMMAND_HANDLERS["snapshots/create"] = _handle_snapshot_create
+
+
+def _get_disk_path_by_index(domain, disk_index):
+    """Get disk path from virsh domblklist by index."""
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get disk list for domain {domain}")
+
+    disk_count = 0
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == "disk":
+            if disk_count == disk_index:
+                return parts[3]
+            disk_count += 1
+
+    raise RuntimeError(f"Disk index {disk_index} not found for domain {domain} (found {disk_count} disks)")
+
+
+def _handle_snapshot_capture(job, params):
+    """Capture a disk snapshot: flatten, upload to S3, cache locally."""
+    domain = _validate_domain_name(params["domain_name"])
+    disk_index = int(params["disk_index"])
+    presigned_url = _validate_url(params["presigned_url"])
+    cache_path = _validate_path(params["cache_path"])
+
+    import tempfile as _tf
+
+    # Get disk path
+    disk_path = _get_disk_path_by_index(domain, disk_index)
+    job["output"].append(f"Disk {disk_index} path: {disk_path}")
+
+    # Flatten to temp file
+    with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+        tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+        job["output"].append("Flattening disk...")
+        _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+
+        # Upload to S3
+        job["output"].append("Uploading to S3...")
+        _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+
+        # Copy to cache
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        job["output"].append(f"Caching to {cache_path}...")
+        shutil.copy(tmp_flat, cache_path)
+
+    size_bytes = os.path.getsize(cache_path)
+    return {"status": "uploaded", "size_bytes": size_bytes}
+
+COMMAND_HANDLERS["snapshots/capture"] = _handle_snapshot_capture
+
+
+def _handle_pattern_capture(job, params):
+    """Capture multiple disks for pattern export."""
+    domain = _validate_domain_name(params["domain_name"])
+    disks = params.get("disks", [])
+
+    import tempfile as _tf
+
+    result_disks = []
+
+    for disk_info in disks:
+        disk_index = int(disk_info["disk_index"])
+        presigned_url = _validate_url(disk_info["presigned_url"])
+        cache_path = _validate_path(disk_info["cache_path"])
+
+        # Get disk path
+        disk_path = _get_disk_path_by_index(domain, disk_index)
+        job["output"].append(f"Disk {disk_index} path: {disk_path}")
+
+        # Flatten to temp file
+        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+            tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+            job["output"].append(f"Flattening disk {disk_index}...")
+            _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+
+            # Upload to S3
+            job["output"].append(f"Uploading disk {disk_index} to S3...")
+            _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+
+            # Copy to cache
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            job["output"].append(f"Caching disk {disk_index} to {cache_path}...")
+            shutil.copy(tmp_flat, cache_path)
+
+        size_bytes = os.path.getsize(cache_path)
+        result_disks.append({"size_bytes": size_bytes})
+
+    return {"status": "uploaded", "disks": result_disks}
+
+COMMAND_HANDLERS["patterns/capture"] = _handle_pattern_capture
 
 
 def _handle_pattern_export(job, params):
