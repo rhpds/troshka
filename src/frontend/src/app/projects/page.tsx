@@ -363,7 +363,7 @@ export default function ProjectsPage() {
                       }}
                     >Stop</Button>
                   )}
-                  {p.state === "stopped" && (
+                  {(p.state === "stopped" || p.state === "error") && (
                     <Button
                       variant="secondary"
                       style={{ fontSize: 11, padding: "2px 8px" }}

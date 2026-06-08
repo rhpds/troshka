@@ -764,7 +764,8 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
         ic["url"] = url
 
     # Pre-check: skip items already cached at full size on the host
-    check_cmds = [f"echo \"{ic['item_id']}:$(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0)\"" for ic in items_to_cache]
+    import shlex
+    check_cmds = [f"echo {shlex.quote(ic['item_id'])}:$(stat -c%s {shlex.quote(ic['cache_path'])} 2>/dev/null || echo 0)" for ic in items_to_cache]
     if check_cmds:
         check_result = run_ssh_script(host_ip, private_key, "\n".join(check_cmds), timeout=15)
         if check_result["success"]:
