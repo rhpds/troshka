@@ -20,12 +20,12 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
     """Capture all disks from a project into a pattern.
 
     Runs in a background thread, spawned by the patterns API when creating from a source project.
-    Uploads each disk to S3 via SSH on the host, creates PatternDisk records, and updates pattern state.
+    Uploads each disk to S3 via troshkad on the host, creates PatternDisk records, and updates pattern state.
     """
     from app.models.project import Project
     from app.models.host import Host
     from app.services import s3_storage
-    from app.services.deploy_service import run_ssh_script
+    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
 
     db = SessionLocal()
     try:
@@ -55,78 +55,106 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
             elif tgt in vm_nodes and src in [d["id"] for d in disk_nodes]:
                 disk_to_vm[src] = tgt
 
-        total = len(disk_nodes)
-        for idx, disk_node in enumerate(disk_nodes):
-            disk_id = disk_node["id"]
-            vm_id = disk_to_vm.get(disk_id, "unknown")
-            fmt = disk_node.get("data", {}).get("format", "qcow2")
-
-            if fmt == "iso":
+        # Group disks by VM so we can make one troshkad call per VM
+        vm_to_disks = {}
+        for disk_node in disk_nodes:
+            vm_id = disk_to_vm.get(disk_node["id"])
+            if not vm_id:
                 continue
+            if vm_id not in vm_to_disks:
+                vm_to_disks[vm_id] = []
+            vm_to_disks[vm_id].append(disk_node)
 
-            s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+        total = len(disk_nodes)
+        processed = 0
+
+        for vm_id, vm_disk_nodes in vm_to_disks.items():
+            domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+
+            # Build disk parameters for this VM's disks
+            disks_params = []
+            disk_metadata = []  # Keep track for DB records
+            for disk_node in vm_disk_nodes:
+                disk_id = disk_node["id"]
+                fmt = disk_node.get("data", {}).get("format", "qcow2")
+
+                if fmt == "iso":
+                    continue
+
+                # Find disk index by looking at the VM's attached disks
+                disk_index = 0
+                for i, other_disk in enumerate(vm_disk_nodes):
+                    if other_disk["id"] == disk_id:
+                        disk_index = i
+                        break
+
+                s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+                presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
+                cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+
+                disks_params.append({
+                    "disk_index": disk_index,
+                    "presigned_url": presigned,
+                    "cache_path": cache_path,
+                })
+
+                disk_metadata.append({
+                    "disk_id": disk_id,
+                    "vm_id": vm_id,
+                    "s3_key": s3_key,
+                    "format": fmt,
+                    "virtual_size_bytes": int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
+                })
+
+            if not disks_params:
+                continue
 
             _capture_progress[pattern_id] = {
                 "step": "uploading",
-                "detail": f"disk {idx + 1}/{total}",
-                "disk_id": disk_id,
+                "detail": f"VM {vm_id[:8]} ({len(disks_params)} disks)",
+                "vm_id": vm_id,
             }
 
-            disk_path = f"/var/lib/troshka/vms/{project_id}/{vm_id[:8]}-{disk_id[:8]}.{fmt}"
-            presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
+            try:
+                job_id = start_job(host, "/patterns/capture", {
+                    "domain_name": domain_name,
+                    "disks": disks_params,
+                })
+                job = wait_for_job(host, job_id, timeout=3600)
 
-            virtual_gb = int(disk_node.get("data", {}).get("size", 0))
-            script = f'''set -e
-DISK_PATH="{disk_path}"
-FLAT_PATH="{disk_path}.flat.qcow2"
-UPLOAD_URL='{presigned}'
+                if job["status"] == "failed":
+                    error_msg = job.get("result", {}).get("error", "Pattern capture failed")
+                    log.error("Failed to capture pattern %s VM %s: %s", pattern_id[:8], vm_id[:8], error_msg)
+                    pattern.state = "error"
+                    db.commit()
+                    return
 
-if [ ! -f "$DISK_PATH" ]; then
-    echo "ERROR: disk not found at $DISK_PATH"
-    exit 1
-fi
+                # Extract size results for each disk
+                disk_results = job.get("result", {}).get("disks", [])
 
-FREE_KB=$(df --output=avail /var/lib/troshka | tail -1)
-NEED_KB=$(( {virtual_gb} * 1048576 ))
-if [ "$FREE_KB" -lt "$NEED_KB" ]; then
-    echo "ERROR: not enough disk space to flatten. Need ~{virtual_gb}GB, have $(( FREE_KB / 1048576 ))GB free"
-    exit 1
-fi
+                # Create PatternDisk records
+                for i, metadata in enumerate(disk_metadata):
+                    size_bytes = 0
+                    if i < len(disk_results):
+                        size_bytes = disk_results[i].get("size_bytes", 0)
 
-echo "Flattening disk (merging backing chain)..."
-qemu-img convert -O qcow2 "$DISK_PATH" "$FLAT_PATH"
-SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
-echo "Uploading flattened disk ($SIZE bytes)..."
-curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
-CACHE_DIR="/var/lib/troshka/cache/patterns/{pattern_id}"
-mkdir -p "$CACHE_DIR"
-mv "$FLAT_PATH" "$CACHE_DIR/{disk_id}.{fmt}"
-echo "Cached at $CACHE_DIR/{disk_id}.{fmt}"
-echo "SIZE:$SIZE"
-echo "UPLOAD_COMPLETE"
-'''
-            result = run_ssh_script(host.ip_address, host.private_key, script, timeout=3600)
+                    pd = PatternDisk(
+                        pattern_id=pattern_id,
+                        source_disk_id=metadata["disk_id"],
+                        source_vm_id=metadata["vm_id"],
+                        s3_key=metadata["s3_key"],
+                        format=metadata["format"],
+                        size_bytes=size_bytes,
+                        virtual_size_bytes=metadata["virtual_size_bytes"],
+                        state="available",
+                    )
+                    db.add(pd)
 
-            size_bytes = 0
-            for line in result.get("output", "").splitlines():
-                if line.startswith("SIZE:"):
-                    size_bytes = int(line.split(":")[1])
+                db.commit()
+                processed += len(disk_metadata)
 
-            pd = PatternDisk(
-                pattern_id=pattern_id,
-                source_disk_id=disk_id,
-                source_vm_id=vm_id,
-                s3_key=s3_key,
-                format=fmt,
-                size_bytes=size_bytes,
-                virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
-                state="available" if result["success"] else "error",
-            )
-            db.add(pd)
-            db.commit()
-
-            if not result["success"]:
-                log.error("Failed to upload disk %s: %s", disk_id, result.get("output", ""))
+            except TroshkadError as e:
+                log.error("Troshkad error capturing pattern %s VM %s: %s", pattern_id[:8], vm_id[:8], str(e))
                 pattern.state = "error"
                 db.commit()
                 return
