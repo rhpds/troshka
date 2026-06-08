@@ -144,6 +144,7 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
                  "-o", "UserKnownHostsFile=/dev/null",
                  "-o", "ConnectTimeout=5",
                  "-o", "BatchMode=yes",
+                 "-o", "IdentitiesOnly=yes",
                  "-i", key_path,
                  f"ec2-user@{host_ip}", "echo", "ssh-ready"],
                 capture_output=True,
@@ -179,6 +180,7 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=30",
+            "-o", "IdentitiesOnly=yes",
             "-i", key_path,
         ]
 
