@@ -360,6 +360,11 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
             net_script = generate_setup_script(net_config, host.ip_address, project_id)
             run_ssh_script(host.ip_address, host.private_key, net_script, timeout=60)
 
+        # Re-cache any missing library images
+        from app.services.deploy_service import cache_library_images
+        topo_for_cache = project.deployed_topology or project.topology or {}
+        cache_library_images(topo_for_cache, host.ip_address, host.private_key, db)
+
         project.state = "active"
         db.commit()
 

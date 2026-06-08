@@ -1180,6 +1180,9 @@ def start_project_async(project_id: str):
                 s.commit()
                 return
 
+        # Re-cache any missing library images (ISOs, base disks)
+        cache_library_images(topology, host.ip_address, host.private_key, s)
+
         # Start VMs
         start_script = generate_start_script(project_id, topology)
         result = run_ssh_script(host.ip_address, host.private_key, start_script, timeout=120)
