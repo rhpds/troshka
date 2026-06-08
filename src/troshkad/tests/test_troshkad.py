@@ -184,6 +184,51 @@ class TestTroshkadServer(unittest.TestCase):
             troshkad._draining = False
             del troshkad.COMMAND_HANDLERS["_test/drain"]
 
+    def test_update_validates_syntax(self):
+        """Test that update endpoint rejects invalid Python syntax."""
+        import base64
+        invalid_script = "def broken("
+        encoded_script = base64.b64encode(invalid_script.encode()).decode()
+        status, body = _make_request(
+            "/admin/update",
+            method="POST",
+            body={"script": encoded_script, "version": "test-version"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("syntax", body["error"].lower())
+
+    def test_update_accepts_valid_script(self):
+        """Test that update endpoint accepts valid Python script."""
+        import base64
+        import unittest.mock
+
+        # Use the current troshkad.py file as a valid script
+        with open(os.path.join(os.path.dirname(__file__), "..", "troshkad.py")) as f:
+            valid_script = f.read()
+        encoded_script = base64.b64encode(valid_script.encode()).decode()
+
+        # Mock the restart function to prevent actual restart
+        restart_event = threading.Event()
+
+        def mock_restart(script_path, new_path):
+            restart_event.set()
+
+        try:
+            with unittest.mock.patch.object(troshkad, "_do_update_restart", mock_restart):
+                status, body = _make_request(
+                    "/admin/update",
+                    method="POST",
+                    body={"script": encoded_script, "version": "test-version"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(body["status"], "restarting")
+
+                # Wait for restart to be called
+                restart_called = restart_event.wait(timeout=2)
+                self.assertTrue(restart_called, "Restart was not called")
+        finally:
+            troshkad._draining = False
+
 
 if __name__ == "__main__":
     unittest.main()

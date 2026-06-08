@@ -343,6 +343,94 @@ def handle_dispatch_command(handler, params):
     handler._send_json(status, response)
 
 
+# ── Update mechanism ──
+
+def _do_update_restart(script_path, new_path):
+    """Move new script into place and exit (systemd will restart)."""
+    os.rename(new_path, script_path)
+    logger.info("Update installed, exiting for systemd restart")
+    os._exit(0)
+
+
+def _drain_and_update(script_path, new_path, force):
+    """Background thread: drain jobs, then update and restart."""
+    global _draining
+    _draining = True
+    logger.info("Drain started, force=%s", force)
+
+    drain_timeout = _config.get("drain_timeout_seconds", 30)
+    if not force:
+        # Wait for running jobs to complete
+        start = time.time()
+        while _running_job_count() > 0:
+            if time.time() - start > drain_timeout:
+                logger.warning("Drain timeout exceeded, terminating remaining jobs")
+                break
+            time.sleep(0.5)
+
+    # Terminate any remaining job subprocesses
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job["status"] == "running" and job.get("_process"):
+                try:
+                    job["_process"].terminate()
+                except Exception as e:
+                    logger.warning("Failed to terminate job %s: %s", job["job_id"], e)
+
+    _do_update_restart(script_path, new_path)
+
+
+@route("POST", "/admin/update")
+def handle_update(handler, params):
+    """Accept a new script, validate syntax, drain, and restart."""
+    import base64
+
+    body = handler._read_body()
+    if "script" not in body:
+        handler._send_json(400, {"error": "missing 'script' field"})
+        return
+
+    # Decode script
+    try:
+        script_bytes = base64.b64decode(body["script"])
+        script_text = script_bytes.decode("utf-8")
+    except Exception as e:
+        handler._send_json(400, {"error": f"invalid base64: {e}"})
+        return
+
+    # Syntax check
+    try:
+        compile(script_text, "<upload>", "exec")
+    except SyntaxError as e:
+        handler._send_json(400, {"error": f"syntax error: {e}"})
+        return
+
+    # Write to temp file
+    script_path = os.path.abspath(__file__)
+    new_path = script_path + ".new"
+    try:
+        with open(new_path, "w") as f:
+            f.write(script_text)
+    except Exception as e:
+        handler._send_json(500, {"error": f"failed to write script: {e}"})
+        return
+
+    # Check for force mode
+    force = "force=true" in handler.path
+
+    # Send success response before starting drain
+    version = body.get("version", "unknown")
+    handler._send_json(200, {"status": "restarting", "version": version})
+
+    # Spawn drain thread
+    drain_thread = threading.Thread(
+        target=_drain_and_update,
+        args=(script_path, new_path, force),
+        daemon=True,
+    )
+    drain_thread.start()
+
+
 # ── Server factory ──
 
 _start_time = time.time()
