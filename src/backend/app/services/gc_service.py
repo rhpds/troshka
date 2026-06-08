@@ -106,10 +106,9 @@ def clean_orphans(host, orphans: dict) -> dict:
 def repair_networks(db: Session, host) -> dict:
     """Ensure VXLAN bridges exist for all active/stopped projects on this host."""
     from app.models.project import Project
-    from app.services.deploy_service import run_ssh_script
-    from app.services.vxlan import build_host_network_config, generate_setup_script
+    from app.services.deploy_service import _setup_networks_via_troshkad
 
-    if not host.ip_address or not host.private_key:
+    if not host.ip_address or host.agent_status != "connected":
         return {"repaired": 0, "error": "Host not reachable"}
 
     projects = db.query(Project).filter(
@@ -128,28 +127,21 @@ def repair_networks(db: Session, host) -> dict:
     if not needed_vnis:
         return {"repaired": 0}
 
-    check_script = "ip -o link show type bridge 2>/dev/null | grep -oP 'br-\\d+' || true"
-    result = run_ssh_script(host.ip_address, host.private_key, check_script, timeout=15)
-    existing_bridges = set(result.get("output", "").strip().splitlines()) if result["success"] else set()
-
-    missing_vnis = {vni for vni in needed_vnis if f"br-{vni}" not in existing_bridges}
-    if not missing_vnis:
-        return {"repaired": 0, "all_bridges_present": True}
-
+    # Repair by re-running full network setup for each project with missing bridges
     repaired = 0
     for p in projects:
         project_vnis = set(str(v) for v in (p.vni_map or {}).values())
-        if not project_vnis.intersection(missing_vnis):
+        if not project_vnis:
             continue
         topo = p.deployed_topology or p.topology or {}
-        config = build_host_network_config(topo, p.vni_map or {}, [])
-        script = generate_setup_script(config, host.ip_address, p.id)
-        r = run_ssh_script(host.ip_address, host.private_key, script, timeout=30)
-        if r["success"]:
-            repaired += len(project_vnis.intersection(missing_vnis))
+        result = _setup_networks_via_troshkad(host, topo, p.vni_map or {}, db, p.id)
+        if result is True:
+            repaired += len(project_vnis)
             log.info("Repaired bridges for project %s", p.id[:8])
+        else:
+            log.warning("Failed to repair bridges for project %s: %s", p.id[:8], result)
 
-    return {"repaired": repaired, "missing_bridges": len(missing_vnis)}
+    return {"repaired": repaired}
 
 
 def reconcile_host(host_id: str, dry_run: bool = False) -> dict:

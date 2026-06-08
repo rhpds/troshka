@@ -76,8 +76,7 @@ def sync_project_eips(
     from app.models.project import Project
     from app.models.host import Host
     from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
-    from app.services.vxlan import build_host_network_config, generate_setup_script
-    from app.services.deploy_service import run_ssh_script
+    from app.services.deploy_service import _setup_networks_via_troshkad
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
@@ -90,7 +89,7 @@ def sync_project_eips(
         raise HTTPException(status_code=409, detail="Project has no host assigned")
 
     host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.ip_address or not host.private_key:
+    if not host or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not reachable")
 
     provider = db.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
@@ -127,13 +126,9 @@ def sync_project_eips(
 
     # Re-run network setup to apply DNAT rules for the new EIPs
     vni_map = project.vni_map or {}
-    all_hosts = db.query(Host).filter(Host.state == "active").all()
-    peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-    network_config = build_host_network_config(topology, vni_map, peer_ips)
-    net_script = generate_setup_script(network_config, host.ip_address, project_id)
-    result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
-    if not result["success"]:
-        logger.error("EIP sync network setup failed: %s", result["output"][-500:])
+    net_result = _setup_networks_via_troshkad(host, topology, vni_map, db, project_id)
+    if net_result is not True:
+        logger.error("EIP sync network setup failed: %s", net_result)
 
     # Sync SG rules
     gateway_node = next(
