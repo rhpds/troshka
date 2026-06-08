@@ -409,6 +409,32 @@ export default function ProjectsPage() {
                       }}
                     >Start</Button>
                   )}
+                  {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
+                    <Button
+                      variant="secondary"
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!window.confirm(`Republish project "${p.name}"? This will destroy and recreate all VMs.`)) return;
+                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
+                          if (d.status === "deploying") {
+                            const poll = setInterval(() => {
+                              fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
+                                if (d.state === "active" || d.state === "error") {
+                                  clearInterval(poll);
+                                  setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
+                                }
+                              }).catch(() => {});
+                            }, 3000);
+                          } else {
+                            alert(d.detail || "Republish failed");
+                            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr));
+                          }
+                        });
+                      }}
+                    >Republish</Button>
+                  )}
                   {(p.state === "stopping" || p.state === "starting") && (
                     <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
                   )}
