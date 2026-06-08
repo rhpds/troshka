@@ -86,6 +86,15 @@ fi
 HOOKEOF
 chmod +x /etc/libvirt/hooks/qemu
 
+# Restart libvirt to pick up hook changes
+if systemctl is-active virtqemud &>/dev/null; then
+    systemctl restart virtqemud
+    echo "virtqemud restarted"
+elif systemctl is-active libvirtd &>/dev/null; then
+    systemctl restart libvirtd
+    echo "libvirtd restarted"
+fi
+
 # Mount dedicated storage volume if present and not already mounted
 if [ -b /dev/nvme1n1 ] && ! mountpoint -q /var/lib/troshka; then
     echo "Mounting dedicated storage volume..."
