@@ -10,7 +10,7 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
     from app.models.library import LibraryItem, LibraryItemDisk
     from app.models.project import Project
     from app.services import s3_storage
-    from app.services.deploy_service import run_ssh_script
+    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
 
     db = SessionLocal()
     try:
@@ -21,7 +21,7 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
             return
 
         host = db.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.ip_address or not host.private_key:
+        if not host or not host.ip_address:
             item.state = "error"
             db.commit()
             log.error("No reachable host for project %s", project_id)
@@ -47,6 +47,9 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
             log.info("Snapshot %s: VM has no disks, marking available", library_item_id[:8])
             return
 
+        # Build domain name for the VM
+        domain_name = f"troshka-{project_id[:8]}-{vm_node_id[:8]}"
+
         for idx, disk_node in enumerate(disk_nodes):
             disk_id = disk_node["id"]
             fmt = disk_node.get("data", {}).get("format", "qcow2")
@@ -55,61 +58,41 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                 continue
 
             s3_key = f"snapshots/{library_item_id}/{disk_id}.{fmt}"
-            disk_path = f"/var/lib/troshka/vms/{project_id}/{vm_node_id[:8]}-{disk_id[:8]}.{fmt}"
             presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
+            cache_path = f"/var/lib/troshka/cache/snapshots/{library_item_id}/{disk_id}.{fmt}"
 
-            virtual_gb = int(disk_node.get("data", {}).get("size", 0))
-            script = f'''set -e
-DISK_PATH="{disk_path}"
-FLAT_PATH="{disk_path}.flat.qcow2"
-UPLOAD_URL='{presigned}'
+            try:
+                job_id = start_job(host, "/snapshots/capture", {
+                    "domain_name": domain_name,
+                    "disk_index": idx,
+                    "presigned_url": presigned,
+                    "cache_path": cache_path,
+                })
+                job = wait_for_job(host, job_id, timeout=3600)
 
-if [ ! -f "$DISK_PATH" ]; then
-    echo "ERROR: disk not found at $DISK_PATH"
-    exit 1
-fi
+                if job["status"] == "failed":
+                    error_msg = job.get("result", {}).get("error", "Snapshot capture failed")
+                    log.error("Snapshot %s: failed to upload disk %s: %s", library_item_id[:8], disk_id[:8], error_msg)
+                    item.state = "error"
+                    db.commit()
+                    return
 
-FREE_KB=$(df --output=avail /var/lib/troshka | tail -1)
-NEED_KB=$(( {virtual_gb} * 1048576 ))
-if [ "$FREE_KB" -lt "$NEED_KB" ]; then
-    echo "ERROR: not enough disk space to flatten. Need ~{virtual_gb}GB, have $(( FREE_KB / 1048576 ))GB free"
-    exit 1
-fi
+                size_bytes = job.get("result", {}).get("size_bytes", 0)
 
-echo "Flattening disk (merging backing chain)..."
-qemu-img convert -O qcow2 "$DISK_PATH" "$FLAT_PATH"
-SIZE=$(stat -c %s "$FLAT_PATH" 2>/dev/null || echo 0)
-echo "Flattened size: $SIZE bytes"
-echo "Uploading flattened disk..."
-curl -s -X PUT -T "$FLAT_PATH" "$UPLOAD_URL"
-CACHE_DIR="/var/lib/troshka/cache/snapshots/{library_item_id}"
-mkdir -p "$CACHE_DIR"
-mv "$FLAT_PATH" "$CACHE_DIR/{disk_id}.{fmt}"
-echo "Cached at $CACHE_DIR/{disk_id}.{fmt}"
-echo "SIZE:$SIZE"
-echo "UPLOAD_COMPLETE"
-'''
-            result = run_ssh_script(host.ip_address, host.private_key, script, timeout=3600)
+                disk_record = LibraryItemDisk(
+                    library_item_id=library_item_id,
+                    s3_key=s3_key,
+                    format=fmt,
+                    size_bytes=size_bytes,
+                    virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
+                    boot_order=idx,
+                    state="available",
+                )
+                db.add(disk_record)
+                db.commit()
 
-            size_bytes = 0
-            for line in result.get("output", "").splitlines():
-                if line.startswith("SIZE:"):
-                    size_bytes = int(line.split(":")[1])
-
-            disk_record = LibraryItemDisk(
-                library_item_id=library_item_id,
-                s3_key=s3_key,
-                format=fmt,
-                size_bytes=size_bytes,
-                virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
-                boot_order=idx,
-                state="available" if result["success"] else "error",
-            )
-            db.add(disk_record)
-            db.commit()
-
-            if not result["success"]:
-                log.error("Snapshot %s: failed to upload disk %s: %s", library_item_id[:8], disk_id[:8], result.get("output", "")[:200])
+            except TroshkadError as e:
+                log.error("Snapshot %s: troshkad error uploading disk %s: %s", library_item_id[:8], disk_id[:8], str(e))
                 item.state = "error"
                 db.commit()
                 return
