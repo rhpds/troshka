@@ -21,7 +21,7 @@ import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-VERSION = "2026.06.08.2"
+VERSION = "dev"  # overwritten at deploy time by the backend
 
 logging.basicConfig(
     level=logging.INFO,

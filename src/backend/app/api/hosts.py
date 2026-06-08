@@ -675,12 +675,25 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
     with open(troshkad_path, "rb") as f:
         script_bytes = f.read()
 
-    # Extract version from script
-    version = "unknown"
-    for line in script_bytes.decode().split("\n"):
-        if line.startswith("VERSION"):
-            version = line.split("=")[1].strip().strip('"').strip("'")
-            break
+    # Generate version from git hash
+    import subprocess
+    try:
+        git_hash = subprocess.run(
+            ["git", "log", "-1", "--format=%h", "--", troshkad_path],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(troshkad_path),
+        ).stdout.strip()
+    except Exception:
+        git_hash = ""
+    version = git_hash or "unknown"
+
+    # Stamp the version into the script before pushing
+    script_text = script_bytes.decode()
+    script_text = script_text.replace(
+        'VERSION = "dev"',
+        f'VERSION = "{version}"',
+    )
+    script_bytes = script_text.encode()
 
     # Push update in background thread
     import threading
