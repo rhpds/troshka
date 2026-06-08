@@ -21,8 +21,14 @@ from app.services.deploy_service import (
     _create_seed_isos_via_troshkad, _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
     cache_library_images, _vm_dir, _disk_path, _seed_path,
 )
-from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
-from app.services import libvirt_mgr
+from app.services.troshkad_client import (
+    start_job, wait_for_job, TroshkadError,
+    get_vm_state as troshkad_get_vm_state,
+    get_vnc_port as troshkad_get_vnc_port,
+    get_vm_config as troshkad_get_vm_config,
+    reconfigure_vm as troshkad_reconfigure_vm,
+    undefine_vm as troshkad_undefine_vm,
+)
 from app.services.console_proxy import get_or_create_proxy
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -206,13 +212,13 @@ def force_stop_project(
 
     topo = project.deployed_topology or project.topology or {}
     vms = [n for n in topo.get("nodes", []) if n.get("type") == "vmNode"]
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    try:
-        for vm in vms:
-            dom = _domain_name(project_id, vm["id"])
-            libvirt_mgr.destroy_vm(conn, dom)
-    finally:
-        conn.close()
+    for vm in vms:
+        dom = _domain_name(project_id, vm["id"])
+        try:
+            job_id = start_job(host, "/vms/destroy", {"domain_name": dom})
+            wait_for_job(host, job_id, timeout=30, poll_interval=2)
+        except TroshkadError:
+            logger.warning("Failed to force-stop VM %s", dom)
 
     project.state = "stopped"
     db.commit()
@@ -300,30 +306,26 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
     if not host or not host.private_key or not host.ip_address:
         return {"states": {}}
 
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    try:
-        states = {}
-        progress = {}
-        for node in project.topology.get("nodes", []):
-            if node.get("type") != "vmNode":
-                continue
-            dom_name = _domain_name(project_id, node["id"])
-            if dom_name in _redeploy_progress:
-                states[node["id"]] = "redeploying"
-                progress[node["id"]] = _redeploy_progress[dom_name]
+    states = {}
+    progress = {}
+    for node in project.topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        dom_name = _domain_name(project_id, node["id"])
+        if dom_name in _redeploy_progress:
+            states[node["id"]] = "redeploying"
+            progress[node["id"]] = _redeploy_progress[dom_name]
+        else:
+            state = troshkad_get_vm_state(host, dom_name)
+            if state == "not_found":
+                states[node["id"]] = "not_found"
+            elif state == "running":
+                states[node["id"]] = "running"
+            elif state == "shut_off":
+                states[node["id"]] = "stopped"
             else:
-                state = libvirt_mgr.get_vm_state(conn, dom_name)
-                if state == "not_found":
-                    states[node["id"]] = "not_found"
-                elif state == "running":
-                    states[node["id"]] = "running"
-                elif state == "shut_off":
-                    states[node["id"]] = "stopped"
-                else:
-                    states[node["id"]] = state
-        return {"states": states, "progress": progress}
-    finally:
-        conn.close()
+                states[node["id"]] = state
+    return {"states": states, "progress": progress}
 
 
 @router.post("/{project_id}/vms/{vm_id}/start")
@@ -388,13 +390,11 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
 
                 # Start only the target VM
                 dom = _domain_name(p_id, target_vm_id)
-                conn = libvirt_mgr.connect(h.ip_address, h.private_key)
                 try:
-                    libvirt_mgr.start_vm(conn, dom)
-                except Exception as e:
+                    job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                    wait_for_job(h, job_id, timeout=60, poll_interval=2)
+                except TroshkadError as e:
                     logger.warning("Failed to start VM %s: %s", dom, e)
-                finally:
-                    conn.close()
 
                 proj.state = "active"
                 s.commit()
@@ -414,8 +414,7 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
     # Start VM in background — re-cache images if needed, then virsh start
     import threading
     p_id = project.id
-    h_ip = host.ip_address
-    h_key = host.private_key
+    h_id = host.id
 
     def _cache_and_start():
         from app.core.database import SessionLocal
@@ -425,18 +424,16 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
             from app.models.project import Project
             from app.models.host import Host as HostModel
             proj = s.query(Project).filter_by(id=p_id).first()
-            h = s.query(HostModel).filter_by(id=host.id).first()
+            h = s.query(HostModel).filter_by(id=h_id).first()
             if proj and h:
                 topo = proj.deployed_topology or proj.topology or {}
                 cache_library_images(topo, h, s)
             dom = _domain_name(p_id, vm_id)
-            conn = libvirt_mgr.connect(h_ip, h_key)
             try:
-                libvirt_mgr.start_vm(conn, dom)
-            except Exception as e:
+                job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                wait_for_job(h, job_id, timeout=60, poll_interval=2)
+            except TroshkadError as e:
                 logger.error("Failed to start VM %s: %s", dom, e)
-            finally:
-                conn.close()
         finally:
             s.close()
 
@@ -448,56 +445,54 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
 def stop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"action": "stop", "success": libvirt_mgr.shutdown_vm(conn, dom)}
-    finally:
-        conn.close()
+        job_id = start_job(host, "/vms/stop", {"domain_name": dom})
+        wait_for_job(host, job_id, timeout=60, poll_interval=2)
+        return {"action": "stop", "success": True}
+    except TroshkadError as e:
+        logger.error("Failed to stop VM %s: %s", dom, e)
+        return {"action": "stop", "success": False}
 
 
 @router.get("/{project_id}/vms/{vm_id}/status")
 def get_vm_status(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    try:
-        state = libvirt_mgr.get_vm_state(conn, dom)
-        return {"state": state}
-    finally:
-        conn.close()
+    state = troshkad_get_vm_state(host, dom)
+    return {"state": state}
 
 
 @router.post("/{project_id}/vms/{vm_id}/forcestop")
 def forcestop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"action": "forcestop", "success": libvirt_mgr.destroy_vm(conn, dom)}
-    finally:
-        conn.close()
+        job_id = start_job(host, "/vms/destroy", {"domain_name": dom})
+        wait_for_job(host, job_id, timeout=30, poll_interval=2)
+        return {"action": "forcestop", "success": True}
+    except TroshkadError as e:
+        logger.error("Failed to force-stop VM %s: %s", dom, e)
+        return {"action": "forcestop", "success": False}
 
 
 @router.post("/{project_id}/vms/{vm_id}/restart")
 def restart_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"action": "restart", "success": libvirt_mgr.reboot_vm(conn, dom)}
-    finally:
-        conn.close()
+        job_id = start_job(host, "/vms/reboot", {"domain_name": dom})
+        wait_for_job(host, job_id, timeout=60, poll_interval=2)
+        return {"action": "restart", "success": True}
+    except TroshkadError as e:
+        logger.error("Failed to restart VM %s: %s", dom, e)
+        return {"action": "restart", "success": False}
 
 
 @router.get("/{project_id}/vms/{vm_id}/console")
 def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    try:
-        vnc_port = libvirt_mgr.get_vnc_port(conn, dom)
-    finally:
-        conn.close()
+    vnc_port = troshkad_get_vnc_port(host, dom)
 
     if not vnc_port:
         return {"error": "VNC not available"}
@@ -559,8 +554,6 @@ def reconfigure_project(
     restart_vm_ids = set((body or {}).get("restart_vm_ids", []))
     p_id = project.id
     h_id = host.id
-    h_ip = host.ip_address
-    h_key = host.private_key
 
     import threading
     def _do_reconfigure():
@@ -655,165 +648,164 @@ def reconfigure_project(
                 logger.exception("Reconfigure %s: metadata service deployment failed (non-fatal)", p_id[:8])
 
             vm_dir_path = _vm_dir(p_id)
-            conn = libvirt_mgr.connect(h_ip, h_key)
-            try:
-                for node in diff["removed_vms"]:
-                    dom = _vm_domain_name(p_id, node["id"])
-                    libvirt_mgr.undefine_vm(conn, dom)
-                    # Remove disk files via troshkad
-                    try:
-                        job_id = start_job(h, "/files/remove", {
-                            "paths": [f"{vm_dir_path}/{node['id'][:8]}-{suffix}" for suffix in ["*"]]
-                        })
-                        wait_for_job(h, job_id, timeout=15)
-                    except TroshkadError:
-                        # Try glob pattern as individual files — files/remove doesn't support globs
-                        # Just remove the whole prefix pattern by removing known extensions
-                        pass
 
-                vms = _extract_vms(current)
-                added_ids = {n["id"] for n in diff["added_vms"]}
-                removed_ids = {n["id"] for n in diff["removed_vms"]}
-                for vm in vms:
-                    if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+            for node in diff["removed_vms"]:
+                dom = _vm_domain_name(p_id, node["id"])
+                troshkad_undefine_vm(h, dom)
+                # Remove disk files via troshkad
+                try:
+                    job_id = start_job(h, "/files/remove", {
+                        "paths": [f"{vm_dir_path}/{node['id'][:8]}-{suffix}" for suffix in ["*"]]
+                    })
+                    wait_for_job(h, job_id, timeout=15)
+                except TroshkadError:
+                    # Try glob pattern as individual files — files/remove doesn't support globs
+                    # Just remove the whole prefix pattern by removing known extensions
+                    pass
+
+            vms = _extract_vms(current)
+            added_ids = {n["id"] for n in diff["added_vms"]}
+            removed_ids = {n["id"] for n in diff["removed_vms"]}
+            for vm in vms:
+                if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+                    continue
+                dom = _vm_domain_name(p_id, vm["node_id"])
+                vm_disks = _find_vm_disks(vm["node_id"], current)
+                boot_devs = _resolve_boot_devs(vm, vm_disks, current)
+                vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
+                nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
+
+                # Build map of deployed disk library items for change detection
+                dep_disk_libs = {}
+                dep_disk_sizes = {}
+                dep_vm_node = next((n for n in deployed.get("nodes", []) if n["id"] == vm["node_id"]), None)
+                if dep_vm_node:
+                    dep_disks = _find_vm_disks(vm["node_id"], deployed)
+                    for dd in dep_disks:
+                        dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
+                        dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
+
+                disk_list = []
+                cdrom_list = []
+                any_disk_changed = False
+                needs_library_download = False
+                files_to_remove = []
+                disks_to_create = []
+                disks_to_resize = []
+                for d in vm_disks:
+                    if d["format"] == "iso":
+                        if d.get("library_item_id"):
+                            cdrom_list.append(f"/var/lib/troshka/images/{d['library_item_id']}.iso")
                         continue
-                    dom = _vm_domain_name(p_id, vm["node_id"])
-                    vm_disks = _find_vm_disks(vm["node_id"], current)
-                    boot_devs = _resolve_boot_devs(vm, vm_disks, current)
-                    vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
-                    nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
+                    path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"])
+                    disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
+                    old_lib = dep_disk_libs.get(d["node_id"])
+                    new_lib = d.get("library_item_id")
+                    image_changed = old_lib != new_lib and (old_lib or new_lib)
+                    old_size = dep_disk_sizes.get(d["node_id"], 0)
+                    size_grew = d["size_gb"] > old_size and old_size > 0
+                    is_new_disk = d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
+                    if image_changed or size_grew or is_new_disk:
+                        any_disk_changed = True
+                    if image_changed:
+                        files_to_remove.append(path)
+                    backing = None
+                    if d.get("source") == "library" and d.get("library_item_id"):
+                        needs_library_download = True
+                        backing = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                    elif d.get("source") == "pattern" and d.get("patternId"):
+                        backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
+                    disks_to_create.append({"path": path, "size_gb": d["size_gb"], "format": d["format"], "backing_file": backing})
+                    if size_grew and not image_changed:
+                        disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
 
-                    # Build map of deployed disk library items for change detection
-                    dep_disk_libs = {}
-                    dep_disk_sizes = {}
-                    dep_vm_node = next((n for n in deployed.get("nodes", []) if n["id"] == vm["node_id"]), None)
-                    if dep_vm_node:
-                        dep_disks = _find_vm_disks(vm["node_id"], deployed)
-                        for dd in dep_disks:
-                            dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
-                            dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
+                if vm.get("cloud_init"):
+                    cdrom_list.append(_seed_path(p_id, vm["node_id"]))
 
-                    disk_list = []
-                    cdrom_list = []
-                    any_disk_changed = False
-                    needs_library_download = False
-                    files_to_remove = []
-                    disks_to_create = []
-                    disks_to_resize = []
-                    for d in vm_disks:
-                        if d["format"] == "iso":
-                            if d.get("library_item_id"):
-                                cdrom_list.append(f"/var/lib/troshka/images/{d['library_item_id']}.iso")
-                            continue
-                        path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"])
-                        disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
-                        old_lib = dep_disk_libs.get(d["node_id"])
-                        new_lib = d.get("library_item_id")
-                        image_changed = old_lib != new_lib and (old_lib or new_lib)
-                        old_size = dep_disk_sizes.get(d["node_id"], 0)
-                        size_grew = d["size_gb"] > old_size and old_size > 0
-                        is_new_disk = d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
-                        if image_changed or size_grew or is_new_disk:
-                            any_disk_changed = True
-                        if image_changed:
-                            files_to_remove.append(path)
-                        backing = None
-                        if d.get("source") == "library" and d.get("library_item_id"):
-                            needs_library_download = True
-                            backing = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
-                        elif d.get("source") == "pattern" and d.get("patternId"):
-                            backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
-                        disks_to_create.append({"path": path, "size_gb": d["size_gb"], "format": d["format"], "backing_file": backing})
-                        if size_grew and not image_changed:
-                            disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
-
-                    if vm.get("cloud_init"):
-                        cdrom_list.append(_seed_path(p_id, vm["node_id"]))
-
-                    if any_disk_changed:
-                        if needs_library_download:
-                            _deploy_progress[p_id] = {"step": "checking images", "detail": ""}
-                            cache_library_images(current, h, s)
-                        # Remove changed disk files
-                        if files_to_remove:
-                            try:
-                                job_id = start_job(h, "/files/remove", {"paths": files_to_remove})
-                                wait_for_job(h, job_id, timeout=30)
-                            except TroshkadError as e:
-                                logger.warning("Failed to remove old disk files: %s", e)
-                        # Create new disks
-                        for dc in disks_to_create:
-                            params = {"path": dc["path"], "size_gb": dc["size_gb"], "format": dc["format"]}
-                            if dc["backing_file"]:
-                                params["backing_file"] = dc["backing_file"]
-                            try:
-                                job_id = start_job(h, "/disks/create", params)
-                                wait_for_job(h, job_id, timeout=300)
-                            except TroshkadError as e:
-                                logger.warning("Failed to create disk %s: %s", dc["path"], e)
-                        # Resize disks
-                        for dr in disks_to_resize:
-                            try:
-                                job_id = start_job(h, "/disks/resize", dr)
-                                wait_for_job(h, job_id, timeout=60)
-                            except TroshkadError as e:
-                                logger.warning("Failed to resize disk %s: %s", dr["path"], e)
-
-                    current_cfg = libvirt_mgr.get_vm_config(conn, dom)
-                    if not current_cfg:
-                        vm_node = next((n for n in current.get("nodes", []) if n["id"] == vm["node_id"]), None)
-                        if vm_node:
-                            diff["added_vms"].append(vm_node)
-                        continue
-
-                    desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
-                    desired_disks = [d["path"] for d in disk_list]
-                    if (
-                        current_cfg["boot_devs"] == boot_devs and
-                        current_cfg["vcpus"] == vm["vcpus"] and
-                        current_cfg["ram_mb"] == vm["ram_gb"] * 1024 and
-                        current_cfg["nics"] == desired_nics and
-                        current_cfg["disks"] == desired_disks and
-                        sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
-                    ):
-                        continue
-
-                    _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
-                    needs_restart = vm["node_id"] in restart_vm_ids or current_cfg["boot_devs"] != boot_devs or current_cfg["vcpus"] != vm["vcpus"] or current_cfg["ram_mb"] != vm["ram_gb"] * 1024 or current_cfg["nics"] != desired_nics or current_cfg["disks"] != desired_disks
-                    if not libvirt_mgr.reconfigure_vm(conn, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list, cdroms=cdrom_list, restart=needs_restart):
-                        errors.append(f"Failed to reconfigure {dom}")
-
-                if diff["added_vms"]:
-                    _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
-                    def _progress(downloaded, total):
-                        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-                        _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
-                    cache_library_images(current, h, s, progress_callback=_progress)
-                    _create_seed_isos_via_troshkad(h, p_id, current)
-                    _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
-                    for vm_node in diff["added_vms"]:
-                        vm_data = {
-                            "node_id": vm_node["id"],
-                            "name": vm_node.get("data", {}).get("name", "vm"),
-                            "vcpus": vm_node.get("data", {}).get("vcpus", 2),
-                            "ram_gb": vm_node.get("data", {}).get("ram", 4),
-                            "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
-                            "boot_devices": vm_node.get("data", {}).get("bootDevices"),
-                        }
-                        vm_disks_add = _find_vm_disks(vm_node["id"], current)
+                if any_disk_changed:
+                    if needs_library_download:
+                        _deploy_progress[p_id] = {"step": "checking images", "detail": ""}
+                        cache_library_images(current, h, s)
+                    # Remove changed disk files
+                    if files_to_remove:
                         try:
-                            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add, current)
-                            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
-                            # Start if auto-start not disabled
-                            no_auto_start = {e["vmId"] for e in current.get("startOrder", []) if e.get("autoStart") is False}
-                            if vm_node["id"] not in no_auto_start:
-                                vm_name = _vm_domain_name(p_id, vm_node["id"])
-                                job_id = start_job(h, "/vms/start", {"domain_name": vm_name})
-                                wait_for_job(h, job_id, timeout=60)
-                        except (TroshkadError, RuntimeError) as e:
-                            errors.append(f"Failed to add VM {vm_node['id'][:8]}: {e}")
-            finally:
-                conn.close()
+                            job_id = start_job(h, "/files/remove", {"paths": files_to_remove})
+                            wait_for_job(h, job_id, timeout=30)
+                        except TroshkadError as e:
+                            logger.warning("Failed to remove old disk files: %s", e)
+                    # Create new disks
+                    for dc in disks_to_create:
+                        params = {"path": dc["path"], "size_gb": dc["size_gb"], "format": dc["format"]}
+                        if dc["backing_file"]:
+                            params["backing_file"] = dc["backing_file"]
+                        try:
+                            job_id = start_job(h, "/disks/create", params)
+                            wait_for_job(h, job_id, timeout=300)
+                        except TroshkadError as e:
+                            logger.warning("Failed to create disk %s: %s", dc["path"], e)
+                    # Resize disks
+                    for dr in disks_to_resize:
+                        try:
+                            job_id = start_job(h, "/disks/resize", dr)
+                            wait_for_job(h, job_id, timeout=60)
+                        except TroshkadError as e:
+                            logger.warning("Failed to resize disk %s: %s", dr["path"], e)
+
+                current_cfg = troshkad_get_vm_config(h, dom)
+                if not current_cfg:
+                    vm_node = next((n for n in current.get("nodes", []) if n["id"] == vm["node_id"]), None)
+                    if vm_node:
+                        diff["added_vms"].append(vm_node)
+                    continue
+
+                desired_nics = [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks] if vm_networks else []
+                desired_disks = [d["path"] for d in disk_list]
+                if (
+                    current_cfg["boot_devs"] == boot_devs and
+                    current_cfg["vcpus"] == vm["vcpus"] and
+                    current_cfg["ram_mb"] == vm["ram_gb"] * 1024 and
+                    current_cfg["nics"] == desired_nics and
+                    current_cfg["disks"] == desired_disks and
+                    sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+                ):
+                    continue
+
+                _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
+                needs_restart = vm["node_id"] in restart_vm_ids or current_cfg["boot_devs"] != boot_devs or current_cfg["vcpus"] != vm["vcpus"] or current_cfg["ram_mb"] != vm["ram_gb"] * 1024 or current_cfg["nics"] != desired_nics or current_cfg["disks"] != desired_disks
+                try:
+                    troshkad_reconfigure_vm(h, dom, boot_devs=boot_devs, vcpus=vm["vcpus"], ram_mb=vm["ram_gb"] * 1024, nics=nics, disks=disk_list, cdroms=cdrom_list, restart=needs_restart)
+                except TroshkadError as e:
+                    errors.append(f"Failed to reconfigure {dom}: {e}")
+
+            if diff["added_vms"]:
+                _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                def _progress(downloaded, total):
+                    pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+                    _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+                cache_library_images(current, h, s, progress_callback=_progress)
+                _create_seed_isos_via_troshkad(h, p_id, current)
+                _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
+                for vm_node in diff["added_vms"]:
+                    vm_data = {
+                        "node_id": vm_node["id"],
+                        "name": vm_node.get("data", {}).get("name", "vm"),
+                        "vcpus": vm_node.get("data", {}).get("vcpus", 2),
+                        "ram_gb": vm_node.get("data", {}).get("ram", 4),
+                        "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
+                        "boot_devices": vm_node.get("data", {}).get("bootDevices"),
+                    }
+                    vm_disks_add = _find_vm_disks(vm_node["id"], current)
+                    try:
+                        _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add, current)
+                        _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+                        # Start if auto-start not disabled
+                        no_auto_start = {e["vmId"] for e in current.get("startOrder", []) if e.get("autoStart") is False}
+                        if vm_node["id"] not in no_auto_start:
+                            vm_name = _vm_domain_name(p_id, vm_node["id"])
+                            job_id = start_job(h, "/vms/start", {"domain_name": vm_name})
+                            wait_for_job(h, job_id, timeout=60)
+                    except (TroshkadError, RuntimeError) as e:
+                        errors.append(f"Failed to add VM {vm_node['id'][:8]}: {e}")
 
             from app.services.placement import sync_host_capacity
             sync_host_capacity(s, h)
@@ -853,8 +845,6 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
 
     p_id = project.id
     host_id = host.id
-    host_ip = host.ip_address
-    private_key = host.private_key
     target_vm_id = vm_id
 
     import threading
@@ -878,13 +868,8 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             topology = proj.topology
             vni_map = proj.vni_map or {}
 
-            conn = libvirt_mgr.connect(host_ip, private_key)
-            was_running = False
-            try:
-                was_running = libvirt_mgr.get_vm_state(conn, dom) == "running"
-                libvirt_mgr.undefine_vm(conn, dom, remove_storage=False)
-            finally:
-                conn.close()
+            was_running = troshkad_get_vm_state(h, dom) == "running"
+            troshkad_undefine_vm(h, dom, remove_storage=False)
 
             _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
             # Remove old disk files via troshkad
