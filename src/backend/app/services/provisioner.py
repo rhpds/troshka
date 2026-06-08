@@ -14,6 +14,17 @@ from app.core.config import config
 logger = logging.getLogger(__name__)
 
 
+def get_public_ip() -> str | None:
+    """Discover this backend's public IP via AWS checkip service."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=5) as resp:
+            return resp.read().decode().strip()
+    except Exception:
+        logger.warning("Could not determine public IP")
+        return None
+
+
 def _get_ec2_client(region: str | None = None, credentials: dict | None = None):
     creds = credentials or {}
     return boto3.client(
@@ -50,6 +61,9 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
     if existing["SecurityGroups"]:
         return existing["SecurityGroups"][0]["GroupId"]
 
+    backend_ip = get_public_ip()
+    troshkad_cidr = f"{backend_ip}/32" if backend_ip else "0.0.0.0/0"
+
     sg = client.create_security_group(
         GroupName=name,
         Description="Troshka host agent",
@@ -60,7 +74,7 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
         GroupId=sg_id,
         IpPermissions=[
             {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
-            {"IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Troshkad API"}]},
+            {"IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337, "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}]},
             {"IpProtocol": "udp", "FromPort": 4789, "ToPort": 4789, "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}]},
         ],
     )
@@ -79,6 +93,33 @@ def get_default_vpc_and_subnet(credentials: dict | None = None) -> tuple[str, st
     if not subnets["Subnets"]:
         raise ValueError("No subnets in default VPC")
     return vpc_id, subnets["Subnets"][0]["SubnetId"]
+
+
+def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = None):
+    """Update the troshkad port (31337) SG rule to a new backend IP."""
+    client = _get_ec2_client(credentials=credentials)
+
+    # Get current rules
+    sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+
+    # Find and revoke the old troshkad rule
+    for perm in sg.get("IpPermissions", []):
+        if perm.get("FromPort") == 31337 and perm.get("ToPort") == 31337:
+            try:
+                client.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+            except Exception:
+                pass
+            break
+
+    # Add new rule with updated IP
+    client.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[{
+            "IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337,
+            "IpRanges": [{"CidrIp": f"{new_ip}/32", "Description": "Troshkad API"}],
+        }],
+    )
+    logger.info("Updated SG %s troshkad rule to %s/32", sg_id, new_ip)
 
 
 CLOUD_INIT = """#cloud-config

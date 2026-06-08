@@ -21,6 +21,40 @@ _health_config = getattr(config, 'health', None)
 _INTERVAL_SECONDS = getattr(_health_config, 'interval_seconds', 30) if _health_config else 30
 _DISCONNECT_AFTER_SECONDS = getattr(_health_config, 'disconnect_after_seconds', 90) if _health_config else 90
 
+_last_known_ip = None
+
+
+def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
+    """If all hosts failed health check, maybe our IP changed."""
+    global _last_known_ip
+    if hosts_failed == 0 or hosts_failed < hosts_checked:
+        return  # Some hosts are reachable, not an IP issue
+
+    from app.services.provisioner import get_public_ip, update_sg_troshkad_ip
+    current_ip = get_public_ip()
+    if not current_ip:
+        return
+    if current_ip == _last_known_ip:
+        return
+
+    logger.warning("Public IP changed from %s to %s — updating security groups", _last_known_ip, current_ip)
+    _last_known_ip = current_ip
+
+    # Update all provider SGs
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+    db = SessionLocal()
+    try:
+        providers = db.query(Provider).filter(Provider.security_group_id.isnot(None)).all()
+        for provider in providers:
+            try:
+                creds = provider.get_credentials()
+                update_sg_troshkad_ip(provider.security_group_id, current_ip, credentials=creds)
+            except Exception:
+                logger.warning("Failed to update SG for provider %s", provider.id[:8])
+    finally:
+        db.close()
+
 
 def _poll_hosts():
     """Single poll cycle — check all active hosts."""
@@ -29,6 +63,8 @@ def _poll_hosts():
     from app.services.troshkad_client import check_health
 
     db = SessionLocal()
+    hosts_checked = 0
+    hosts_failed = 0
     try:
         # Query hosts that should be polled:
         # - state="active" (not stopped/terminated)
@@ -39,6 +75,7 @@ def _poll_hosts():
         ).all()
 
         for host in hosts:
+            hosts_checked += 1
             try:
                 health = check_health(host)
                 now = datetime.now(timezone.utc)
@@ -65,6 +102,7 @@ def _poll_hosts():
                         host.agent_status = "connected"
                         logger.info("Host %s reconnected (troshkad %s)", host.id[:8], health.get("version"))
                 else:
+                    hosts_failed += 1
                     # Failed — check if we should mark as disconnected
                     if host.agent_status == "connected" and host.last_health_at:
                         elapsed = (now - host.last_health_at).total_seconds()
@@ -72,9 +110,13 @@ def _poll_hosts():
                             host.agent_status = "disconnected"
                             logger.warning("Host %s marked disconnected (no health for %ds)", host.id[:8], int(elapsed))
             except Exception:
+                hosts_failed += 1
                 logger.debug("Health check failed for host %s", host.id[:8], exc_info=True)
 
         db.commit()
+
+        # Check if all hosts failed — maybe our IP changed
+        _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed)
     except Exception:
         logger.exception("Health poller cycle failed")
     finally:
