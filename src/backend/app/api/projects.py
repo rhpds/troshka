@@ -16,7 +16,7 @@ from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
 from app.services.deploy_service import (
     deploy_project_async, stop_project_async, start_project_async, destroy_project_sync,
-    diff_topologies, generate_incremental_script, _extract_vms, _find_vm_networks, _find_vm_disks,
+    diff_topologies, _extract_vms, _find_vm_networks, _find_vm_disks,
     _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
     _create_seed_isos_via_troshkad, _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
     cache_library_images, _vm_dir, _disk_path, _seed_path,
@@ -141,10 +141,10 @@ def deploy_project(
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
-    from app.services.deploy_service import check_host_disk_space
+    from app.services.troshkad_client import check_disk_usage
     host = db.query(Host).filter_by(id=result["host_id"]).first()
     if host and host.ip_address:
-        disk = check_host_disk_space(host)
+        disk = check_disk_usage(host)
         if disk["used_pct"] >= 90:
             free_gb = disk["free_bytes"] / (1024 ** 3)
             raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
@@ -255,8 +255,8 @@ def _get_project_and_host(project_id: str, user: User, db: Session, check_disk: 
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
     if check_disk:
-        from app.services.deploy_service import check_host_disk_space
-        disk = check_host_disk_space(host)
+        from app.services.troshkad_client import check_disk_usage
+        disk = check_disk_usage(host)
         if disk["used_pct"] >= 90:
             free_gb = disk["free_bytes"] / (1024 ** 3)
             raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume.")
