@@ -229,6 +229,20 @@ class TestTroshkadServer(unittest.TestCase):
         finally:
             troshkad._draining = False
 
+    def test_disk_usage_returns_stats(self):
+        """Test that /host/disk-usage returns disk statistics."""
+        status, body = _make_request("/host/disk-usage")
+        self.assertEqual(status, 200)
+        self.assertIn("free_bytes", body)
+        self.assertIn("total_bytes", body)
+        self.assertIn("used_pct", body)
+        # On macOS dev machine, /var/lib/troshka won't exist so it should return used_pct=100
+        self.assertIsInstance(body["free_bytes"], (int, float))
+        self.assertIsInstance(body["total_bytes"], (int, float))
+        self.assertIsInstance(body["used_pct"], (int, float))
+        self.assertGreaterEqual(body["used_pct"], 0)
+        self.assertLessEqual(body["used_pct"], 100)
+
 
 from unittest.mock import patch, MagicMock
 
@@ -416,6 +430,40 @@ class TestOpsHandlers(unittest.TestCase):
         })
         result = troshkad._handle_snapshot_create(job, job["params"])
         self.assertEqual(result["status"], "created")
+
+
+class TestHostEndpoints(unittest.TestCase):
+    """Unit tests for host management command handlers."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_resize_storage(self, mock_popen):
+        """Test that resize-storage runs xfs_growfs."""
+        mock_popen.return_value = _mock_popen(stdout="Done")
+        job = troshkad._create_job("host/resize-storage", {})
+        result = troshkad._handle_resize_storage(job, job["params"])
+        self.assertTrue(mock_popen.called)
+        cmd = mock_popen.call_args[0][0]
+        self.assertEqual(cmd, ["xfs_growfs", "/var/lib/troshka"])
+        self.assertEqual(result["status"], "resized")
+
+    @patch("troshkad.os.remove")
+    def test_files_remove(self, mock_remove):
+        """Test that files/remove removes valid paths."""
+        job = troshkad._create_job("files/remove", {
+            "paths": ["/var/lib/troshka/vms/test/disk.qcow2"]
+        })
+        result = troshkad._handle_files_remove(job, job["params"])
+        mock_remove.assert_called_once_with("/var/lib/troshka/vms/test/disk.qcow2")
+        self.assertEqual(result["removed"], 1)
+
+    def test_files_remove_rejects_bad_path(self):
+        """Test that files/remove rejects paths outside /var/lib/troshka."""
+        job = troshkad._create_job("files/remove", {
+            "paths": ["/etc/passwd"]
+        })
+        with self.assertRaises(ValueError) as ctx:
+            troshkad._handle_files_remove(job, job["params"])
+        self.assertIn("/var/lib/troshka", str(ctx.exception))
 
 
 if __name__ == "__main__":

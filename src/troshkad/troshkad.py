@@ -765,6 +765,64 @@ def _handle_pattern_export(job, params):
 COMMAND_HANDLERS["patterns/export"] = _handle_pattern_export
 
 
+# ── Host handlers ──
+
+@route("GET", "/host/disk-usage")
+def handle_disk_usage(handler, params):
+    """Return disk usage stats for /var/lib/troshka."""
+    try:
+        stat = shutil.disk_usage("/var/lib/troshka")
+        free_bytes = stat.free
+        total_bytes = stat.total
+        used_pct = round((stat.used / stat.total) * 100, 2) if stat.total > 0 else 0
+    except Exception:
+        # If path doesn't exist or is inaccessible, return error fallback
+        free_bytes = 0
+        total_bytes = 0
+        used_pct = 100
+    handler._send_json(200, {
+        "free_bytes": free_bytes,
+        "total_bytes": total_bytes,
+        "used_pct": used_pct,
+    })
+
+
+def _handle_resize_storage(job, params):
+    """Resize /var/lib/troshka filesystem using xfs_growfs."""
+    _run_cmd(job, ["xfs_growfs", "/var/lib/troshka"], timeout=120)
+    return {"status": "resized"}
+
+COMMAND_HANDLERS["host/resize-storage"] = _handle_resize_storage
+
+
+def _handle_files_remove(job, params):
+    """Remove files or directories under /var/lib/troshka."""
+    paths = params.get("paths", [])
+    if not paths:
+        raise ValueError("Missing required parameter: paths")
+
+    removed = 0
+    for path in paths:
+        validated_path = _validate_path(path)
+        try:
+            if os.path.isdir(validated_path):
+                shutil.rmtree(validated_path)
+                job["output"].append(f"Removed directory: {validated_path}")
+            else:
+                os.remove(validated_path)
+                job["output"].append(f"Removed file: {validated_path}")
+            removed += 1
+        except FileNotFoundError:
+            job["output"].append(f"Skipped (not found): {validated_path}")
+        except Exception as e:
+            job["output"].append(f"Failed to remove {validated_path}: {e}")
+            raise
+
+    return {"removed": removed}
+
+COMMAND_HANDLERS["files/remove"] = _handle_files_remove
+
+
 # ── Update mechanism ──
 
 def _do_update_restart(script_path, new_path):
