@@ -1149,6 +1149,16 @@ export default function PropertiesPanel() {
                                   ))}
                                 </select>
                               </div>
+                              {(() => {
+                                const selEip = externalIps.find((e) => e.id === (pf as Record<string, string>).extIpId);
+                                return selEip?.ip ? (
+                                  <button
+                                    style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 12, alignSelf: "end", marginBottom: 4 }}
+                                    title={`Copy ${selEip.ip}`}
+                                    onClick={() => navigator.clipboard.writeText(selEip.ip)}
+                                  >📋</button>
+                                ) : null;
+                              })()}
                               <div className="props-field" style={{ flex: "0 0 50px" }}>
                                 {i === 0 && <label className="props-label">Ext Port</label>}
                                 <input className="props-input" value={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
