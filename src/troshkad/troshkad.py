@@ -984,15 +984,49 @@ def _handle_seed_create(job, params):
 COMMAND_HANDLERS["seeds/create"] = _handle_seed_create
 
 
+import fcntl
+
 def _handle_image_cache(job, params):
     url = _validate_url(params["url"])
     dest_path = _validate_path(params["dest_path"])
+    expected_size = params.get("expected_size", 0)
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    _run_cmd(job, ["curl", "-fSL", "-o", dest_path, url], timeout=3600)
-    fmt = params.get("expected_format")
-    if fmt == "qcow2":
-        _run_cmd(job, ["qemu-img", "check", dest_path], timeout=60)
-    return {"path": dest_path, "status": "cached"}
+
+    lock_path = dest_path + ".lock"
+    lock_fd = open(lock_path, "w")
+    try:
+        # Non-blocking try — if another job holds the lock, wait for it
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            job["output"].append(f"Another download in progress for {os.path.basename(dest_path)}, waiting...")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Block until lock released
+            # Check if the other job already completed the download
+            if os.path.exists(dest_path) and expected_size > 0:
+                actual = os.path.getsize(dest_path)
+                if actual >= expected_size - 1024:
+                    job["output"].append(f"Already downloaded by another job ({actual} bytes)")
+                    return {"path": dest_path, "status": "cached", "waited": True}
+
+        # Check if already fully cached
+        if os.path.exists(dest_path) and expected_size > 0:
+            actual = os.path.getsize(dest_path)
+            if actual >= expected_size - 1024:
+                job["output"].append(f"Already cached ({actual} bytes)")
+                return {"path": dest_path, "status": "cached", "skipped": True}
+
+        _run_cmd(job, ["curl", "-fSL", "-o", dest_path, url], timeout=3600)
+        fmt = params.get("expected_format")
+        if fmt == "qcow2":
+            _run_cmd(job, ["qemu-img", "check", dest_path], timeout=60)
+        return {"path": dest_path, "status": "cached"}
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
 
 COMMAND_HANDLERS["images/cache"] = _handle_image_cache
 

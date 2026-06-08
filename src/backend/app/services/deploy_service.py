@@ -308,6 +308,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             job_id = start_job(host, "/images/cache", {
                 "url": url,
                 "dest_path": ic["cache_path"],
+                "expected_size": ic.get("expected_size", 0),
                 "expected_format": "qcow2" if ic["cache_path"].endswith(".qcow2") else None,
             })
             active_jobs.append({"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]})
