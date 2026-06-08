@@ -192,6 +192,8 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
             "bus": bus,
             "source": sdata.get("source", "blank"),
             "library_item_id": sdata.get("libraryItemId"),
+            "patternId": sdata.get("patternId"),
+            "patternDiskId": sdata.get("patternDiskId"),
         })
 
     return disks
