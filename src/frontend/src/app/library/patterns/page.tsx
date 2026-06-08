@@ -54,7 +54,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
       position: "fixed", inset: 0, zIndex: 10000,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.6)",
-    }} onClick={(e) => { if (e.target === e.currentTarget && !deploying) onClose(); }}>
+    }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
         borderRadius: 12, padding: 24, width: 420, maxWidth: "90vw",
