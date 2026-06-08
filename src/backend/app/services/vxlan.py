@@ -319,6 +319,8 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
         cidr = net.get("cidr", "")
 
         # Create VXLAN in host namespace, add peers, then move into netns
+        vxlan_cmds.append(f"ip link del {vxlan_if} 2>/dev/null || true")
+        vxlan_cmds.append(f"ip netns exec {ns} ip link del {vxlan_if} 2>/dev/null || true")
         vxlan_cmds.append(f"ip link add {vxlan_if} type vxlan id {vni} local {host_ip} dstport 4789 nolearning")
         for peer in net.get("peers", []):
             if peer != host_ip:

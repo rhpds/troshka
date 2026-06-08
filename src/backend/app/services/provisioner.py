@@ -116,7 +116,7 @@ runcmd:
         ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
         BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F': ' '{print $2}' | head -1)
         [ -z "$BRIDGE" ] && exit 0
-        for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk '/^[a-z]/ && !/^Name/ {print $1}'); do
+        for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk 'NR>2 && NF>0 {print $1}'); do
             ip link set "$TAP" netns "$NS" 2>/dev/null
             ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
             ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null
