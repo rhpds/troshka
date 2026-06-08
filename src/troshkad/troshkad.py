@@ -746,6 +746,469 @@ def _handle_network_teardown(job, params):
 COMMAND_HANDLERS["networks/teardown"] = _handle_network_teardown
 
 
+def _handle_network_full_setup(job, params):
+    """Full VXLAN mesh network setup: namespace, veth, VXLAN, bridge, DHCP, nftables.
+
+    Replaces the generate_setup_script() bash script with structured handler.
+    Params:
+        project_id: str
+        host_ip: str  — this host's IP for VXLAN local binding
+        networks: list of {vni, bridge_name, vxlan_name, cidr,
+                           dhcp_enabled, dhcp_config, dns_enabled, dns_domain,
+                           dhcp_hosts, peers, pxe_config}
+        gateway: optional {mode, port_forwards, eip_private_ips, transit_ns_ip,
+                           outbound_policy, outbound_ports}
+        routers: list of {connected_vnis}
+    """
+    project_id = _validate_project_id(params["project_id"])
+    host_ip = _validate_ip(params["host_ip"])
+    networks = params.get("networks", [])
+    gateway = params.get("gateway")
+    routers = params.get("routers", [])
+
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    veth_host = f"ve{pid}h"
+    veth_ns = f"ve{pid}n"
+
+    # Derive transit subnet from first VNI
+    all_vnis = [int(net["vni"]) for net in networks]
+    first_vni = all_vnis[0] if all_vnis else 1000
+    transit_octet3 = first_vni & 0xFF
+    transit_host_ip = f"172.30.{transit_octet3}.1"
+    transit_ns_ip = f"172.30.{transit_octet3}.2"
+    transit_cidr = f"172.30.{transit_octet3}.0/24"
+
+    # ── Deploy qemu hook (idempotent) ──
+    hook_script = (
+        '#!/bin/bash\n'
+        'DOMAIN=$1\n'
+        'ACTION=$2\n'
+        'if [ "$ACTION" = "started" ]; then\n'
+        '    PID=$(echo "$DOMAIN" | sed -n \'s/^troshka-\\([a-f0-9]*\\)-.*/\\1/p\')\n'
+        '    [ -z "$PID" ] && exit 0\n'
+        '    NS="troshka-$PID"\n'
+        '    ip netns list 2>/dev/null | grep -q "^$NS " || exit 0\n'
+        '    BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F\': \' \'{print $2}\' | head -1)\n'
+        '    [ -z "$BRIDGE" ] && exit 0\n'
+        '    for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk \'NR>2 && NF>0 {print $1}\'); do\n'
+        '        ip link set "$TAP" netns "$NS" 2>/dev/null\n'
+        '        ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null\n'
+        '        ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null\n'
+        '    done\n'
+        'fi\n'
+    )
+
+    os.makedirs("/etc/libvirt/hooks", exist_ok=True)
+    with open("/etc/libvirt/hooks/qemu", "w") as f:
+        f.write(hook_script)
+    os.chmod("/etc/libvirt/hooks/qemu", 0o755)
+    job["output"].append("Installed qemu hook")
+
+    # ── Namespace + veth setup ──
+    try:
+        _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
+    except RuntimeError:
+        pass
+    try:
+        _run_cmd(job, ["ip", "link", "del", veth_host], timeout=10)
+    except RuntimeError:
+        pass
+
+    _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
+    _run_cmd(job, ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns], timeout=10)
+    _run_cmd(job, ["ip", "link", "set", veth_ns, "netns", ns], timeout=10)
+    _run_cmd(job, ["ip", "addr", "add", f"{transit_host_ip}/24", "dev", veth_host], timeout=10)
+    _run_cmd(job, ["ip", "link", "set", veth_host, "up"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add", f"{transit_ns_ip}/24", "dev", veth_ns], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", veth_ns, "up"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", transit_host_ip], timeout=10)
+
+    try:
+        _run_cmd(job, ["ip", "route", "add", transit_cidr, "dev", veth_host], timeout=10)
+    except RuntimeError:
+        job["output"].append(f"Route to {transit_cidr} may already exist, continuing")
+
+    _run_cmd(job, ["sysctl", "-w", "net.ipv4.ip_forward=1"], timeout=10)
+    job["output"].append("Namespace and veth pair configured")
+
+    # ── VXLAN + Bridge setup (inside namespace) ──
+    for net in networks:
+        vni = int(net["vni"])
+        bridge = net["bridge_name"]
+        vxlan_if = net["vxlan_name"]
+        cidr = net.get("cidr", "")
+        peers = net.get("peers", [])
+
+        # Validate names
+        _validate_bridge_name(bridge)
+
+        # Clean up existing
+        try:
+            _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if], timeout=10)
+        except RuntimeError:
+            pass
+
+        # Create VXLAN in host namespace
+        _run_cmd(job, ["ip", "link", "add", vxlan_if, "type", "vxlan",
+                        "id", str(vni), "local", host_ip, "dstport", "4789", "nolearning"], timeout=10)
+
+        # Add peers
+        for peer in peers:
+            if peer != host_ip:
+                try:
+                    _validate_ip(peer)
+                    _run_cmd(job, ["bridge", "fdb", "append", "00:00:00:00:00:00",
+                                    "dev", vxlan_if, "dst", peer], timeout=10)
+                except (ValueError, RuntimeError):
+                    job["output"].append(f"Warning: skipping peer {peer}")
+
+        # Move VXLAN into namespace
+        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
+
+        # Create bridge inside namespace
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
+
+        # Create dummy bridge in host namespace for libvirt validation
+        try:
+            subprocess.run(["ip", "link", "show", bridge], capture_output=True, check=True, timeout=5)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
+
+        # Assign bridge IP if DHCP/DNS is enabled
+        if net.get("dhcp_enabled") or net.get("dns_enabled"):
+            dhcp_cfg = net.get("dhcp_config", {})
+            gateway_ip = dhcp_cfg.get("gateway", "")
+            if gateway_ip and cidr:
+                prefix = cidr.split("/")[1] if "/" in cidr else "24"
+                _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                                f"{gateway_ip}/{prefix}", "dev", bridge], timeout=10)
+
+        job["output"].append(f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
+
+    # ── DHCP (dnsmasq inside namespace) ──
+    for net in networks:
+        if not net.get("dhcp_enabled"):
+            continue
+        vni = int(net["vni"])
+        bridge = net["bridge_name"]
+        dhcp_cfg = net.get("dhcp_config", {})
+        range_start = dhcp_cfg.get("range_start", "")
+        range_end = dhcp_cfg.get("range_end", "")
+        lease_time = dhcp_cfg.get("lease_time", "24h")
+        if not (range_start and range_end):
+            continue
+
+        dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{vni}.conf"
+        dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
+        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{vni}.leases"
+
+        conf_lines = [
+            f"interface={bridge}",
+            "bind-dynamic",
+            "except-interface=lo",
+            "no-resolv",
+            "no-hosts",
+            f"pid-file={dnsmasq_pid}",
+            f"dhcp-leasefile={dnsmasq_lease}",
+            f"dhcp-range={range_start},{range_end},{lease_time}",
+        ]
+        for dh in net.get("dhcp_hosts", []):
+            safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
+            hostname_part = f",{safe_name}" if safe_name else ""
+            conf_lines.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
+        if net.get("dns_enabled") and net.get("dns_domain"):
+            conf_lines.append(f"domain={net['dns_domain']}")
+
+        # PXE config
+        pxe = net.get("pxe_config")
+        if pxe:
+            method = pxe.get("method", "legacy")
+            if method == "legacy" and pxe.get("next_server") and pxe.get("boot_file"):
+                conf_lines.append(f"dhcp-boot={pxe['boot_file']},{pxe['next_server']},{pxe['next_server']}")
+            elif method == "ipxe" and pxe.get("ipxe_script_url"):
+                conf_lines.append(f"dhcp-boot={pxe['ipxe_script_url']}")
+
+        os.makedirs("/etc/dnsmasq.d", exist_ok=True)
+        with open(dnsmasq_conf, "w") as f:
+            f.write("\n".join(conf_lines) + "\n")
+
+        # Kill existing dnsmasq for this VNI
+        if os.path.exists(dnsmasq_pid):
+            try:
+                with open(dnsmasq_pid) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+            try:
+                os.remove(dnsmasq_pid)
+            except FileNotFoundError:
+                pass
+
+        _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
+        job["output"].append(f"dnsmasq started for VNI {vni} on {bridge}")
+
+    # ── nftables inside namespace ──
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "table", "inet", "filter"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "filter", "forward",
+                    "{ type filter hook forward priority 0; policy drop; }"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "table", "inet", "nat"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "nat", "postrouting",
+                    "{ type nat hook postrouting priority 100; }"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "nat", "prerouting",
+                    "{ type nat hook prerouting priority -100; }"], timeout=10)
+    # Masquerade outbound traffic from bridges
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "nat", "postrouting",
+                    "oifname", veth_ns, "masquerade"], timeout=10)
+
+    # Intra-bridge forwarding
+    for net in networks:
+        bridge = net["bridge_name"]
+        _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                        "iifname", bridge, "oifname", bridge, "accept"], timeout=10)
+
+    # Router: inter-bridge forwarding
+    for router in routers:
+        vnis = router.get("connected_vnis", [])
+        for i, vni_a in enumerate(vnis):
+            for vni_b in vnis[i + 1:]:
+                br_a = f"br-{vni_a}"
+                br_b = f"br-{vni_b}"
+                _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                "iifname", br_a, "oifname", br_b, "accept"], timeout=10)
+                _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                "iifname", br_b, "oifname", br_a, "accept"], timeout=10)
+
+    # Allow established/related + bridge→veth outbound
+    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                    "ct", "state", "established,related", "accept"], timeout=10)
+    for net in networks:
+        bridge = net["bridge_name"]
+        _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                        "iifname", bridge, "oifname", veth_ns, "accept"], timeout=10)
+
+    # Port forward DNAT inside namespace
+    pf_transit_ips = {}
+    if gateway and gateway.get("mode") == "nat-portforward":
+        for pf_idx, pf in enumerate(gateway.get("port_forwards", [])):
+            ext_port = pf.get("extPort", "")
+            int_ip = pf.get("intIp", "")
+            int_port = pf.get("intPort", "")
+            if ext_port and int_ip and int_port:
+                pf_transit_ip = f"172.30.{transit_octet3}.{10 + pf_idx}"
+                pf_transit_ips[pf_idx] = pf_transit_ip
+                try:
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                                    f"{pf_transit_ip}/24", "dev", veth_ns], timeout=10)
+                except RuntimeError:
+                    pass  # May already exist
+                _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "nat", "prerouting",
+                                "ip", "daddr", pf_transit_ip, "tcp", "dport", str(ext_port),
+                                "dnat", "ip", "to", f"{int_ip}:{int_port}"], timeout=10)
+                _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                "iifname", veth_ns, "tcp", "dport", str(int_port), "accept"], timeout=10)
+
+    job["output"].append("Namespace nftables configured")
+
+    # ── nftables in HOST namespace ──
+    if gateway and gateway.get("mode") in ("nat", "nat-portforward"):
+        fwd_chain = f"troshka-fwd-{pid}"
+        post_chain = f"troshka-post-{pid}"
+        pre_chain = f"troshka-pre-{pid}"
+
+        # These may fail if tables/chains already exist — that's OK
+        def _nft_try(cmd):
+            try:
+                _run_cmd(job, cmd, timeout=10)
+            except RuntimeError:
+                pass
+
+        _nft_try(["nft", "add", "table", "inet", "filter"])
+        _nft_try(["nft", "add", "chain", "inet", "filter", "forward",
+                   "{ type filter hook forward priority 0; policy accept; }"])
+        _nft_try(["nft", "add", "table", "inet", "nat"])
+        _nft_try(["nft", "add", "chain", "inet", "nat", "postrouting",
+                   "{ type nat hook postrouting priority 100; }"])
+        _nft_try(["nft", "add", "chain", "inet", "nat", "prerouting",
+                   "{ type nat hook prerouting priority -100; }"])
+        _nft_try(["nft", "add", "chain", "inet", "filter", fwd_chain])
+        _nft_try(["nft", "flush", "chain", "inet", "filter", fwd_chain])
+        _nft_try(["nft", "add", "chain", "inet", "nat", post_chain])
+        _nft_try(["nft", "flush", "chain", "inet", "nat", post_chain])
+        _nft_try(["nft", "add", "chain", "inet", "nat", pre_chain])
+        _nft_try(["nft", "flush", "chain", "inet", "nat", pre_chain])
+
+        # Check if jump rules exist, add if not
+        for (table, chain, jump_chain) in [
+            ("filter", "forward", fwd_chain),
+            ("nat", "postrouting", post_chain),
+            ("nat", "prerouting", pre_chain),
+        ]:
+            check = subprocess.run(
+                ["nft", "list", "chain", "inet", table, chain],
+                capture_output=True, text=True, timeout=5,
+            )
+            if f"jump {jump_chain}" not in check.stdout:
+                _nft_try(["nft", "add", "rule", "inet", table, chain, "jump", jump_chain])
+
+        # Forward traffic through veth
+        _run_cmd(job, ["nft", "add", "rule", "inet", "filter", fwd_chain,
+                        "iifname", veth_host, "accept"], timeout=10)
+        _run_cmd(job, ["nft", "add", "rule", "inet", "filter", fwd_chain,
+                        "oifname", veth_host, "accept"], timeout=10)
+        # Masquerade transit traffic
+        _run_cmd(job, ["nft", "add", "rule", "inet", "nat", post_chain,
+                        "ip", "saddr", transit_cidr, "masquerade"], timeout=10)
+
+        # EIP port forward DNAT in host namespace
+        if gateway.get("mode") == "nat-portforward":
+            for pf_idx, pf in enumerate(gateway.get("port_forwards", [])):
+                ext_port = pf.get("extPort", "")
+                int_ip = pf.get("intIp", "")
+                int_port = pf.get("intPort", "")
+                priv_ip = pf.get("_private_ip", "")
+                pf_transit_ip = pf_transit_ips.get(pf_idx, transit_ns_ip)
+                if ext_port and int_ip and int_port:
+                    if priv_ip:
+                        _run_cmd(job, ["nft", "add", "rule", "inet", "nat", pre_chain,
+                                        "ip", "daddr", priv_ip, "tcp", "dport", str(ext_port),
+                                        "dnat", "ip", "to", f"{pf_transit_ip}:{ext_port}"], timeout=10)
+                    else:
+                        _run_cmd(job, ["nft", "add", "rule", "inet", "nat", pre_chain,
+                                        "tcp", "dport", str(ext_port),
+                                        "dnat", "ip", "to", f"{pf_transit_ip}:{ext_port}"], timeout=10)
+
+        job["output"].append("Host nftables configured")
+
+    return {
+        "project_id": project_id,
+        "namespace": ns,
+        "networks": len(networks),
+        "status": "configured",
+    }
+
+COMMAND_HANDLERS["networks/full-setup"] = _handle_network_full_setup
+
+
+def _handle_network_full_teardown(job, params):
+    """Tear down project networking: destroy VMs, delete namespace, clean up files.
+
+    Replaces generate_destroy_script() for the network/cleanup portion.
+    Params:
+        project_id: str
+        vni_list: list of VNI ints — for dnsmasq file cleanup
+    """
+    project_id = _validate_project_id(params["project_id"])
+    vni_list = params.get("vni_list", [])
+
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    veth_host = f"ve{pid}h"
+
+    # Delete namespace (removes bridges, VXLAN, nftables inside)
+    try:
+        _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
+    except RuntimeError:
+        job["output"].append(f"Namespace {ns} may not exist")
+
+    # Delete host-side veth
+    try:
+        _run_cmd(job, ["ip", "link", "del", veth_host], timeout=10)
+    except RuntimeError:
+        pass
+
+    # Clean up host-side nftables chains for this project
+    fwd_chain = f"troshka-fwd-{pid}"
+    post_chain = f"troshka-post-{pid}"
+    pre_chain = f"troshka-pre-{pid}"
+    for table, chain in [("filter", fwd_chain), ("nat", post_chain), ("nat", pre_chain)]:
+        try:
+            _run_cmd(job, ["nft", "flush", "chain", "inet", table, chain], timeout=10)
+            _run_cmd(job, ["nft", "delete", "chain", "inet", table, chain], timeout=10)
+        except RuntimeError:
+            pass
+
+    # Clean up dnsmasq files
+    for vni in vni_list:
+        for path in [
+            f"/run/troshka-dnsmasq-{vni}.pid",
+            f"/etc/dnsmasq.d/troshka-{vni}.conf",
+            f"/var/lib/troshka/dnsmasq-{vni}.leases",
+        ]:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+    # Clean up dummy bridges in host namespace
+    for vni in vni_list:
+        bridge = f"br-{vni}"
+        try:
+            _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
+        except RuntimeError:
+            pass
+
+    return {"project_id": project_id, "status": "torn_down"}
+
+COMMAND_HANDLERS["networks/full-teardown"] = _handle_network_full_teardown
+
+
+def _handle_seed_create_batch(job, params):
+    """Create multiple seed ISOs in one job call.
+
+    Params:
+        seeds: list of {path, meta_data, user_data, network_config}
+    """
+    seeds = params.get("seeds", [])
+    if not seeds:
+        raise ValueError("Missing required parameter: seeds")
+
+    import tempfile as _tf
+
+    created = 0
+    for seed in seeds:
+        path = _validate_path(seed["path"])
+        meta_data = seed.get("meta_data", "")
+        user_data = seed.get("user_data", "")
+        network_config = seed.get("network_config", "")
+
+        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+            if meta_data:
+                with open(os.path.join(tmpdir, "meta-data"), "w") as f:
+                    f.write(meta_data)
+            if user_data:
+                with open(os.path.join(tmpdir, "user-data"), "w") as f:
+                    f.write(user_data)
+            if network_config:
+                with open(os.path.join(tmpdir, "network-config"), "w") as f:
+                    f.write(network_config)
+
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            _run_cmd(job, [
+                "xorriso", "-as", "genisoimage",
+                "-output", path,
+                "-volid", "cidata",
+                "-joliet", "-rock",
+                tmpdir + "/",
+            ])
+        created += 1
+        job["output"].append(f"Seed ISO created: {path}")
+
+    return {"created": created, "status": "completed"}
+
+COMMAND_HANDLERS["seeds/create-batch"] = _handle_seed_create_batch
+
+
 def _handle_eip_configure(job, params):
     project_id = _validate_project_id(params["project_id"])
     eip_mappings = params.get("eip_mappings", [])
