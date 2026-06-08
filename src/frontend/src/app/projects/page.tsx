@@ -409,7 +409,7 @@ export default function ProjectsPage() {
                       }}
                     >Start</Button>
                   )}
-                  {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
+                  {(p.state === "error" || p.state === "active" || p.state === "stopped" || p.state === "deploying") && (
                     <Button
                       variant="secondary"
                       style={{ fontSize: 11, padding: "2px 8px" }}
