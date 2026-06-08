@@ -212,6 +212,11 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                 "port_forwards": port_forwards,
                 "eip_private_ips": [eip.get("_private_ip", "") for eip in external_ips if eip.get("_private_ip")],
             }
+            # Add transit subnet info for host-side EIP DNAT
+            first_vni = networks[0]["vni"] if networks else None
+            if first_vni:
+                transit = _transit_subnet(first_vni)
+                gateway_config["transit_ns_ip"] = transit["ns_ip"]
             break
 
     # Build router configs
