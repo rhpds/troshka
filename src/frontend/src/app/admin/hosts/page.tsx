@@ -523,11 +523,11 @@ export default function AdminHostsPage() {
                   }}>
                     {updating === h.id ? "Updating..." : "Update Agent"}
                   </Button>
-                  <Button variant="secondary" onClick={() => {
+                  <Button variant="secondary" isLoading={installing === h.id} isDisabled={installing === h.id} onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
                     installAgent(h.id);
                   }}>
-                    Reinstall Agent
+                    {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
                   <Button variant="secondary" onClick={async () => {
                     const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
