@@ -348,7 +348,7 @@ export default function ProjectsPage() {
                       style={{ fontSize: 11, padding: "2px 8px" }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down and EIPs disassociated.`)) return;
+                        if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down.`)) return;
                         setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
                         fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" });
                         const poll = setInterval(() => {
@@ -368,7 +368,7 @@ export default function ProjectsPage() {
                       style={{ fontSize: 11, padding: "2px 8px" }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!window.confirm(`Start project "${p.name}"? This will boot all VMs and associate EIPs.`)) return;
+                        if (!window.confirm(`Start project "${p.name}"? All VMs will be started in the configured start order.`)) return;
                         setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
                         fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" });
                         const poll = setInterval(() => {

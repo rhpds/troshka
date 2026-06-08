@@ -381,7 +381,14 @@ def generate_stop_script(project_id: str, topology: dict) -> str:
         lines.append(f"virsh shutdown {vm_name} 2>/dev/null || true")
 
     lines.append('echo "Waiting for VMs to shut down..."')
-    lines.append("sleep 15")
+    lines.append("for i in $(seq 1 15); do")
+    lines.append("  STILL_RUNNING=0")
+    for vm in vms:
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        lines.append(f"  virsh domstate {vm_name} 2>/dev/null | grep -q running && STILL_RUNNING=1")
+    lines.append("  [ $STILL_RUNNING -eq 0 ] && break")
+    lines.append("  sleep 1")
+    lines.append("done")
 
     for vm in vms:
         vm_name = _vm_domain_name(project_id, vm["node_id"])
