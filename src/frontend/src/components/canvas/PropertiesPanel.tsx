@@ -1136,29 +1136,33 @@ export default function PropertiesPanel() {
                             <div className="props-row" style={{ marginBottom: 4, alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
                                 {i === 0 && <label className="props-label">External IP</label>}
-                                <select className="props-select" style={{ fontSize: 11 }}
-                                  value={(pf as Record<string, string>).extIpId || ""}
-                                  onChange={(e) => {
-                                    const updated = [...portForwards];
-                                    (updated[i] as Record<string, string>).extIpId = e.target.value;
-                                    update("portForwards", updated);
-                                  }}>
-                                  <option value="">Select IP...</option>
-                                  {externalIps.map((eip) => (
-                                    <option key={eip.id} value={eip.id}>{eip.name}{eip.ip ? ` (${eip.ip})` : " (auto)"}</option>
-                                  ))}
-                                </select>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                  <select className="props-select" style={{ fontSize: 11, flex: 1 }}
+                                    value={(pf as Record<string, string>).extIpId || ""}
+                                    onChange={(e) => {
+                                      const updated = [...portForwards];
+                                      (updated[i] as Record<string, string>).extIpId = e.target.value;
+                                      update("portForwards", updated);
+                                    }}>
+                                    <option value="">Select IP...</option>
+                                    {externalIps.map((eip) => (
+                                      <option key={eip.id} value={eip.id}>{eip.name}{eip.ip ? ` (${eip.ip})` : " (auto)"}</option>
+                                    ))}
+                                  </select>
+                                  {(() => {
+                                    const selEip = externalIps.find((e) => e.id === (pf as Record<string, string>).extIpId);
+                                    return selEip?.ip ? (
+                                      <button
+                                        style={{ background: "none", border: "none", color: "var(--troshka-cyan)", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7, transition: "opacity 0.15s" }}
+                                        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                                        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
+                                        title={`Copy ${selEip.ip}`}
+                                        onClick={(e) => { navigator.clipboard.writeText(selEip.ip); const btn = e.currentTarget; const orig = btn.innerHTML; btn.innerHTML = '<span style="font-size:10px">Copied</span>'; setTimeout(() => { btn.innerHTML = orig; }, 1000); }}
+                                      ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                                    ) : null;
+                                  })()}
+                                </div>
                               </div>
-                              {(() => {
-                                const selEip = externalIps.find((e) => e.id === (pf as Record<string, string>).extIpId);
-                                return selEip?.ip ? (
-                                  <button
-                                    style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 12, alignSelf: "end", marginBottom: 4 }}
-                                    title={`Copy ${selEip.ip}`}
-                                    onClick={() => navigator.clipboard.writeText(selEip.ip)}
-                                  >📋</button>
-                                ) : null;
-                              })()}
                               <div className="props-field" style={{ flex: "0 0 50px" }}>
                                 {i === 0 && <label className="props-label">Ext Port</label>}
                                 <input className="props-input" value={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
