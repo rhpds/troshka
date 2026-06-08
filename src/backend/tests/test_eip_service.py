@@ -92,9 +92,8 @@ def test_allocate_eip(mock_ec2_client):
     db.close()
 
 
-@patch("app.services.eip_service.run_ssh_script")
 @patch("app.services.eip_service._get_ec2_client")
-def test_release_eip(mock_ec2_client, mock_ssh):
+def test_release_eip(mock_ec2_client):
     """Test EIP release — calls ec2.release_address and deletes DB row."""
     mock_ec2 = MagicMock()
     mock_ec2_client.return_value = mock_ec2

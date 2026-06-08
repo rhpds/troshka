@@ -6,7 +6,6 @@ from sqlalchemy import func
 
 from app.models.elastic_ip import ElasticIp
 from app.models.provider import Provider
-from app.services.deploy_service import run_ssh_script
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +28,6 @@ def _get_primary_eni(ec2, instance_id: str) -> str:
         if eni["Attachment"]["DeviceIndex"] == 0:
             return eni["NetworkInterfaceId"]
     raise ValueError(f"No primary ENI found for {instance_id}")
-
-
-def _detect_primary_iface(host_ip: str, private_key: str) -> str:
-    """Detect the primary network interface on the host via SSH."""
-    result = run_ssh_script(
-        host_ip,
-        private_key,
-        "ip route show default | awk '{print $5}' | head -1",
-        timeout=10,
-    )
-    lines = [
-        l.strip() for l in result.get("output", "").strip().splitlines()
-        if l.strip() and not l.strip().startswith("Warning:")
-    ]
-    return lines[0] if lines else "eth0"
 
 
 def allocate_eip(
