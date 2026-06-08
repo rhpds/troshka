@@ -599,8 +599,8 @@ export default function PropertiesPanel() {
                           return (ipNum & mask) === (netNum & mask);
                         };
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
-                        const ipConflict = nicIp ? (() => {
-                          const nd = netNode!.data as Record<string, any>;
+                        const ipConflict = nicIp && netNode ? (() => {
+                          const nd = netNode.data as Record<string, any>;
                           const gwIp = (nd.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
                           if (gwIp && gwIp === nicIp) return "gateway IP";
                           if (nd.dnsServerIp === nicIp) return "DNS server IP";
