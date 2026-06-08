@@ -50,7 +50,7 @@ export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [providers, setProviders] = useState<Array<{id: string; name: string; default_region: string; default_ami: string | null}>>([]);
+  const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_ami: string | null}>>([]);
   const [provisioning, setProvisioning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProviderId, setNewProviderId] = useState("");

@@ -82,7 +82,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   };
 
   const isLoginPage = pathname === "/login";
-  const isConsolePage = pathname === "/console";
+  const isConsolePage = pathname?.startsWith("/console");
   const isAuthenticated = !!user && !isLoginPage;
   const isAdmin = user?.role === "admin";
 

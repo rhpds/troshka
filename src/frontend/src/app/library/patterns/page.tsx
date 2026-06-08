@@ -31,6 +31,7 @@ interface Pattern {
   name: string;
   description: string;
   visibility: string;
+  state: string;
   disk_count: number;
   total_size_gb: number;
   total_size_bytes: number;
@@ -112,6 +113,14 @@ export default function PatternsPage() {
 
   useEffect(() => { loadPatterns(); }, []);
 
+  // Poll while any pattern is still saving
+  useEffect(() => {
+    const hasPending = patterns.some((p) => p.state === "creating" || p.state === "capturing");
+    if (!hasPending) return;
+    const timer = setInterval(loadPatterns, 3000);
+    return () => clearInterval(timer);
+  }, [patterns]);
+
   const filtered = patterns.filter((p) => {
     if (!search) return true;
     const q = search.toLowerCase();
@@ -185,13 +194,22 @@ export default function PatternsPage() {
           </EmptyState>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
-            {filtered.map((pattern) => (
-              <Card key={pattern.id} isCompact style={{ cursor: "pointer" }} onClick={() => setPreviewPattern({ id: pattern.id, name: pattern.name })}>
+            {filtered.map((pattern) => {
+              const saving = pattern.state === "creating" || pattern.state === "capturing";
+              return (
+              <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
                 <CardTitle>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <strong>{pattern.name}</strong>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
+                      {saving ? (
+                        <Label color="orange">saving…</Label>
+                      ) : pattern.state === "error" ? (
+                        <Label color="red">error</Label>
+                      ) : (
+                        <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
+                      )}
+                      {!saving && (
                       <span
                         style={{ color: "var(--pf-t--global--color--status--danger--default)", cursor: "pointer", padding: "0 4px", fontSize: 14 }}
                         onClick={(e) => {
@@ -203,6 +221,7 @@ export default function PatternsPage() {
                             });
                         }}
                       >✕</span>
+                      )}
                     </div>
                   </div>
                 </CardTitle>
@@ -219,6 +238,7 @@ export default function PatternsPage() {
                     <Button
                       variant="primary"
                       size="sm"
+                      isDisabled={saving}
                       onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name })}
                     >
                       Create Project
@@ -226,6 +246,7 @@ export default function PatternsPage() {
                     <Button
                       variant="secondary"
                       size="sm"
+                      isDisabled={saving}
                       onClick={() => setBulkPatternId(pattern.id)}
                     >
                       Bulk Deploy
@@ -233,7 +254,8 @@ export default function PatternsPage() {
                   </div>
                 </CardBody>
               </Card>
-            ))}
+              );
+            })}
           </div>
         )}
       </PageSection>

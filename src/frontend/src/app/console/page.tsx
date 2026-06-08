@@ -20,6 +20,9 @@ function ConsolePage() {
   const [status, setStatus] = useState("Connecting...");
   const [wsPort, setWsPort] = useState<number | null>(null);
   const [scaled, setScaled] = useState(true);
+  const [focused, setFocused] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"linux" | "windows" | null>(null);
+  const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
@@ -170,7 +173,95 @@ function ConsolePage() {
     document.title = `Console: ${vmName}`;
   }, [vmName]);
 
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onIn = () => setFocused(true);
+    const onOut = () => setFocused(false);
+    el.addEventListener("focusin", onIn);
+    el.addEventListener("focusout", onOut);
+    return () => { el.removeEventListener("focusin", onIn); el.removeEventListener("focusout", onOut); };
+  }, []);
+
   const btnStyle = { background: "none", border: "1px solid #555", color: "#fff", padding: "2px 8px", borderRadius: 4, fontSize: 11, cursor: "pointer" } as const;
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!openMenu) return;
+    const close = () => setOpenMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [openMenu]);
+
+  const sendCombo = useCallback((keysyms: number[]) => {
+    const r = rfbRef.current as Record<string, any> | null;
+    if (!r?.sendKey) return;
+    const send = r.sendKey as (k: number, c: string | null, d?: boolean) => void;
+    for (const k of keysyms) send.call(r, k, null, true);
+    for (const k of [...keysyms].reverse()) send.call(r, k, null, false);
+  }, []);
+
+  // Listen for key combos from the virtual keyboard popup
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === "vkb-combo" && Array.isArray(e.data.keysyms)) {
+        sendCombo(e.data.keysyms);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [sendCombo]);
+
+  // Close keyboard popup when console page unloads
+  useEffect(() => {
+    return () => { kbWindowRef.current?.close(); };
+  }, []);
+
+  const openKeyboard = useCallback(() => {
+    if (kbWindowRef.current && !kbWindowRef.current.closed) {
+      kbWindowRef.current.focus();
+      return;
+    }
+    kbWindowRef.current = window.open(
+      `/console/keyboard?name=${encodeURIComponent(vmName)}`,
+      "troshka-vkb",
+      "width=900,height=290,menubar=no,toolbar=no,location=no,status=no",
+    );
+  }, []);
+
+  const XK = {
+    Ctrl: 0xffe3, Alt: 0xffe9, Shift: 0xffe1, Super: 0xffeb,
+    Tab: 0xff09, Esc: 0xff1b, Del: 0xffff, Return: 0xff0d,
+    F1: 0xffbe, F2: 0xffbf, F3: 0xffc0, F4: 0xffc1, F5: 0xffc2, F6: 0xffc3,
+    F7: 0xffc4, F8: 0xffc5, F9: 0xffc6, F10: 0xffc7, F11: 0xffc8, F12: 0xffc9,
+  } as const;
+  const k = (ch: string) => ch.charCodeAt(0); // ASCII letter keysym
+
+  type Macro = { label: string; keys: number[] };
+  const linuxMacros: Macro[] = [
+    { label: "Ctrl+C  Interrupt", keys: [XK.Ctrl, k("c")] },
+    { label: "Ctrl+D  EOF / Logout", keys: [XK.Ctrl, k("d")] },
+    { label: "Ctrl+Z  Suspend", keys: [XK.Ctrl, k("z")] },
+    { label: "Ctrl+L  Clear", keys: [XK.Ctrl, k("l")] },
+    { label: "Ctrl+Alt+T  Terminal", keys: [XK.Ctrl, XK.Alt, k("t")] },
+    { label: "Alt+F2  Run Dialog", keys: [XK.Alt, XK.F2] },
+    { label: "Alt+Tab  Switch Window", keys: [XK.Alt, XK.Tab] },
+    { label: "Ctrl+Alt+F1  TTY 1", keys: [XK.Ctrl, XK.Alt, XK.F1] },
+    { label: "Ctrl+Alt+F2  TTY 2", keys: [XK.Ctrl, XK.Alt, XK.F2] },
+    { label: "Ctrl+Alt+F3  TTY 3", keys: [XK.Ctrl, XK.Alt, XK.F3] },
+    { label: "Ctrl+Alt+Del", keys: [XK.Ctrl, XK.Alt, XK.Del] },
+  ];
+  const windowsMacros: Macro[] = [
+    { label: "Ctrl+Alt+Del", keys: [XK.Ctrl, XK.Alt, XK.Del] },
+    { label: "Alt+Tab  Switch Window", keys: [XK.Alt, XK.Tab] },
+    { label: "Alt+F4  Close Window", keys: [XK.Alt, XK.F4] },
+    { label: "Win  Start Menu", keys: [XK.Super] },
+    { label: "Win+R  Run", keys: [XK.Super, k("r")] },
+    { label: "Win+E  Explorer", keys: [XK.Super, k("e")] },
+    { label: "Win+D  Show Desktop", keys: [XK.Super, k("d")] },
+    { label: "Win+L  Lock", keys: [XK.Super, k("l")] },
+    { label: "Ctrl+Shift+Esc  Task Mgr", keys: [XK.Ctrl, XK.Shift, XK.Esc] },
+  ];
 
   if (!projectId) {
     return (
@@ -198,7 +289,31 @@ function ConsolePage() {
           <img src="/images/troshka-logo-dark-200.png" alt="" style={{ height: 20 }} />
           <span>{vmName}</span>
         </div>
-        <span style={{ color: statusColor }}>{status}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: statusColor }}>{status}</span>
+          {status === "Connected" && (
+            <span
+              title={focused ? "Keyboard active — typing goes to VM" : "Click console to activate keyboard"}
+              style={{ display: "flex", alignItems: "center", gap: 5, transition: "opacity 0.2s", opacity: focused ? 1 : 0.5 }}
+            >
+              {focused ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                  <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+              )}
+              <span style={{ fontSize: 10, color: focused ? "#4ade80" : "#888" }}>
+                {focused ? "Focused" : "Unfocused"}
+              </span>
+            </span>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button
             onClick={() => {
@@ -212,7 +327,8 @@ function ConsolePage() {
             {scaled ? "Scaled" : "1:1"}
           </button>
           <button
-            onClick={async () => {
+            onClick={async (e) => {
+              (e.target as HTMLElement).blur();
               let text = "";
               try {
                 text = await navigator.clipboard.readText();
@@ -225,7 +341,6 @@ function ConsolePage() {
               const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
               if (!sendKey) return;
 
-              // Characters that require Shift on US keyboard
               const shiftChars: Record<string, number> = {
                 "_": 0x005f, "~": 0x007e, "!": 0x0021, "@": 0x0040,
                 "#": 0x0023, "$": 0x0024, "%": 0x0025, "^": 0x005e,
@@ -234,8 +349,7 @@ function ConsolePage() {
                 ":": 0x003a, '"': 0x0022, "<": 0x003c, ">": 0x003e,
                 "?": 0x003f,
               };
-              const shiftKeysym = 0xffe1; // XK_Shift_L
-
+              const shiftKeysym = 0xffe1;
               const controlKeys: Record<string, number> = {
                 "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09,
               };
@@ -248,7 +362,6 @@ function ConsolePage() {
                 }
                 let keysym = ch.charCodeAt(0);
                 if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
-
                 const needsShift = ch in shiftChars || (ch >= "A" && ch <= "Z");
                 if (needsShift) sendKey.call(r, shiftKeysym, "", true);
                 sendKey.call(r, keysym, "", true);
@@ -261,16 +374,74 @@ function ConsolePage() {
             Paste
           </button>
           <button
-            onClick={() => {
-              const r = rfbRef.current as { sendCtrlAltDel: () => void } | null;
-              if (r) r.sendCtrlAltDel();
-            }}
-            style={btnStyle}
+            onClick={openKeyboard}
+            style={{ ...btnStyle, display: "flex", alignItems: "center", gap: 4 }}
+            title="Virtual Keyboard"
           >
-            Ctrl+Alt+Del
+            <svg width="18" height="12" viewBox="0 0 18 12" fill="none" stroke="currentColor" strokeWidth="0.8">
+              <rect x="0.5" y="0.5" width="17" height="11" rx="1.5" />
+              <rect x="2" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="5" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="8" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="11" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="14" y="2" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="2" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="5" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="8" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="11" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="14" y="5" width="2" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+              <rect x="5" y="8.5" width="8" height="1.5" rx="0.3" fill="currentColor" stroke="none" />
+            </svg>
           </button>
+          {(["linux", "windows"] as const).map((os) => {
+            const macros = os === "linux" ? linuxMacros : windowsMacros;
+            const isOpen = openMenu === os;
+            return (
+              <div key={os} style={{ position: "relative" }}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setOpenMenu(isOpen ? null : os); }}
+                  style={{ ...btnStyle, background: isOpen ? "rgba(74,222,128,0.15)" : "none", borderColor: isOpen ? "#4ade80" : "#555" }}
+                >
+                  {os === "linux" ? "Linux" : "Windows"} ▾
+                </button>
+                {isOpen && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      position: "absolute", top: "100%", right: 0, marginTop: 4,
+                      background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
+                      padding: "4px 0", minWidth: 220, zIndex: 100,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                    }}
+                  >
+                    {macros.map((m, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { sendCombo(m.keys); setOpenMenu(null); }}
+                        style={{
+                          display: "block", width: "100%", textAlign: "left",
+                          background: "none", border: "none", color: "#fff",
+                          padding: "5px 12px", fontSize: 11, cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                        onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+                        onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
+      <div style={{
+        height: 2,
+        background: focused ? "#4ade80" : "transparent",
+        transition: "background 0.2s",
+      }} />
       <div style={{ flex: 1, position: "relative", background: "#000" }}>
         <div ref={canvasRef} style={{ width: "100%", height: "100%" }} />
         {status !== "Connected" && (
