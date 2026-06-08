@@ -86,6 +86,20 @@ Tests use SQLite with type compiler overrides for JSONB/UUID. Auth is dev-mode (
 - `chpasswd` uses new `users:` format (not deprecated `list: |`)
 - Custom user-data is YAML-validated before appending
 
+### Troshkad (Host Agent Daemon)
+- Single-file Python daemon at `src/troshkad/troshkad.py` — stdlib only, no pip
+- Backend client: `src/backend/app/services/troshkad_client.py`
+- HTTPS on port 31337, bearer token auth, cert fingerprint pinning
+- All host operations go through troshkad — SSH only for initial install + VNC console
+- **Qemu hook** (`/etc/libvirt/hooks/qemu`): lives ONLY in agent install script (`agent_deployer.py`), must NOT call `virsh` (deadlocks virtqemud), parses XML from stdin
+- **Python string escaping**: backslashes in install script heredocs must be doubled (`\\(`, `\\1`, `\\K`)
+- **Shared ISOs**: hard-linked into VM dirs (not symlinked) — prevents qemu permission denied and survives `virsh undefine --remove-all-storage`
+- **File ownership**: chown to `qemu:qemu` after creating disks, seeds, and hard links
+- **Download locking**: `fcntl.flock()` prevents concurrent downloads of same file
+- **Wipe preserves cache**: never deletes `/var/lib/troshka/images/` or `/var/lib/troshka/cache/`
+- **Version**: `VERSION = "dev"` in source, stamped with SHA-256 content hash at push time
+- Agent install restarts `virtqemud` so hook changes take effect
+
 ### Host Operations
 - Disk paths: `/var/lib/troshka/vms/{project_id}/{vm_id[:8]}-{disk_id[:8]}.{format}`
 - Image cache: `/var/lib/troshka/images/{item_id}.{format}`
