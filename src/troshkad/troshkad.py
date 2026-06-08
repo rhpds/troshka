@@ -482,14 +482,14 @@ def _handle_vm_create(job, params):
         path = _validate_path(disk["path"])
         bus = _validate_bus(disk.get("bus", "virtio"))
         device = disk.get("device", "disk")
-        # Create symlink if referencing a shared cached file
-        symlink_from = disk.get("symlink_from")
-        if symlink_from:
-            symlink_from = _validate_path(symlink_from)
+        # Hard-link shared cached files into VM dir (preserves permissions, survives --remove-all-storage)
+        link_from = disk.get("symlink_from")
+        if link_from:
+            link_from = _validate_path(link_from)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             try:
-                os.symlink(symlink_from, path)
-                job["output"].append(f"Symlinked {os.path.basename(path)} -> {symlink_from}")
+                os.link(link_from, path)
+                job["output"].append(f"Linked {os.path.basename(path)} -> {link_from}")
             except FileExistsError:
                 pass
         disk_arg = f"path={path},bus={bus}"
