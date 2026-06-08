@@ -162,6 +162,14 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             s.commit()
             result = deploy_agent(h.ip_address, h.private_key, h.id)
             h.agent_status = "connected" if result["success"] else "install_failed"
+
+            # Store troshkad credentials
+            creds = result.get("troshkad_credentials", {})
+            if creds.get("token") and creds.get("fingerprint"):
+                h.agent_token = creds["token"]
+                h.agent_cert_fingerprint = creds["fingerprint"]
+                logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
             s.commit()
         except Exception:
             logger.exception("Auto-install failed for host %s", host.id)
@@ -219,6 +227,14 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
             s.commit()
             result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id)
             h.agent_status = "connected" if result["success"] else "install_failed"
+
+            # Store troshkad credentials
+            creds = result.get("troshkad_credentials", {})
+            if creds.get("token") and creds.get("fingerprint"):
+                h.agent_token = creds["token"]
+                h.agent_cert_fingerprint = creds["fingerprint"]
+                logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
             s.commit()
         except Exception:
             import logging
@@ -388,6 +404,14 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
             s.commit()
             result = deploy_agent(h.ip_address, h.private_key, h.id)
             h.agent_status = "connected" if result["success"] else "install_failed"
+
+            # Store troshkad credentials
+            creds = result.get("troshkad_credentials", {})
+            if creds.get("token") and creds.get("fingerprint"):
+                h.agent_token = creds["token"]
+                h.agent_cert_fingerprint = creds["fingerprint"]
+                logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
             s.commit()
 
             if result["success"]:

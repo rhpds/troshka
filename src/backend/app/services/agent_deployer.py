@@ -118,6 +118,74 @@ AGENTCFG
 # Verify libvirt
 virsh list --all > /dev/null 2>&1 && echo "libvirt: OK" || echo "libvirt: FAILED"
 
+# ── Install troshkad daemon ──
+echo "Installing troshkad daemon..."
+mkdir -p /opt/troshka/tls
+
+# Generate TLS cert if not present
+if [ ! -f /opt/troshka/tls/server.crt ]; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -nodes -days 3650 -subj "/CN=troshkad" \
+        -keyout /opt/troshka/tls/server.key -out /opt/troshka/tls/server.crt 2>/dev/null
+    chmod 600 /opt/troshka/tls/server.key
+    echo "troshkad: TLS certificate generated"
+else
+    echo "troshkad: TLS certificate already exists"
+fi
+
+# Generate config with token if not present
+if [ ! -f /opt/troshka/troshkad.conf ]; then
+    TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    cat > /opt/troshka/troshkad.conf << TROSHKADCFG
+{{
+  "port": 31337,
+  "token": "$TROSHKAD_TOKEN",
+  "tls_cert": "/opt/troshka/tls/server.crt",
+  "tls_key": "/opt/troshka/tls/server.key",
+  "host_id": "{host_id}",
+  "max_concurrent_jobs": 4,
+  "drain_timeout_seconds": 300
+}}
+TROSHKADCFG
+    chmod 600 /opt/troshka/troshkad.conf
+    echo "troshkad: config generated"
+else
+    echo "troshkad: config already exists"
+fi
+
+# Write systemd unit
+cat > /etc/systemd/system/troshkad.service << 'SYSTEMDEOF'
+[Unit]
+Description=Troshka Host Agent Daemon
+After=network.target libvirtd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/troshka/troshkad.py
+WorkingDirectory=/opt/troshka
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMDEOF
+
+systemctl daemon-reload
+systemctl enable --now troshkad
+
+# Open firewall port
+if which firewall-cmd &>/dev/null; then
+    firewall-cmd --add-port=31337/tcp --permanent 2>/dev/null || true
+    firewall-cmd --reload 2>/dev/null || true
+fi
+
+echo "troshkad: service started"
+
+# Output credentials for backend to capture
+CERT_FP=$(openssl x509 -in /opt/troshka/tls/server.crt -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//')
+TOKEN=$(python3 -c "import json; print(json.load(open('/opt/troshka/troshkad.conf'))['token'])")
+echo "TROSHKAD_CREDENTIALS:$TOKEN:$CERT_FP"
+
 # Report status
 echo "=== Agent installation complete ==="
 echo "Host ID: {host_id}"
@@ -186,6 +254,32 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
 
         logger.info("Deploying agent to %s", host_ip)
 
+        # SCP troshkad.py to host
+        troshkad_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "troshkad",
+            "troshkad.py"
+        )
+        if os.path.exists(troshkad_path):
+            logger.info("Copying troshkad.py to %s", host_ip)
+            scp_result = subprocess.run(
+                ["scp", *ssh_opts, troshkad_path, f"ec2-user@{host_ip}:/tmp/troshkad.py"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if scp_result.returncode != 0:
+                logger.warning("SCP troshkad.py failed: %s", scp_result.stderr)
+            else:
+                subprocess.run(
+                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mv", "/tmp/troshkad.py", "/opt/troshka/troshkad.py"],
+                    capture_output=True,
+                    timeout=30,
+                )
+        else:
+            logger.warning("troshkad.py not found at %s", troshkad_path)
+
+        # Run install script
         result = subprocess.run(
             ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "bash", "-s"],
             input=script,
@@ -197,12 +291,24 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
         output = result.stdout + result.stderr
         success = result.returncode == 0
 
+        # Extract troshkad credentials from output
+        troshkad_credentials = {}
+        for line in output.splitlines():
+            if line.startswith("TROSHKAD_CREDENTIALS:"):
+                rest = line.split(":", 1)[1]
+                troshkad_credentials = {
+                    "token": rest[:64],
+                    "fingerprint": rest[65:]
+                }
+                break
+
         logger.info("Agent deploy %s on %s (exit %d)", "succeeded" if success else "failed", host_ip, result.returncode)
 
         return {
             "success": success,
             "exit_code": result.returncode,
             "output": output,
+            "troshkad_credentials": troshkad_credentials,
         }
     finally:
         os.unlink(key_path)

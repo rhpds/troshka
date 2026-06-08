@@ -60,7 +60,7 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
         GroupId=sg_id,
         IpPermissions=[
             {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
-            {"IpProtocol": "tcp", "FromPort": 8443, "ToPort": 8443, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Agent WS"}]},
+            {"IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Troshkad API"}]},
             {"IpProtocol": "udp", "FromPort": 4789, "ToPort": 4789, "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}]},
         ],
     )
