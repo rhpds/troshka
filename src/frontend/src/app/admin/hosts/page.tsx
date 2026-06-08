@@ -238,16 +238,35 @@ export default function AdminHostsPage() {
 
   const installAgent = async (hostId: string) => {
     setInstalling(hostId);
-    setInstallOutput((prev) => ({ ...prev, [hostId]: "Installing..." }));
+    setInstallOutput((prev) => ({ ...prev, [hostId]: "" }));
     try {
       const resp = await fetch(`/api/v1/hosts/${hostId}/install-agent`, { method: "POST" });
-      const data = await resp.json();
-      if (data.success) {
-        setInstallOutput((prev) => ({ ...prev, [hostId]: "Agent installed successfully" }));
-        loadData();
-      } else {
-        setInstallOutput((prev) => ({ ...prev, [hostId]: `Failed (exit ${data.exit_code}): ${data.output?.slice(-200) || "unknown error"}` }));
+      if (!resp.ok) {
+        const data = await resp.json();
+        setInstallOutput((prev) => ({ ...prev, [hostId]: data.detail || "Install request failed" }));
+        setInstalling(null);
+        return;
       }
+      // Poll until agent connects (install runs in background)
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const hostsResp = await fetch("/api/v1/hosts/");
+        if (hostsResp.ok) {
+          const hostsList = await hostsResp.json();
+          const updated = hostsList.find((x: Host) => x.id === hostId);
+          if (updated?.agent_status === "connected") {
+            setInstallOutput((prev) => ({ ...prev, [hostId]: "" }));
+            loadData();
+            setInstalling(null);
+            return;
+          } else if (updated?.agent_status === "install_failed") {
+            setInstallOutput((prev) => ({ ...prev, [hostId]: "Agent install failed — check server logs" }));
+            setInstalling(null);
+            return;
+          }
+        }
+      }
+      setInstallOutput((prev) => ({ ...prev, [hostId]: "Install timed out — check host status" }));
     } catch {
       setInstallOutput((prev) => ({ ...prev, [hostId]: "Connection failed" }));
     }
