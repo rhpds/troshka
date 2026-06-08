@@ -325,53 +325,49 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
     project, host = _get_project_and_host(project_id, user, db)
 
     if project.state == "stopped":
-        from app.models.elastic_ip import ElasticIp
-        from app.services.eip_service import associate_eip
-        from app.services.deploy_service import run_ssh_script
-        from app.services.vxlan import build_host_network_config
-        import copy, json
-        from sqlalchemy import text
-
-        topo = project.deployed_topology or project.topology or {}
-
-        # Re-associate EIPs first so topology has _private_ip for DNAT rules
-        project_eips = db.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
-        for eip in project_eips:
-            try:
-                associate_eip(db, eip, host)
-                for ext_ip in topo.get("externalIps", []):
-                    if ext_ip.get("id") == eip.canvas_eip_id:
-                        ext_ip["_private_ip"] = eip.private_ip
-                        ext_ip["ip"] = eip.public_ip
-            except Exception:
-                logger.warning("Failed to re-associate EIP %s on VM start", eip.public_ip)
-
-        if project_eips:
-            db.execute(text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                       {"topo": json.dumps(topo), "pid": project_id})
-            db.commit()
-
-        # Recreate bridges and DNAT rules
-        vni_map = project.vni_map or {}
-        if vni_map:
-            all_hosts = db.query(Host).filter(Host.state == "active").all()
-            peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-            net_config = build_host_network_config(topo, vni_map, peer_ips)
-            net_script = generate_setup_script(net_config, host.ip_address, project_id)
-            run_ssh_script(host.ip_address, host.private_key, net_script, timeout=60)
-
-        # Re-cache any missing library images
-        from app.services.deploy_service import cache_library_images
-        topo_for_cache = project.deployed_topology or project.topology or {}
-        cache_library_images(topo_for_cache, host.ip_address, host.private_key, db)
-
-        project.state = "active"
+        # Project is stopped — need to bring up infra (EIPs, bridges, cache) in background
+        import threading
+        project.state = "starting"
         db.commit()
+        p_id = project.id
+        h_id = host.id
+        target_vm_id = vm_id
+
+        def _start_infra_then_vm():
+            from app.services.deploy_service import start_project_async
+            start_project_async(p_id)
+            # After project start completes, the target VM should already be running
+            # (start_project_async starts all auto-start VMs). If the target VM has
+            # auto-start disabled, start it now.
+            from app.core.database import SessionLocal
+            from app.models.project import Project
+            s = SessionLocal()
+            try:
+                proj = s.query(Project).filter_by(id=p_id).first()
+                if proj and proj.state == "active":
+                    h = s.query(Host).filter_by(id=h_id).first()
+                    if h:
+                        dom = _domain_name(p_id, target_vm_id)
+                        conn = libvirt_mgr.connect(h.ip_address, h.private_key)
+                        try:
+                            libvirt_mgr.start_vm(conn, dom)
+                        except Exception:
+                            pass
+                        finally:
+                            conn.close()
+            finally:
+                s.close()
+
+        threading.Thread(target=_start_infra_then_vm, daemon=True).start()
+        return {"action": "start", "success": True, "starting_project": True}
 
     dom = _domain_name(project_id, vm_id)
     conn = libvirt_mgr.connect(host.ip_address, host.private_key)
     try:
-        return {"action": "start", "success": libvirt_mgr.start_vm(conn, dom)}
+        success = libvirt_mgr.start_vm(conn, dom)
+        return {"action": "start", "success": success}
+    except Exception as e:
+        return {"action": "start", "success": False, "output": str(e)}
     finally:
         conn.close()
 
