@@ -347,6 +347,7 @@ export default function ProjectsPage() {
                       style={{ fontSize: 11, padding: "2px 8px" }}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
                         setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
                         fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }).then(r => r.json()).then(d => {
                           if (d.status === "deploying") {
