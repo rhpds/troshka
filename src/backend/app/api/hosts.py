@@ -579,3 +579,65 @@ def gc_run(host_id: str, user: User = Depends(require_role("admin")), db: Sessio
 
     from app.services.gc_service import reconcile_host
     return reconcile_host(host_id, dry_run=False)
+
+
+@router.post("/{host_id}/update-agent")
+def update_agent(host_id: str, force: bool = False, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Push a troshkad update to a host."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if host.agent_status != "connected":
+        raise HTTPException(status_code=400, detail="Agent not connected")
+    if not host.agent_token:
+        raise HTTPException(status_code=400, detail="No agent credentials")
+
+    # Read the current troshkad.py
+    import os
+    troshkad_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))), "troshkad", "troshkad.py")
+    if not os.path.exists(troshkad_path):
+        raise HTTPException(status_code=500, detail="troshkad.py not found on server")
+
+    with open(troshkad_path, "rb") as f:
+        script_bytes = f.read()
+
+    # Extract version from script
+    version = "unknown"
+    for line in script_bytes.decode().split("\n"):
+        if line.startswith("VERSION"):
+            version = line.split("=")[1].strip().strip('"').strip("'")
+            break
+
+    # Push update in background thread
+    import threading
+    def _push():
+        from app.core.database import SessionLocal
+        from app.services.troshkad_client import push_update, check_health, TroshkadError
+        s = SessionLocal()
+        try:
+            h = s.query(Host).filter_by(id=host_id).first()
+            if not h:
+                return
+            try:
+                push_update(h, script_bytes, version, force=force)
+                # Wait for restart and verify new version
+                import time
+                for _ in range(30):
+                    time.sleep(5)
+                    health = check_health(h)
+                    if health and health.get("version") == version:
+                        h.agent_version = version
+                        s.commit()
+                        logger.info("Host %s updated to troshkad %s", host_id[:8], version)
+                        return
+                logger.warning("Host %s update: did not confirm version %s", host_id[:8], version)
+            except TroshkadError as e:
+                logger.error("Host %s update failed: %s", host_id[:8], e)
+        except Exception:
+            logger.exception("Update agent failed for host %s", host_id)
+        finally:
+            s.close()
+
+    threading.Thread(target=_push, daemon=True).start()
+    return {"status": "updating", "version": version, "force": force}

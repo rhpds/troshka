@@ -31,6 +31,8 @@ interface Host {
   storage_free_gb?: number;
   max_eips: number;
   used_eips: number;
+  agent_version: string | null;
+  last_health_at: string | null;
   created_at: string;
 }
 
@@ -406,8 +408,13 @@ export default function AdminHostsPage() {
                   </span>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${agentColors[h.agent_status] || "#94a3b8"}22`, color: agentColors[h.agent_status] || "#94a3b8" }}>
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
-                    {agentLabels[h.agent_status] || h.agent_status}
+                    {agentLabels[h.agent_status] || h.agent_status}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
+                  {h.agent_status === "connected" && h.last_health_at && (
+                    <span style={{ fontSize: 11, opacity: 0.5 }}>
+                      health: {Math.round((Date.now() - new Date(h.last_health_at).getTime()) / 1000)}s ago
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                   {h.instance_type} · {h.region} · {h.ip_address || "no IP"} · {h.host_type}
@@ -451,32 +458,53 @@ export default function AdminHostsPage() {
                 </Button>
               )}
               {h.state === "active" && h.agent_status === "connected" && (
-                <Button variant="secondary" onClick={async () => {
-                  const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
-                  if (resp.ok) {
-                    const report = await resp.json();
-                    const cap = report.capacity || {};
-                    const orphans = report.orphans_found || 0;
-                    const cleaned = report.cleanup?.cleaned || 0;
-                    const parts = [];
-                    if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
-                    else parts.push("Capacity: already in sync");
-                    if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
-                    else parts.push("No orphans found");
-                    const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
-                    const staleCache = report.orphans?.stale_cache?.length || 0;
-                    if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
-                    const repaired = report.network_repair?.repaired || 0;
-                    if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
-                    else parts.push("Network bridges: OK");
-                    alert(parts.join("\n"));
-                    loadData();
-                  } else {
-                    alert("GC failed — check server logs");
-                  }
-                }}>
-                  Clean
-                </Button>
+                <>
+                  <Button variant="secondary" onClick={async () => {
+                    const confirmMsg = "Update troshkad on this host? This will briefly interrupt operations.";
+                    if (!window.confirm(confirmMsg)) return;
+                    let force = false;
+                    if (window.confirm("Force update? This will kill any running jobs.")) {
+                      force = true;
+                    }
+                    const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
+                    if (resp.ok) {
+                      const data = await resp.json();
+                      alert(`Update initiated. Target version: ${data.version}${force ? " (forced)" : ""}`);
+                      loadData();
+                    } else {
+                      const data = await resp.json();
+                      alert(data.detail || "Update failed");
+                    }
+                  }}>
+                    Update Agent
+                  </Button>
+                  <Button variant="secondary" onClick={async () => {
+                    const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
+                    if (resp.ok) {
+                      const report = await resp.json();
+                      const cap = report.capacity || {};
+                      const orphans = report.orphans_found || 0;
+                      const cleaned = report.cleanup?.cleaned || 0;
+                      const parts = [];
+                      if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
+                      else parts.push("Capacity: already in sync");
+                      if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                      else parts.push("No orphans found");
+                      const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
+                      const staleCache = report.orphans?.stale_cache?.length || 0;
+                      if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
+                      const repaired = report.network_repair?.repaired || 0;
+                      if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
+                      else parts.push("Network bridges: OK");
+                      alert(parts.join("\n"));
+                      loadData();
+                    } else {
+                      alert("GC failed — check server logs");
+                    }
+                  }}>
+                    Clean
+                  </Button>
+                </>
               )}
               {h.state === "active" && (
                 <Button variant="secondary" onClick={() => {

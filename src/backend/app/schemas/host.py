@@ -28,6 +28,7 @@ class HostResponse(BaseModel):
     max_eips: int = 0
     used_eips: int = 0
     agent_version: str | None = None
+    last_health_at: datetime.datetime | None = None
     created_at: datetime.datetime
 
     model_config = {"from_attributes": True}
