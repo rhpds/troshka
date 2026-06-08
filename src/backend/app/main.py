@@ -2,6 +2,8 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,11 +12,20 @@ from app.core.database import init_db
 
 init_db()
 
+
+@asynccontextmanager
+async def lifespan(app):
+    from app.services.health_poller import start_health_poller
+    start_health_poller()
+    yield
+
+
 app = FastAPI(
     title=config.app.name,
     description="Nested VM Environment Builder",
     version="0.1.0",
     root_path=config.app.root_path,
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -48,12 +59,6 @@ app.include_router(provider_routes.router, prefix="/api/v1")
 app.include_router(library_routes.router, prefix="/api/v1")
 app.include_router(pattern_routes.router, prefix="/api/v1")
 app.include_router(eip_routes.router, prefix="/api/v1")
-
-
-@app.on_event("startup")
-def startup_event():
-    from app.services.health_poller import start_health_poller
-    start_health_poller()
 
 
 @app.get("/api/v1/health")
