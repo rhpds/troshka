@@ -238,6 +238,8 @@ def clean_orphans(host, orphans: dict) -> dict:
         lines.append(f'echo "Removing orphaned bridge: {bridge}"')
         lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
         lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
+        lines.append(f"ip rule del iif {bridge} table {vni} 2>/dev/null || true")
+        lines.append(f"ip route flush table {vni} 2>/dev/null || true")
         lines.append(f"ip link del {bridge} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
 

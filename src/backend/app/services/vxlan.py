@@ -305,11 +305,20 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
         vxlan_cmds.append(f"ip link set {bridge} up")
 
         # Assign bridge IP if DHCP/DNS is enabled (bridge acts as gateway)
+        # Use policy routing to isolate bridge subnets — each VNI gets its own
+        # routing table so multiple bridges with the same CIDR don't conflict.
         if net.get("dhcp_enabled") or net.get("dns_enabled"):
             gateway_ip = net.get("dhcp_config", {}).get("gateway", "")
             if gateway_ip and cidr:
                 prefix = cidr.split("/")[1] if "/" in cidr else "24"
+                rt_table = vni
                 vxlan_cmds.append(f"ip addr add {gateway_ip}/{prefix} dev {bridge} 2>/dev/null || true")
+                vxlan_cmds.append(f"ip route del {cidr} dev {bridge} table main 2>/dev/null || true")
+                vxlan_cmds.append(f"ip rule del iif {bridge} table {rt_table} 2>/dev/null || true")
+                vxlan_cmds.append(f"ip rule add iif {bridge} table {rt_table} priority {rt_table}")
+                vxlan_cmds.append(f"ip route flush table {rt_table} 2>/dev/null || true")
+                vxlan_cmds.append(f"ip route add {cidr} dev {bridge} scope link table {rt_table}")
+                vxlan_cmds.append(f"ip route add default via $(ip route show default | awk '{{print $3}}' | head -1) table {rt_table}")
 
         # DHCP via per-bridge dnsmasq instance
         if net.get("dhcp_enabled"):
