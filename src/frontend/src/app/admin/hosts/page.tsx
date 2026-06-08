@@ -512,7 +512,7 @@ export default function AdminHostsPage() {
                   </Button>
                   <Button variant="danger" onClick={async () => {
                     if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
-                    if (!window.confirm("This cannot be undone. Type YES to confirm.")) return;
+                    if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
                     const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
                     if (resp.ok) {
                       const data = await resp.json();
