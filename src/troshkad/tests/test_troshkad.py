@@ -230,5 +230,184 @@ class TestTroshkadServer(unittest.TestCase):
             troshkad._draining = False
 
 
+from unittest.mock import patch, MagicMock
+
+
+class TestVmHandlers(unittest.TestCase):
+    """Unit tests for VM command handlers — mock subprocess."""
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_create_calls_virt_install(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="Domain created", stderr="")
+        job = troshkad._create_job("vms/create", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "vcpus": 2,
+            "ram_mb": 4096,
+            "disks": [{"path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2", "bus": "virtio"}],
+            "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+            "seed_iso": "/var/lib/troshka/vms/proj/aabb-seed.iso",
+        })
+        result = troshkad._handle_vm_create(job, job["params"])
+        self.assertTrue(mock_run.called)
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "virt-install")
+        self.assertIn("--name", cmd)
+        self.assertIn("troshka-aabbccdd-11223344", cmd)
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_destroy_calls_virsh(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("vms/destroy", {"domain_name": "troshka-aabb1122-11223344"})
+        troshkad._handle_vm_destroy(job, job["params"])
+        calls = [c[0][0] for c in mock_run.call_args_list]
+        # Should call virsh destroy, then virsh undefine
+        self.assertTrue(any("destroy" in c for c in calls))
+        self.assertTrue(any("undefine" in c for c in calls))
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_start(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="Domain started", stderr="")
+        job = troshkad._create_job("vms/start", {"domain_name": "troshka-aabb1122-11223344"})
+        troshkad._handle_vm_start(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[:2], ["virsh", "start"])
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_stop(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="Domain stopped", stderr="")
+        job = troshkad._create_job("vms/stop", {"domain_name": "troshka-aabb1122-11223344"})
+        troshkad._handle_vm_stop(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[:2], ["virsh", "shutdown"])
+
+    def test_vm_create_rejects_invalid_domain(self):
+        """Domain name must match troshka-{hex}-{hex} pattern."""
+        job = troshkad._create_job("vms/create", {
+            "domain_name": "evil; rm -rf /",
+            "vcpus": 2, "ram_mb": 4096, "disks": [], "networks": [],
+        })
+        with self.assertRaises(ValueError):
+            troshkad._handle_vm_create(job, job["params"])
+
+
+class TestStorageHandlers(unittest.TestCase):
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_disk_create_qcow2(self, mock_run, mock_makedirs):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("disks/create", {
+            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+            "size_gb": 20,
+            "format": "qcow2",
+        })
+        result = troshkad._handle_disk_create(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], "qemu-img")
+        self.assertIn("create", cmd)
+        self.assertEqual(result["status"], "created")
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_disk_create_with_backing(self, mock_run, mock_makedirs):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("disks/create", {
+            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+            "size_gb": 20,
+            "format": "qcow2",
+            "backing_file": "/var/lib/troshka/images/base.qcow2",
+        })
+        troshkad._handle_disk_create(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("-b", cmd)
+
+    @patch("troshkad.subprocess.run")
+    def test_disk_resize(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("disks/resize", {
+            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+            "new_size_gb": 40,
+        })
+        troshkad._handle_disk_resize(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[:2], ["qemu-img", "resize"])
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_seed_create(self, mock_run, mock_makedirs):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        # Mock tempfile module to use a local temp dir instead of /var/lib/troshka/tmp
+        with patch("tempfile.TemporaryDirectory") as mock_tempdir:
+            mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
+            job = troshkad._create_job("seeds/create", {
+                "path": "/var/lib/troshka/vms/proj-id/aabb-seed.iso",
+                "meta_data": "instance-id: test",
+                "user_data": "#cloud-config\npassword: test",
+            })
+            with patch("builtins.open", unittest.mock.mock_open()):
+                troshkad._handle_seed_create(job, job["params"])
+            cmd = mock_run.call_args[0][0]
+            self.assertEqual(cmd[0], "xorriso")
+
+    def test_disk_create_rejects_bad_path(self):
+        job = troshkad._create_job("disks/create", {
+            "path": "/etc/passwd",
+            "size_gb": 20, "format": "qcow2",
+        })
+        with self.assertRaises(ValueError):
+            troshkad._handle_disk_create(job, job["params"])
+
+
+class TestNetworkHandlers(unittest.TestCase):
+
+    @patch("troshkad.subprocess.run")
+    def test_network_setup(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("networks/setup", {
+            "network_name": "troshka-net-aabb",
+            "cidr": "192.168.100.0/24",
+            "vni": 10001,
+            "bridge_name": "br-troshka-aabb",
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+        })
+        result = troshkad._handle_network_setup(job, job["params"])
+        self.assertEqual(result["status"], "configured")
+
+    @patch("troshkad.subprocess.run")
+    def test_network_teardown(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("networks/teardown", {
+            "network_name": "troshka-net-aabb",
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+        })
+        result = troshkad._handle_network_teardown(job, job["params"])
+        self.assertEqual(result["status"], "removed")
+
+
+class TestOpsHandlers(unittest.TestCase):
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_snapshot_create(self, mock_run, mock_makedirs):
+        # Mock the virsh commands
+        def run_side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            # Mock domblklist to return a disk path
+            if "domblklist" in cmd:
+                result.stdout = "Type       Device  Target     Source\nfile       disk    vda        /var/lib/troshka/vms/proj/disk.qcow2\n"
+            return result
+
+        mock_run.side_effect = run_side_effect
+        job = troshkad._create_job("snapshots/create", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "output_path": "/var/lib/troshka/tmp/snapshot.qcow2",
+        })
+        result = troshkad._handle_snapshot_create(job, job["params"])
+        self.assertEqual(result["status"], "created")
+
+
 if __name__ == "__main__":
     unittest.main()

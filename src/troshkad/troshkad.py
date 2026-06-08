@@ -343,6 +343,364 @@ def handle_dispatch_command(handler, params):
     handler._send_json(status, response)
 
 
+# ── Param validation ──
+
+import re
+
+_DOMAIN_RE = re.compile(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$")
+_PATH_RE = re.compile(r"^/var/lib/troshka/")
+_UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+_NET_NAME_RE = re.compile(r"^troshka-net-[a-f0-9]+$")
+_BRIDGE_RE = re.compile(r"^br-troshka-[a-f0-9]+$")
+
+
+def _validate_domain_name(name):
+    if not _DOMAIN_RE.match(name):
+        raise ValueError(f"Invalid domain name: {name}")
+    return name
+
+
+def _validate_path(path):
+    normalized = os.path.normpath(path)
+    if not _PATH_RE.match(normalized):
+        raise ValueError(f"Path must be under /var/lib/troshka/: {path}")
+    return normalized
+
+
+def _validate_network_name(name):
+    if not _NET_NAME_RE.match(name):
+        raise ValueError(f"Invalid network name: {name}")
+    return name
+
+
+def _validate_bridge_name(name):
+    if not _BRIDGE_RE.match(name):
+        raise ValueError(f"Invalid bridge name: {name}")
+    return name
+
+
+def _validate_project_id(pid):
+    if not _UUID_RE.match(pid):
+        raise ValueError(f"Invalid project ID: {pid}")
+    return pid
+
+
+def _run_cmd(job, cmd, timeout=600):
+    """Run a subprocess command, appending output to job. Returns CompletedProcess."""
+    job["output"].append(f"$ {' '.join(cmd)}")
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if proc.stdout:
+        job["output"].extend(proc.stdout.strip().split("\n"))
+    if proc.stderr:
+        job["output"].extend(proc.stderr.strip().split("\n"))
+    if proc.returncode != 0:
+        raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(cmd)}")
+    return proc
+
+
+# ── VM handlers ──
+
+def _handle_vm_create(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    vcpus = int(params["vcpus"])
+    ram_mb = int(params["ram_mb"])
+    disks = params.get("disks", [])
+    networks = params.get("networks", [])
+    seed_iso = params.get("seed_iso")
+
+    cmd = [
+        "virt-install",
+        "--name", domain,
+        "--vcpus", str(vcpus),
+        "--memory", str(ram_mb),
+        "--os-variant", "generic",
+        "--noautoconsole",
+        "--noreboot",
+        "--import",
+    ]
+    for disk in disks:
+        path = _validate_path(disk["path"])
+        bus = disk.get("bus", "virtio")
+        cmd.extend(["--disk", f"path={path},bus={bus}"])
+    for net in networks:
+        bridge = net.get("bridge", "")
+        model = net.get("model", "virtio")
+        mac = net.get("mac", "")
+        net_arg = f"bridge={bridge},model={model}"
+        if mac:
+            net_arg += f",mac={mac}"
+        cmd.extend(["--network", net_arg])
+    if seed_iso:
+        cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
+    _run_cmd(job, cmd, timeout=600)
+    return {"domain": domain, "status": "created"}
+
+COMMAND_HANDLERS["vms/create"] = _handle_vm_create
+
+
+def _handle_vm_destroy(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    # Destroy (force stop) — may fail if already stopped, that's OK
+    try:
+        _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+    except RuntimeError:
+        job["output"].append("Domain may already be stopped, continuing with undefine")
+    _run_cmd(job, ["virsh", "undefine", domain, "--nvram", "--remove-all-storage"], timeout=30)
+    return {"domain": domain, "status": "destroyed"}
+
+COMMAND_HANDLERS["vms/destroy"] = _handle_vm_destroy
+
+
+def _handle_vm_start(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "start", domain], timeout=60)
+    return {"domain": domain, "status": "started"}
+
+COMMAND_HANDLERS["vms/start"] = _handle_vm_start
+
+
+def _handle_vm_stop(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "shutdown", domain], timeout=60)
+    return {"domain": domain, "status": "stopped"}
+
+COMMAND_HANDLERS["vms/stop"] = _handle_vm_stop
+
+
+def _handle_vm_reboot(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "reboot", domain], timeout=60)
+    return {"domain": domain, "status": "rebooted"}
+
+COMMAND_HANDLERS["vms/reboot"] = _handle_vm_reboot
+
+
+# ── Storage handlers ──
+
+def _handle_disk_create(job, params):
+    path = _validate_path(params["path"])
+    size_gb = int(params["size_gb"])
+    fmt = params.get("format", "qcow2")
+    backing = params.get("backing_file")
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cmd = ["qemu-img", "create", "-f", fmt]
+    if backing:
+        backing = _validate_path(backing)
+        cmd.extend(["-b", backing, "-F", fmt])
+    cmd.extend([path, f"{size_gb}G"])
+    _run_cmd(job, cmd)
+    return {"path": path, "status": "created"}
+
+COMMAND_HANDLERS["disks/create"] = _handle_disk_create
+
+
+def _handle_disk_resize(job, params):
+    path = _validate_path(params["path"])
+    new_size_gb = int(params["new_size_gb"])
+    _run_cmd(job, ["qemu-img", "resize", path, f"{new_size_gb}G"])
+    return {"path": path, "status": "resized"}
+
+COMMAND_HANDLERS["disks/resize"] = _handle_disk_resize
+
+
+def _handle_seed_create(job, params):
+    path = _validate_path(params["path"])
+    meta_data = params.get("meta_data", "")
+    user_data = params.get("user_data", "")
+    network_config = params.get("network_config", "")
+
+    import tempfile as _tf
+    with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+        if meta_data:
+            with open(os.path.join(tmpdir, "meta-data"), "w") as f:
+                f.write(meta_data)
+        if user_data:
+            with open(os.path.join(tmpdir, "user-data"), "w") as f:
+                f.write(user_data)
+        if network_config:
+            with open(os.path.join(tmpdir, "network-config"), "w") as f:
+                f.write(network_config)
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _run_cmd(job, [
+            "xorriso", "-as", "genisoimage",
+            "-output", path,
+            "-volid", "cidata",
+            "-joliet", "-rock",
+            tmpdir + "/",
+        ])
+    return {"path": path, "status": "created"}
+
+COMMAND_HANDLERS["seeds/create"] = _handle_seed_create
+
+
+def _handle_image_cache(job, params):
+    url = params["url"]
+    dest_path = _validate_path(params["dest_path"])
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    _run_cmd(job, ["curl", "-fSL", "-o", dest_path, url], timeout=3600)
+    fmt = params.get("expected_format")
+    if fmt == "qcow2":
+        _run_cmd(job, ["qemu-img", "check", dest_path], timeout=60)
+    return {"path": dest_path, "status": "cached"}
+
+COMMAND_HANDLERS["images/cache"] = _handle_image_cache
+
+
+# ── Network handlers ──
+
+def _handle_network_setup(job, params):
+    network_name = _validate_network_name(params["network_name"])
+    cidr = params["cidr"]
+    vni = int(params["vni"])
+    bridge_name = _validate_bridge_name(params["bridge_name"])
+    project_id = _validate_project_id(params["project_id"])
+    ns = f"troshka-{project_id[:8]}"
+
+    # Create namespace
+    try:
+        _run_cmd(job, ["ip", "netns", "add", ns])
+    except RuntimeError:
+        job["output"].append(f"Namespace {ns} may already exist, continuing")
+
+    # Create bridge in namespace
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge_name, "type", "bridge"])
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add", cidr, "dev", bridge_name])
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge_name, "up"])
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
+
+    return {"network": network_name, "namespace": ns, "status": "configured"}
+
+COMMAND_HANDLERS["networks/setup"] = _handle_network_setup
+
+
+def _handle_network_teardown(job, params):
+    network_name = _validate_network_name(params["network_name"])
+    project_id = _validate_project_id(params["project_id"])
+    ns = f"troshka-{project_id[:8]}"
+
+    try:
+        _run_cmd(job, ["ip", "netns", "delete", ns])
+    except RuntimeError:
+        job["output"].append(f"Namespace {ns} may not exist, continuing")
+
+    return {"network": network_name, "status": "removed"}
+
+COMMAND_HANDLERS["networks/teardown"] = _handle_network_teardown
+
+
+def _handle_eip_configure(job, params):
+    project_id = _validate_project_id(params["project_id"])
+    eip_mappings = params.get("eip_mappings", [])
+    ns = f"troshka-{project_id[:8]}"
+
+    for mapping in eip_mappings:
+        public_ip = mapping["public_ip"]
+        private_ip = mapping["private_ip"]
+        _run_cmd(job, [
+            "ip", "netns", "exec", ns, "nft", "add", "rule",
+            "ip", "nat", "postrouting",
+            "ip", "saddr", private_ip,
+            "counter", "masquerade",
+        ])
+
+    return {"project_id": project_id, "status": "configured"}
+
+COMMAND_HANDLERS["eips/configure"] = _handle_eip_configure
+
+
+# ── Operations handlers ──
+
+def _handle_gc_run(job, params):
+    job["output"].append("Running garbage collection...")
+
+    # Orphan domain cleanup
+    result = subprocess.run(
+        ["virsh", "list", "--all", "--name"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode == 0:
+        domains = [d.strip() for d in result.stdout.strip().split("\n") if d.strip()]
+        troshka_domains = [d for d in domains if d.startswith("troshka-")]
+        job["output"].append(f"Found {len(troshka_domains)} troshka domains")
+
+    return {"status": "completed"}
+
+COMMAND_HANDLERS["gc/run"] = _handle_gc_run
+
+
+def _handle_snapshot_create(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    output_path = _validate_path(params["output_path"])
+
+    # Shut down VM first for consistent snapshot
+    try:
+        _run_cmd(job, ["virsh", "shutdown", domain], timeout=60)
+        # Wait for VM to stop (up to 60s)
+        for _ in range(60):
+            result = subprocess.run(
+                ["virsh", "domstate", domain],
+                capture_output=True, text=True, timeout=5,
+            )
+            if "shut off" in result.stdout:
+                break
+            time.sleep(1)
+    except RuntimeError:
+        job["output"].append("VM may already be stopped")
+
+    # Get disk path from domain XML
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True, text=True, timeout=10,
+    )
+    disk_path = None
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] == "disk":
+                disk_path = parts[3]
+                break
+
+    if not disk_path:
+        raise RuntimeError(f"Could not find disk for domain {domain}")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, output_path], timeout=3600)
+
+    return {"domain": domain, "output_path": output_path, "status": "created"}
+
+COMMAND_HANDLERS["snapshots/create"] = _handle_snapshot_create
+
+
+def _handle_pattern_export(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    output_path = _validate_path(params["output_path"])
+
+    # Same as snapshot but flatten the qcow2 chain
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True, text=True, timeout=10,
+    )
+    disk_path = None
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] == "disk":
+                disk_path = parts[3]
+                break
+
+    if not disk_path:
+        raise RuntimeError(f"Could not find disk for domain {domain}")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, output_path], timeout=3600)
+
+    return {"domain": domain, "output_path": output_path, "status": "exported"}
+
+COMMAND_HANDLERS["patterns/export"] = _handle_pattern_export
+
+
 # ── Update mechanism ──
 
 def _do_update_restart(script_path, new_path):
