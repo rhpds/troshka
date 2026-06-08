@@ -333,10 +333,7 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                 import ipaddress as _ipaddress
                 gateway_ip = dhcp_cfg.get("gateway", "")
                 dhcp_cmds.append(f"interface={bridge}")
-                dhcp_cmds.append("bind-interfaces")
-                if gateway_ip:
-                    _ipaddress.ip_address(gateway_ip)
-                    dhcp_cmds.append(f"listen-address={gateway_ip}")
+                dhcp_cmds.append("bind-dynamic")
                 dhcp_cmds.append("except-interface=lo")
                 dhcp_cmds.append("no-resolv")
                 dhcp_cmds.append("no-hosts")
