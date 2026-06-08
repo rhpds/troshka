@@ -480,12 +480,14 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
     vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
 
     # Build disk list for virt-install
+    vm_dir = _vm_dir(project_id)
     disks = []
     for disk in vm_disks:
         if disk["format"] == "iso":
             if disk.get("library_item_id"):
                 cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
-                disks.append({"path": cache_path, "bus": "sata", "device": "cdrom"})
+                link_path = f"{vm_dir}/{vm['node_id'][:8]}-{disk['library_item_id'][:8]}.iso"
+                disks.append({"path": link_path, "bus": "sata", "device": "cdrom", "symlink_from": cache_path})
             continue
         dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
         disks.append({"path": dp, "bus": disk["bus"]})

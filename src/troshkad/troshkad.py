@@ -482,6 +482,16 @@ def _handle_vm_create(job, params):
         path = _validate_path(disk["path"])
         bus = _validate_bus(disk.get("bus", "virtio"))
         device = disk.get("device", "disk")
+        # Create symlink if referencing a shared cached file
+        symlink_from = disk.get("symlink_from")
+        if symlink_from:
+            symlink_from = _validate_path(symlink_from)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            try:
+                os.symlink(symlink_from, path)
+                job["output"].append(f"Symlinked {os.path.basename(path)} -> {symlink_from}")
+            except FileExistsError:
+                pass
         disk_arg = f"path={path},bus={bus}"
         if device == "cdrom":
             disk_arg += ",device=cdrom"
