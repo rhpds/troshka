@@ -413,7 +413,7 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
     for vm in vms:
         vm_name = _vm_domain_name(project_id, vm["node_id"])
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
-        lines.append(f"virsh undefine {vm_name} --remove-all-storage 2>/dev/null || true")
+        lines.append(f"virsh undefine {vm_name} 2>/dev/null || true")
 
     lines.append(f"rm -rf {_vm_dir(project_id)}")
 
@@ -551,7 +551,7 @@ def generate_incremental_script(
         vm_name = _vm_domain_name(project_id, node["id"])
         lines.append(f'echo "Removing VM: {vm_name}"')
         lines.append(f"virsh destroy {vm_name} 2>/dev/null || true")
-        lines.append(f"virsh undefine {vm_name} --remove-all-storage 2>/dev/null || true")
+        lines.append(f"virsh undefine {vm_name} 2>/dev/null || true")
         lines.append(f"rm -f {vm_dir}/{node['id'][:8]}-*")
 
     for node in diff["removed_networks"]:
