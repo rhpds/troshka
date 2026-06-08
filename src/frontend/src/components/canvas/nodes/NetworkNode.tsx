@@ -97,7 +97,7 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
                           const eip = externalIps.find((e) => e.id === extIpId);
                           const ipLabel = eip ? (eip.ip || "auto") : "";
                           return (
-                            <div key={i}>
+                            <div key={i} style={{ marginBottom: 2 }}>
                               {ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} →
                               <div style={{ paddingLeft: 10 }}>{pf.intIp || "?"}:{pf.intPort || "?"}</div>
                             </div>

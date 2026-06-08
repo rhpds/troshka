@@ -1174,7 +1174,7 @@ export default function PropertiesPanel() {
                                 />
                               </div>
                             </div>
-                            <div style={{ textAlign: "center", color: "var(--troshka-text-dim)", fontSize: 10, lineHeight: 1, margin: "-2px 0" }}>↓</div>
+                            <div style={{ textAlign: "center", color: "var(--troshka-text-dim)", fontSize: 10, lineHeight: 1, margin: "0" }}>↓</div>
                             <div className="props-row" style={{ alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
                                 {<label className="props-label">Internal IP</label>}
