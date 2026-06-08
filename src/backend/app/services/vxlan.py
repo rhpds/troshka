@@ -18,6 +18,21 @@ VNI_MIN = 1000
 VNI_MAX = 16_777_000
 
 
+def _transit_subnet(vni: int) -> dict:
+    """Calculate the unique /30 transit subnet for a VNI's veth pair.
+
+    Returns dict with host_ip, ns_ip, and cidr for the transit link.
+    Uses 172.30.0.0/16 space, derived deterministically from VNI.
+    """
+    octet3 = (vni >> 2) & 0xFF
+    octet4_base = (vni & 0x03) * 4
+    return {
+        "host_ip": f"172.30.{octet3}.{octet4_base + 1}",
+        "ns_ip": f"172.30.{octet3}.{octet4_base + 2}",
+        "cidr": f"172.30.{octet3}.{octet4_base}/30",
+    }
+
+
 def _get_all_used_vnis(db: Session) -> set[int]:
     """Collect all VNIs currently in use across all projects."""
     from app.models.project import Project
