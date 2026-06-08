@@ -64,20 +64,18 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
           const portForwards = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string}>) || [];
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="network-node-cidr" style={{ fontSize: 10 }}>
-                  {isPortFwd ? "NAT + Port Fwd" : "NAT Outbound"}
-                </span>
-                {(() => {
-                  const projectIps = useCanvasStore.getState().externalIps;
-                  const withIps = projectIps.filter((eip) => eip.ip);
-                  return withIps.length > 0 ? (
-                    <span className="network-node-badge dhcp" style={{ fontSize: 9 }}>
-                      {withIps.map((eip) => eip.ip).join(", ")}
-                    </span>
-                  ) : null;
-                })()}
-              </div>
+              <span className="network-node-cidr" style={{ fontSize: 10 }}>
+                {isPortFwd ? "NAT + Port Fwd" : "NAT Outbound"}
+              </span>
+              {(() => {
+                const projectIps = useCanvasStore.getState().externalIps;
+                const withIps = projectIps.filter((eip) => eip.ip);
+                return withIps.length > 0 ? (
+                  <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3 }}>
+                    {withIps.map((eip) => <div key={eip.id}>{eip.ip}</div>)}
+                  </div>
+                ) : null;
+              })()}
               {isPortFwd && (() => {
                 const externalIps = useCanvasStore.getState().externalIps;
                 const hasIncomplete = portForwards.some((pf) =>
@@ -99,7 +97,10 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
                           const eip = externalIps.find((e) => e.id === extIpId);
                           const ipLabel = eip ? (eip.ip || "auto") : "";
                           return (
-                            <div key={i}>{ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} → {pf.intIp || "?"}:{pf.intPort || "?"}</div>
+                            <div key={i}>
+                              {ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} →
+                              <div style={{ paddingLeft: 10 }}>{pf.intIp || "?"}:{pf.intPort || "?"}</div>
+                            </div>
                           );
                         })}
                       </div>

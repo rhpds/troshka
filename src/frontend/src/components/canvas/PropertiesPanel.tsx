@@ -1135,7 +1135,7 @@ export default function PropertiesPanel() {
                           <div key={i} style={{ background: "var(--troshka-surface2)", borderRadius: 6, padding: 8, marginBottom: 6 }}>
                             <div className="props-row" style={{ marginBottom: 4, alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
-                                {i === 0 && <label className="props-label">External IP</label>}
+                                {<label className="props-label">External IP</label>}
                                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                   <select className="props-select" style={{ fontSize: 11, flex: 1 }}
                                     value={(pf as Record<string, string>).extIpId || ""}
@@ -1157,14 +1157,14 @@ export default function PropertiesPanel() {
                                         onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
                                         onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
                                         title={`Copy ${selEip.ip}`}
-                                        onClick={(e) => { navigator.clipboard.writeText(selEip.ip); const btn = e.currentTarget; const orig = btn.innerHTML; btn.innerHTML = '<span style="font-size:10px">Copied</span>'; setTimeout(() => { btn.innerHTML = orig; }, 1000); }}
+                                        onClick={(e) => { navigator.clipboard.writeText(selEip.ip); const btn = e.currentTarget; const orig = btn.innerHTML; btn.innerHTML = '<span style="font-size:10px">Copied IP</span>'; setTimeout(() => { btn.innerHTML = orig; }, 1000); }}
                                       ><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
                                     ) : null;
                                   })()}
                                 </div>
                               </div>
                               <div className="props-field" style={{ flex: "0 0 50px" }}>
-                                {i === 0 && <label className="props-label">Ext Port</label>}
+                                {<label className="props-label">Ext Port</label>}
                                 <input className="props-input" value={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
                                   onChange={(e) => {
                                     const updated = [...portForwards];
@@ -1177,7 +1177,7 @@ export default function PropertiesPanel() {
                             <div style={{ textAlign: "center", color: "var(--troshka-text-dim)", fontSize: 10, lineHeight: 1, margin: "-2px 0" }}>↓</div>
                             <div className="props-row" style={{ alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
-                                {i === 0 && <label className="props-label">Internal IP</label>}
+                                {<label className="props-label">Internal IP</label>}
                                 <input className="props-input" value={pf.intIp} placeholder="192.168.1.10" style={{ fontFamily: "monospace" }}
                                   onChange={(e) => {
                                     const updated = [...portForwards];
@@ -1187,7 +1187,7 @@ export default function PropertiesPanel() {
                                 />
                               </div>
                               <div className="props-field" style={{ flex: "0 0 50px" }}>
-                                {i === 0 && <label className="props-label">Int Port</label>}
+                                {<label className="props-label">Int Port</label>}
                                 <input className="props-input" value={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
                                   onChange={(e) => {
                                     const updated = [...portForwards];
