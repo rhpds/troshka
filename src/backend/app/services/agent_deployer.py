@@ -136,17 +136,19 @@ fi
 # Generate config with token if not present
 if [ ! -f /opt/troshka/troshkad.conf ]; then
     TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
-    cat > /opt/troshka/troshkad.conf << TROSHKADCFG
-{{
-  "port": 31337,
-  "token": "$TROSHKAD_TOKEN",
-  "tls_cert": "/opt/troshka/tls/server.crt",
-  "tls_key": "/opt/troshka/tls/server.key",
-  "host_id": "{host_id}",
-  "max_concurrent_jobs": 4,
-  "drain_timeout_seconds": 300
-}}
-TROSHKADCFG
+    python3 -c "
+import json, sys
+conf = {
+    'port': 31337,
+    'token': sys.argv[1],
+    'tls_cert': '/opt/troshka/tls/server.crt',
+    'tls_key': '/opt/troshka/tls/server.key',
+    'host_id': '{host_id}',
+    'max_concurrent_jobs': 4,
+    'drain_timeout_seconds': 300,
+}
+json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+" "$TROSHKAD_TOKEN"
     chmod 600 /opt/troshka/troshkad.conf
     echo "troshkad: config generated"
 else
@@ -272,9 +274,12 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 logger.warning("SCP troshkad.py failed: %s", scp_result.stderr)
             else:
                 subprocess.run(
+                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mkdir", "-p", "/opt/troshka"],
+                    capture_output=True, timeout=10,
+                )
+                subprocess.run(
                     ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mv", "/tmp/troshkad.py", "/opt/troshka/troshkad.py"],
-                    capture_output=True,
-                    timeout=30,
+                    capture_output=True, timeout=30,
                 )
         else:
             logger.warning("troshkad.py not found at %s", troshkad_path)

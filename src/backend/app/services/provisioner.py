@@ -50,6 +50,29 @@ def find_rhel_ami(region: str | None = None) -> str:
     return images[-1]["ImageId"]
 
 
+def _ensure_troshkad_rule(client, sg_id: str):
+    """Ensure the SG has a troshkad port (31337) rule. Idempotent."""
+    sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    has_31337 = any(
+        p.get("FromPort") == 31337 and p.get("ToPort") == 31337
+        for p in sg.get("IpPermissions", [])
+    )
+    if not has_31337:
+        backend_ip = get_public_ip()
+        troshkad_cidr = f"{backend_ip}/32" if backend_ip else "0.0.0.0/0"
+        try:
+            client.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{
+                    "IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337,
+                    "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}],
+                }],
+            )
+            logger.info("Added troshkad rule (port 31337) to SG %s", sg_id)
+        except Exception:
+            logger.warning("Failed to add troshkad rule to SG %s", sg_id, exc_info=True)
+
+
 def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None) -> str:
     client = _get_ec2_client(credentials=credentials)
     existing = client.describe_security_groups(
@@ -59,7 +82,9 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
         ]
     )
     if existing["SecurityGroups"]:
-        return existing["SecurityGroups"][0]["GroupId"]
+        sg_id = existing["SecurityGroups"][0]["GroupId"]
+        _ensure_troshkad_rule(client, sg_id)
+        return sg_id
 
     backend_ip = get_public_ip()
     troshkad_cidr = f"{backend_ip}/32" if backend_ip else "0.0.0.0/0"
