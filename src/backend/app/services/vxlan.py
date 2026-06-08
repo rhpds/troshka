@@ -282,8 +282,8 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
     """
     pid = project_id[:8] if project_id else "default"
     ns = f"troshka-{pid}"
-    veth_host = f"veth-{pid}-h"
-    veth_ns = f"veth-{pid}-ns"
+    veth_host = f"ve{pid}h"
+    veth_ns = f"ve{pid}n"
 
     # Derive transit subnet from the first VNI (one transit per project)
     all_vnis = [net["vni"] for net in config.get("networks", [])]
@@ -330,6 +330,11 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
         vxlan_cmds.append(f"ip netns exec {ns} ip link set {vxlan_if} master {bridge}")
         vxlan_cmds.append(f"ip netns exec {ns} ip link set {vxlan_if} up")
         vxlan_cmds.append(f"ip netns exec {ns} ip link set {bridge} up")
+
+        # Create dummy bridge in host namespace for libvirt validation
+        # (libvirt checks bridge exists before starting VM; qemu hook moves tap to real bridge)
+        vxlan_cmds.append(f"ip link show {bridge} &>/dev/null || ip link add {bridge} type bridge")
+        vxlan_cmds.append(f"ip link set {bridge} up")
 
         # Assign bridge IP if DHCP/DNS is enabled (bridge acts as gateway)
         if net.get("dhcp_enabled") or net.get("dns_enabled"):

@@ -422,7 +422,7 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
     # Delete namespace (cleans up bridges, VXLAN, dnsmasq, nftables)
     pid = project_id[:8]
     ns = f"troshka-{pid}"
-    veth_h = f"veth-{pid}-h"
+    veth_h = f"ve{pid}h"
     lines.append(f"ip netns del {ns} 2>/dev/null || true")
     lines.append(f"ip link del {veth_h} 2>/dev/null || true")
     for vni in vni_map.values():
@@ -672,7 +672,7 @@ def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str
 
     if pid:
         ns = f"troshka-{pid}"
-        veth_h = f"veth-{pid}-h"
+        veth_h = f"ve{pid}h"
         lines.append(f"ip netns del {ns} 2>/dev/null || true")
         lines.append(f"ip link del {veth_h} 2>/dev/null || true")
 

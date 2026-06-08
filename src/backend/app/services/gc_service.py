@@ -258,7 +258,7 @@ def clean_orphans(host, orphans: dict) -> dict:
         pid = ns_name.replace("troshka-", "")
         lines.append(f'echo "Removing orphaned namespace: {ns_name}"')
         lines.append(f"ip netns del {ns_name} 2>/dev/null || true")
-        lines.append(f"ip link del veth-{pid}-h 2>/dev/null || true")
+        lines.append(f"ip link del ve{pid}h 2>/dev/null || true")
 
     for cache_path in orphans.get("orphaned_cache", []):
         lines.append(f'echo "Removing orphaned cache: {cache_path}"')
