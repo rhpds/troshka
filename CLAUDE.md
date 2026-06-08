@@ -55,6 +55,14 @@ Tests use SQLite with type compiler overrides for JSONB/UUID. Auth is dev-mode (
 - `useState` + `useEffect` for state management
 - PatternFly components: `PageSection`, `Toolbar`, `Card`, `Button`
 
+### Console
+- VNC console at `/console?vm=&project=&name=` — bare layout (no app header)
+- noVNC (`@novnc/novnc`) over WebSocket, `focusOnClick=true`
+- Virtual keyboard at `/console/keyboard?name=` — opens as popup window via `window.open()`
+- Keyboard communicates via `postMessage` with same-origin restriction (never `"*"`)
+- Key macros: Linux/Windows dropdowns send X11 keysyms via `sendCombo()`
+- `sendCombo()`: press all keys down in order, release in reverse — standard VNC key combo pattern
+
 ### Canvas
 - Topology stored as JSONB in `Project.topology` (source of truth)
 - Zustand store: `useCanvasStore` for nodes, edges, selections
@@ -112,6 +120,11 @@ Tests use SQLite with type compiler overrides for JSONB/UUID. Auth is dev-mode (
 - Runs on host agent connect, admin Clean button, or future cron
 - Steps: capacity sync → orphan cleanup → network repair → cache eviction
 - Cache eviction configurable per type in `config.yaml` (`gc.cache_stale_hours_*`)
+
+### Pattern Save State
+- Backend `Pattern.state`: "creating" → "capturing" → "available" or "error"
+- Frontend patterns page shows read-only cards during save (buttons disabled, delete hidden)
+- Auto-polls every 3s while any pattern is in creating/capturing state
 
 ### Duplicate Name Prevention
 - Projects, patterns, library items, and snapshots enforce unique names per user
