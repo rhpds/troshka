@@ -311,7 +311,7 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                 prefix = cidr.split("/")[1] if "/" in cidr else "24"
                 vxlan_cmds.append(f"ip addr add {gateway_ip}/{prefix} dev {bridge} 2>/dev/null || true")
 
-        # DHCP via dnsmasq
+        # DHCP via per-bridge dnsmasq instance
         if net.get("dhcp_enabled"):
             dhcp_cfg = net.get("dhcp_config", {})
             range_start = dhcp_cfg.get("range_start", "")
@@ -319,8 +319,15 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
             lease = dhcp_cfg.get("lease_time", "24h")
             if range_start and range_end:
                 dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{vni}.conf"
+                dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
+                dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{vni}.leases"
                 dhcp_cmds.append(f"cat > {dnsmasq_conf} << 'DNSEOF'")
                 dhcp_cmds.append(f"interface={bridge}")
+                dhcp_cmds.append("bind-interfaces")
+                dhcp_cmds.append("no-resolv")
+                dhcp_cmds.append("no-hosts")
+                dhcp_cmds.append(f"pid-file={dnsmasq_pid}")
+                dhcp_cmds.append(f"dhcp-leasefile={dnsmasq_lease}")
                 dhcp_cmds.append(f"dhcp-range={range_start},{range_end},{lease}")
                 for dh in net.get("dhcp_hosts", []):
                     safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
@@ -329,6 +336,8 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                 if net.get("dns_enabled") and net.get("dns_domain"):
                     dhcp_cmds.append(f"domain={net['dns_domain']}")
                 dhcp_cmds.append("DNSEOF")
+                dhcp_cmds.append(f"[ -f {dnsmasq_pid} ] && kill $(cat {dnsmasq_pid}) 2>/dev/null; rm -f {dnsmasq_pid}")
+                dhcp_cmds.append(f"dnsmasq --conf-file={dnsmasq_conf}")
 
         nft_cmds.append(f"nft add rule inet filter {fwd_chain} iifname \"{bridge}\" oifname \"{bridge}\" accept")
 
@@ -365,7 +374,7 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                         gateway_cmds.append(f"nft add rule inet nat {pre_chain} tcp dport {ext_port} dnat ip to {int_ip}:{int_port}")
 
     if dhcp_cmds:
-        dhcp_cmds.append("systemctl restart dnsmasq")
+        dhcp_cmds.append("systemctl stop dnsmasq 2>/dev/null || true")
 
     return AGENT_SETUP_SCRIPT.format(
         vxlan_commands="\n".join(vxlan_cmds) or "# No VXLAN networks",

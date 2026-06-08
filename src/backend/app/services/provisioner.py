@@ -99,6 +99,7 @@ packages:
 runcmd:
   - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
   - systemctl enable --now nftables
+  - systemctl disable --now dnsmasq 2>/dev/null || true
   - bash -c 'while [ ! -b /dev/nvme1n1 ]; do sleep 1; done; blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1; mkdir -p /var/lib/troshka; mount /dev/nvme1n1 /var/lib/troshka; grep -q /var/lib/troshka /etc/fstab || echo "/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab'
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
   - echo "host_id: {host_id}" > /etc/troshka-agent/host-id

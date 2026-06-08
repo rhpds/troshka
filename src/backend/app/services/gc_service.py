@@ -236,9 +236,10 @@ def clean_orphans(host, orphans: dict) -> dict:
     for bridge in orphans.get("orphaned_bridges", []):
         vni = bridge.replace("br-", "")
         lines.append(f'echo "Removing orphaned bridge: {bridge}"')
+        lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
+        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
         lines.append(f"ip link del {bridge} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
-        lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
     for cache_path in orphans.get("orphaned_cache", []):
         lines.append(f'echo "Removing orphaned cache: {cache_path}"')
@@ -261,7 +262,6 @@ def clean_orphans(host, orphans: dict) -> dict:
         return {"cleaned": 0, "output": "Nothing to clean"}
 
     lines.append("")
-    lines.append("systemctl restart dnsmasq 2>/dev/null || true")
     lines.append('echo "GC cleanup complete"')
 
     result = run_ssh_script(host.ip_address, host.private_key, "\n".join(lines), timeout=120)

@@ -414,9 +414,10 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
     for vni in vni_map.values():
         bridge = f"br-{vni}"
         vxlan_if = f"vxlan-{vni}"
+        lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
+        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
         lines.append(f"ip link del {bridge} 2>/dev/null || true")
         lines.append(f"ip link del {vxlan_if} 2>/dev/null || true")
-        lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
     # Delete per-project nftables chains
     pid = project_id[:8]
@@ -424,8 +425,6 @@ def generate_destroy_script(project_id: str, topology: dict, vni_map: dict) -> s
         chain = f"troshka-{chain_type}-{pid}"
         lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
         lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
-
-    lines.append("systemctl restart dnsmasq 2>/dev/null || true")
     lines.append("")
     lines.append('echo "=== Project destroyed ==="')
     return "\n".join(lines)
@@ -552,9 +551,10 @@ def generate_incremental_script(
         nid = node["id"]
         if nid in vni_map:
             vni = vni_map[nid]
+            lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
+            lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
             lines.append(f"ip link del br-{vni} 2>/dev/null || true")
             lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
-            lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
     for node in diff["changed_vms"]:
         d = node.get("data", {})
@@ -668,9 +668,10 @@ def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str
     lines = ["#!/bin/bash", "set -uo pipefail", ""]
 
     for vni in vni_map.values():
+        lines.append(f"[ -f /run/troshka-dnsmasq-{vni}.pid ] && kill $(cat /run/troshka-dnsmasq-{vni}.pid) 2>/dev/null || true")
+        lines.append(f"rm -f /run/troshka-dnsmasq-{vni}.pid /etc/dnsmasq.d/troshka-{vni}.conf /var/lib/troshka/dnsmasq-{vni}.leases")
         lines.append(f"ip link del br-{vni} 2>/dev/null || true")
         lines.append(f"ip link del vxlan-{vni} 2>/dev/null || true")
-        lines.append(f"rm -f /etc/dnsmasq.d/troshka-{vni}.conf 2>/dev/null || true")
 
     if project_id:
         pid = project_id[:8]
@@ -678,8 +679,6 @@ def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str
             chain = f"troshka-{chain_type}-{pid}"
             lines.append(f"nft flush chain inet {table} {chain} 2>/dev/null || true")
             lines.append(f"nft delete chain inet {table} {chain} 2>/dev/null || true")
-
-    lines.append("systemctl restart dnsmasq 2>/dev/null || true")
     return "\n".join(lines)
 
 
