@@ -55,3 +55,6 @@ troshka.db*
 mockup.html
 ansible/vars/dev.yml
 ansible/vars/*-host.yml
+
+# Troshkad test artifacts
+*.py.new
