@@ -1221,36 +1221,7 @@ def _handle_network_full_setup(job, params):
     transit_ns_ip = f"172.30.{transit_octet3}.2"
     transit_cidr = f"172.30.{transit_octet3}.0/24"
 
-    # ── Deploy qemu hook (idempotent) ──
-    # NOTE: Do NOT call virsh from the hook — it deadlocks virtqemud.
-    # Parse TAP names from the domain XML passed on stdin instead.
-    hook_script = (
-        '#!/bin/bash\n'
-        '# Troshka qemu hook — moves TAP interfaces into project namespace\n'
-        '# NOTE: Do NOT call virsh from this hook — it deadlocks virtqemud.\n'
-        'DOMAIN=$1\n'
-        'ACTION=$2\n'
-        'if [ "$ACTION" = "started" ]; then\n'
-        '    PID=$(echo "$DOMAIN" | sed -n \'s/^troshka-\\([a-f0-9]*\\)-.*/\\1/p\')\n'
-        '    [ -z "$PID" ] && exit 0\n'
-        '    NS="troshka-$PID"\n'
-        '    ip netns list 2>/dev/null | grep -q "^$NS " || exit 0\n'
-        '    BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F\': \' \'{print $2}\' | head -1)\n'
-        '    [ -z "$BRIDGE" ] && exit 0\n'
-        '    XML=$(cat)\n'
-        '    for TAP in $(echo "$XML" | grep -oP "dev=\'\\K(vnet|tap)[^\']*"); do\n'
-        '        ip link set "$TAP" netns "$NS" 2>/dev/null\n'
-        '        ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null\n'
-        '        ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null\n'
-        '    done\n'
-        'fi\n'
-    )
-
-    os.makedirs("/etc/libvirt/hooks", exist_ok=True)
-    with open("/etc/libvirt/hooks/qemu", "w") as f:
-        f.write(hook_script)
-    os.chmod("/etc/libvirt/hooks/qemu", 0o755)
-    job["output"].append("Installed qemu hook")
+    # qemu hook is installed by the agent install script — not managed here
 
     # ── Namespace + veth setup ──
     try:
