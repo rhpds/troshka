@@ -686,5 +686,258 @@ class TestMetadataHandlers(unittest.TestCase):
         self.assertTrue(len(ip_add_calls) > 0, "Should have added metadata IP to bridge")
 
 
+class TestVmStateHandler(unittest.TestCase):
+    """Tests for vms/state handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_state_running(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_state(job, job["params"])
+        self.assertEqual(result["domain"], "troshka-aabbccdd-11223344")
+        self.assertEqual(result["state"], "running")
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_state_shut_off(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="shut off\n", stderr="")
+        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_state(job, job["params"])
+        self.assertEqual(result["state"], "shut_off")
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_state_not_found(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Domain not found")
+        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_state(job, job["params"])
+        self.assertEqual(result["state"], "not_found")
+
+    def test_vm_state_rejects_invalid_domain(self):
+        job = troshkad._create_job("vms/state", {"domain_name": "evil; rm -rf /"})
+        with self.assertRaises(ValueError):
+            troshkad._handle_vm_state(job, job["params"])
+
+
+class TestVmListHandler(unittest.TestCase):
+    """Tests for vms/list handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_list(self, mock_run):
+        def run_side_effect(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            if "list" in cmd:
+                result.stdout = "troshka-aabb1122-11223344\ntroshka-ccdd5566-55667788\nother-domain\n"
+            elif "domstate" in cmd:
+                if "aabb1122" in cmd[2]:
+                    result.stdout = "running\n"
+                else:
+                    result.stdout = "shut off\n"
+            result.stderr = ""
+            return result
+        mock_run.side_effect = run_side_effect
+        job = troshkad._create_job("vms/list", {})
+        result = troshkad._handle_vm_list(job, job["params"])
+        self.assertEqual(len(result["domains"]), 2)
+        self.assertEqual(result["domains"][0]["name"], "troshka-aabb1122-11223344")
+        self.assertEqual(result["domains"][0]["state"], "running")
+        self.assertEqual(result["domains"][1]["state"], "shut_off")
+
+
+class TestVmVncPortHandler(unittest.TestCase):
+    """Tests for vms/vnc-port handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_vnc_port_found(self, mock_run):
+        xml = '''<domain>
+          <devices>
+            <graphics type='vnc' port='5900' autoport='yes' listen='127.0.0.1'/>
+          </devices>
+        </domain>'''
+        mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
+        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_vnc_port(job, job["params"])
+        self.assertEqual(result["vnc_port"], 5900)
+
+    @patch("troshkad.subprocess.run")
+    def test_vnc_port_autoport(self, mock_run):
+        xml = '''<domain>
+          <devices>
+            <graphics type='vnc' port='-1' autoport='yes'/>
+          </devices>
+        </domain>'''
+        mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
+        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_vnc_port(job, job["params"])
+        self.assertIsNone(result["vnc_port"])
+
+    @patch("troshkad.subprocess.run")
+    def test_vnc_port_domain_not_found(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Domain not found")
+        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_vnc_port(job, job["params"])
+        self.assertIsNone(result["vnc_port"])
+
+
+class TestVmConfigHandler(unittest.TestCase):
+    """Tests for vms/config handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_vm_config(self, mock_run):
+        xml = '''<domain type='kvm'>
+          <vcpu placement='static'>4</vcpu>
+          <memory unit='KiB'>8388608</memory>
+          <os>
+            <type>hvm</type>
+            <boot dev='hd'/>
+            <boot dev='network'/>
+          </os>
+          <devices>
+            <interface type='bridge'>
+              <source bridge='br-10001'/>
+              <mac address='52:54:00:aa:bb:cc'/>
+            </interface>
+            <disk type='file' device='disk'>
+              <source file='/var/lib/troshka/vms/proj/disk.qcow2'/>
+              <target dev='vda' bus='virtio'/>
+            </disk>
+            <disk type='file' device='cdrom'>
+              <source file='/var/lib/troshka/vms/proj/seed.iso'/>
+              <target dev='sda' bus='sata'/>
+            </disk>
+          </devices>
+        </domain>'''
+        mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
+        job = troshkad._create_job("vms/config", {"domain_name": "troshka-aabbccdd-11223344"})
+        result = troshkad._handle_vm_config(job, job["params"])
+        self.assertEqual(result["vcpus"], 4)
+        self.assertEqual(result["ram_mb"], 8192)
+        self.assertEqual(result["boot_devs"], ["hd", "network"])
+        self.assertEqual(len(result["nics"]), 1)
+        self.assertEqual(result["nics"][0]["bridge"], "br-10001")
+        self.assertEqual(result["nics"][0]["mac"], "52:54:00:aa:bb:cc")
+        self.assertEqual(result["disks"], ["/var/lib/troshka/vms/proj/disk.qcow2"])
+        self.assertEqual(result["cdroms"], ["/var/lib/troshka/vms/proj/seed.iso"])
+
+
+class TestVmReconfigureHandler(unittest.TestCase):
+    """Tests for vms/reconfigure handler."""
+
+    SAMPLE_XML = '''<domain type='kvm'>
+      <name>troshka-aabbccdd-11223344</name>
+      <vcpu placement='static'>2</vcpu>
+      <memory unit='KiB'>4194304</memory>
+      <currentMemory unit='KiB'>4194304</currentMemory>
+      <os>
+        <type>hvm</type>
+        <boot dev='hd'/>
+      </os>
+      <devices>
+        <interface type='bridge'>
+          <source bridge='br-10001'/>
+          <mac address='52:54:00:aa:bb:cc'/>
+          <model type='virtio'/>
+        </interface>
+        <disk type='file' device='disk'>
+          <source file='/var/lib/troshka/vms/proj/disk.qcow2'/>
+          <target dev='vdb' bus='virtio'/>
+          <driver name='qemu' type='qcow2'/>
+        </disk>
+        <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
+          <listen type='address' address='127.0.0.1'/>
+        </graphics>
+      </devices>
+    </domain>'''
+
+    @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.subprocess.run")
+    def test_reconfigure_vcpus_and_ram(self, mock_run, mock_popen):
+        # domstate: running
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),   # domstate
+            MagicMock(returncode=0, stdout=self.SAMPLE_XML, stderr=""),  # dumpxml
+        ]
+        # virsh destroy, virsh define /dev/stdin, virsh start
+        mock_popen.side_effect = [
+            _mock_popen(stdout="Domain destroyed"),   # destroy
+            _mock_popen(stdout="Domain defined"),      # define
+            _mock_popen(stdout="Domain started"),      # start
+        ]
+
+        job = troshkad._create_job("vms/reconfigure", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "vcpus": 8,
+            "ram_mb": 16384,
+            "restart": True,
+        })
+        result = troshkad._handle_vm_reconfigure(job, job["params"])
+        self.assertEqual(result["status"], "reconfigured")
+        self.assertTrue(result["restarted"])
+
+        # Check virsh define was called with stdin pipe
+        define_call = mock_popen.call_args_list[1]
+        self.assertIn("define", define_call[0][0])
+
+    @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.subprocess.run")
+    def test_reconfigure_no_restart_when_stopped(self, mock_run, mock_popen):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="shut off\n", stderr=""),   # domstate
+            MagicMock(returncode=0, stdout=self.SAMPLE_XML, stderr=""),  # dumpxml
+        ]
+        mock_popen.side_effect = [
+            _mock_popen(stdout="Domain defined"),  # define
+        ]
+
+        job = troshkad._create_job("vms/reconfigure", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "boot_devs": ["network", "hd"],
+        })
+        result = troshkad._handle_vm_reconfigure(job, job["params"])
+        self.assertEqual(result["status"], "reconfigured")
+        self.assertFalse(result["restarted"])
+
+    def test_reconfigure_rejects_invalid_domain(self):
+        job = troshkad._create_job("vms/reconfigure", {"domain_name": "evil; rm -rf /"})
+        with self.assertRaises(ValueError):
+            troshkad._handle_vm_reconfigure(job, job["params"])
+
+
+class TestVmUndefineHandler(unittest.TestCase):
+    """Tests for vms/undefine handler."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_undefine_with_storage(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("vms/undefine", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "remove_storage": True,
+        })
+        result = troshkad._handle_vm_undefine(job, job["params"])
+        self.assertEqual(result["status"], "undefined")
+        # Check that --remove-all-storage was in the undefine command
+        calls = [c[0][0] for c in mock_popen.call_args_list]
+        undefine_calls = [c for c in calls if "undefine" in c]
+        self.assertTrue(len(undefine_calls) > 0)
+        self.assertIn("--remove-all-storage", undefine_calls[0])
+
+    @patch("troshkad.subprocess.Popen")
+    def test_undefine_without_storage(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("vms/undefine", {
+            "domain_name": "troshka-aabbccdd-11223344",
+            "remove_storage": False,
+        })
+        result = troshkad._handle_vm_undefine(job, job["params"])
+        self.assertEqual(result["status"], "undefined")
+        calls = [c[0][0] for c in mock_popen.call_args_list]
+        undefine_calls = [c for c in calls if "undefine" in c]
+        self.assertNotIn("--remove-all-storage", undefine_calls[0])
+
+    def test_undefine_rejects_invalid_domain(self):
+        job = troshkad._create_job("vms/undefine", {"domain_name": "evil; rm -rf /"})
+        with self.assertRaises(ValueError):
+            troshkad._handle_vm_undefine(job, job["params"])
+
+
 if __name__ == "__main__":
     unittest.main()

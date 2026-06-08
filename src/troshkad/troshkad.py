@@ -535,6 +535,386 @@ def _handle_vm_reboot(job, params):
 COMMAND_HANDLERS["vms/reboot"] = _handle_vm_reboot
 
 
+def _handle_vm_state(job, params):
+    """Get VM state via virsh domstate."""
+    domain = _validate_domain_name(params["domain_name"])
+    result = subprocess.run(
+        ["virsh", "domstate", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        # Domain not found or other error
+        return {"domain": domain, "state": "not_found"}
+    raw_state = result.stdout.strip().lower().replace(" ", "_")
+    # Normalize virsh state names to match libvirt_mgr conventions
+    state_map = {
+        "running": "running",
+        "shut_off": "shut_off",
+        "paused": "paused",
+        "in_shutdown": "shutting_down",
+        "crashed": "crashed",
+        "pmsuspended": "suspended",
+        "idle": "unknown",
+    }
+    state = state_map.get(raw_state, raw_state)
+    return {"domain": domain, "state": state}
+
+COMMAND_HANDLERS["vms/state"] = _handle_vm_state
+
+
+def _handle_vm_list(job, params):
+    """List all troshka domains with their states."""
+    result = subprocess.run(
+        ["virsh", "list", "--all", "--name"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"virsh list failed: {result.stderr}")
+    domains = []
+    for name in result.stdout.strip().split("\n"):
+        name = name.strip()
+        if not name or not name.startswith("troshka-"):
+            continue
+        # Get state for each domain
+        state_result = subprocess.run(
+            ["virsh", "domstate", name],
+            capture_output=True, text=True, timeout=5,
+        )
+        state = "unknown"
+        if state_result.returncode == 0:
+            raw = state_result.stdout.strip().lower().replace(" ", "_")
+            state_map = {
+                "running": "running",
+                "shut_off": "shut_off",
+                "paused": "paused",
+                "in_shutdown": "shutting_down",
+                "crashed": "crashed",
+                "pmsuspended": "suspended",
+            }
+            state = state_map.get(raw, raw)
+        domains.append({"name": name, "state": state})
+    return {"domains": domains}
+
+COMMAND_HANDLERS["vms/list"] = _handle_vm_list
+
+
+def _handle_vm_vnc_port(job, params):
+    """Get VNC port for a VM by parsing its XML."""
+    import xml.etree.ElementTree as ET
+
+    domain = _validate_domain_name(params["domain_name"])
+    result = subprocess.run(
+        ["virsh", "dumpxml", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        return {"domain": domain, "vnc_port": None}
+    root = ET.fromstring(result.stdout)
+    graphics = root.find(".//graphics[@type='vnc']")
+    vnc_port = None
+    if graphics is not None:
+        port = graphics.get("port")
+        if port and port != "-1":
+            vnc_port = int(port)
+    return {"domain": domain, "vnc_port": vnc_port}
+
+COMMAND_HANDLERS["vms/vnc-port"] = _handle_vm_vnc_port
+
+
+def _handle_vm_config(job, params):
+    """Get VM config from inactive XML — structured dict."""
+    import xml.etree.ElementTree as ET
+
+    domain = _validate_domain_name(params["domain_name"])
+    result = subprocess.run(
+        ["virsh", "dumpxml", "--inactive", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get XML for {domain}: {result.stderr}")
+
+    root = ET.fromstring(result.stdout)
+
+    boot_devs = [b.get("dev") for b in root.findall(".//os/boot")]
+    vcpus = int(root.findtext("vcpu", "0"))
+    mem_elem = root.find("memory")
+    mem_kib = int(mem_elem.text) if mem_elem is not None else 0
+    if mem_elem is not None and mem_elem.get("unit", "KiB") == "KiB":
+        ram_mb = mem_kib // 1024
+    else:
+        ram_mb = mem_kib
+
+    nics = []
+    for iface in root.findall(".//interface"):
+        source = iface.find("source")
+        mac = iface.find("mac")
+        nics.append({
+            "bridge": source.get("bridge", "") if source is not None else "",
+            "mac": mac.get("address", "") if mac is not None else "",
+        })
+
+    disks = []
+    cdroms = []
+    for disk in root.findall(".//disk"):
+        source = disk.find("source")
+        path = source.get("file", "") if source is not None else ""
+        if disk.get("device") == "cdrom":
+            cdroms.append(path)
+        else:
+            disks.append(path)
+
+    return {
+        "boot_devs": boot_devs,
+        "vcpus": vcpus,
+        "ram_mb": ram_mb,
+        "nics": nics,
+        "disks": disks,
+        "cdroms": cdroms,
+    }
+
+COMMAND_HANDLERS["vms/config"] = _handle_vm_config
+
+
+def _handle_vm_reconfigure(job, params):
+    """Reconfigure a VM: modify XML and redefine.
+
+    Reimplements libvirt_mgr.reconfigure_vm() using virsh + XML parsing.
+    """
+    import xml.etree.ElementTree as ET
+
+    domain = _validate_domain_name(params["domain_name"])
+    boot_devs = params.get("boot_devs")
+    vcpus = params.get("vcpus")
+    ram_mb = params.get("ram_mb")
+    nics = params.get("nics")
+    disks = params.get("disks")
+    cdroms = params.get("cdroms")
+    vnc_listen = params.get("vnc_listen", "127.0.0.1")
+    restart = params.get("restart", True)
+
+    # Check if domain is running
+    state_result = subprocess.run(
+        ["virsh", "domstate", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    was_active = state_result.returncode == 0 and "running" in state_result.stdout.lower()
+
+    if restart and was_active:
+        _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+
+    # Get inactive XML
+    result = subprocess.run(
+        ["virsh", "dumpxml", "--inactive", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get XML for {domain}: {result.stderr}")
+
+    root = ET.fromstring(result.stdout)
+
+    # ── Boot devices ──
+    if boot_devs is not None:
+        os_elem = root.find("os")
+        for boot in os_elem.findall("boot"):
+            os_elem.remove(boot)
+        type_elem = os_elem.find("type")
+        insert_idx = list(os_elem).index(type_elem) + 1
+        for i, dev in enumerate(boot_devs):
+            boot_elem = ET.Element("boot")
+            boot_elem.set("dev", dev)
+            os_elem.insert(insert_idx + i, boot_elem)
+
+    # ── vCPUs ──
+    if vcpus is not None:
+        vcpu_elem = root.find("vcpu")
+        vcpu_elem.text = str(vcpus)
+        vcpu_elem.set("placement", "static")
+
+    # ── RAM ──
+    if ram_mb is not None:
+        ram_kib = ram_mb * 1024
+        mem = root.find("memory")
+        mem.text = str(ram_kib)
+        mem.set("unit", "KiB")
+        cur_mem = root.find("currentMemory")
+        if cur_mem is not None:
+            cur_mem.text = str(ram_kib)
+            cur_mem.set("unit", "KiB")
+
+    # ── NICs ──
+    if nics is not None:
+        devices = root.find("devices")
+        for iface in devices.findall("interface"):
+            devices.remove(iface)
+        for nic in nics:
+            iface = ET.SubElement(devices, "interface")
+            iface.set("type", "bridge")
+            source = ET.SubElement(iface, "source")
+            source.set("bridge", nic["bridge"])
+            if nic.get("mac"):
+                mac_elem = ET.SubElement(iface, "mac")
+                mac_elem.set("address", nic["mac"])
+            model = ET.SubElement(iface, "model")
+            model.set("type", nic.get("model", "virtio"))
+
+    # ── Disks ──
+    if disks is not None:
+        devices = root.find("devices")
+        existing_disks = devices.findall("disk") if devices is not None else []
+        existing_paths = set()
+        for d in existing_disks:
+            source = d.find("source")
+            if source is not None and source.get("file"):
+                existing_paths.add(source.get("file"))
+
+        desired_paths = {d["path"] for d in disks}
+
+        # Remove disks no longer in topology (skip cdroms)
+        for d in existing_disks:
+            if d.get("device") == "cdrom":
+                continue
+            source = d.find("source")
+            path = source.get("file") if source is not None else None
+            if path and path not in desired_paths:
+                devices.remove(d)
+                job["output"].append(f"Removed disk {path} from {domain}")
+
+        # Add new disks
+        target_letters = "bcdefghijklmnop"
+        used_targets = {d.find("target").get("dev") for d in devices.findall("disk") if d.find("target") is not None}
+        for disk_info in disks:
+            if disk_info["path"] in existing_paths:
+                continue
+            target_dev = None
+            for letter in target_letters:
+                dev_name = f"vd{letter}"
+                if dev_name not in used_targets:
+                    target_dev = dev_name
+                    used_targets.add(dev_name)
+                    break
+            if not target_dev:
+                continue
+
+            disk_elem = ET.SubElement(devices, "disk")
+            disk_elem.set("type", "file")
+            disk_elem.set("device", "disk")
+            driver = ET.SubElement(disk_elem, "driver")
+            driver.set("name", "qemu")
+            driver.set("type", disk_info.get("format", "qcow2"))
+            source = ET.SubElement(disk_elem, "source")
+            source.set("file", disk_info["path"])
+            target = ET.SubElement(disk_elem, "target")
+            target.set("dev", target_dev)
+            target.set("bus", disk_info.get("bus", "virtio"))
+            job["output"].append(f"Added disk {disk_info['path']} as {target_dev} to {domain}")
+
+    # ── CDROMs ──
+    if cdroms is not None:
+        devices = root.find("devices")
+        existing_cdroms = [d for d in (devices.findall("disk") if devices is not None else []) if d.get("device") == "cdrom"]
+        desired_set = set(cdroms)
+        existing_set = set()
+        cdrom_bus = "sata"
+        for cd in existing_cdroms:
+            src = cd.find("source")
+            existing_set.add(src.get("file", "") if src is not None else "")
+            tgt = cd.find("target")
+            if tgt is not None and tgt.get("bus"):
+                cdrom_bus = tgt.get("bus")
+
+        if existing_set != desired_set:
+            for cd in existing_cdroms:
+                devices.remove(cd)
+            dev_prefix = "sd" if cdrom_bus == "sata" else "hd" if cdrom_bus == "ide" else "vd"
+            target_letters_cd = "abcdefghijklmnop"
+            used_targets = {d.find("target").get("dev") for d in devices.findall("disk") if d.find("target") is not None}
+            for path in cdroms:
+                target_dev = None
+                for letter in target_letters_cd:
+                    dev_name = f"{dev_prefix}{letter}"
+                    if dev_name not in used_targets:
+                        target_dev = dev_name
+                        used_targets.add(dev_name)
+                        break
+                if not target_dev:
+                    continue
+                disk_elem = ET.SubElement(devices, "disk")
+                disk_elem.set("type", "file")
+                disk_elem.set("device", "cdrom")
+                source = ET.SubElement(disk_elem, "source")
+                source.set("file", path)
+                target = ET.SubElement(disk_elem, "target")
+                target.set("dev", target_dev)
+                target.set("bus", cdrom_bus)
+                ET.SubElement(disk_elem, "readonly")
+                job["output"].append(f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
+
+    # ── VNC ──
+    if vnc_listen:
+        devices = root.find("devices")
+        graphics = devices.find("graphics[@type='vnc']") if devices is not None else None
+        if graphics is not None:
+            graphics.set("listen", vnc_listen)
+            listen_elem = graphics.find("listen")
+            if listen_elem is not None:
+                listen_elem.set("address", vnc_listen)
+        elif devices is not None:
+            graphics = ET.SubElement(devices, "graphics")
+            graphics.set("type", "vnc")
+            graphics.set("port", "-1")
+            graphics.set("autoport", "yes")
+            graphics.set("listen", vnc_listen)
+            listen_sub = ET.SubElement(graphics, "listen")
+            listen_sub.set("type", "address")
+            listen_sub.set("address", vnc_listen)
+
+    # Write new XML via virsh define
+    new_xml = ET.tostring(root, encoding="unicode")
+    proc = subprocess.Popen(
+        ["virsh", "define", "/dev/stdin"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(input=new_xml, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"virsh define failed: {stderr}")
+    job["output"].append(f"Redefined {domain}")
+
+    restarted = False
+    if restart and was_active:
+        _run_cmd(job, ["virsh", "start", domain], timeout=60)
+        restarted = True
+        job["output"].append(f"Reconfigured and restarted {domain}")
+    else:
+        job["output"].append(f"Reconfigured {domain}")
+
+    return {"domain": domain, "status": "reconfigured", "restarted": restarted}
+
+COMMAND_HANDLERS["vms/reconfigure"] = _handle_vm_reconfigure
+
+
+def _handle_vm_undefine(job, params):
+    """Undefine a VM: force stop if running, then undefine."""
+    domain = _validate_domain_name(params["domain_name"])
+    remove_storage = params.get("remove_storage", True)
+
+    # Destroy if running (ignore errors)
+    try:
+        _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+    except RuntimeError:
+        job["output"].append(f"Domain {domain} may already be stopped")
+
+    # Build undefine command
+    cmd = ["virsh", "undefine", domain, "--nvram"]
+    if remove_storage:
+        cmd.append("--remove-all-storage")
+
+    _run_cmd(job, cmd, timeout=30)
+    return {"domain": domain, "status": "undefined"}
+
+COMMAND_HANDLERS["vms/undefine"] = _handle_vm_undefine
+
+
 # ── Storage handlers ──
 
 _DISK_FORMATS = {"qcow2", "raw", "vmdk"}
