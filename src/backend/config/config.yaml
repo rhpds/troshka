@@ -43,3 +43,7 @@ gc:
   cache_stale_hours_patterns: 24
   cache_stale_hours_snapshots: 1
   cache_stale_hours_images: 5
+
+health:
+  interval_seconds: 30
+  disconnect_after_seconds: 90

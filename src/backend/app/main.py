@@ -50,6 +50,12 @@ app.include_router(pattern_routes.router, prefix="/api/v1")
 app.include_router(eip_routes.router, prefix="/api/v1")
 
 
+@app.on_event("startup")
+def startup_event():
+    from app.services.health_poller import start_health_poller
+    start_health_poller()
+
+
 @app.get("/api/v1/health")
 def health_check():
     return {"status": "healthy", "app": config.app.name, "version": "0.1.0"}
