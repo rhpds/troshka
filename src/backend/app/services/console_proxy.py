@@ -95,6 +95,7 @@ def get_or_create_proxy(
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ExitOnForwardFailure=yes",
+            "-o", "IdentitiesOnly=yes",
             "-N",
             "-L", f"{tunnel_port}:127.0.0.1:{vnc_port}",
             "-i", kf.name,
