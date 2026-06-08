@@ -28,6 +28,11 @@ export default function ProjectCanvasPage() {
   const [projectState, setProjectState] = useState("draft");
 
   useEffect(() => {
+    document.title = projectName ? `${projectName} — Troshka` : "Troshka";
+    return () => { document.title = "Troshka"; };
+  }, [projectName]);
+
+  useEffect(() => {
     if (projectId) {
       // Always reload if nodes are empty (e.g., returning from another page)
       const store = useCanvasStore.getState();
