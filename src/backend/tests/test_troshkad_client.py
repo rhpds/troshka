@@ -93,6 +93,14 @@ class TestTroshkadClient(unittest.TestCase):
             troshkad_request(NoFingerprintHost(), "GET", "/health")
         self.assertIn("No cert fingerprint", str(ctx.exception))
 
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_check_disk_usage(self, mock_https_cls):
+        from app.services.troshkad_client import check_disk_usage
+        mock_conn = _mock_conn({"free_bytes": 380*1024**3, "total_bytes": 500*1024**3, "used_pct": 24})
+        mock_https_cls.return_value = mock_conn
+        result = check_disk_usage(FakeHost())
+        self.assertEqual(result["used_pct"], 24)
+
 
 if __name__ == "__main__":
     unittest.main()

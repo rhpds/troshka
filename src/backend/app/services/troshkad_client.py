@@ -196,3 +196,11 @@ def push_update(host, script_bytes, version, force=False):
         "script": base64.b64encode(script_bytes).decode(),
         "version": version,
     }, timeout=30)
+
+
+def check_disk_usage(host, timeout=15):
+    """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct} or error dict."""
+    try:
+        return troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)
+    except TroshkadError as e:
+        return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": str(e)}
