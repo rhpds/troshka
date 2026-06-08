@@ -2250,15 +2250,28 @@ def _handle_nft_reset(job, params):
     """Flush all troshka nftables chains and delete them. Nuclear reset."""
     flushed = 0
     proc = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True, timeout=5)
+    if proc.returncode != 0:
+        return {"flushed_chains": 0, "error": "nft list failed"}
+
+    # First pass: flush base chains (removes jump rules to troshka chains)
+    for table_chain in [("filter", "forward"), ("nat", "postrouting"), ("nat", "prerouting")]:
+        try:
+            _run_cmd(job, ["nft", "flush", "chain", "inet", table_chain[0], table_chain[1]], timeout=5)
+        except RuntimeError:
+            pass
+
+    # Second pass: find and delete all troshka-* chains
     for line in proc.stdout.split("\n"):
         line = line.strip()
         if line.startswith("chain troshka-"):
             chain_name = line.split()[1]
-            table_type = "filter" if "fwd" in chain_name else "nat"
+            # Determine which table this chain is in
+            table_type = "nat" if ("post" in chain_name or "pre" in chain_name) else "filter"
             try:
                 _run_cmd(job, ["nft", "flush", "chain", "inet", table_type, chain_name], timeout=5)
                 _run_cmd(job, ["nft", "delete", "chain", "inet", table_type, chain_name], timeout=5)
                 flushed += 1
+                job["output"].append(f"Deleted chain {table_type}/{chain_name}")
             except RuntimeError:
                 pass
     return {"flushed_chains": flushed}

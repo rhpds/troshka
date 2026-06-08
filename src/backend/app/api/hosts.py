@@ -636,6 +636,14 @@ def wipe_host(host_id: str, user: User = Depends(require_role("admin")), db: Ses
                 })
                 cleanup_job = wait_for_job(host, job_id, timeout=120)
                 results["cleanup"] = cleanup_job.get("result", {})
+
+            # Flush all troshka nftables chains from host namespace
+            try:
+                nft_job_id = start_job(host, "/host/nft-reset", {})
+                nft_job = wait_for_job(host, nft_job_id, timeout=15)
+                results["nft_reset"] = nft_job.get("result", {})
+            except TroshkadError:
+                pass
         except TroshkadError as e:
             results["cleanup"] = {"error": str(e)}
 
