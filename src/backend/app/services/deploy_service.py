@@ -766,11 +766,14 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
         log_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.log"
         script_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.py"
         py_lines = [
-            "import os, sys, urllib.request",
+            "import os, sys, urllib.request, fcntl",
             "cache = %r" % ic["cache_path"],
             "status = %r" % status_file,
             "expected = %d" % ic["expected_size"],
             "url = %r" % ic["url"],
+            "lock_path = cache + '.lock'",
+            "lock_fd = open(lock_path, 'w')",
+            "fcntl.flock(lock_fd, fcntl.LOCK_EX)",
             "try:",
             "    current = os.path.getsize(cache) if os.path.exists(cache) else 0",
             "    if current >= expected - 1024 and expected > 0:",
