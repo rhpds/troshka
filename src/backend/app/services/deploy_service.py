@@ -742,6 +742,9 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                     "cache_dir": cache_dir,
                 })
 
+    logger.info("cache_library_images: %d items to cache", len(items_to_cache))
+    for ic in items_to_cache:
+        logger.info("  cache item: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])
     if not items_to_cache:
         return
 

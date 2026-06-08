@@ -324,8 +324,7 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
 def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
 
-    if project.state == "stopped":
-        # Project is stopped — need to bring up infra (EIPs, bridges, cache) in background
+    if project.state in ("stopped", "starting"):
         import threading
         project.state = "starting"
         db.commit()
@@ -334,42 +333,110 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
         target_vm_id = vm_id
 
         def _start_infra_then_vm():
-            from app.services.deploy_service import start_project_async
-            start_project_async(p_id)
-            # After project start completes, the target VM should already be running
-            # (start_project_async starts all auto-start VMs). If the target VM has
-            # auto-start disabled, start it now.
             from app.core.database import SessionLocal
             from app.models.project import Project
+            from app.models.host import Host as HostModel
+            from app.models.elastic_ip import ElasticIp
+            from app.services.eip_service import associate_eip
+            from app.services.vxlan import build_host_network_config
+            from app.services.deploy_service import run_ssh_script, cache_library_images
+            import json
+            from sqlalchemy import text
+
             s = SessionLocal()
             try:
                 proj = s.query(Project).filter_by(id=p_id).first()
-                if proj and proj.state == "active":
-                    h = s.query(Host).filter_by(id=h_id).first()
-                    if h:
-                        dom = _domain_name(p_id, target_vm_id)
-                        conn = libvirt_mgr.connect(h.ip_address, h.private_key)
-                        try:
-                            libvirt_mgr.start_vm(conn, dom)
-                        except Exception:
-                            pass
-                        finally:
-                            conn.close()
+                h = s.query(HostModel).filter_by(id=h_id).first()
+                if not proj or not h:
+                    return
+
+                topology = proj.topology or {}
+                vni_map = proj.vni_map or {}
+
+                # Re-associate EIPs
+                project_eips = s.query(ElasticIp).filter_by(project_id=p_id, state="allocated").all()
+                for eip in project_eips:
+                    try:
+                        associate_eip(s, eip, h)
+                        for ext_ip in topology.get("externalIps", []):
+                            if ext_ip.get("id") == eip.canvas_eip_id:
+                                ext_ip["_private_ip"] = eip.private_ip
+                                ext_ip["ip"] = eip.public_ip
+                    except Exception:
+                        logger.warning("Failed to re-associate EIP %s", eip.public_ip)
+
+                if project_eips:
+                    s.execute(text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+                              {"topo": json.dumps(topology), "pid": p_id})
+                    s.commit()
+                    s.refresh(proj)
+                    topology = proj.topology or {}
+
+                # Re-cache missing images
+                cache_library_images(topology, h.ip_address, h.private_key, s)
+
+                # Recreate bridges and DNAT rules
+                if vni_map:
+                    all_hosts = s.query(HostModel).filter(HostModel.state == "active").all()
+                    peer_ips = [ho.ip_address for ho in all_hosts if ho.ip_address]
+                    net_config = build_host_network_config(topology, vni_map, peer_ips)
+                    net_script = generate_setup_script(net_config, h.ip_address, p_id)
+                    run_ssh_script(h.ip_address, h.private_key, net_script, timeout=120)
+
+                # Start only the target VM
+                dom = _domain_name(p_id, target_vm_id)
+                conn = libvirt_mgr.connect(h.ip_address, h.private_key)
+                try:
+                    libvirt_mgr.start_vm(conn, dom)
+                except Exception as e:
+                    logger.warning("Failed to start VM %s: %s", dom, e)
+                finally:
+                    conn.close()
+
+                proj.state = "active"
+                s.commit()
+                logger.info("Infra + VM %s started for project %s", target_vm_id[:8], p_id[:8])
+            except Exception:
+                logger.exception("Failed to start infra for project %s", p_id[:8])
+                proj = s.query(Project).filter_by(id=p_id).first()
+                if proj:
+                    proj.state = "error"
+                    s.commit()
             finally:
                 s.close()
 
         threading.Thread(target=_start_infra_then_vm, daemon=True).start()
         return {"action": "start", "success": True, "starting_project": True}
 
-    dom = _domain_name(project_id, vm_id)
-    conn = libvirt_mgr.connect(host.ip_address, host.private_key)
-    try:
-        success = libvirt_mgr.start_vm(conn, dom)
-        return {"action": "start", "success": success}
-    except Exception as e:
-        return {"action": "start", "success": False, "output": str(e)}
-    finally:
-        conn.close()
+    # Start VM in background — re-cache images if needed, then virsh start
+    import threading
+    p_id = project.id
+    h_ip = host.ip_address
+    h_key = host.private_key
+
+    def _cache_and_start():
+        from app.core.database import SessionLocal
+        from app.services.deploy_service import cache_library_images
+        s = SessionLocal()
+        try:
+            from app.models.project import Project
+            proj = s.query(Project).filter_by(id=p_id).first()
+            if proj:
+                topo = proj.deployed_topology or proj.topology or {}
+                cache_library_images(topo, h_ip, h_key, s)
+            dom = _domain_name(p_id, vm_id)
+            conn = libvirt_mgr.connect(h_ip, h_key)
+            try:
+                libvirt_mgr.start_vm(conn, dom)
+            except Exception as e:
+                logger.error("Failed to start VM %s: %s", dom, e)
+            finally:
+                conn.close()
+        finally:
+            s.close()
+
+    threading.Thread(target=_cache_and_start, daemon=True).start()
+    return {"action": "start", "success": True}
 
 
 @router.post("/{project_id}/vms/{vm_id}/stop")
