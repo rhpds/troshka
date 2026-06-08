@@ -209,6 +209,8 @@ def create_pattern(
         project = db.query(Project).filter_by(id=body.source_project_id, owner_id=user.id).first()
         if not project:
             raise HTTPException(status_code=404, detail="Source project not found")
+        if project.state not in ("active", "stopped"):
+            raise HTTPException(status_code=400, detail="Project must be deployed (active or stopped) to save as pattern")
         topology = project.topology or {}
         state = "capturing"
     elif body.topology:
