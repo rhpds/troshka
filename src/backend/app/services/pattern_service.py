@@ -131,6 +131,27 @@ echo "UPLOAD_COMPLETE"
                 db.commit()
                 return
 
+        # Update pattern topology: point storage nodes to captured pattern disks
+        topo = pattern.topology or {}
+        disk_map = {d.source_disk_id: d for d in pattern.disks}
+        for node in topo.get("nodes", []):
+            if node.get("type") != "storageNode":
+                continue
+            if node.get("data", {}).get("format") == "iso":
+                continue
+            pd = disk_map.get(node["id"])
+            if pd:
+                node["data"]["source"] = "pattern"
+                node["data"]["patternId"] = pattern_id
+                node["data"]["patternDiskId"] = pd.id
+                node["data"].pop("libraryItemId", None)
+        import json, copy
+        from sqlalchemy import text
+        db.execute(
+            text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+            {"topo": json.dumps(copy.deepcopy(topo)), "pid": pattern_id},
+        )
+
         pattern.state = "available"
         pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)
         db.commit()
