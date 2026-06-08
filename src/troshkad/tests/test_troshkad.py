@@ -233,12 +233,20 @@ class TestTroshkadServer(unittest.TestCase):
 from unittest.mock import patch, MagicMock
 
 
+def _mock_popen(returncode=0, stdout="", stderr=""):
+    """Create a mock Popen instance that works with _run_cmd."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate.return_value = (stdout, stderr)
+    return proc
+
+
 class TestVmHandlers(unittest.TestCase):
     """Unit tests for VM command handlers — mock subprocess."""
 
-    @patch("troshkad.subprocess.run")
-    def test_vm_create_calls_virt_install(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="Domain created", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_create_calls_virt_install(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
         job = troshkad._create_job("vms/create", {
             "domain_name": "troshka-aabbccdd-11223344",
             "vcpus": 2,
@@ -248,36 +256,35 @@ class TestVmHandlers(unittest.TestCase):
             "seed_iso": "/var/lib/troshka/vms/proj/aabb-seed.iso",
         })
         result = troshkad._handle_vm_create(job, job["params"])
-        self.assertTrue(mock_run.called)
-        cmd = mock_run.call_args[0][0]
+        self.assertTrue(mock_popen.called)
+        cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[0], "virt-install")
         self.assertIn("--name", cmd)
         self.assertIn("troshka-aabbccdd-11223344", cmd)
 
-    @patch("troshkad.subprocess.run")
-    def test_vm_destroy_calls_virsh(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_destroy_calls_virsh(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("vms/destroy", {"domain_name": "troshka-aabb1122-11223344"})
         troshkad._handle_vm_destroy(job, job["params"])
-        calls = [c[0][0] for c in mock_run.call_args_list]
-        # Should call virsh destroy, then virsh undefine
+        calls = [c[0][0] for c in mock_popen.call_args_list]
         self.assertTrue(any("destroy" in c for c in calls))
         self.assertTrue(any("undefine" in c for c in calls))
 
-    @patch("troshkad.subprocess.run")
-    def test_vm_start(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="Domain started", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_start(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain started")
         job = troshkad._create_job("vms/start", {"domain_name": "troshka-aabb1122-11223344"})
         troshkad._handle_vm_start(job, job["params"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["virsh", "start"])
 
-    @patch("troshkad.subprocess.run")
-    def test_vm_stop(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="Domain stopped", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_stop(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain stopped")
         job = troshkad._create_job("vms/stop", {"domain_name": "troshka-aabb1122-11223344"})
         troshkad._handle_vm_stop(job, job["params"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["virsh", "shutdown"])
 
     def test_vm_create_rejects_invalid_domain(self):
@@ -293,24 +300,24 @@ class TestVmHandlers(unittest.TestCase):
 class TestStorageHandlers(unittest.TestCase):
 
     @patch("troshkad.os.makedirs")
-    @patch("troshkad.subprocess.run")
-    def test_disk_create_qcow2(self, mock_run, mock_makedirs):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_create_qcow2(self, mock_popen, mock_makedirs):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("disks/create", {
             "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
             "size_gb": 20,
             "format": "qcow2",
         })
         result = troshkad._handle_disk_create(job, job["params"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[0], "qemu-img")
         self.assertIn("create", cmd)
         self.assertEqual(result["status"], "created")
 
     @patch("troshkad.os.makedirs")
-    @patch("troshkad.subprocess.run")
-    def test_disk_create_with_backing(self, mock_run, mock_makedirs):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_create_with_backing(self, mock_popen, mock_makedirs):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("disks/create", {
             "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
             "size_gb": 20,
@@ -318,25 +325,24 @@ class TestStorageHandlers(unittest.TestCase):
             "backing_file": "/var/lib/troshka/images/base.qcow2",
         })
         troshkad._handle_disk_create(job, job["params"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         self.assertIn("-b", cmd)
 
-    @patch("troshkad.subprocess.run")
-    def test_disk_resize(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_resize(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("disks/resize", {
             "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
             "new_size_gb": 40,
         })
         troshkad._handle_disk_resize(job, job["params"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["qemu-img", "resize"])
 
     @patch("troshkad.os.makedirs")
-    @patch("troshkad.subprocess.run")
-    def test_seed_create(self, mock_run, mock_makedirs):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        # Mock tempfile module to use a local temp dir instead of /var/lib/troshka/tmp
+    @patch("troshkad.subprocess.Popen")
+    def test_seed_create(self, mock_popen, mock_makedirs):
+        mock_popen.return_value = _mock_popen()
         with patch("tempfile.TemporaryDirectory") as mock_tempdir:
             mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
             job = troshkad._create_job("seeds/create", {
@@ -346,7 +352,7 @@ class TestStorageHandlers(unittest.TestCase):
             })
             with patch("builtins.open", unittest.mock.mock_open()):
                 troshkad._handle_seed_create(job, job["params"])
-            cmd = mock_run.call_args[0][0]
+            cmd = mock_popen.call_args[0][0]
             self.assertEqual(cmd[0], "xorriso")
 
     def test_disk_create_rejects_bad_path(self):
@@ -360,9 +366,9 @@ class TestStorageHandlers(unittest.TestCase):
 
 class TestNetworkHandlers(unittest.TestCase):
 
-    @patch("troshkad.subprocess.run")
-    def test_network_setup(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_network_setup(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("networks/setup", {
             "network_name": "troshka-net-aabb",
             "cidr": "192.168.100.0/24",
@@ -373,9 +379,9 @@ class TestNetworkHandlers(unittest.TestCase):
         result = troshkad._handle_network_setup(job, job["params"])
         self.assertEqual(result["status"], "configured")
 
-    @patch("troshkad.subprocess.run")
-    def test_network_teardown(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("troshkad.subprocess.Popen")
+    def test_network_teardown(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("networks/teardown", {
             "network_name": "troshka-net-aabb",
             "project_id": "aabbccdd-1122-3344-5566-778899001122",
@@ -388,16 +394,19 @@ class TestOpsHandlers(unittest.TestCase):
 
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.run")
-    def test_snapshot_create(self, mock_run, mock_makedirs):
-        # Mock the virsh commands
+    @patch("troshkad.subprocess.Popen")
+    def test_snapshot_create(self, mock_popen, mock_run, mock_makedirs):
+        mock_popen.return_value = _mock_popen()
+
         def run_side_effect(cmd, **kwargs):
             result = MagicMock()
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
-            # Mock domblklist to return a disk path
             if "domblklist" in cmd:
                 result.stdout = "Type       Device  Target     Source\nfile       disk    vda        /var/lib/troshka/vms/proj/disk.qcow2\n"
+            if "domstate" in cmd:
+                result.stdout = "shut off\n"
             return result
 
         mock_run.side_effect = run_side_effect
