@@ -355,7 +355,7 @@ export default function ProjectsPage() {
                             fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
                               if (d.state === "stopped" || d.state === "error") {
                                 clearInterval(poll);
-                                window.location.reload();
+                                setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
                               }
                             }).catch(() => {});
                           }, 2000);
@@ -376,9 +376,9 @@ export default function ProjectsPage() {
                           fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
                             if (d.state === "active" || d.state === "error") {
                               clearInterval(poll);
-                              window.location.reload();
+                              setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
                             }
-                          });
+                          }).catch(() => {});
                         }, 2000);
                       }}
                     >Start</Button>

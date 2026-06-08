@@ -330,7 +330,6 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                 dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
                 dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{vni}.leases"
                 dhcp_cmds.append(f"cat > {dnsmasq_conf} << 'DNSEOF'")
-                import ipaddress as _ipaddress
                 gateway_ip = dhcp_cfg.get("gateway", "")
                 dhcp_cmds.append(f"interface={bridge}")
                 dhcp_cmds.append("bind-dynamic")
