@@ -458,6 +458,17 @@ def _run_cmd(job, cmd, timeout=600):
     return proc
 
 
+def _chown_qemu(path):
+    """Set file/dir ownership to qemu:qemu so libvirt can access it."""
+    import pwd
+    try:
+        qemu_uid = pwd.getpwnam("qemu").pw_uid
+        qemu_gid = pwd.getpwnam("qemu").pw_gid
+        os.chown(path, qemu_uid, qemu_gid)
+    except (KeyError, OSError):
+        pass
+
+
 # ── VM handlers ──
 
 def _handle_vm_create(job, params):
@@ -489,6 +500,7 @@ def _handle_vm_create(job, params):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             try:
                 os.link(link_from, path)
+                _chown_qemu(path)
                 job["output"].append(f"Linked {os.path.basename(path)} -> {link_from}")
             except FileExistsError:
                 pass
@@ -949,6 +961,7 @@ def _handle_disk_create(job, params):
         cmd.extend(["-b", backing, "-F", fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
+    _chown_qemu(path)
     return {"path": path, "status": "created"}
 
 COMMAND_HANDLERS["disks/create"] = _handle_disk_create
@@ -989,6 +1002,7 @@ def _handle_seed_create(job, params):
             "-joliet", "-rock",
             tmpdir + "/",
         ])
+    _chown_qemu(path)
     return {"path": path, "status": "created"}
 
 COMMAND_HANDLERS["seeds/create"] = _handle_seed_create
@@ -1208,8 +1222,12 @@ def _handle_network_full_setup(job, params):
     transit_cidr = f"172.30.{transit_octet3}.0/24"
 
     # ── Deploy qemu hook (idempotent) ──
+    # NOTE: Do NOT call virsh from the hook — it deadlocks virtqemud.
+    # Parse TAP names from the domain XML passed on stdin instead.
     hook_script = (
         '#!/bin/bash\n'
+        '# Troshka qemu hook — moves TAP interfaces into project namespace\n'
+        '# NOTE: Do NOT call virsh from this hook — it deadlocks virtqemud.\n'
         'DOMAIN=$1\n'
         'ACTION=$2\n'
         'if [ "$ACTION" = "started" ]; then\n'
@@ -1219,7 +1237,8 @@ def _handle_network_full_setup(job, params):
         '    ip netns list 2>/dev/null | grep -q "^$NS " || exit 0\n'
         '    BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F\': \' \'{print $2}\' | head -1)\n'
         '    [ -z "$BRIDGE" ] && exit 0\n'
-        '    for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk \'NR>2 && NF>0 {print $1}\'); do\n'
+        '    XML=$(cat)\n'
+        '    for TAP in $(echo "$XML" | grep -oP "dev=\'\\K(vnet|tap)[^\']*"); do\n'
         '        ip link set "$TAP" netns "$NS" 2>/dev/null\n'
         '        ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null\n'
         '        ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null\n'
@@ -1650,6 +1669,7 @@ def _handle_seed_create_batch(job, params):
                 "-joliet", "-rock",
                 tmpdir + "/",
             ])
+        _chown_qemu(path)
         created += 1
         job["output"].append(f"Seed ISO created: {path}")
 
