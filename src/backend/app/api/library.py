@@ -341,9 +341,8 @@ def import_from_url(
     def _host_download():
         from app.core.database import SessionLocal as SL
         from app.services.s3_storage import _get_s3_client, _bucket
-        from app.services.deploy_service import run_ssh_script
+        from app.services.troshkad_client import start_job, wait_for_job, check_disk_usage, TroshkadError
         from app.models.host import Host
-        import time as _time
 
         sess = SL()
         try:
@@ -352,7 +351,7 @@ def import_from_url(
                 return
 
             host = sess.query(Host).filter_by(state="active", agent_status="connected").first()
-            if not host or not host.ip_address or not host.private_key:
+            if not host:
                 logger.error("Import %s: no active host available", item_id[:8])
                 it.state = "error"
                 sess.commit()
@@ -362,133 +361,87 @@ def import_from_url(
             bucket = _bucket()
 
             # Check disk space before downloading
-            from app.services.deploy_service import check_host_disk_space
-            disk = check_host_disk_space(host.ip_address, host.private_key)
-            if disk["used_pct"] >= 90:
-                free_gb = disk["free_bytes"] / (1024 ** 3)
-                logger.error("Import %s: host storage %d%% full (%.1f GB free)", item_id[:8], disk["used_pct"], free_gb)
+            disk = check_disk_usage(host)
+            if disk.get("used_pct", 100) >= 90:
+                free_gb = disk.get("free_bytes", 0) / (1024 ** 3)
+                logger.error("Import %s: host storage %d%% full (%.1f GB free)", item_id[:8], disk.get("used_pct", 100), free_gb)
                 it.state = "error"
                 sess.commit()
                 return
 
-            it.state = "downloading"
+            it.state = "importing"
             sess.commit()
 
-            # Step 1: Download file on host in background, poll size
+            # Calculate number of parts needed
             cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
-            run_ssh_script(host.ip_address, host.private_key, f"mkdir -p /var/lib/troshka/tmp", timeout=10)
-            run_ssh_script(host.ip_address, host.private_key,
-                f"nohup bash -c \"curl -sfL -o {cache_path} '{body.url}' && echo DONE > {cache_path}.status || echo FAIL > {cache_path}.status\" > /dev/null 2>&1 &",
-                timeout=15)
-
-            # Poll file size while downloading
-            import time as _time
-            while True:
-                _time.sleep(5)
-                poll = run_ssh_script(host.ip_address, host.private_key,
-                    f"cat {cache_path}.status 2>/dev/null; stat -c%s {cache_path} 2>/dev/null || echo 0",
-                    timeout=10)
-                lines = [l.strip() for l in poll["output"].strip().split("\n") if not l.strip().startswith("Warning:")]
-                status_line = lines[0] if lines else ""
-                size_line = lines[-1] if len(lines) > 1 else lines[0] if lines else "0"
-
-                if status_line == "DONE":
-                    if size_line.isdigit():
-                        it.size_bytes = int(size_line)
-                    it.state = "uploading_s3"
-                    sess.commit()
-                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}.status", timeout=10)
-                    break
-                elif status_line == "FAIL":
-                    logger.error("Import %s: download failed on host", item_id[:8])
-                    it.state = "error"
-                    sess.commit()
-                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} {cache_path}.status", timeout=10)
-                    return
-                else:
-                    # Still downloading — update size
-                    if size_line.isdigit() and int(size_line) > 0:
-                        it.size_bytes = int(size_line)
-                        sess.commit()
-
-            # Step 2: Split file on host
-            file_size = it.size_bytes or 0
             chunk_size = 500 * 1024 * 1024
-            tmp_dir = "/var/lib/troshka/tmp"
-            prefix = f"part-{item_id[:8]}"
 
-            split_result = run_ssh_script(host.ip_address, host.private_key,
-                f"cd {tmp_dir} && split -b {chunk_size} -d {cache_path} {prefix}- && ls -1 {tmp_dir}/{prefix}-* | wc -l",
-                timeout=300)
-            if not split_result["success"]:
-                logger.error("Import %s: split failed", item_id[:8])
-                it.state = "error"
-                sess.commit()
-                return
-
-            num_parts = 0
-            for line in split_result["output"].strip().split("\n"):
-                if line.strip().isdigit():
-                    num_parts = int(line.strip())
-
-            # Step 3: Upload each part individually with progress
+            # Create multipart upload and generate presigned URLs
             mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
             upload_id = mpu["UploadId"]
-            parts = []
-            uploaded_bytes = 0
 
-            it.state = "uploading_s3"
-            it.tags = {"total_parts": num_parts, "uploaded_parts": 0}
-            sess.commit()
-
-            for pn in range(1, num_parts + 1):
-                idx = f"{pn - 1:02d}"
-                part_file = f"{tmp_dir}/{prefix}-{idx}"
+            # Generate presigned URLs for up to 100 parts (max file size 50GB)
+            # Troshkad will use only what it needs based on actual file size
+            max_parts = 100
+            upload_parts = []
+            for pn in range(1, max_parts + 1):
                 url = client.generate_presigned_url(
                     "upload_part",
                     Params={"Bucket": bucket, "Key": s3_key, "UploadId": upload_id, "PartNumber": pn},
                     ExpiresIn=14400,
                 )
+                upload_parts.append({"part_num": pn, "presigned_url": url})
 
-                result = run_ssh_script(host.ip_address, host.private_key,
-                    f"ETAG=$(curl -sfL -X PUT -T {part_file} '{url}' -D- -o /dev/null | grep -i etag | tr -d '\\r' | awk '{{print $2}}') && rm -f {part_file} && echo $ETAG",
-                    timeout=600)
+            # Single troshkad job replaces 13 SSH calls
+            import_params = {
+                "download_url": body.url,
+                "cache_path": cache_path,
+                "s3_multipart": {
+                    "part_size_bytes": chunk_size,
+                    "upload_parts": upload_parts,
+                }
+            }
 
-                if result["success"]:
-                    etag = result["output"].strip().split("\n")[-1].strip()
-                    if etag:
-                        parts.append({"PartNumber": pn, "ETag": etag})
-                        uploaded_bytes += chunk_size
-                        it.tags = {"total_parts": num_parts, "uploaded_parts": pn}
-                        sess.commit()
-                        logger.info("Import %s: part %d/%d uploaded", item_id[:8], pn, num_parts)
-                    else:
-                        logger.error("Import %s: no etag for part %d", item_id[:8], pn)
+            try:
+                job_id = start_job(host, "/library/import", import_params)
+                job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)
+
+                if job["status"] == "failed":
+                    logger.error("Import %s: troshkad job failed: %s", item_id[:8], job.get("error", "unknown"))
                     client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
-                    it.state = "error"
-                    sess.commit()
-                else:
-                    logger.error("Import %s: part %d upload failed: %s", item_id[:8], pn, result["output"][-200:])
-                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
-                    run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path} {tmp_dir}/{prefix}-*", timeout=15)
                     it.state = "error"
                     sess.commit()
                     return
 
-            # Complete multipart upload
-            run_ssh_script(host.ip_address, host.private_key, f"rm -f {cache_path}", timeout=15)
-            if parts:
+                # Complete S3 multipart upload with ETags from job result
+                result = job.get("result", {})
+                etags = result.get("etags", [])
+
+                if not etags:
+                    logger.error("Import %s: no etags in job result", item_id[:8])
+                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
+                    it.state = "error"
+                    sess.commit()
+                    return
+
+                # Complete multipart upload
+                parts = [{"PartNumber": e["part"], "ETag": e["etag"]} for e in etags]
                 client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
+
+                # Update item with final size
                 head = client.head_object(Bucket=bucket, Key=s3_key)
                 it.size_bytes = head["ContentLength"]
                 it.state = "ready"
                 it.tags = None
                 sess.commit()
-                logger.info("Import %s complete via host: %d bytes", item_id[:8], it.size_bytes)
-            else:
+                logger.info("Import %s complete via troshkad: %d bytes", item_id[:8], it.size_bytes)
+
+            except TroshkadError as e:
+                logger.error("Import %s: troshkad error: %s", item_id[:8], e)
                 client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
                 it.state = "error"
                 sess.commit()
+
         except Exception:
             logger.exception("Import failed for %s", item_id[:8])
             it = sess.query(LibraryItem).filter_by(id=item_id).first()
@@ -496,14 +449,6 @@ def import_from_url(
                 it.state = "error"
                 sess.commit()
         finally:
-            # Always clean up temp files on the host
-            try:
-                if host and host.ip_address and host.private_key:
-                    run_ssh_script(host.ip_address, host.private_key,
-                        f"rm -f /var/lib/troshka/tmp/import-{item_id[:8]}* /var/lib/troshka/tmp/part-{item_id[:8]}-*",
-                        timeout=15)
-            except Exception:
-                pass
             sess.close()
 
     threading.Thread(target=_host_download, daemon=True).start()
