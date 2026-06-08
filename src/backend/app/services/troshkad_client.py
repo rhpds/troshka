@@ -2,15 +2,16 @@
 """Client for communicating with troshkad agents on hosts.
 
 Replaces run_ssh_script() with HTTPS requests to the troshkad daemon.
-Uses only stdlib (urllib) -- no requests/httpx dependency.
+Uses only stdlib (http.client, ssl) -- no requests/httpx dependency.
+Uses http.client directly (not urllib) so we can verify the peer cert
+fingerprint before reading the response.
 """
 import hashlib
+import http.client
 import json
 import logging
 import ssl
 import time
-import urllib.request
-import urllib.error
 
 logger = logging.getLogger(__name__)
 
@@ -26,34 +27,41 @@ class TroshkadError(Exception):
         self.response = response
 
 
-def _make_ssl_context(host):
-    """Create SSL context that accepts self-signed certs for fingerprint pinning.
+def _make_ssl_context():
+    """Create SSL context that accepts self-signed certs.
 
-    We disable default CA verification because troshkad uses self-signed certs.
-    Instead, we verify the cert's SHA-256 fingerprint matches what we stored
-    at install time -- this is actually stronger than CA verification for
-    known hosts (same principle as SSH known_hosts).
+    We disable CA verification because troshkad uses self-signed certs.
+    Security is provided by cert fingerprint pinning after connection --
+    same principle as SSH known_hosts.
     """
-    ctx = ssl.create_default_context()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
 
-def _verify_cert_fingerprint(host, resp):
-    """Verify the server cert fingerprint matches our stored fingerprint."""
-    if not hasattr(host, "agent_cert_fingerprint") or not host.agent_cert_fingerprint:
-        return
-    peer_cert_der = resp.fp.raw._sock.getpeercert(binary_form=True)
-    if peer_cert_der:
-        actual_fp = hashlib.sha256(peer_cert_der).hexdigest().upper()
-        # Stored fingerprint may have colons (e.g., AB:CD:EF:...)
-        expected_fp = host.agent_cert_fingerprint.replace(":", "").upper()
-        if actual_fp != expected_fp:
-            raise TroshkadError(
-                f"Certificate fingerprint mismatch on {host.ip_address}: "
-                f"expected {expected_fp[:16]}..., got {actual_fp[:16]}..."
-            )
+def _verify_cert_fingerprint(conn, host):
+    """Verify the server cert SHA-256 fingerprint matches what we stored at install time.
+
+    Raises TroshkadError on mismatch or missing fingerprint.
+    """
+    fingerprint = getattr(host, "agent_cert_fingerprint", None)
+    if not fingerprint:
+        raise TroshkadError(
+            f"No cert fingerprint stored for host {host.ip_address} -- "
+            "cannot verify identity. Re-install the agent to generate credentials."
+        )
+    peer_cert_der = conn.sock.getpeercert(binary_form=True)
+    if not peer_cert_der:
+        raise TroshkadError(f"No peer certificate received from {host.ip_address}")
+    actual_fp = hashlib.sha256(peer_cert_der).hexdigest().upper()
+    expected_fp = fingerprint.replace(":", "").upper()
+    if actual_fp != expected_fp:
+        raise TroshkadError(
+            f"Certificate fingerprint mismatch on {host.ip_address}: "
+            f"expected {expected_fp[:16]}..., got {actual_fp[:16]}..."
+        )
 
 
 def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
@@ -70,9 +78,8 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
         Parsed JSON response dict
 
     Raises:
-        TroshkadError: On connection, auth, or server errors
+        TroshkadError: On connection, auth, cert mismatch, or server errors
     """
-    url = f"https://{host.ip_address}:{TROSHKAD_PORT}{path}"
     data = json.dumps(body).encode() if body else None
     headers = {
         "Authorization": f"Bearer {host.agent_token}",
@@ -80,27 +87,39 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
     if data:
         headers["Content-Type"] = "application/json"
 
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    ctx = _make_ssl_context(host)
+    ctx = _make_ssl_context()
+    conn = http.client.HTTPSConnection(
+        host.ip_address, TROSHKAD_PORT, context=ctx, timeout=timeout,
+    )
 
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode() if e.fp else ""
-        try:
-            error_body = json.loads(body_text)
-        except (json.JSONDecodeError, ValueError):
-            error_body = {"error": body_text}
-        raise TroshkadError(
-            f"troshkad {host.ip_address} returned {e.code}: {error_body}",
-            status_code=e.code,
-            response=error_body,
-        )
-    except urllib.error.URLError as e:
+        conn.request(method, path, body=data, headers=headers)
+        # Verify cert fingerprint BEFORE reading response
+        _verify_cert_fingerprint(conn, host)
+        resp = conn.getresponse()
+        resp_body = resp.read().decode()
+
+        if resp.status >= 400:
+            try:
+                error_body = json.loads(resp_body)
+            except (json.JSONDecodeError, ValueError):
+                error_body = {"error": resp_body}
+            raise TroshkadError(
+                f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
+                status_code=resp.status,
+                response=error_body,
+            )
+        return json.loads(resp_body)
+    except TroshkadError:
+        raise
+    except ConnectionError as e:
         raise TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
+    except TimeoutError as e:
+        raise TroshkadError(f"Connection to troshkad on {host.ip_address} timed out: {e}")
     except Exception as e:
         raise TroshkadError(f"troshkad request failed: {e}")
+    finally:
+        conn.close()
 
 
 def start_job(host, path, params):

@@ -406,10 +406,10 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
             h.agent_status = "connected" if result["success"] else "install_failed"
 
             # Store troshkad credentials
-            creds = result.get("troshkad_credentials", {})
-            if creds.get("token") and creds.get("fingerprint"):
-                h.agent_token = creds["token"]
-                h.agent_cert_fingerprint = creds["fingerprint"]
+            troshkad_creds = result.get("troshkad_credentials", {})
+            if troshkad_creds.get("token") and troshkad_creds.get("fingerprint"):
+                h.agent_token = troshkad_creds["token"]
+                h.agent_cert_fingerprint = troshkad_creds["fingerprint"]
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
 
             s.commit()
