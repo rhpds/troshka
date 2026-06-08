@@ -138,5 +138,141 @@ class TestTroshkadClient(unittest.TestCase):
             start_job(FakeHost(), "/vms/create", {"domain_name": "test"})
 
 
+class TestVmHelpers(unittest.TestCase):
+    """Tests for VM management convenience functions."""
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_get_vm_state_running(self, mock_https_cls):
+        from app.services.troshkad_client import get_vm_state
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # start_job response
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                # poll_job response
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": {"domain": "test", "state": "running"}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        state = get_vm_state(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertEqual(state, "running")
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_get_vm_state_error_returns_not_found(self, mock_https_cls):
+        from app.services.troshkad_client import get_vm_state, TroshkadError
+
+        mock_conn = _mock_conn({"error": "connection refused"}, status=500)
+        mock_https_cls.return_value = mock_conn
+        state = get_vm_state(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertEqual(state, "not_found")
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_get_vnc_port(self, mock_https_cls):
+        from app.services.troshkad_client import get_vnc_port
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": {"domain": "test", "vnc_port": 5901}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        port = get_vnc_port(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertEqual(port, 5901)
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_get_vnc_port_none(self, mock_https_cls):
+        from app.services.troshkad_client import get_vnc_port
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": {"domain": "test", "vnc_port": None}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        port = get_vnc_port(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertIsNone(port)
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_get_vm_config(self, mock_https_cls):
+        from app.services.troshkad_client import get_vm_config
+
+        config = {"vcpus": 4, "ram_mb": 8192, "boot_devs": ["hd"], "nics": [], "disks": [], "cdroms": []}
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": config, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        result = get_vm_config(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertEqual(result["vcpus"], 4)
+        self.assertEqual(result["ram_mb"], 8192)
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_reconfigure_vm(self, mock_https_cls):
+        from app.services.troshkad_client import reconfigure_vm
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": {"domain": "test", "status": "reconfigured", "restarted": True}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        result = reconfigure_vm(FakeHost(), "troshka-aabbccdd-11223344", vcpus=8, ram_mb=16384)
+        self.assertEqual(result["status"], "reconfigured")
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_reconfigure_vm_failure_raises(self, mock_https_cls):
+        from app.services.troshkad_client import reconfigure_vm, TroshkadError
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "failed",
+                                   "result": {"error": "virsh define failed"}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        with self.assertRaises(TroshkadError):
+            reconfigure_vm(FakeHost(), "troshka-aabbccdd-11223344", vcpus=8)
+
+    @patch("app.services.troshkad_client.http.client.HTTPSConnection")
+    def test_undefine_vm(self, mock_https_cls):
+        from app.services.troshkad_client import undefine_vm
+
+        call_count = 0
+        def conn_factory(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_conn({"job_id": "j1", "status": "running"}, status=202)
+            else:
+                return _mock_conn({"job_id": "j1", "status": "completed",
+                                   "result": {"domain": "test", "status": "undefined"}, "output": []})
+        mock_https_cls.side_effect = conn_factory
+        result = undefine_vm(FakeHost(), "troshka-aabbccdd-11223344")
+        self.assertTrue(result)
+
+
 if __name__ == "__main__":
     unittest.main()

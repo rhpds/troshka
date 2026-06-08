@@ -219,6 +219,59 @@ def push_update(host, script_bytes, version, force=False):
     }, timeout=30)
 
 
+def get_vm_state(host, domain_name, timeout=15):
+    """Get VM state. Returns state string or 'not_found'."""
+    try:
+        job_id = start_job(host, "/vms/state", {"domain_name": domain_name})
+        job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+        if job["status"] == "completed":
+            return job["result"].get("state", "unknown")
+        return "unknown"
+    except TroshkadError:
+        return "not_found"
+
+
+def get_vnc_port(host, domain_name, timeout=15):
+    """Get VNC port for a VM. Returns port int or None."""
+    try:
+        job_id = start_job(host, "/vms/vnc-port", {"domain_name": domain_name})
+        job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+        if job["status"] == "completed":
+            return job["result"].get("vnc_port")
+        return None
+    except TroshkadError:
+        return None
+
+
+def get_vm_config(host, domain_name, timeout=15):
+    """Get VM config. Returns config dict or None."""
+    try:
+        job_id = start_job(host, "/vms/config", {"domain_name": domain_name})
+        job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+        if job["status"] == "completed":
+            return job["result"]
+        return None
+    except TroshkadError:
+        return None
+
+
+def reconfigure_vm(host, domain_name, timeout=60, **kwargs):
+    """Reconfigure a VM. kwargs: boot_devs, vcpus, ram_mb, nics, disks, cdroms, restart."""
+    params = {"domain_name": domain_name, **kwargs}
+    job_id = start_job(host, "/vms/reconfigure", params)
+    job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+    if job["status"] == "failed":
+        raise TroshkadError(f"Reconfigure failed: {job['result'].get('error')}")
+    return job["result"]
+
+
+def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
+    """Undefine a VM."""
+    job_id = start_job(host, "/vms/undefine", {"domain_name": domain_name, "remove_storage": remove_storage})
+    job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
+    return job["status"] == "completed"
+
+
 def check_disk_usage(host, timeout=15):
     """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct} or error dict."""
     try:
