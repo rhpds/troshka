@@ -459,12 +459,16 @@ export default function AdminHostsPage() {
               )}
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
-                  <Button variant="secondary" onClick={async () => {
-                    if (!window.confirm("Update troshkad on this host?")) return;
-                    const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent`, { method: "POST" });
+                  <Button variant="secondary" onClick={async (e) => {
+                    const force = e.shiftKey;
+                    const msg = force
+                      ? "FORCE update troshkad? This will kill any running jobs."
+                      : "Update troshkad on this host? (Shift+click for force update)";
+                    if (!window.confirm(msg)) return;
+                    const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
                     if (resp.ok) {
                       const data = await resp.json();
-                      alert(`Update initiated → v${data.version}`);
+                      alert(`Update initiated → v${data.version}${force ? " (forced)" : ""}`);
                       loadData();
                     } else {
                       const data = await resp.json();
