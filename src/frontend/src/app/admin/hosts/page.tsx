@@ -233,6 +233,7 @@ export default function AdminHostsPage() {
   };
 
   const [installing, setInstalling] = useState<string | null>(null);
+  const [updating, setUpdating] = useState<string | null>(null);
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
 
   const installAgent = async (hostId: string) => {
@@ -459,20 +460,25 @@ export default function AdminHostsPage() {
               )}
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
-                  <Button variant="secondary" onClick={async (e) => {
+                  <Button variant="secondary" isLoading={updating === h.id} isDisabled={updating === h.id} onClick={async (e) => {
                     const force = e.shiftKey;
                     const msg = force
                       ? "FORCE update troshkad? This will kill any running jobs."
                       : "Update troshkad on this host? (Shift+click for force update)";
                     if (!window.confirm(msg)) return;
-                    const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
-                    if (resp.ok) {
-                      const data = await resp.json();
-                      alert(`Update initiated → v${data.version}${force ? " (forced)" : ""}`);
-                      loadData();
-                    } else {
-                      const data = await resp.json();
-                      alert(data.detail || "Update failed");
+                    setUpdating(h.id);
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
+                      if (resp.ok) {
+                        const data = await resp.json();
+                        alert(`Update initiated → v${data.version}${force ? " (forced)" : ""}`);
+                        loadData();
+                      } else {
+                        const data = await resp.json();
+                        alert(data.detail || "Update failed");
+                      }
+                    } finally {
+                      setUpdating(null);
                     }
                   }}>
                     Update Agent
