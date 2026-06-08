@@ -103,6 +103,27 @@ runcmd:
   - bash -c 'while [ ! -b /dev/nvme1n1 ]; do sleep 1; done; blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1; mkdir -p /var/lib/troshka; mount /dev/nvme1n1 /var/lib/troshka; grep -q /var/lib/troshka /etc/fstab || echo "/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab'
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
   - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+  - |
+    mkdir -p /etc/libvirt/hooks
+    cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
+    #!/bin/bash
+    DOMAIN=$1
+    ACTION=$2
+    if [ "$ACTION" = "started" ]; then
+        PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\([a-f0-9]*\)-.*/\1/p')
+        [ -z "$PID" ] && exit 0
+        NS="troshka-$PID"
+        ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
+        BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F': ' '{print $2}' | head -1)
+        [ -z "$BRIDGE" ] && exit 0
+        for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk '/^[a-z]/ && !/^Name/ {print $1}'); do
+            ip link set "$TAP" netns "$NS" 2>/dev/null
+            ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
+            ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null
+        done
+    fi
+    HOOKEOF
+    chmod +x /etc/libvirt/hooks/qemu
 """
 
 

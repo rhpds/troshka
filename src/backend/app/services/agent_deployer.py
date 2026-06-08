@@ -59,6 +59,28 @@ polkit.addRule(function(action, subject) {
 });
 POLKITEOF
 
+# Deploy libvirt qemu hook for namespace tap migration
+mkdir -p /etc/libvirt/hooks
+cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
+#!/bin/bash
+DOMAIN=$1
+ACTION=$2
+if [ "$ACTION" = "started" ]; then
+    PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\([a-f0-9]*\)-.*/\1/p')
+    [ -z "$PID" ] && exit 0
+    NS="troshka-$PID"
+    ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
+    BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F': ' '{print $2}' | head -1)
+    [ -z "$BRIDGE" ] && exit 0
+    for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk '/^[a-z]/ && !/^Name/ {print $1}'); do
+        ip link set "$TAP" netns "$NS" 2>/dev/null
+        ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
+        ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null
+    done
+fi
+HOOKEOF
+chmod +x /etc/libvirt/hooks/qemu
+
 # Mount dedicated storage volume if present and not already mounted
 if [ -b /dev/nvme1n1 ] && ! mountpoint -q /var/lib/troshka; then
     echo "Mounting dedicated storage volume..."
