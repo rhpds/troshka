@@ -51,6 +51,8 @@ def run_ssh_script(host_ip: str, private_key: str, script: str, timeout: int = 6
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "ConnectTimeout=30",
                 "-o", "IdentitiesOnly=yes",
+                "-o", "ServerAliveInterval=30",
+                "-o", "ServerAliveCountMax=3",
                 "-i", key_path,
                 f"ec2-user@{host_ip}",
                 "sudo", "bash", "-s",
