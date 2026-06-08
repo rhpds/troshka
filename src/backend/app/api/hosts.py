@@ -53,17 +53,16 @@ def list_hosts(
 @router.get("/storage")
 def host_storage(user: User = Depends(require_role("operator")), db: Session = Depends(get_db)):
     """Get live disk usage for all active hosts."""
-    from app.services.deploy_service import check_host_disk_space
+    from app.services.troshkad_client import check_disk_usage
     hosts = db.query(Host).filter(Host.state == "active", Host.agent_status == "connected").all()
     result = {}
     for h in hosts:
-        if h.ip_address and h.private_key:
-            disk = check_host_disk_space(h.ip_address, h.private_key)
-            result[h.id] = {
-                "used_pct": disk["used_pct"],
-                "free_gb": round(disk["free_bytes"] / (1024 ** 3), 1),
-                "total_gb": round(disk["total_bytes"] / (1024 ** 3), 1),
-            }
+        disk = check_disk_usage(h)
+        result[h.id] = {
+            "used_pct": disk["used_pct"],
+            "free_gb": round(disk["free_bytes"] / (1024 ** 3), 1),
+            "total_gb": round(disk["total_bytes"] / (1024 ** 3), 1),
+        }
     return result
 
 
@@ -470,9 +469,12 @@ def resize_storage(host_id: str, body: dict, user: User = Depends(require_role("
     ec2.modify_volume(VolumeId=vol_id, Size=new_size)
 
     # Grow the filesystem on the host (XFS online grow)
-    if host.ip_address and host.private_key:
-        from app.services.deploy_service import run_ssh_script
-        run_ssh_script(host.ip_address, host.private_key, "xfs_growfs /var/lib/troshka", timeout=30)
+    if host.ip_address and host.agent_status == "connected":
+        from app.services.troshkad_client import start_job, wait_for_job
+        job_id = start_job(host, "/host/resize-storage", {})
+        job = wait_for_job(host, job_id, timeout=30)
+        if job["status"] == "failed":
+            raise HTTPException(status_code=500, detail=job["result"].get("error", "Resize failed"))
 
     host.storage_size_gb = new_size
     db.commit()
