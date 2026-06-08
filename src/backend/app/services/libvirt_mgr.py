@@ -21,7 +21,7 @@ def connect(host_ip: str, private_key: str) -> libvirt.virConnect:
     kf.close()
     os.chmod(kf.name, 0o600)
 
-    uri = f"qemu+ssh://ec2-user@{host_ip}/system?keyfile={kf.name}&no_verify=1&known_hosts_verify=ignore"
+    uri = f"qemu+ssh://ec2-user@{host_ip}/system?keyfile={kf.name}&no_verify=1&known_hosts_verify=ignore&sshauth=privkey"
     try:
         conn = libvirt.open(uri)
     finally:
