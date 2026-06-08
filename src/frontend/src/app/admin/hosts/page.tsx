@@ -529,19 +529,24 @@ export default function AdminHostsPage() {
                   }}>
                     Clean
                   </Button>
-                  <Button variant="danger" onClick={async () => {
+                  <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={updating === `wipe-${h.id}`} onClick={async () => {
                     if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
                     if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
-                    const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
-                    if (resp.ok) {
-                      const data = await resp.json();
-                      alert(`Wiped: ${data.projects_destroyed} projects destroyed, ${data.projects_reset} reset to draft`);
-                      loadData();
-                    } else {
-                      alert("Wipe failed — check server logs");
+                    setUpdating(`wipe-${h.id}`);
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
+                      if (resp.ok) {
+                        const data = await resp.json();
+                        alert(`Wiped: ${data.projects_destroyed} destroyed, ${data.projects_reset} reset, ${data.nft_reset?.flushed_chains || 0} nft chains flushed`);
+                        loadData();
+                      } else {
+                        alert("Wipe failed — check server logs");
+                      }
+                    } finally {
+                      setUpdating(null);
                     }
                   }}>
-                    Wipe Host
+                    {updating === `wipe-${h.id}` ? "Wiping..." : "Wipe Host"}
                   </Button>
                 </>
               )}
