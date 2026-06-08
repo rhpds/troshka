@@ -1,15 +1,16 @@
 """
-Deploy service — creates VMs and networks on hosts via SSH.
+Deploy service — creates VMs and networks on hosts via troshkad.
 
 Translates canvas topology into libvirt VMs and VXLAN networks,
-then executes setup scripts on the target host over SSH.
+then sends structured commands to the troshkad agent on the host.
 """
 import logging
-import os
-import subprocess
-import tempfile
+import time as _time
 
-from app.services.vxlan import generate_setup_script
+from app.models.host import Host
+from app.services.troshkad_client import (
+    start_job, wait_for_job, check_disk_usage, poll_job, TroshkadError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,70 +18,16 @@ logger = logging.getLogger(__name__)
 _deploy_progress: dict[str, dict] = {}
 
 
-def check_host_disk_space(host_ip: str, private_key: str) -> dict:
-    """Check free space on /var/lib/troshka mount (or root if not mounted)."""
-    result = run_ssh_script(host_ip, private_key,
-        "stat -f -c '%a %b %S' /var/lib/troshka 2>/dev/null || stat -f -c '%a %b %S' /",
-        timeout=15)
-    if not result["success"]:
-        return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": result["output"]}
-    lines = [l.strip() for l in result["output"].strip().split("\n") if l.strip() and not l.strip().startswith("Warning:")]
-    if lines:
-        parts = lines[0].split()
-        if len(parts) >= 3 and all(p.isdigit() for p in parts):
-            free_blocks, total_blocks, block_size = int(parts[0]), int(parts[1]), int(parts[2])
-            free_bytes = free_blocks * block_size
-            total_bytes = total_blocks * block_size
-            used_pct = round((1 - free_blocks / max(total_blocks, 1)) * 100)
-            return {"free_bytes": free_bytes, "total_bytes": total_bytes, "used_pct": used_pct}
-    return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": "Could not parse stat output"}
+def check_host_disk_space(host) -> dict:
+    """Check free space on /var/lib/troshka via troshkad.
 
+    Args:
+        host: Host model instance (needs ip_address, agent_token, agent_cert_fingerprint)
 
-def run_ssh_script(host_ip: str, private_key: str, script: str, timeout: int = 600) -> dict:
-    """Execute a bash script on a remote host via SSH."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
-        kf.write(private_key)
-        key_path = kf.name
-    os.chmod(key_path, 0o600)
-
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=30",
-                "-o", "IdentitiesOnly=yes",
-                "-o", "ServerAliveInterval=30",
-                "-o", "ServerAliveCountMax=3",
-                "-i", key_path,
-                f"ec2-user@{host_ip}",
-                "sudo", "bash", "-s",
-            ],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = result.stdout + result.stderr
-        success = result.returncode == 0
-        if success:
-            logger.info("SSH %s (exit 0): %s", host_ip, output[-500:].strip() if len(output) > 500 else output.strip())
-        else:
-            logger.error("SSH %s (exit %d): %s", host_ip, result.returncode, output[-1000:].strip())
-        return {
-            "success": success,
-            "exit_code": result.returncode,
-            "output": output,
-        }
-    except subprocess.TimeoutExpired:
-        logger.error("SSH %s: timed out after %ds", host_ip, timeout)
-        return {"success": False, "exit_code": -1, "output": f"SSH command timed out after {timeout}s"}
-    except Exception as e:
-        logger.error("SSH %s: %s", host_ip, e)
-        return {"success": False, "exit_code": -1, "output": str(e)}
-    finally:
-        os.unlink(key_path)
+    Returns:
+        dict with free_bytes, total_bytes, used_pct (and optionally error)
+    """
+    return check_disk_usage(host)
 
 
 # ── Topology parsing ──
@@ -685,16 +632,22 @@ def generate_network_teardown_script(vni_map: dict, project_id: str = "") -> str
     return "\n".join(lines)
 
 
-def cache_library_images(topology: dict, host_ip: str, private_key: str, db_session, progress_callback=None):
-    """Download all library images and pattern disks to host cache with progress tracking.
+def cache_library_images(topology: dict, host, db_session, progress_callback=None):
+    """Download all library images and pattern disks to host cache via troshkad.
 
-    Starts downloads in background on the host, polls until complete.
-    progress_callback(downloaded_bytes, total_bytes, item_name) called periodically.
+    Uses troshkad images/cache endpoint for each item. Downloads run in parallel
+    as separate jobs on the host agent.
+
+    Args:
+        topology: Project topology dict
+        host: Host model instance
+        db_session: SQLAlchemy session
+        progress_callback: optional callback(downloaded_bytes, total_bytes)
     """
     from app.models.library import LibraryItem
     from app.models.pattern import PatternDisk
     from app.services import s3_storage
-    import time as _time
+    from app.services.troshkad_client import poll_job
 
     nodes = topology.get("nodes", [])
     items_to_cache = []
@@ -727,15 +680,13 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
         if pattern_id and pattern_disk_id:
             pd = db_session.query(PatternDisk).filter_by(id=pattern_disk_id, pattern_id=pattern_id).first()
             if pd and pd.s3_key:
-                cache_dir = f"/var/lib/troshka/cache/patterns/{pattern_id}"
-                cache_path = f"{cache_dir}/{pattern_disk_id}.{pd.format}"
+                cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{pattern_disk_id}.{pd.format}"
                 items_to_cache.append({
                     "item_id": pattern_disk_id,
                     "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
                     "s3_key": pd.s3_key,
                     "cache_path": cache_path,
                     "expected_size": pd.size_bytes,
-                    "cache_dir": cache_dir,
                 })
 
     seen_ids = set()
@@ -747,170 +698,262 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
     items_to_cache = deduped
 
     logger.info("cache_library_images: %d items to cache", len(items_to_cache))
-    for ic in items_to_cache:
-        logger.info("  cache item: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])
     if not items_to_cache:
         return
 
-    # Create cache directories for pattern disks
-    cache_dirs = set()
-    for ic in items_to_cache:
-        if "cache_dir" in ic:
-            cache_dirs.add(ic["cache_dir"])
-    if cache_dirs:
-        mkdir_script = "\n".join([f"mkdir -p {d}" for d in cache_dirs])
-        run_ssh_script(host_ip, private_key, mkdir_script, timeout=15)
-
-    # Generate presigned URLs
+    # Generate presigned URLs and start download jobs
+    active_jobs = []
     for ic in items_to_cache:
         url = s3_storage.generate_presigned_url(ic["s3_key"], expires=7200)
-        ic["url"] = url
+        try:
+            job_id = start_job(host, "/images/cache", {
+                "url": url,
+                "dest_path": ic["cache_path"],
+                "expected_format": "qcow2" if ic["cache_path"].endswith(".qcow2") else None,
+            })
+            active_jobs.append({"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]})
+            logger.info("  cache job started: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])
+        except TroshkadError as e:
+            logger.error("Failed to start cache job for %s: %s", ic["name"], e)
 
-    # Pre-check: skip items already cached at full size on the host
-    import shlex
-    check_cmds = [f"echo {shlex.quote(ic['item_id'])}:$(stat -c%s {shlex.quote(ic['cache_path'])} 2>/dev/null || echo 0)" for ic in items_to_cache]
-    if check_cmds:
-        check_result = run_ssh_script(host_ip, private_key, "\n".join(check_cmds), timeout=15)
-        if check_result["success"]:
-            for line in check_result.get("output", "").strip().splitlines():
-                if ":" not in line or line.startswith("Warning:"):
-                    continue
-                parts = line.strip().split(":")
-                if len(parts) == 2 and parts[1].isdigit():
-                    item_id, size = parts[0], int(parts[1])
-                    for ic in items_to_cache:
-                        if ic["item_id"] == item_id and size >= ic["expected_size"] - 1024 and ic["expected_size"] > 0:
-                            logger.info("cache: %s already cached (%d bytes), skipping", ic["name"], size)
-                            ic["_skip"] = True
-        items_to_cache = [ic for ic in items_to_cache if not ic.get("_skip")]
-        if not items_to_cache:
-            logger.info("cache_library_images: all items already cached")
-            return
+    if not active_jobs:
+        return
 
-    # Start all downloads in background on host using python3
-    import base64 as _b64
-    for ic in items_to_cache:
-        status_file = ic["cache_path"] + ".status"
-        log_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.log"
-        script_file = f"/var/lib/troshka/tmp/dl-{ic['item_id']}.py"
-        py_lines = [
-            "import os, sys, urllib.request, fcntl",
-            "cache = %r" % ic["cache_path"],
-            "status = %r" % status_file,
-            "expected = %d" % ic["expected_size"],
-            "url = %r" % ic["url"],
-            "lock_path = cache + '.lock'",
-            "lock_fd = open(lock_path, 'w')",
-            "fcntl.flock(lock_fd, fcntl.LOCK_EX)",
-            "try:",
-            "    current = os.path.getsize(cache) if os.path.exists(cache) else 0",
-            "    if current >= expected - 1024 and expected > 0:",
-            "        open(status, 'w').write('DONE')",
-            "        sys.exit(0)",
-            "    print('downloading %d bytes remaining' % (expected - current), flush=True)",
-            "    req = urllib.request.Request(url)",
-            "    if current > 0:",
-            "        req.add_header('Range', 'bytes=%d-' % current)",
-            "    with urllib.request.urlopen(req, timeout=300) as resp:",
-            "        mode = 'ab' if current > 0 and resp.status == 206 else 'wb'",
-            "        with open(cache, mode) as f:",
-            "            while True:",
-            "                chunk = resp.read(1048576)",
-            "                if not chunk:",
-            "                    break",
-            "                f.write(chunk)",
-            "    open(status, 'w').write('DONE')",
-            "except Exception as e:",
-            "    print('FAILED: %s' % e, flush=True)",
-            "    open(status, 'w').write('FAIL')",
-        ]
-        py_script = "\n".join(py_lines) + "\n"
-        b64 = _b64.b64encode(py_script.encode()).decode()
-        run_ssh_script(host_ip, private_key,
-            f"echo '{b64}' | base64 -d > {script_file}\n"
-            f"nohup python3 {script_file} > {log_file} 2>&1 &",
-            timeout=15)
-
-    # Poll until all downloads complete
+    # Poll until all jobs complete
     total_expected = sum(ic["expected_size"] for ic in items_to_cache)
-    last_total = 0
+    completed = set()
+    failed = set()
     stale_polls = 0
-    while True:
+    last_completed_count = 0
+
+    while len(completed) + len(failed) < len(active_jobs):
         _time.sleep(5)
-        poll_cmds = []
-        for ic in items_to_cache:
-            poll_cmds.append(f"echo \"FILE:{ic['item_id']}:$(cat {ic['cache_path']}.status 2>/dev/null || echo PENDING):$(stat -c%s {ic['cache_path']} 2>/dev/null || echo 0)\"")
-        result = run_ssh_script(host_ip, private_key, "\n".join(poll_cmds), timeout=15)
-
-        all_done = True
-        total_downloaded = 0
-        for line in result["output"].strip().split("\n"):
-            line = line.strip()
-            if not line.startswith("FILE:"):
+        for aj in active_jobs:
+            if aj["job_id"] in completed or aj["job_id"] in failed:
                 continue
-            parts = line.split(":")
-            if len(parts) >= 4:
-                status = parts[2]
-                size = int(parts[3]) if parts[3].isdigit() else 0
-                total_downloaded += size
-                if status == "FAIL":
-                    logger.error("Download failed for %s", parts[1])
-                    return
-                item_id = parts[1]
-                expected = next((ic["expected_size"] for ic in items_to_cache if ic["item_id"] == item_id), 0)
-                if status == "PENDING" and expected > 0 and size >= expected - 1024:
-                    status = "DONE"
-                if status != "DONE":
-                    all_done = False
+            try:
+                job = poll_job(host, aj["job_id"])
+                if job["status"] == "completed":
+                    completed.add(aj["job_id"])
+                    logger.info("cache: %s downloaded", aj["name"])
+                elif job["status"] == "failed":
+                    failed.add(aj["job_id"])
+                    logger.error("cache: %s failed: %s", aj["name"], job.get("result", {}).get("error", ""))
+            except TroshkadError:
+                pass  # Transient connection error, retry next poll
 
-        if progress_callback and not all_done:
-            progress_callback(total_downloaded, total_expected)
+        if progress_callback:
+            done_count = len(completed) + len(failed)
+            done_bytes = int(total_expected * done_count / max(len(active_jobs), 1))
+            progress_callback(done_bytes, total_expected)
 
-        if total_downloaded == last_total:
+        if len(completed) + len(failed) == last_completed_count:
             stale_polls += 1
         else:
             stale_polls = 0
-            last_total = total_downloaded
+            last_completed_count = len(completed) + len(failed)
 
-        if stale_polls >= 12:
-            logger.error("Download stalled for 60s at %d/%d bytes", total_downloaded, total_expected)
+        if stale_polls >= 720:  # 1 hour with no progress
+            logger.error("Download stalled for 1 hour, aborting")
             return
 
-        if all_done:
-            cleanup = [f"rm -f {ic['cache_path']}.status" for ic in items_to_cache]
-            run_ssh_script(host_ip, private_key, "\n".join(cleanup), timeout=15)
-            return
-
-
-def _prepare_library_downloads(topology: dict, host_ip: str, private_key: str, db_session):
-    """Generate presigned S3 URLs for library items and write them to the host."""
-    from app.models.library import LibraryItem
-    from app.services import s3_storage
-
-    nodes = topology.get("nodes", [])
-    library_item_ids = set()
-    for node in nodes:
-        if node.get("type") == "storageNode":
-            item_id = node.get("data", {}).get("libraryItemId")
-            if item_id:
-                library_item_ids.add(item_id)
-
-    if not library_item_ids:
-        return
-
-    lines = ["#!/bin/bash"]
-    for item_id in library_item_ids:
-        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
-        if not item or not item.s3_key:
-            continue
-        url = s3_storage.generate_presigned_url(item.s3_key, expires=7200)
-        lines.append(f"echo '{url}' > /var/lib/troshka/tmp/presigned-{item_id}")
-
-    if len(lines) > 1:
-        run_ssh_script(host_ip, private_key, "\n".join(lines), timeout=15)
+    if failed:
+        logger.error("cache_library_images: %d/%d downloads failed", len(failed), len(active_jobs))
 
 
 # ── Async orchestrators ──
+
+def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id):
+    """Set up full VXLAN mesh networking via troshkad.
+
+    Builds the network config and sends it to the networks/full-setup endpoint.
+    Returns True on success, error string on failure.
+    """
+    from app.services.vxlan import build_host_network_config
+
+    all_hosts = db_session.query(Host).filter(Host.state == "active").all()
+    peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
+    network_config = build_host_network_config(topology, vni_map, peer_ips)
+
+    # Build params for troshkad
+    params = {
+        "project_id": project_id,
+        "host_ip": host.ip_address,
+        "networks": network_config.get("networks", []),
+        "gateway": network_config.get("gateway"),
+        "routers": network_config.get("routers", []),
+    }
+
+    try:
+        job_id = start_job(host, "/networks/full-setup", params)
+        job = wait_for_job(host, job_id, timeout=120)
+        if job["status"] == "failed":
+            error = job.get("result", {}).get("error", "Network setup failed")
+            return f"Network setup failed: {error}"
+        return True
+    except TroshkadError as e:
+        return f"Network setup failed: {e}"
+
+
+def _teardown_networks_via_troshkad(host, project_id, vni_map):
+    """Tear down project networking via troshkad."""
+    vni_list = list(vni_map.values()) if vni_map else []
+    try:
+        job_id = start_job(host, "/networks/full-teardown", {
+            "project_id": project_id,
+            "vni_list": vni_list,
+        })
+        wait_for_job(host, job_id, timeout=60)
+    except TroshkadError as e:
+        logger.warning("Network teardown error for %s: %s", project_id[:8], e)
+
+
+def _create_seed_isos_via_troshkad(host, project_id, topology):
+    """Create cloud-init seed ISOs via troshkad seeds/create-batch."""
+    from app.services.cloud_init import generate_userdata, generate_metadata
+
+    nodes = topology.get("nodes", [])
+    seeds = []
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if not data.get("cloudInit"):
+            continue
+
+        node_id = node["id"]
+        vm_label = data.get("name", "vm")
+        userdata = generate_userdata(data)
+        metadata = generate_metadata(vm_label)
+        path = _seed_path(project_id, node_id)
+
+        seeds.append({
+            "path": path,
+            "user_data": userdata,
+            "meta_data": metadata,
+        })
+
+    if not seeds:
+        return
+
+    try:
+        job_id = start_job(host, "/seeds/create-batch", {"seeds": seeds})
+        job = wait_for_job(host, job_id, timeout=60)
+        if job["status"] == "failed":
+            logger.error("Seed ISO creation failed: %s", job.get("result", {}).get("error", ""))
+    except TroshkadError as e:
+        logger.error("Seed ISO creation failed: %s", e)
+
+
+def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, topology):
+    """Create disk images for a VM via troshkad disks/create."""
+    for disk in vm_disks:
+        if disk["format"] == "iso":
+            continue
+        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+
+        backing = None
+        if disk.get("source") == "pattern" and disk.get("patternId"):
+            backing = f"/var/lib/troshka/cache/patterns/{disk['patternId']}/{disk['patternDiskId']}.{disk['format']}"
+        elif disk.get("source") == "library" and disk.get("library_item_id"):
+            backing = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+
+        params = {
+            "path": dp,
+            "size_gb": disk["size_gb"],
+            "format": disk["format"],
+        }
+        if backing:
+            params["backing_file"] = backing
+
+        try:
+            job_id = start_job(host, "/disks/create", params)
+            wait_for_job(host, job_id, timeout=300)
+        except TroshkadError as e:
+            raise RuntimeError(f"Disk creation failed for {dp}: {e}")
+
+
+def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
+    """Create a VM definition via troshkad vms/create."""
+    vm_name = _vm_domain_name(project_id, vm["node_id"])
+    vm_disks = _find_vm_disks(vm["node_id"], topology)
+    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
+
+    # Build disk list for virt-install
+    disks = []
+    for disk in vm_disks:
+        if disk["format"] == "iso":
+            if disk.get("library_item_id"):
+                cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                disks.append({"path": cache_path, "bus": "sata", "device": "cdrom"})
+            continue
+        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+        disks.append({"path": dp, "bus": disk["bus"]})
+
+    # Seed ISO as cdrom
+    if vm.get("cloud_init"):
+        disks.append({"path": _seed_path(project_id, vm["node_id"]), "bus": "sata", "device": "cdrom"})
+
+    # Build network list
+    networks = []
+    for net in vm_networks:
+        entry = {"bridge": net["bridge"], "model": "virtio"}
+        if net["mac"]:
+            entry["mac"] = net["mac"]
+        networks.append(entry)
+
+    params = {
+        "domain_name": vm_name,
+        "vcpus": vm["vcpus"],
+        "ram_mb": vm["ram_gb"] * 1024,
+        "disks": disks,
+        "networks": networks,
+    }
+    if vm.get("cloud_init"):
+        params["seed_iso"] = _seed_path(project_id, vm["node_id"])
+
+    job_id = start_job(host, "/vms/create", params)
+    job = wait_for_job(host, job_id, timeout=600)
+    if job["status"] == "failed":
+        raise RuntimeError(f"VM creation failed for {vm_name}: {job.get('result', {}).get('error', '')}")
+    return vm_name
+
+
+def _start_vms_via_troshkad(host, project_id, topology):
+    """Start VMs respecting start order via troshkad vms/start."""
+    vms = _extract_vms(topology)
+    start_order = topology.get("startOrder", [])
+
+    ordered_vm_ids = set()
+    if start_order:
+        for entry in start_order:
+            vm_id = entry.get("vmId", "")
+            vm = next((v for v in vms if v["node_id"] == vm_id), None)
+            if vm:
+                ordered_vm_ids.add(vm_id)
+                if entry.get("autoStart", True) is False:
+                    logger.info("Deploy %s: skipping %s (auto-start disabled)", project_id[:8], vm["name"])
+                    continue
+                delay = entry.get("delaySeconds", 0)
+                if delay > 0:
+                    _time.sleep(delay)
+                vm_name = _vm_domain_name(project_id, vm["node_id"])
+                try:
+                    job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+                    wait_for_job(host, job_id, timeout=60)
+                except TroshkadError as e:
+                    logger.warning("Failed to start VM %s: %s", vm_name, e)
+
+    # Start any VMs not in start order
+    for vm in vms:
+        if vm["node_id"] not in ordered_vm_ids:
+            vm_name = _vm_domain_name(project_id, vm["node_id"])
+            try:
+                job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+                wait_for_job(host, job_id, timeout=60)
+            except TroshkadError as e:
+                logger.warning("Failed to start VM %s: %s", vm_name, e)
+
 
 def deploy_project_async(project_id: str):
     """Background thread: deploy a project's topology to a host."""
@@ -925,31 +968,24 @@ def deploy_project_async(project_id: str):
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.private_key or not host.ip_address:
+        if not host or not host.ip_address:
             project.state = "error"
-            project.deploy_error = "Host not available or missing SSH key"
+            project.deploy_error = "Host not available"
             s.commit()
             return
 
         topology = project.topology
         vni_map = project.vni_map or {}
-        host_ip = host.ip_address
-        private_key = host.private_key
 
         # Step 1: Set up VXLAN networks
         _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
-        logger.info("Deploy %s: setting up networks on %s", project_id[:8], host_ip)
-        from app.services.vxlan import build_host_network_config
-        all_hosts = s.query(Host).filter(Host.state == "active").all()
-        peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-        network_config = build_host_network_config(topology, vni_map, peer_ips)
-        net_script = generate_setup_script(network_config, host_ip, project_id)
+        logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
 
-        result = run_ssh_script(host_ip, private_key, net_script, timeout=120)
-        if not result["success"]:
-            logger.error("Deploy %s: network setup failed: %s", project_id[:8], result["output"][-500:])
+        net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+        if net_result is not True:
+            logger.error("Deploy %s: %s", project_id[:8], net_result)
             project.state = "error"
-            project.deploy_error = f"Network setup failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
+            project.deploy_error = net_result
             s.commit()
             _deploy_progress.pop(project_id, None)
             return
@@ -1011,11 +1047,8 @@ def deploy_project_async(project_id: str):
 
         # Step 2: Create cloud-init seed ISOs
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
-        from app.services.cloud_init import generate_seed_iso_script
-        seed_script = generate_seed_iso_script(project_id, topology)
-        if seed_script:
-            logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
-            run_ssh_script(host_ip, private_key, seed_script, timeout=30)
+        logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
+        _create_seed_isos_via_troshkad(host, project_id, topology)
 
         # Step 3: Cache library images on host
         _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
@@ -1023,35 +1056,21 @@ def deploy_project_async(project_id: str):
         def _deploy_dl_progress(downloaded, total):
             pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
             _deploy_progress[project_id] = {"step": "downloading images", "detail": pct}
-        cache_library_images(topology, host_ip, private_key, s, progress_callback=_deploy_dl_progress)
+        cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
-        # Step 4: Create VMs
+        # Step 4: Create VM disks and definitions
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
         logger.info("Deploy %s: creating VMs", project_id[:8])
-        vm_script = generate_vm_script(project_id, topology, vni_map)
-
-        result = run_ssh_script(host_ip, private_key, vm_script, timeout=300)
-        if not result["success"]:
-            logger.error("Deploy %s: VM creation failed: %s", project_id[:8], result["output"][-500:])
-            project.state = "error"
-            project.deploy_error = f"VM creation failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
-            s.commit()
-            _deploy_progress.pop(project_id, None)
-            return
+        vms = _extract_vms(topology)
+        for vm in vms:
+            vm_disks = _find_vm_disks(vm["node_id"], topology)
+            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, topology)
+            _create_vm_via_troshkad(host, project_id, vm, topology, vni_map)
 
         # Step 5: Start VMs
         _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
         logger.info("Deploy %s: starting VMs", project_id[:8])
-        start_script = generate_start_script(project_id, topology)
-
-        result = run_ssh_script(host_ip, private_key, start_script, timeout=120)
-        if not result["success"]:
-            logger.error("Deploy %s: VM start failed: %s", project_id[:8], result["output"][-500:])
-            project.state = "error"
-            project.deploy_error = f"VM start failed (exit {result['exit_code']}):\n{result['output'][-2000:]}"
-            s.commit()
-            _deploy_progress.pop(project_id, None)
-            return
+        _start_vms_via_troshkad(host, project_id, topology)
 
         project.state = "active"
         project.deploy_error = None
@@ -1088,23 +1107,26 @@ def stop_project_async(project_id: str):
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.private_key or not host.ip_address:
+        if not host or not host.ip_address:
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
             return
 
-        # Stop VMs
-        stop_script = generate_stop_script(project_id, project.topology)
-        result = run_ssh_script(host.ip_address, host.private_key, stop_script, timeout=120)
-        if not result["success"]:
-            logger.warning("Stop %s: VM shutdown had issues: %s", project_id[:8], result["output"][-300:])
+        # Stop VMs via troshkad
+        vms = _extract_vms(project.topology)
+        for vm in vms:
+            vm_name = _vm_domain_name(project_id, vm["node_id"])
+            try:
+                job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
+                wait_for_job(host, job_id, timeout=60)
+            except TroshkadError as e:
+                logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
 
-        # Tear down networks
+        # Tear down networks via troshkad
         vni_map = project.vni_map or {}
         if vni_map:
-            teardown_script = generate_network_teardown_script(vni_map, project_id)
-            run_ssh_script(host.ip_address, host.private_key, teardown_script, timeout=60)
+            _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         # Disassociate EIPs (but don't release — keep for redeploy)
         from app.models.elastic_ip import ElasticIp
@@ -1143,14 +1165,12 @@ def start_project_async(project_id: str):
 
     s = SessionLocal()
     try:
-        from app.services.vxlan import build_host_network_config
-
         project = s.query(Project).filter_by(id=project_id).first()
         if not project:
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.private_key or not host.ip_address:
+        if not host or not host.ip_address:
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
@@ -1174,7 +1194,7 @@ def start_project_async(project_id: str):
                 logger.warning("Failed to re-associate EIP %s on start", eip.public_ip)
 
         if project_eips:
-            import copy, json
+            import json
             from sqlalchemy import text
             s.execute(text("UPDATE projects SET topology = :topo WHERE id = :pid"),
                       {"topo": json.dumps(topology), "pid": project_id})
@@ -1202,30 +1222,20 @@ def start_project_async(project_id: str):
                     ]
                     sync_security_group_rules(s, provider, desired_sg)
 
-        # Recreate networks (with correct EIP private IPs for DNAT)
+        # Recreate networks via troshkad
         if vni_map:
-            all_hosts = s.query(Host).filter(Host.state == "active").all()
-            peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-            network_config = build_host_network_config(topology, vni_map, peer_ips)
-            net_script = generate_setup_script(network_config, host.ip_address, project_id)
-            result = run_ssh_script(host.ip_address, host.private_key, net_script, timeout=120)
-            if not result["success"]:
+            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+            if net_result is not True:
                 project.state = "error"
-                project.deploy_error = f"Network setup failed on restart:\n{result['output'][-2000:]}"
+                project.deploy_error = f"Network setup failed on restart: {net_result}"
                 s.commit()
                 return
 
         # Re-cache any missing library images (ISOs, base disks)
-        cache_library_images(topology, host.ip_address, host.private_key, s)
+        cache_library_images(topology, host, s)
 
-        # Start VMs
-        start_script = generate_start_script(project_id, topology)
-        result = run_ssh_script(host.ip_address, host.private_key, start_script, timeout=120)
-        if not result["success"]:
-            project.state = "error"
-            project.deploy_error = f"VM start failed:\n{result['output'][-2000:]}"
-            s.commit()
-            return
+        # Start VMs via troshkad
+        _start_vms_via_troshkad(host, project_id, topology)
 
         project.state = "active"
         project.deploy_error = None
@@ -1259,13 +1269,32 @@ def destroy_project_sync(project_id: str):
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.private_key or not host.ip_address:
+        if not host or not host.ip_address:
             return
 
         vni_map = project.vni_map or {}
         topo = project.deployed_topology or project.topology
-        destroy_script = generate_destroy_script(project_id, topo, vni_map)
-        run_ssh_script(host.ip_address, host.private_key, destroy_script, timeout=120)
+
+        # Destroy VMs via troshkad
+        vms = _extract_vms(topo)
+        for vm in vms:
+            vm_name = _vm_domain_name(project_id, vm["node_id"])
+            try:
+                job_id = start_job(host, "/vms/destroy", {"domain_name": vm_name})
+                wait_for_job(host, job_id, timeout=60)
+            except TroshkadError as e:
+                logger.warning("Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e)
+
+        # Remove project VM directory
+        vm_dir = _vm_dir(project_id)
+        try:
+            job_id = start_job(host, "/files/remove", {"paths": [vm_dir]})
+            wait_for_job(host, job_id, timeout=30)
+        except TroshkadError as e:
+            logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
+
+        # Tear down networks via troshkad
+        _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         from app.services.placement import sync_host_capacity
         sync_host_capacity(s, host)
