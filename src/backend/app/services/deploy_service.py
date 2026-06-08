@@ -854,6 +854,10 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                 if status == "FAIL":
                     logger.error("Download failed for %s", parts[1])
                     return
+                item_id = parts[1]
+                expected = next((ic["expected_size"] for ic in items_to_cache if ic["item_id"] == item_id), 0)
+                if status == "PENDING" and expected > 0 and size >= expected - 1024:
+                    status = "DONE"
                 if status != "DONE":
                     all_done = False
 
