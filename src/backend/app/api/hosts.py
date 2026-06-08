@@ -693,18 +693,29 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
             if not h:
                 return
             try:
+                old_version = h.agent_version
                 push_update(h, script_bytes, version, force=force)
-                # Wait for restart and verify new version
                 import time
+                # Wait for agent to go down (drain + restart)
+                for _ in range(10):
+                    time.sleep(2)
+                    health = check_health(h)
+                    if not health:
+                        break
+                # Wait for agent to come back with new version
                 for _ in range(30):
                     time.sleep(5)
                     health = check_health(h)
-                    if health and health.get("version") == version:
-                        h.agent_version = version
+                    if health:
+                        new_ver = health.get("version", "")
+                        h.agent_version = new_ver
                         s.commit()
-                        logger.info("Host %s updated to troshkad %s", host_id[:8], version)
+                        if new_ver != old_version:
+                            logger.info("Host %s updated troshkad %s → %s", host_id[:8], old_version, new_ver)
+                        else:
+                            logger.info("Host %s troshkad restarted (same version %s)", host_id[:8], new_ver)
                         return
-                logger.warning("Host %s update: did not confirm version %s", host_id[:8], version)
+                logger.warning("Host %s update: agent did not come back after 150s", host_id[:8])
             except TroshkadError as e:
                 logger.error("Host %s update failed: %s", host_id[:8], e)
         except Exception:

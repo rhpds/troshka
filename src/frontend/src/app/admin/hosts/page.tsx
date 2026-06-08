@@ -475,16 +475,23 @@ export default function AdminHostsPage() {
                         return;
                       }
                       const data = await resp.json();
-                      const targetVersion = data.version;
-                      // Poll until host comes back with new version
+                      const oldVersion = h.agent_version;
+                      // Poll: wait for agent to restart (version changes or health recovers)
+                      let sawDown = false;
                       for (let i = 0; i < 60; i++) {
                         await new Promise(r => setTimeout(r, 3000));
                         const hostsResp = await fetch("/api/v1/hosts/");
                         if (hostsResp.ok) {
                           const hostsList = await hostsResp.json();
                           const updated = hostsList.find((x: Host) => x.id === h.id);
-                          if (updated?.agent_version === targetVersion) {
-                            alert(`Updated → v${targetVersion}`);
+                          if (!updated || updated.agent_status === "disconnected") {
+                            sawDown = true;
+                          } else if (sawDown && updated.agent_status === "connected") {
+                            alert(`Updated → v${updated.agent_version}`);
+                            loadData();
+                            return;
+                          } else if (updated.agent_version && updated.agent_version !== oldVersion) {
+                            alert(`Updated → v${updated.agent_version}`);
                             loadData();
                             return;
                           }
