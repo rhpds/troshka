@@ -264,7 +264,8 @@ export default function ProjectsPage() {
         return r.json();
       })
       .then((data) => {
-        setProjects(Array.isArray(data) ? data : []);
+        const sorted = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
+        setProjects(sorted);
         setLoading(false);
       })
       .catch(() => {
@@ -339,21 +340,46 @@ export default function ProjectsPage() {
                     {p.state}
                   </span>
                 </div>
-                <Button
-                  variant="plain"
-                  style={{ color: "var(--pf-t--global--color--status--danger--default)", padding: 4 }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
-                    fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" })
-                      .then((r) => {
-                        if (r.ok) {
-                          setProjects(projects.filter((pr) => pr.id !== p.id));
-                          localStorage.removeItem(`troshka-canvas-${p.id}`);
-                        }
-                      });
-                  }}
-                >✕</Button>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  {p.state === "active" && (
+                    <Button
+                      variant="secondary"
+                      isDanger
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" })
+                          .then(() => window.location.reload());
+                      }}
+                    >Stop</Button>
+                  )}
+                  {p.state === "stopped" && (
+                    <Button
+                      variant="secondary"
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" })
+                          .then(() => window.location.reload());
+                      }}
+                    >Start</Button>
+                  )}
+                  <Button
+                    variant="plain"
+                    style={{ color: "var(--pf-t--global--color--status--danger--default)", padding: 4 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
+                      fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" })
+                        .then((r) => {
+                          if (r.ok) {
+                            setProjects(projects.filter((pr) => pr.id !== p.id));
+                            localStorage.removeItem(`troshka-canvas-${p.id}`);
+                          }
+                        });
+                    }}
+                  >✕</Button>
+                </div>
               </CardTitle>
               <CardBody>
                 <p style={{ fontSize: 13, opacity: 0.7 }}>{p.description || "No description"}</p>
