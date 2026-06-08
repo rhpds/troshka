@@ -645,12 +645,14 @@ def reconfigure_project(
                 _deploy_progress.pop(p_id, None)
                 return
 
-            # Metadata service script still uses SSH (runs a long-lived daemon)
-            # TODO: migrate to troshkad endpoint in a future task
-            meta_script = generate_metadata_service_script(p_id, current, vni_map)
-            if meta_script:
-                # Metadata service is best-effort; skip if troshkad doesn't support it
-                logger.info("Reconfigure %s: metadata service script generated (skipped — needs SSH)", p_id[:8])
+            # Deploy metadata service via troshkad
+            _deploy_progress[p_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
+            from app.services.deploy_service import _setup_metadata_via_troshkad
+            try:
+                _setup_metadata_via_troshkad(h, p_id, current, vni_map)
+                logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
+            except Exception:
+                logger.exception("Reconfigure %s: metadata service deployment failed (non-fatal)", p_id[:8])
 
             vm_dir_path = _vm_dir(p_id)
             conn = libvirt_mgr.connect(h_ip, h_key)

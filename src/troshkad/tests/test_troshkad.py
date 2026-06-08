@@ -651,5 +651,40 @@ class TestCaptureEndpoints(unittest.TestCase):
         self.assertEqual(result["disks"][0]["size_bytes"], 54321)
 
 
+class TestMetadataHandlers(unittest.TestCase):
+    """Unit tests for metadata service deployment."""
+
+    @patch("troshkad.subprocess.Popen")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("troshkad.os.makedirs")
+    def test_metadata_deploy(self, mock_makedirs, mock_open, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("metadata/deploy", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "bridges": ["br-10001"],
+            "vm_configs": {
+                "aa:bb:cc:dd:ee:ff": {
+                    "vm_name": "test",
+                    "userdata": "#cloud-config\nhostname: test",
+                    "metadata": '{"instance-id": "test-vm"}'
+                }
+            },
+            "namespace": "troshka-aabbccdd",
+        })
+        result = troshkad._handle_metadata_deploy(job, job["params"])
+        self.assertEqual(result["status"], "started")
+        self.assertIn("pid", result)
+
+        # Verify script was written
+        mock_open.assert_called()
+        write_calls = [c for c in mock_open().write.call_args_list]
+        self.assertTrue(len(write_calls) > 0, "Script should have been written")
+
+        # Verify metadata IP was added to bridge
+        calls = [c[0][0] for c in mock_popen.call_args_list]
+        ip_add_calls = [c for c in calls if "ip" in c and "addr" in c and "add" in c]
+        self.assertTrue(len(ip_add_calls) > 0, "Should have added metadata IP to bridge")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -353,7 +353,7 @@ import ipaddress
 _DOMAIN_RE = re.compile(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$")
 _UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 _NET_NAME_RE = re.compile(r"^troshka-net-[a-f0-9]+$")
-_BRIDGE_RE = re.compile(r"^br-troshka-[a-f0-9]+$")
+_BRIDGE_RE = re.compile(r"^br-(?:troshka-)?[a-f0-9]+$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 _BUS_TYPES = {"virtio", "scsi", "sata", "ide", "usb"}
@@ -1207,6 +1207,140 @@ def _handle_seed_create_batch(job, params):
     return {"created": created, "status": "completed"}
 
 COMMAND_HANDLERS["seeds/create-batch"] = _handle_seed_create_batch
+
+
+_METADATA_SCRIPT_TEMPLATE = '''
+import http.server
+import json
+import subprocess
+import socketserver
+
+CONFIGS = {configs_json}
+
+def get_mac_for_ip(ip):
+    try:
+        result = subprocess.run(["ip", "neigh", "show", ip], capture_output=True, text=True)
+        for line in result.stdout.strip().split("\\n"):
+            parts = line.split()
+            if len(parts) >= 5 and parts[0] == ip:
+                return parts[4].lower()
+    except Exception:
+        pass
+    return None
+
+class MetadataHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        client_ip = self.client_address[0]
+        mac = get_mac_for_ip(client_ip)
+        config = CONFIGS.get(mac, {{}})
+        meta = json.loads(config.get("metadata", "{{}}"))
+        vm_name = config.get("vm_name", "troshka-vm")
+
+        if self.path in ("/latest/user-data", "/latest/user-data/"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/yaml")
+            self.end_headers()
+            self.wfile.write(config.get("userdata", "").encode())
+        elif self.path in ("/latest/meta-data/", "/latest/meta-data"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ami-id\\ninstance-id\\nlocal-hostname\\nhostname\\ninstance-type\\n")
+        elif self.path == "/latest/meta-data/instance-id":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(meta.get("instance-id", vm_name).encode())
+        elif self.path in ("/latest/meta-data/local-hostname", "/latest/meta-data/hostname"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(meta.get("local-hostname", vm_name).encode())
+        elif self.path == "/latest/meta-data/ami-id":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"troshka-image")
+        elif self.path == "/latest/meta-data/instance-type":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"troshka.nested")
+        elif self.path in ("/", "/latest", "/latest/"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"latest\\n")
+        else:
+            self.send_response(200)
+            self.end_headers()
+
+socketserver.TCPServer.allow_reuse_address = True
+server = http.server.HTTPServer(("169.254.169.254", 80), MetadataHandler)
+server.serve_forever()
+'''
+
+
+def _handle_metadata_deploy(job, params):
+    """Deploy the cloud-init metadata service inside a network namespace."""
+    project_id = _validate_project_id(params["project_id"])
+    bridges = params.get("bridges", [])
+    vm_configs = params.get("vm_configs", {})
+    namespace = params.get("namespace", f"troshka-{project_id[:8]}")
+
+    # Validate bridges
+    for bridge in bridges:
+        _validate_bridge_name(bridge)
+
+    # Step 1: Kill existing metadata service for this project
+    try:
+        _run_cmd(job, ["pkill", "-9", "-f", f"metadata-{project_id[:8]}.py"], timeout=5)
+        job["output"].append(f"Killed existing metadata service (if any)")
+    except RuntimeError:
+        job["output"].append(f"No existing metadata service to kill")
+
+    # Step 2: Add metadata IP to each bridge inside namespace
+    for bridge in bridges:
+        try:
+            _run_cmd(job, [
+                "ip", "netns", "exec", namespace,
+                "ip", "addr", "add", "169.254.169.254/32", "dev", bridge
+            ], timeout=10)
+            job["output"].append(f"Added metadata IP to {bridge} in {namespace}")
+        except RuntimeError as e:
+            if "File exists" in str(e) or "RTNETLINK answers: File exists" in str(e):
+                job["output"].append(f"Metadata IP already exists on {bridge}, continuing")
+            else:
+                raise
+
+    # Step 3: Write metadata service script
+    script_path = f"/opt/troshka/metadata-{project_id[:8]}.py"
+    configs_json = json.dumps(vm_configs)
+    script_content = _METADATA_SCRIPT_TEMPLATE.format(configs_json=configs_json)
+
+    os.makedirs("/opt/troshka", exist_ok=True)
+    with open(script_path, "w") as f:
+        f.write(script_content)
+    job["output"].append(f"Wrote metadata service script to {script_path}")
+
+    # Step 4: Start metadata service in namespace
+    log_file = f"/var/log/troshka-metadata-{project_id[:8]}.log"
+    proc = subprocess.Popen(
+        ["ip", "netns", "exec", namespace, "nohup", "python3", script_path],
+        stdout=open(log_file, "w"),
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    time.sleep(0.5)  # Let process start
+
+    # Check if process is still running
+    if proc.poll() is not None:
+        job["output"].append(f"Warning: metadata service may have failed to start (check {log_file})")
+        return {"status": "started", "pid": None, "warning": "Process exited immediately"}
+
+    pid = proc.pid
+    job["output"].append(f"Started metadata service in {namespace} (PID {pid}, log: {log_file})")
+
+    return {"status": "started", "pid": pid}
+
+COMMAND_HANDLERS["metadata/deploy"] = _handle_metadata_deploy
 
 
 def _handle_eip_configure(job, params):

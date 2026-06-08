@@ -518,6 +518,45 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
     return vm_name
 
 
+def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
+    """Deploy the cloud-init metadata service via troshkad metadata/deploy."""
+    from app.services.cloud_init import generate_userdata, generate_metadata
+
+    nodes = topology.get("nodes", [])
+    vm_configs = {}
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if not data.get("cloudInit"):
+            continue
+        vm_label = data.get("name", "vm")
+        userdata = generate_userdata(data)
+        metadata = generate_metadata(vm_label)
+        for nic in data.get("nics", []):
+            mac = nic.get("mac", "").lower()
+            if mac:
+                vm_configs[mac] = {"vm_name": vm_label, "userdata": userdata, "metadata": metadata}
+
+    if not vm_configs:
+        return
+
+    bridges = [f"br-{vni}" for vni in vni_map.values()]
+    ns = f"troshka-{project_id[:8]}"
+
+    try:
+        job_id = start_job(host, "/metadata/deploy", {
+            "project_id": project_id,
+            "bridges": bridges,
+            "vm_configs": vm_configs,
+            "namespace": ns,
+        })
+        wait_for_job(host, job_id, timeout=30)
+        logger.info("Metadata service deployed for %s", project_id[:8])
+    except TroshkadError as e:
+        logger.warning("Metadata service deployment failed for %s: %s", project_id[:8], e)
+
+
 def _start_vms_via_troshkad(host, project_id, topology):
     """Start VMs respecting start order via troshkad vms/start."""
     vms = _extract_vms(topology)
@@ -648,6 +687,11 @@ def deploy_project_async(project_id: str):
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
         _create_seed_isos_via_troshkad(host, project_id, topology)
+
+        # Step 2b: Deploy metadata service
+        _deploy_progress[project_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
+        logger.info("Deploy %s: deploying metadata service", project_id[:8])
+        _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
         # Step 3: Cache library images on host
         _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
