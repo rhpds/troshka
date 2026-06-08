@@ -26,7 +26,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [id, nicCount, dcCount, updateNodeInternals]);
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
-  const isDeployed = (projectState === "active" || projectState === "stopped") && deployedVmIds.has(id);
+  const isDeployed = (projectState === "active" || projectState === "stopped" || projectState === "starting") && deployedVmIds.has(id);
   const startOrder = useCanvasStore((s) => s.startOrder);
   const autoStart = (() => { const e = startOrder.find((o) => o.vmId === id); return e ? e.autoStart : true; })();
 
@@ -220,7 +220,15 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             const first = bootDevs[0];
             if (first === "network") return <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="16" rx="2" /><line x1="8" y1="18" x2="8" y2="22" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="16" y1="18" x2="16" y2="22" /><rect x="6" y="5" width="12" height="6" rx="1" /><line x1="9" y1="5" x2="9" y2="11" /><line x1="12" y1="5" x2="12" y2="11" /><line x1="15" y1="5" x2="15" y2="11" /></svg>Network (PXE)</span>;
             const sn = nodes.find((n) => n.id === first);
-            if (!sn) return "hd";
+            if (!sn) {
+              if (first === "hd") {
+                const disk = connectedStorageIds
+                  .map((sid) => nodes.find((n) => n.id === sid))
+                  .find((n) => n && (n.data as Record<string, any>).format !== "iso");
+                if (disk) return `🛢 ${(disk.data as Record<string, any>).name}`;
+              }
+              return "hd";
+            }
             const fmt = (sn.data as Record<string, any>).format as string;
             const name = (sn.data as Record<string, any>).name as string;
             return fmt === "iso" ? `💿 ${name}` : `🛢 ${name}`;

@@ -744,6 +744,14 @@ def cache_library_images(topology: dict, host_ip: str, private_key: str, db_sess
                     "cache_dir": cache_dir,
                 })
 
+    seen_ids = set()
+    deduped = []
+    for ic in items_to_cache:
+        if ic["item_id"] not in seen_ids:
+            seen_ids.add(ic["item_id"])
+            deduped.append(ic)
+    items_to_cache = deduped
+
     logger.info("cache_library_images: %d items to cache", len(items_to_cache))
     for ic in items_to_cache:
         logger.info("  cache item: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])

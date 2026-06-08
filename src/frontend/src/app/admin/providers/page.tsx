@@ -418,7 +418,7 @@ export default function AdminProvidersPage() {
                       }}>Create Bucket</Button>
                     )}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
-                    {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
+                    {p.type !== "s3" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
                     {p.type === "ec2" && p.state === "active" && (
                       <Button variant="secondary" onClick={async () => {
