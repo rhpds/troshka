@@ -313,7 +313,6 @@ def generate_setup_script(config: dict, host_ip: str, project_id: str = "") -> s
                 prefix = cidr.split("/")[1] if "/" in cidr else "24"
                 rt_table = vni
                 vxlan_cmds.append(f"ip addr add {gateway_ip}/{prefix} dev {bridge} 2>/dev/null || true")
-                vxlan_cmds.append(f"ip route del {cidr} dev {bridge} table main 2>/dev/null || true")
                 vxlan_cmds.append(f"ip rule del iif {bridge} table {rt_table} 2>/dev/null || true")
                 vxlan_cmds.append(f"ip rule add iif {bridge} table {rt_table} priority {rt_table}")
                 vxlan_cmds.append(f"ip route flush table {rt_table} 2>/dev/null || true")

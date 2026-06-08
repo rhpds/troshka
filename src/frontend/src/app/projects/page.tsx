@@ -350,15 +350,16 @@ export default function ProjectsPage() {
                         e.stopPropagation();
                         if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down.`)) return;
                         setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" });
-                        const poll = setInterval(() => {
-                          fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
-                            if (d.state === "stopped" || d.state === "error") {
-                              clearInterval(poll);
-                              window.location.reload();
-                            }
-                          });
-                        }, 2000);
+                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }).then(() => {
+                          const poll = setInterval(() => {
+                            fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
+                              if (d.state === "stopped" || d.state === "error") {
+                                clearInterval(poll);
+                                window.location.reload();
+                              }
+                            }).catch(() => {});
+                          }, 2000);
+                        });
                       }}
                     >Stop</Button>
                   )}
