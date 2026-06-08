@@ -333,7 +333,7 @@ export default function ProjectCanvasPage() {
           </span>
         </div>
         <div className="project-action-bar-right">
-          {(projectState === "active" || projectState === "stopped" || projectState === "draft") && (
+          {(projectState === "active" || projectState === "stopped") && (
             <button className="project-publish-btn" onClick={() => setShowPatternModal(true)} style={{ opacity: 0.85 }}>
               Save as Pattern
             </button>
