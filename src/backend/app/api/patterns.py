@@ -493,6 +493,41 @@ def deploy_pattern(
 # ---------------------------------------------------------------------------
 
 
+def _bulk_deploy_projects(project_ids: list[str]):
+    from app.core.database import SessionLocal
+    from app.services.placement import place_project, calculate_project_requirements
+    from app.services.deploy_service import deploy_project_async
+
+    ready_ids = []
+    s = SessionLocal()
+    try:
+        for project_id in project_ids:
+            project = s.query(Project).filter_by(id=project_id).first()
+            if not project or project.state != "draft" or not project.topology:
+                continue
+            reqs = calculate_project_requirements(project.topology)
+            if reqs["vm_count"] == 0:
+                continue
+            result = place_project(s, project)
+            if "error" in result:
+                logger.warning("Bulk deploy: placement failed for %s: %s", project_id[:8], result["error"])
+                project.state = "error"
+                project.deploy_error = result["error"]
+                continue
+            project.vni_map = result.get("vni_map")
+            project.state = "deploying"
+            ready_ids.append(project_id)
+        s.commit()
+    except Exception:
+        logger.exception("Bulk deploy: placement phase failed")
+        return
+    finally:
+        s.close()
+
+    for pid in ready_ids:
+        threading.Thread(target=deploy_project_async, args=(pid,), daemon=True).start()
+
+
 @router.post("/{pattern_id}/bulk-deploy", status_code=201)
 def bulk_deploy_pattern(
     pattern_id: str,
@@ -503,8 +538,8 @@ def bulk_deploy_pattern(
     """Create N projects from a pattern.
 
     ``name_template`` may contain ``{n}`` which is replaced with a zero-padded
-    3-digit index (001, 002, ...).  ``auto_deploy`` is accepted but currently
-    only creates drafts.
+    3-digit index (001, 002, ...).  If ``auto_deploy`` is true, each project
+    is placed and deployed in a background thread after creation.
     """
     if body.count < 1 or body.count > 500:
         raise HTTPException(status_code=400, detail="count must be between 1 and 500")
@@ -536,6 +571,11 @@ def bulk_deploy_pattern(
     db.commit()
     for p in projects:
         db.refresh(p)
+
+    if body.auto_deploy:
+        project_ids = [p.id for p in projects]
+        import threading
+        threading.Thread(target=_bulk_deploy_projects, args=(project_ids,), daemon=True).start()
 
     return {
         "pattern_id": pattern_id,
