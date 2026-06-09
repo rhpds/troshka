@@ -215,7 +215,7 @@ def provision_host(
     vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
     subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
     if not vpc_id or not subnet_id:
-        vpc_id, subnet_id = get_default_vpc_and_subnet(credentials=credentials)
+        raise ValueError("VPC and subnet must be configured on the provider — run Setup VPC first")
 
     sg_id = kwargs.get("security_group_id") or getattr(config.aws, "security_group_id", None)
     if not sg_id:
