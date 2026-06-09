@@ -20,9 +20,12 @@ function RJ45Icon() {
   );
 }
 
-function NetworkNodeComponent({ data, selected }: NodeProps) {
+function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
   const [fwdExpanded, setFwdExpanded] = useState(false);
+
+  const networkType = (data as Record<string, any>).networkType;
+  const isBmc = networkType === "bmc";
 
   return (
     <div
@@ -32,8 +35,9 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
           router:  { bg: "rgba(251,146,60,0.08)", border: "rgba(251,146,60,0.6)",  glow: "rgba(251,146,60,0.2)",  selected: "#fb923c" },
           gateway: { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",   glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
           network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
+          bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
         };
-        const c = colors[d.subtype as keyof typeof colors] || colors.network;
+        const c = isBmc ? colors.bmc : (colors[d.subtype as keyof typeof colors] || colors.network);
         return {
           background: c.bg,
           borderColor: selected ? c.selected : c.border,
@@ -51,8 +55,22 @@ function NetworkNodeComponent({ data, selected }: NodeProps) {
             <span className="network-node-cidr">{d.cidr}</span>
             {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
             {d.dns && <span className="network-node-badge dns">DNS</span>}
+            {isBmc && (
+              <span style={{ background: "rgba(168,85,247,0.2)", color: "rgba(168,85,247,1)", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>
+                BMC
+              </span>
+            )}
           </div>
         )}
+        {isBmc && (() => {
+          const edges = useCanvasStore.getState().edges;
+          const hasConnection = edges.some((e) => e.source === id || e.target === id);
+          return !hasConnection ? (
+            <div style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", fontSize: 9, padding: "3px 6px", borderRadius: 4, marginTop: 4, textAlign: "center" }}>
+              Connect a provisioner VM
+            </div>
+          ) : null;
+        })()}
         {d.subtype === "router" && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span className="network-node-cidr" style={{ fontSize: 10 }}>L3 Router</span>
