@@ -293,6 +293,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     // Networks don't connect to other networks
     if (sIsNetwork && tIsNetwork) return;
 
+    // BMC network: only VMs can connect (the provisioner)
+    const isBmcSource = sourceNode?.type === "networkNode" && (sourceNode.data as Record<string, any>).networkType === "bmc";
+    const isBmcTarget = targetNode?.type === "networkNode" && (targetNode.data as Record<string, any>).networkType === "bmc";
+    if ((isBmcSource || isBmcTarget) && (sourceNode?.type !== "vmNode" && targetNode?.type !== "vmNode")) {
+      return;
+    }
+
     let edgeStyle: React.CSSProperties;
     let animated = false;
 
@@ -879,6 +886,84 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     suppressDeleteWarning: state.suppressDeleteWarning,
   }),
 }));
+
+/**
+ * Auto-create or remove the BMC network node based on whether any VMs have BMC enabled.
+ * Called by PropertiesPanel when bmcEnabled is toggled.
+ */
+export function syncBmcNetwork() {
+  const state = useCanvasStore.getState();
+  const nodes = state.nodes;
+
+  const hasBmcVm = nodes.some(
+    (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled
+  );
+  const bmcNetNode = nodes.find(
+    (n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc"
+  );
+
+  if (hasBmcVm && !bmcNetNode) {
+    // Auto-create BMC network node
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const password = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+
+    // Position near the center of existing BMC-enabled VM nodes
+    const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
+    const avgX = vmNodes.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(vmNodes.length, 1);
+    const avgY = vmNodes.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(vmNodes.length, 1);
+
+    const bmcNode = {
+      id: `bmc-network-${Date.now()}`,
+      type: "networkNode",
+      position: { x: avgX + 300, y: avgY },
+      data: {
+        label: "BMC Network",
+        name: "BMC Network",
+        subtype: "network" as const,
+        networkType: "bmc",
+        cidr: "192.168.100.0/24",
+        dhcp: true,
+        dns: false,
+        bmcUsername: "admin",
+        bmcPassword: password,
+      },
+    };
+    state.addNode(bmcNode);
+  } else if (!hasBmcVm && bmcNetNode) {
+    // Auto-remove BMC network and its edges
+    state.deleteNode(bmcNetNode.id);
+  }
+}
+
+/**
+ * Allocate the next available BMC IP from the BMC network CIDR.
+ */
+export function allocateBmcIp(): string {
+  const state = useCanvasStore.getState();
+  const nodes = state.nodes;
+
+  const bmcNet = nodes.find(
+    (n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc"
+  );
+  const cidr = (bmcNet?.data as Record<string, any>)?.cidr || "192.168.100.0/24";
+  const base = cidr.split("/")[0].split(".").slice(0, 3).join(".");
+
+  // Collect all used BMC IPs
+  const usedIps = new Set<string>();
+  for (const n of nodes) {
+    if (n.type === "vmNode") {
+      const ip = (n.data as Record<string, any>).bmcIp;
+      if (ip) usedIps.add(ip);
+    }
+  }
+
+  // Allocate from .11 upward (gateway is .1)
+  for (let i = 11; i < 250; i++) {
+    const candidate = `${base}.${i}`;
+    if (!usedIps.has(candidate)) return candidate;
+  }
+  return `${base}.11`;
+}
 
 // Save topology to API
 function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[]; startOrder: StartOrderEntry[]; externalIps: ExternalIp[] }) {
