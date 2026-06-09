@@ -20,6 +20,7 @@ from app.services.deploy_service import (
     _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
     _create_seed_isos_via_troshkad, _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
     cache_library_images, _vm_dir, _disk_path, _seed_path,
+    _setup_pxe_via_troshkad,
 )
 from app.services.troshkad_client import (
     start_job, wait_for_job, TroshkadError,
@@ -708,6 +709,8 @@ def reconfigure_project(
                 logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
             except Exception:
                 logger.exception("Reconfigure %s: metadata service deployment failed (non-fatal)", p_id[:8])
+
+            _setup_pxe_via_troshkad(h, current, vni_map, p_id)
 
             vm_dir_path = _vm_dir(p_id)
 
