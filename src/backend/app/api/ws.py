@@ -66,10 +66,13 @@ def _build_snapshot(project: Project, db) -> dict:
             snapshot["vm_states"][node["id"]] = "redeploying"
             snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
         else:
-            state = troshkad_get_vm_state(host, dom_name)
-            if state == "shut_off":
-                state = "stopped"
-            snapshot["vm_states"][node["id"]] = state
+            try:
+                state = troshkad_get_vm_state(host, dom_name, timeout=5)
+                if state == "shut_off":
+                    state = "stopped"
+                snapshot["vm_states"][node["id"]] = state
+            except Exception:
+                snapshot["vm_states"][node["id"]] = "unknown"
 
     return snapshot
 
