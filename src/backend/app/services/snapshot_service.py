@@ -100,6 +100,34 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
         item.size_bytes = sum(d.size_bytes for d in item.item_disks)
         item.state = "ready"
         db.commit()
+
+        # Save metadata to S3 for recovery after DB loss
+        import json
+        metadata = {
+            "type": "snapshot",
+            "name": item.name,
+            "item_type": item.type,
+            "format": item.format,
+            "size_bytes": item.size_bytes,
+            "os_variant": item.os_variant,
+            "vm_config": item.vm_config,
+            "tags": item.tags,
+            "disks": [
+                {"s3_key": d.s3_key, "format": d.format, "size_bytes": d.size_bytes,
+                 "virtual_size_bytes": d.virtual_size_bytes, "boot_order": d.boot_order}
+                for d in item.item_disks
+            ],
+        }
+        try:
+            s3_storage._get_s3_client().put_object(
+                Bucket=s3_storage._bucket(),
+                Key=f"snapshots/{library_item_id}/metadata.json",
+                Body=json.dumps(metadata),
+                ContentType="application/json",
+            )
+        except Exception:
+            log.warning("Failed to save snapshot metadata to S3 for %s", library_item_id[:8])
+
         log.info("Snapshot %s: capture complete (%d disks)", library_item_id[:8], len(disk_nodes))
 
     except Exception as e:

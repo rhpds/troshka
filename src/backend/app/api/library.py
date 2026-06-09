@@ -606,4 +606,142 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
     if imported:
         db.commit()
 
-    return {"imported": imported, "bucket": bucket}
+    # Scan snapshots/ and patterns/ — collect all objects grouped by ID
+    import json
+    from app.models.library import LibraryItemDisk
+    from app.models.pattern import Pattern, PatternDisk
+
+    def _scan_prefix(prefix):
+        """List all S3 objects under a prefix, grouped by parent ID."""
+        groups = {}  # id -> {metadata: dict|None, files: [{key, size}]}
+        cont = None
+        while True:
+            kw = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+            if cont:
+                kw["ContinuationToken"] = cont
+            r = client.list_objects_v2(**kw)
+            for obj in r.get("Contents", []):
+                key = obj["Key"]
+                parts = key.split("/")
+                if len(parts) < 3:
+                    continue
+                obj_id = parts[1]
+                if obj_id not in groups:
+                    groups[obj_id] = {"metadata": None, "files": []}
+                if key.endswith("/metadata.json"):
+                    try:
+                        meta_resp = client.get_object(Bucket=bucket, Key=key)
+                        groups[obj_id]["metadata"] = json.loads(meta_resp["Body"].read())
+                    except Exception:
+                        pass
+                else:
+                    groups[obj_id]["files"].append({"key": key, "size": obj.get("Size", 0)})
+            if r.get("IsTruncated"):
+                cont = r.get("NextContinuationToken")
+            else:
+                break
+        return groups
+
+    # Import snapshots
+    snapshot_count = 0
+    for item_id, group in _scan_prefix("snapshots/").items():
+        if db.query(LibraryItem).filter_by(id=item_id).first():
+            continue
+        meta = group["metadata"]
+        if meta:
+            name = meta.get("name", f"snapshot-{item_id[:8]}")
+            fmt = meta.get("format", "qcow2")
+            size = meta.get("size_bytes", 0)
+            os_variant = meta.get("os_variant")
+            vm_config = meta.get("vm_config")
+            tags = meta.get("tags")
+        else:
+            name = f"orphan-snapshot-{item_id[:8]}"
+            fmt = "qcow2"
+            size = sum(f["size"] for f in group["files"])
+            os_variant = None
+            vm_config = None
+            tags = {"orphaned": True}
+
+        item = LibraryItem(
+            id=item_id, library_id=lib.id, name=name, type="image", format=fmt,
+            size_bytes=size, os_variant=os_variant, vm_config=vm_config, tags=tags, state="ready",
+        )
+        db.add(item)
+        db.flush()
+
+        if meta and meta.get("disks"):
+            for disk in meta["disks"]:
+                db.add(LibraryItemDisk(
+                    library_item_id=item_id, s3_key=disk["s3_key"],
+                    format=disk.get("format", "qcow2"), size_bytes=disk.get("size_bytes", 0),
+                    virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                    boot_order=disk.get("boot_order", 0), state="available",
+                ))
+        else:
+            for i, f in enumerate(group["files"]):
+                file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
+                db.add(LibraryItemDisk(
+                    library_item_id=item_id, s3_key=f["key"],
+                    format=file_fmt, size_bytes=f["size"],
+                    boot_order=i, state="available",
+                ))
+        snapshot_count += 1
+
+    # Import patterns
+    pattern_count = 0
+    for pattern_id, group in _scan_prefix("patterns/").items():
+        if db.query(Pattern).filter_by(id=pattern_id).first():
+            continue
+        meta = group["metadata"]
+        if meta:
+            pattern = Pattern(
+                id=pattern_id, name=meta.get("name", f"pattern-{pattern_id[:8]}"),
+                description=meta.get("description"), owner_id=user.id,
+                visibility=meta.get("visibility", "private"),
+                topology=meta.get("topology", {}), state="available",
+                total_size_bytes=meta.get("total_size_bytes", 0), tags=meta.get("tags"),
+            )
+            db.add(pattern)
+            db.flush()
+            for disk in meta.get("disks", []):
+                import uuid as _uuid
+                db.add(PatternDisk(
+                    id=disk.get("id", str(_uuid.uuid4())), pattern_id=pattern_id,
+                    source_disk_id=disk.get("source_disk_id", ""),
+                    source_vm_id=disk.get("source_vm_id", ""),
+                    s3_key=disk["s3_key"], format=disk.get("format", "qcow2"),
+                    size_bytes=disk.get("size_bytes", 0),
+                    virtual_size_bytes=disk.get("virtual_size_bytes", 0), state="available",
+                ))
+        else:
+            total_size = sum(f["size"] for f in group["files"])
+            pattern = Pattern(
+                id=pattern_id, name=f"orphan-pattern-{pattern_id[:8]}",
+                owner_id=user.id, visibility="private",
+                topology={"nodes": [], "edges": []}, state="available",
+                total_size_bytes=total_size, tags={"orphaned": True},
+            )
+            db.add(pattern)
+            db.flush()
+            for f in group["files"]:
+                import uuid as _uuid
+                file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
+                disk_id = f["key"].split("/")[-1].rsplit(".", 1)[0] if "/" in f["key"] else str(_uuid.uuid4())
+                db.add(PatternDisk(
+                    id=str(_uuid.uuid4()), pattern_id=pattern_id,
+                    source_disk_id=disk_id, source_vm_id="",
+                    s3_key=f["key"], format=file_fmt,
+                    size_bytes=f["size"], state="available",
+                ))
+        pattern_count += 1
+
+    if snapshot_count or pattern_count:
+        db.commit()
+
+    return {
+        "imported": imported,
+        "snapshots": snapshot_count,
+        "patterns": pattern_count,
+        "bucket": bucket,
+    }

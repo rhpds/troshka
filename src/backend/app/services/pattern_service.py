@@ -183,6 +183,34 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
         pattern.state = "available"
         pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)
         db.commit()
+
+        # Save metadata to S3 for recovery after DB loss
+        from app.services import s3_storage
+        metadata = {
+            "type": "pattern",
+            "name": pattern.name,
+            "description": pattern.description,
+            "visibility": pattern.visibility,
+            "topology": pattern.topology,
+            "total_size_bytes": pattern.total_size_bytes,
+            "tags": pattern.tags,
+            "disks": [
+                {"id": d.id, "source_disk_id": d.source_disk_id, "source_vm_id": d.source_vm_id,
+                 "s3_key": d.s3_key, "format": d.format, "size_bytes": d.size_bytes,
+                 "virtual_size_bytes": d.virtual_size_bytes}
+                for d in pattern.disks
+            ],
+        }
+        try:
+            s3_storage._get_s3_client().put_object(
+                Bucket=s3_storage._bucket(),
+                Key=f"patterns/{pattern_id}/metadata.json",
+                Body=json.dumps(metadata),
+                ContentType="application/json",
+            )
+        except Exception:
+            log.warning("Failed to save pattern metadata to S3 for %s", pattern_id[:8])
+
         log.info("Pattern %s capture complete", pattern_id)
 
     except Exception as e:

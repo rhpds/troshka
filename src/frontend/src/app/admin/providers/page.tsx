@@ -429,7 +429,10 @@ export default function AdminProvidersPage() {
                         const resp = await fetch("/api/v1/library/scan-s3", { method: "POST" });
                         if (resp.ok) {
                           const data = await resp.json();
-                          setTestResult((prev) => ({ ...prev, [p.id]: `Imported ${data.imported} item(s) from S3` }));
+                          const parts = [`${data.imported} library item(s)`];
+                  if (data.snapshots) parts.push(`${data.snapshots} snapshot(s)`);
+                  if (data.patterns) parts.push(`${data.patterns} pattern(s)`);
+                  setTestResult((prev) => ({ ...prev, [p.id]: `Imported: ${parts.join(", ")}` }));
                         } else {
                           const data = await resp.json().catch(() => ({}));
                           setTestResult((prev) => ({ ...prev, [p.id]: `Scan failed: ${data.detail || "unknown error"}` }));
