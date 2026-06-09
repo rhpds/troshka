@@ -423,6 +423,19 @@ export default function AdminProvidersPage() {
                         }
                       }}>Create Bucket</Button>
                     )}
+                    {p.type === "s3" && (
+                      <Button variant="secondary" onClick={async () => {
+                        setTestResult((prev) => ({ ...prev, [p.id]: "Scanning S3..." }));
+                        const resp = await fetch("/api/v1/library/scan-s3", { method: "POST" });
+                        if (resp.ok) {
+                          const data = await resp.json();
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Imported ${data.imported} item(s) from S3` }));
+                        } else {
+                          const data = await resp.json().catch(() => ({}));
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Scan failed: ${data.detail || "unknown error"}` }));
+                        }
+                      }}>Scan S3</Button>
+                    )}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
                     {p.type !== "s3" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>

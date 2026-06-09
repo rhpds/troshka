@@ -233,19 +233,6 @@ export default function ImagesPage() {
               <input style={inputStyle} placeholder="Search..." value={filter} onChange={(e) => setFilter(e.target.value)} />
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="secondary" onClick={async () => {
-                const resp = await fetch("/api/v1/library/scan-s3", { method: "POST" });
-                if (resp.ok) {
-                  const data = await resp.json();
-                  alert(`Imported ${data.imported} item(s) from S3`);
-                  loadItems();
-                } else {
-                  const data = await resp.json().catch(() => ({}));
-                  alert(data.detail || "Scan failed");
-                }
-              }}>Scan S3</Button>
-            </ToolbarItem>
-            <ToolbarItem>
               <Button variant="primary" onClick={() => setShowUpload(!showUpload)}>
                 {showUpload ? "Cancel" : "+ Upload"}
               </Button>
