@@ -221,6 +221,10 @@ def provision_host(
     if not sg_id:
         sg_id = ensure_security_group(vpc_id, credentials=credentials)
 
+    # Get all subnets in the VPC for AZ fallback
+    all_subnets = client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+    subnet_ids = [subnet_id] + [s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id]
+
     key_name = f"troshka-{host_id[:8]}"
     key_result = client.create_key_pair(KeyName=key_name)
     private_key = key_result.get("KeyMaterial", "")
@@ -230,40 +234,54 @@ def provision_host(
 
     logger.info("Provisioning host %s (%s, %s)", hostname, instance_type, ami_id)
 
-    response = client.run_instances(
-        ImageId=ami_id,
-        InstanceType=instance_type,
-        KeyName=key_name,
-        MinCount=1,
-        MaxCount=1,
-        CpuOptions={"NestedVirtualization": "enabled"},
-        UserData=user_data,
-        BlockDeviceMappings=[
-            {
-                "DeviceName": "/dev/sda1",
-                "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "DeleteOnTermination": True},
-            },
-            {
-                "DeviceName": "/dev/sdf",
-                "Ebs": {"VolumeSize": storage_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
-            },
-        ],
-        TagSpecifications=[{
-            "ResourceType": "instance",
-            "Tags": [
-                {"Key": "Name", "Value": hostname},
-                {"Key": "Project", "Value": "troshka"},
-                {"Key": "ManagedBy", "Value": "troshka"},
-                {"Key": "troshka-host-id", "Value": host_id},
-            ],
-        }],
-        NetworkInterfaces=[{
-            "DeviceIndex": 0,
-            "SubnetId": subnet_id,
-            "Groups": [sg_id],
-            "AssociatePublicIpAddress": True,
-        }],
-    )
+    # Try each subnet (AZ) until one supports the instance type
+    response = None
+    last_error = None
+    for try_subnet in subnet_ids:
+        try:
+            response = client.run_instances(
+                ImageId=ami_id,
+                InstanceType=instance_type,
+                KeyName=key_name,
+                MinCount=1,
+                MaxCount=1,
+                CpuOptions={"NestedVirtualization": "enabled"},
+                UserData=user_data,
+                BlockDeviceMappings=[
+                    {
+                        "DeviceName": "/dev/sda1",
+                        "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "DeleteOnTermination": True},
+                    },
+                    {
+                        "DeviceName": "/dev/sdf",
+                        "Ebs": {"VolumeSize": storage_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
+                    },
+                ],
+                TagSpecifications=[{
+                    "ResourceType": "instance",
+                    "Tags": [
+                        {"Key": "Name", "Value": hostname},
+                        {"Key": "Project", "Value": "troshka"},
+                        {"Key": "ManagedBy", "Value": "troshka"},
+                        {"Key": "troshka-host-id", "Value": host_id},
+                    ],
+                }],
+                NetworkInterfaces=[{
+                    "DeviceIndex": 0,
+                    "SubnetId": try_subnet,
+                    "Groups": [sg_id],
+                    "AssociatePublicIpAddress": True,
+                }],
+            )
+            break
+        except client.exceptions.ClientError as e:
+            if "Unsupported" in str(e):
+                logger.warning("Instance type %s not supported in subnet %s, trying next AZ", instance_type, try_subnet)
+                last_error = e
+                continue
+            raise
+    if not response:
+        raise last_error or ValueError(f"Instance type {instance_type} not supported in any AZ")
 
     instance_id = response["Instances"][0]["InstanceId"]
     logger.info("Launched %s, waiting for running state", instance_id)

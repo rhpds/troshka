@@ -325,32 +325,50 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
             {"Key": "ManagedBy", "Value": "troshka"},
         ])
 
-        subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.100.1.0/24")
-        subnet_id = subnet["Subnet"]["SubnetId"]
-        ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
-        ec2.create_tags(Resources=[subnet_id], Tags=[
-            {"Key": "Name", "Value": "troshka-public"},
-            {"Key": "ManagedBy", "Value": "troshka"},
-        ])
+        # Create a subnet in every AZ so the provisioner can pick one that supports the instance type
+        azs_resp = ec2.describe_availability_zones(Filters=[{"Name": "state", "Values": ["available"]}])
+        azs = [az["ZoneName"] for az in azs_resp["AvailabilityZones"]]
+
+        subnet_ids = []
+        first_subnet_id = None
+        for i, az in enumerate(azs):
+            cidr = f"10.100.{i + 1}.0/24"
+            subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock=cidr, AvailabilityZone=az)
+            sid = subnet["Subnet"]["SubnetId"]
+            ec2.modify_subnet_attribute(SubnetId=sid, MapPublicIpOnLaunch={"Value": True})
+            ec2.create_tags(Resources=[sid], Tags=[
+                {"Key": "Name", "Value": f"troshka-{az}"},
+                {"Key": "ManagedBy", "Value": "troshka"},
+            ])
+            subnet_ids.append(sid)
+            if not first_subnet_id:
+                first_subnet_id = sid
 
         route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
         rt_id = route_tables["RouteTables"][0]["RouteTableId"]
         ec2.create_route(RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
+        # Associate all subnets with the route table
+        for sid in subnet_ids:
+            try:
+                ec2.associate_route_table(RouteTableId=rt_id, SubnetId=sid)
+            except Exception:
+                pass
 
         from app.services.provisioner import ensure_security_group
         sg_id = ensure_security_group(vpc_id, credentials=creds)
 
         provider.vpc_id = vpc_id
-        provider.subnet_id = subnet_id
+        provider.subnet_id = first_subnet_id
         provider.security_group_id = sg_id
         db.commit()
 
         return {
             "vpc_id": vpc_id,
-            "subnet_id": subnet_id,
+            "subnet_ids": subnet_ids,
             "security_group_id": sg_id,
             "internet_gateway_id": igw_id,
             "cidr": "10.100.0.0/16",
+            "availability_zones": azs,
         }
     except HTTPException:
         raise
