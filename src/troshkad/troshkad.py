@@ -2973,29 +2973,9 @@ def _handle_bmc_teardown(job, params):
                 except (ValueError, ProcessLookupError, PermissionError):
                     pass
 
+    # Kill vbmcd directly — all vbmc entries die with it, no need for graceful stop
     vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
-    vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")
     if os.path.exists(vbmcd_pid_path):
-        env = os.environ.copy()
-        if os.path.exists(vbmcd_conf_path):
-            env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
-        try:
-            result = subprocess.run(
-                ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "list"],
-                capture_output=True, text=True, env=env, timeout=10,
-            )
-            for line in result.stdout.splitlines():
-                parts = line.split()
-                if parts and parts[0].startswith("troshka-"):
-                    domain = parts[0]
-                    try:
-                        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "stop", domain], timeout=10)
-                        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "delete", domain], timeout=10)
-                    except RuntimeError:
-                        pass
-        except (subprocess.TimeoutExpired, RuntimeError):
-            pass
-
         try:
             with open(vbmcd_pid_path) as f:
                 p = int(f.read().strip())
