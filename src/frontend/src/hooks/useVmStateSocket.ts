@@ -66,8 +66,8 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             setDeployProgress(msg.deploy_progress || null);
             break;
           case "vm-state":
-            setVmStates(msg.states || {});
-            setVmProgress(msg.progress || {});
+            setVmStates((prev) => ({ ...prev, ...msg.states }));
+            setVmProgress((prev) => ({ ...prev, ...msg.progress }));
             break;
           case "project-state":
             setProjectState(msg.state || null);
