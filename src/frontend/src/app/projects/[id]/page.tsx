@@ -101,6 +101,22 @@ export default function ProjectCanvasPage() {
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
       loadProject(projectId);
+      // Re-apply VM states after loadProject replaces nodes — topology on
+      // server has no status field, so WS states need to be reapplied
+      setTimeout(() => {
+        if (Object.keys(ws.vmStates).length) {
+          const store = useCanvasStore.getState();
+          useCanvasStore.setState({
+            nodes: store.nodes.map((node) => {
+              if (node.type !== "vmNode") return node;
+              if (node.id in ws.vmStates) {
+                return { ...node, data: { ...node.data, status: ws.vmStates[node.id] } };
+              }
+              return node;
+            }),
+          });
+        }
+      }, 2000);
     }
   }, [ws.projectState, ws.deployError]);
 
