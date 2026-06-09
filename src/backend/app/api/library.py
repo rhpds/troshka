@@ -541,3 +541,69 @@ def unshare_item(item_id: str, user_email: str, user: User = Depends(get_current
         db.commit()
 
     return {"unshared": user_email}
+
+
+@router.post("/scan-s3")
+def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Scan S3 bucket and import any library items not already in the DB."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    lib = _ensure_user_library(user, db)
+    client = s3_storage._get_s3_client()
+    bucket = s3_storage._bucket()
+
+    imported = 0
+    continuation_token = None
+
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": "library/", "MaxKeys": 1000}
+        if continuation_token:
+            kwargs["ContinuationToken"] = continuation_token
+        resp = client.list_objects_v2(**kwargs)
+
+        for obj in resp.get("Contents", []):
+            key = obj["Key"]
+            parts = key.split("/")
+            # Expected: library/{user_id}/{item_id}/{filename}.{ext}
+            if len(parts) < 4:
+                continue
+
+            item_id = parts[2]
+            filename = "/".join(parts[3:])  # handle nested paths
+            size = obj.get("Size", 0)
+
+            # Skip if already in DB
+            if db.query(LibraryItem).filter_by(id=item_id).first():
+                continue
+
+            # Parse name and format from filename
+            if "." in filename:
+                name, fmt = filename.rsplit(".", 1)
+            else:
+                name, fmt = filename, "unknown"
+
+            item_type = "iso" if fmt.lower() == "iso" else "image"
+
+            item = LibraryItem(
+                id=item_id,
+                library_id=lib.id,
+                name=name,
+                type=item_type,
+                format=fmt.lower(),
+                size_bytes=size,
+                s3_key=key,
+                state="ready",
+            )
+            db.add(item)
+            imported += 1
+
+        if resp.get("IsTruncated"):
+            continuation_token = resp.get("NextContinuationToken")
+        else:
+            break
+
+    if imported:
+        db.commit()
+
+    return {"imported": imported, "bucket": bucket}
