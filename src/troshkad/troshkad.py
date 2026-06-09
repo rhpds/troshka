@@ -22,7 +22,18 @@ import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-VERSION = "dev"  # overwritten at deploy time by the backend
+VERSION = "dev"  # stamped by backend at push time; self-hashes if unstamped
+
+def _compute_version():
+    import hashlib as _hl
+    try:
+        with open(__file__, "rb") as _f:
+            return _hl.sha256(_f.read()).hexdigest()[:12]
+    except Exception:
+        return "dev"
+
+if VERSION == "dev":
+    VERSION = _compute_version()
 
 logging.basicConfig(
     level=logging.INFO,
