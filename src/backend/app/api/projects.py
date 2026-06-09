@@ -414,10 +414,12 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
             finally:
                 s.close()
 
+        notify_project(project_id, {"type": "vm-state", "states": {vm_id: "starting"}, "progress": {}})
         threading.Thread(target=_start_infra_then_vm, daemon=True).start()
         return {"action": "start", "success": True, "starting_project": True}
 
     # Start VM in background — re-cache images if needed, then virsh start
+    notify_project(project_id, {"type": "vm-state", "states": {vm_id: "starting"}, "progress": {}})
     import threading
     p_id = project.id
     h_id = host.id

@@ -180,7 +180,14 @@ function ConsolePage() {
   // WebSocket → VM state
   useEffect(() => {
     if (!vmId || !ws.vmStates[vmId]) return;
-    setVmState(ws.vmStates[vmId]);
+    const state = ws.vmStates[vmId];
+    setVmState(state);
+    if (state === "starting") {
+      startingRef.current = true;
+      setStatus("Starting...");
+    } else if (state === "running" && startingRef.current) {
+      startingRef.current = false;
+    }
   }, [ws.vmStates, vmId]);
 
   useEffect(() => {
