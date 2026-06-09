@@ -163,8 +163,14 @@ export default function AdminProvidersPage() {
     const resp = await fetch(`/api/v1/providers/${id}/discover-vpcs`);
     if (resp.ok) {
       const data = await resp.json();
-      setVpcOptions((prev) => ({ ...prev, [id]: data.vpcs || [] }));
-      setAmiResult((prev) => ({ ...prev, [id]: `Found ${data.vpcs?.length || 0} VPC(s)` }));
+      const vpcs = data.vpcs || [];
+      if (vpcs.length === 0) {
+        setAmiResult((prev) => ({ ...prev, [id]: "No troshka VPC found — creating one..." }));
+        await createVpc(id, true);
+        return;
+      }
+      setVpcOptions((prev) => ({ ...prev, [id]: vpcs }));
+      setAmiResult((prev) => ({ ...prev, [id]: `Found ${vpcs.length} VPC(s)` }));
     } else {
       setAmiResult((prev) => ({ ...prev, [id]: "VPC discovery failed" }));
     }
@@ -181,8 +187,8 @@ export default function AdminProvidersPage() {
     }
   };
 
-  const createVpc = async (id: string) => {
-    if (!window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
+  const createVpc = async (id: string, skipConfirm = false) => {
+    if (!skipConfirm && !window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
     setAmiResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
     const resp = await fetch(`/api/v1/providers/${id}/create-vpc`, { method: "POST" });
     if (resp.ok) {
