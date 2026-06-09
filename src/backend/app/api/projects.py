@@ -590,8 +590,25 @@ def reconfigure_project(
     if not host or not host.private_key or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not available")
 
-    # Allocate VNIs for new networks before going async
+    # Validate BMC network has at least one connected provisioner VM
     current = project.topology or {}
+    bmc_net = next(
+        (n for n in current.get("nodes", [])
+         if n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"),
+        None,
+    )
+    if bmc_net:
+        bmc_edges = [
+            e for e in current.get("edges", [])
+            if e.get("source") == bmc_net["id"] or e.get("target") == bmc_net["id"]
+        ]
+        if not bmc_edges:
+            raise HTTPException(
+                status_code=400,
+                detail="BMC network requires at least one connected VM to act as a provisioner",
+            )
+
+    # Allocate VNIs for new networks before going async
     deployed = project.deployed_topology or {}
     vni_map = dict(project.vni_map or {})
     diff = diff_topologies(current, deployed) if deployed else {"added_vms": [], "removed_vms": [], "changed_vms": [], "added_networks": [], "removed_networks": [], "has_changes": False}
