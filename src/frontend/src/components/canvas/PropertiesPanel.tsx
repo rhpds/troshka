@@ -863,9 +863,8 @@ export default function PropertiesPanel() {
 
           {/* ── BMC (Baseboard Management Controller) ── */}
           <div className="props-section">
-            <div className="props-section-header" style={{ cursor: "pointer" }}
-              onClick={() => toggleSection("bmc")}>
-              <span style={{ transform: isCollapsed("bmc") ? "rotate(-90deg)" : undefined, display: "inline-block", transition: "transform 0.15s", marginRight: 4 }}>▾</span>
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("bmc")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("bmc") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
               BMC
             </div>
             {!isCollapsed("bmc") && (
