@@ -257,7 +257,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
 
-  useEffect(() => {
+  const fetchProjects = () => {
     fetch(`${API_BASE}/api/v1/projects/`)
       .then((r) => {
         if (!r.ok) throw new Error("Failed to fetch projects");
@@ -272,6 +272,13 @@ export default function ProjectsPage() {
         setProjects([]);
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    fetchProjects();
+    const onVisible = () => { if (document.visibilityState === "visible") fetchProjects(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   if (loading) {
