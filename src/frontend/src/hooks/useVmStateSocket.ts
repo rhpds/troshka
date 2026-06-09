@@ -19,6 +19,7 @@ interface VmStateSocket {
   projectState: string | null;
   deployError: string | null;
   deployProgress: DeployProgress | null;
+  deleted: boolean;
 }
 
 const BACKOFF_BASE = 1000;
@@ -31,6 +32,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [projectState, setProjectState] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
+  const [deleted, setDeleted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
@@ -76,6 +78,9 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "deploy-progress":
             setDeployProgress(msg.progress || null);
             break;
+          case "project-deleted":
+            setDeleted(true);
+            break;
           case "ping":
             break;
         }
@@ -111,5 +116,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, projectState, deployError, deployProgress };
+  return { connected, vmStates, vmProgress, projectState, deployError, deployProgress, deleted };
 }

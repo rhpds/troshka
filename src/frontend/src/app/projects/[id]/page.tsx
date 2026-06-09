@@ -30,6 +30,10 @@ export default function ProjectCanvasPage() {
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
+    if (ws.deleted) router.push("/projects");
+  }, [ws.deleted]);
+
+  useEffect(() => {
     document.title = projectName ? `${projectName} — Troshka` : "Troshka";
     return () => { document.title = "Troshka"; };
   }, [projectName]);

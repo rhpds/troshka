@@ -1071,6 +1071,8 @@ def delete_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
+    notify_project(project_id, {"type": "project-deleted"})
+
     # Clean up infrastructure in background, delete DB record immediately
     if project.host_id and project.state in ("active", "stopped", "error"):
         import threading
