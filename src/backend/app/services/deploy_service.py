@@ -730,6 +730,8 @@ def deploy_project_async(project_id: str):
         project.deployed_topology = project.topology
         s.commit()
         notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
+        vm_states = {vm["node_id"]: "running" for vm in vms}
+        notify_project(project_id, {"type": "vm-state", "states": vm_states, "progress": {}})
         _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
