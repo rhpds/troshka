@@ -1535,9 +1535,12 @@ def _handle_network_full_setup(job, params):
         except RuntimeError:
             pass
 
-        # Create VXLAN in host namespace
-        _run_cmd(job, ["ip", "link", "add", vxlan_if, "type", "vxlan",
-                        "id", str(vni), "local", host_ip, "dstport", "4789", "nolearning"], timeout=10)
+        # Create VXLAN in host namespace (may already exist from a previous deploy)
+        try:
+            _run_cmd(job, ["ip", "link", "add", vxlan_if, "type", "vxlan",
+                            "id", str(vni), "local", host_ip, "dstport", "4789", "nolearning"], timeout=10)
+        except RuntimeError:
+            job["output"].append(f"VXLAN {vxlan_if} already exists, reusing")
 
         # Add peers
         for peer in peers:
