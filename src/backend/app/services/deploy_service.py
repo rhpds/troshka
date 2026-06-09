@@ -150,6 +150,69 @@ def _vm_domain_name(project_id: str, node_id: str) -> str:
     return f"troshka-{project_id[:8]}-{node_id[:8]}"
 
 
+def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:
+    """Extract BMC configuration from topology if any VMs have BMC enabled."""
+    bmc_network = None
+    for node in topology.get("nodes", []):
+        if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "bmc":
+            bmc_network = node
+            break
+
+    if not bmc_network:
+        return None
+
+    bmc_vms = []
+    for node in topology.get("nodes", []):
+        if node.get("type") == "vmNode" and node.get("data", {}).get("bmcEnabled"):
+            bmc_ip = node["data"].get("bmcIp", "")
+            if bmc_ip:
+                bmc_vms.append({
+                    "node_id": node["id"],
+                    "domain_name": _vm_domain_name(project_id, node["id"]),
+                    "bmc_ip": bmc_ip,
+                })
+
+    if not bmc_vms:
+        return None
+
+    return {
+        "bmc_network": bmc_network["data"],
+        "vms": bmc_vms,
+    }
+
+
+def _setup_bmc_via_troshkad(host, project_id: str, bmc_config: dict):
+    """Start BMC endpoints (Redfish + IPMI) on the host for this project."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    net_data = bmc_config["bmc_network"]
+    cidr = net_data.get("cidr", "192.168.100.0/24")
+    params = {
+        "project_id": project_id,
+        "bmc_cidr": cidr,
+        "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+        "bmc_username": net_data.get("bmcUsername", "admin"),
+        "bmc_password": net_data.get("bmcPassword", "password"),
+        "vms": [{"domain_name": vm["domain_name"], "bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+    }
+    job_id = start_job(host, "/bmc/setup", params)
+    job = wait_for_job(host, job_id, timeout=120)
+    if job["status"] == "failed":
+        error = job.get("result", {}).get("error", "BMC setup failed")
+        return error
+    return True
+
+
+def _teardown_bmc_via_troshkad(host, project_id: str):
+    """Stop all BMC endpoints and remove BMC bridge for this project."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    job_id = start_job(host, "/bmc/teardown", {"project_id": project_id})
+    job = wait_for_job(host, job_id, timeout=60)
+    if job["status"] == "failed":
+        logger.warning("BMC teardown failed for %s: %s", project_id[:8], job.get("result"))
+
+
 def _vm_dir(project_id: str) -> str:
     return f"/var/lib/troshka/vms/{project_id}"
 
@@ -810,6 +873,21 @@ def deploy_project_async(project_id: str):
             _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks)
             _create_vm_via_troshkad(host, project_id, vm, topology, vni_map)
 
+        # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
+        bmc_config = _extract_bmc_config(topology, project_id)
+        if bmc_config:
+            _deploy_progress[project_id] = {"step": "bmc", "detail": "starting BMC endpoints"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: starting BMC endpoints for %d VMs", project_id[:8], len(bmc_config["vms"]))
+            bmc_result = _setup_bmc_via_troshkad(host, project_id, bmc_config)
+            if bmc_result is not True:
+                logger.error("Deploy %s: BMC setup failed: %s", project_id[:8], bmc_result)
+                project.state = "error"
+                project.deploy_error = f"BMC setup failed: {bmc_result}"
+                s.commit()
+                _deploy_progress.pop(project_id, None)
+                return
+
         # Step 5: Start VMs
         _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
@@ -819,6 +897,24 @@ def deploy_project_async(project_id: str):
         project.state = "active"
         project.deploy_error = None
         project.deployed_topology = project.topology
+
+        # Store BMC addresses in deployed topology for UI display
+        if bmc_config:
+            deployed_topo = project.deployed_topology or {}
+            deployed_topo["bmc"] = {
+                "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+                "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+                "vms": {
+                    vm["node_id"]: {
+                        "ip": vm["bmc_ip"],
+                        "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['domain_name']}",
+                        "ipmi_address": f"{vm['bmc_ip']}:623",
+                    }
+                    for vm in bmc_config["vms"]
+                },
+            }
+            project.deployed_topology = deployed_topo
+
         s.commit()
         notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
         vm_states = {vm["node_id"]: "running" for vm in vms}
@@ -863,7 +959,8 @@ def stop_project_async(project_id: str):
             return
 
         # Stop VMs via troshkad
-        vms = _extract_vms(project.topology or {})
+        topology = project.topology or {}
+        vms = _extract_vms(topology)
         for vm in vms:
             vm_name = _vm_domain_name(project_id, vm["node_id"])
             try:
@@ -871,6 +968,12 @@ def stop_project_async(project_id: str):
                 wait_for_job(host, job_id, timeout=60)
             except TroshkadError as e:
                 logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
+
+        # Tear down BMC endpoints before network teardown
+        bmc_config = _extract_bmc_config(topology, project_id)
+        if bmc_config:
+            logger.info("Stop %s: tearing down BMC endpoints", project_id[:8])
+            _teardown_bmc_via_troshkad(host, project_id)
 
         # Tear down networks via troshkad (serialized to avoid nftables contention)
         vni_map = project.vni_map or {}
@@ -990,6 +1093,12 @@ def start_project_async(project_id: str):
 
         # Start VMs via troshkad
         _start_vms_via_troshkad(host, project_id, topology)
+
+        # Re-start BMC endpoints
+        bmc_config = _extract_bmc_config(topology, project_id)
+        if bmc_config:
+            logger.info("Start %s: re-starting BMC endpoints", project_id[:8])
+            _setup_bmc_via_troshkad(host, project_id, bmc_config)
 
         project.state = "active"
         project.deploy_error = None
