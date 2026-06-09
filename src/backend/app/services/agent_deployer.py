@@ -229,7 +229,7 @@ if /opt/troshka/venv/bin/python3 -c "import libvirt" 2>/dev/null; then
     echo "System libvirt module available, installing without libvirt-python"
     /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps sushy-tools
     # Install sushy-tools runtime deps except libvirt-python
-    /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity
+    /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity bcrypt
     /opt/troshka/venv/bin/pip install $PIP_ARGS virtualbmc
 else
     echo "No system libvirt, attempting full install"
