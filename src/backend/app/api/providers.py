@@ -258,7 +258,7 @@ def discover_vpcs(provider_id: str, user: User = Depends(require_role("admin")),
             aws_secret_access_key=creds.get("secret_access_key"),
         )
 
-        vpcs_resp = ec2.describe_vpcs()
+        vpcs_resp = ec2.describe_vpcs(Filters=[{"Name": "tag:ManagedBy", "Values": ["troshka"]}])
         vpcs = []
         for vpc in vpcs_resp["Vpcs"]:
             vpc_id = vpc["VpcId"]
