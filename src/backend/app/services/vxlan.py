@@ -54,6 +54,7 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
         n for n in nodes
         if n.get("type") == "networkNode"
         and n.get("data", {}).get("subtype") == "network"
+        and n.get("data", {}).get("networkType") != "bmc"
     ]
 
     used_vnis = _get_all_used_vnis(db)

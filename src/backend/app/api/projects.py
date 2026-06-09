@@ -600,7 +600,7 @@ def reconfigure_project(
         used_vnis = _get_all_used_vnis(db) | set(vni_map.values())
         next_vni = VNI_MIN
         for net_node in diff["added_networks"]:
-            if net_node.get("data", {}).get("subtype") == "network" and net_node["id"] not in vni_map:
+            if net_node.get("data", {}).get("subtype") == "network" and net_node.get("data", {}).get("networkType") != "bmc" and net_node["id"] not in vni_map:
                 while next_vni in used_vnis:
                     next_vni += 1
                 if next_vni > VNI_MAX:
@@ -878,13 +878,42 @@ def reconfigure_project(
             from app.services.placement import sync_host_capacity
             sync_host_capacity(s, h)
 
+            # BMC setup/teardown during reconfigure
+            from app.services.deploy_service import _extract_bmc_config, _setup_bmc_via_troshkad, _teardown_bmc_via_troshkad
+            bmc_config = _extract_bmc_config(current, p_id)
+            deployed_had_bmc = any(
+                n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
+                for n in deployed.get("nodes", [])
+            )
+            if deployed_had_bmc:
+                _teardown_bmc_via_troshkad(h, p_id)
+            if bmc_config:
+                bmc_result = _setup_bmc_via_troshkad(h, p_id, bmc_config)
+                if bmc_result is not True:
+                    errors.append(f"BMC setup failed: {bmc_result}")
+
             s.refresh(proj)
             final_topo = proj.topology or {}
 
             import copy
             proj.state = "active"
             if not errors:
-                proj.deployed_topology = copy.deepcopy(final_topo)
+                # Store BMC addresses in deployed topology
+                deployed_topo = copy.deepcopy(final_topo)
+                if bmc_config:
+                    deployed_topo["bmc"] = {
+                        "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+                        "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+                        "vms": {
+                            vm["node_id"]: {
+                                "ip": vm["bmc_ip"],
+                                "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['domain_name']}",
+                                "ipmi_address": f"{vm['bmc_ip']}:623",
+                            }
+                            for vm in bmc_config["vms"]
+                        },
+                    }
+                proj.deployed_topology = deployed_topo
                 proj.deploy_error = None
             else:
                 proj.deploy_error = "\n".join(errors)
