@@ -72,7 +72,7 @@ def create_project(
     return project
 
 
-@router.get("/{project_id}", response_model=ProjectResponse)
+@router.get("/{project_id}")
 def get_project(
     project_id: str,
     user: User = Depends(get_current_user),
@@ -83,7 +83,35 @@ def get_project(
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    return project
+
+    # Build response dict from project model
+    result = {
+        "id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "owner_id": project.owner_id,
+        "provider_id": project.provider_id,
+        "host_type": project.host_type,
+        "host_id": project.host_id,
+        "state": project.state,
+        "topology": project.topology,
+        "deployed_topology": project.deployed_topology,
+        "vni_map": project.vni_map,
+        "deploy_error": project.deploy_error,
+        "run_timer_hours": project.run_timer_hours,
+        "lifetime_expires_at": project.lifetime_expires_at,
+        "poweroff_mode": project.poweroff_mode,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    }
+
+    # Include BMC addresses if available
+    deployed_topo = project.deployed_topology or {}
+    bmc_data = deployed_topo.get("bmc")
+    if bmc_data:
+        result["bmc"] = bmc_data
+
+    return result
 
 
 @router.get("/{project_id}/deploy-progress")
@@ -141,6 +169,24 @@ def deploy_project(
     reqs = calculate_project_requirements(project.topology)
     if reqs["vm_count"] == 0:
         raise HTTPException(status_code=400, detail="Project has no VMs")
+
+    # Validate BMC network has at least one connected provisioner VM
+    topology = project.topology or {}
+    bmc_network = None
+    for node in topology.get("nodes", []):
+        if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "bmc":
+            bmc_network = node
+            break
+    if bmc_network:
+        bmc_edges = [
+            e for e in topology.get("edges", [])
+            if e.get("source") == bmc_network["id"] or e.get("target") == bmc_network["id"]
+        ]
+        if not bmc_edges:
+            raise HTTPException(
+                status_code=400,
+                detail="BMC network requires at least one connected VM to act as a provisioner",
+            )
 
     _check_library_items_ready(project.topology, db)
 
