@@ -48,7 +48,7 @@ def _extract_vms(topology: dict) -> list[dict]:
     return vms
 
 
-def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict) -> list[dict]:
+def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict, project_id: str = "") -> list[dict]:
     """Find networks connected to a VM via NIC handles."""
     edges = topology.get("edges", [])
     nodes = topology.get("nodes", [])
@@ -69,8 +69,6 @@ def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict) -> list[di
 
         if not handle or not handle.startswith("nic-"):
             continue
-        if network_node_id not in vni_map:
-            continue
 
         # Find the NIC data to get MAC address
         # Handle format: "nic-{nicId}-top" or "nic-{nicId}-bottom"
@@ -81,6 +79,19 @@ def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict) -> list[di
                 if nic["id"] in handle:
                     mac = nic.get("mac", "")
                     break
+
+        # BMC networks use a dedicated bridge (no VNI)
+        net_node = next((n for n in nodes if n["id"] == network_node_id), None)
+        if net_node and net_node.get("data", {}).get("networkType") == "bmc":
+            networks.append({
+                "bridge": f"br-bmc-{project_id[:8]}",
+                "mac": mac,
+                "nic_id": handle,
+            })
+            continue
+
+        if network_node_id not in vni_map:
+            continue
 
         vni = vni_map[network_node_id]
         networks.append({
@@ -604,7 +615,7 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], topology)
-    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map)
+    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map, project_id)
 
     # Build disk list for virt-install
     vm_dir = _vm_dir(project_id)

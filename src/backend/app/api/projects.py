@@ -737,7 +737,7 @@ def reconfigure_project(
                 dom = _vm_domain_name(p_id, vm["node_id"])
                 vm_disks = _find_vm_disks(vm["node_id"], current)
                 boot_devs = _resolve_boot_devs(vm, vm_disks, current)
-                vm_networks = _find_vm_networks(vm["node_id"], current, vni_map)
+                vm_networks = _find_vm_networks(vm["node_id"], current, vni_map, p_id)
                 nics = [{"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks] or None
 
                 # Build map of deployed disk library items for change detection
