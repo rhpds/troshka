@@ -2,6 +2,7 @@
 
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
+import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 
 export default function ConsolePageWrapper() {
   return (
@@ -23,6 +24,7 @@ function ConsolePage() {
   const [focused, setFocused] = useState(false);
   const [openMenu, setOpenMenu] = useState<"linux" | "windows" | "power" | null>(null);
   const [vmState, setVmState] = useState<string | null>(null);
+  const ws = useVmStateSocket(projectId);
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
@@ -175,19 +177,11 @@ function ConsolePage() {
     document.title = `Console: ${vmName}`;
   }, [vmName]);
 
-  const fetchVmState = useCallback(() => {
-    if (!projectId || !vmId) return;
-    fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (data?.state) setVmState(data.state); })
-      .catch(() => {});
-  }, [projectId, vmId]);
-
+  // WebSocket → VM state
   useEffect(() => {
-    fetchVmState();
-    const timer = setInterval(fetchVmState, 5000);
-    return () => clearInterval(timer);
-  }, [fetchVmState]);
+    if (!vmId || !ws.vmStates[vmId]) return;
+    setVmState(ws.vmStates[vmId]);
+  }, [ws.vmStates, vmId]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -258,11 +252,7 @@ function ConsolePage() {
     } catch {
       alert("Failed to connect to server");
     }
-    setTimeout(() => {
-      fetchVmState();
-      localStorage.setItem("troshka-vm-power", `${vmId}:${action}:${Date.now()}`);
-    }, 1500);
-  }, [projectId, vmId, fetchVmState]);
+  }, [projectId, vmId]);
 
   const XK = {
     Ctrl: 0xffe3, Alt: 0xffe9, Shift: 0xffe1, Super: 0xffeb,
