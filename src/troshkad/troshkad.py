@@ -365,7 +365,7 @@ import ipaddress
 _DOMAIN_RE = re.compile(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$")
 _UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 _NET_NAME_RE = re.compile(r"^troshka-net-[a-f0-9]+$")
-_BRIDGE_RE = re.compile(r"^br-(?:troshka-)?[a-f0-9]+$")
+_BRIDGE_RE = re.compile(r"^br-(?:troshka-|bmc-)?[a-f0-9]+$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 _BUS_TYPES = {"virtio", "scsi", "sata", "ide", "usb"}
