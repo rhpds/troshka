@@ -30,6 +30,7 @@ from app.services.troshkad_client import (
     undefine_vm as troshkad_undefine_vm,
 )
 from app.services.console_proxy import get_or_create_proxy
+from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -187,6 +188,7 @@ def stop_project(
 
     project.state = "stopping"
     db.commit()
+    notify_project(project_id, {"type": "project-state", "state": "stopping", "deploy_error": None})
 
     import threading
     threading.Thread(target=stop_project_async, args=(project.id,), daemon=True).start()
@@ -222,6 +224,7 @@ def force_stop_project(
 
     project.state = "stopped"
     db.commit()
+    notify_project(project_id, {"type": "project-state", "state": "stopped", "deploy_error": None})
     return {"status": "stopped"}
 
 
@@ -241,6 +244,7 @@ def start_project(
 
     project.state = "starting"
     db.commit()
+    notify_project(project_id, {"type": "project-state", "state": "starting", "deploy_error": None})
 
     import threading
     threading.Thread(target=start_project_async, args=(project.id,), daemon=True).start()
@@ -393,11 +397,13 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
                 try:
                     job_id = start_job(h, "/vms/start", {"domain_name": dom})
                     wait_for_job(h, job_id, timeout=60, poll_interval=2)
+                    notify_project(p_id, {"type": "vm-state", "states": {target_vm_id: "running"}, "progress": {}})
                 except TroshkadError as e:
                     logger.warning("Failed to start VM %s: %s", dom, e)
 
                 proj.state = "active"
                 s.commit()
+                notify_project(p_id, {"type": "project-state", "state": "active", "deploy_error": None})
                 logger.info("Infra + VM %s started for project %s", target_vm_id[:8], p_id[:8])
             except Exception:
                 logger.exception("Failed to start infra for project %s", p_id[:8])
@@ -432,6 +438,7 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
             try:
                 job_id = start_job(h, "/vms/start", {"domain_name": dom})
                 wait_for_job(h, job_id, timeout=60, poll_interval=2)
+                notify_project(p_id, {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}})
             except TroshkadError as e:
                 logger.error("Failed to start VM %s: %s", dom, e)
         finally:
@@ -448,6 +455,7 @@ def stop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user),
     try:
         job_id = start_job(host, "/vms/stop", {"domain_name": dom})
         wait_for_job(host, job_id, timeout=60, poll_interval=2)
+        notify_project(project_id, {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}})
         return {"action": "stop", "success": True}
     except TroshkadError as e:
         logger.error("Failed to stop VM %s: %s", dom, e)
@@ -469,6 +477,7 @@ def forcestop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_u
     try:
         job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
         wait_for_job(host, job_id, timeout=30, poll_interval=2)
+        notify_project(project_id, {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}})
         return {"action": "forcestop", "success": True}
     except TroshkadError as e:
         logger.error("Failed to force-stop VM %s: %s", dom, e)
@@ -482,6 +491,7 @@ def restart_vm(project_id: str, vm_id: str, user: User = Depends(get_current_use
     try:
         job_id = start_job(host, "/vms/reboot", {"domain_name": dom})
         wait_for_job(host, job_id, timeout=60, poll_interval=2)
+        notify_project(project_id, {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}})
         return {"action": "restart", "success": True}
     except TroshkadError as e:
         logger.error("Failed to restart VM %s: %s", dom, e)

@@ -11,6 +11,7 @@ from app.models.host import Host
 from app.services.troshkad_client import (
     start_job, wait_for_job, check_disk_usage, poll_job, TroshkadError,
 )
+from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
@@ -618,6 +619,7 @@ def deploy_project_async(project_id: str):
 
         # Step 1: Set up VXLAN networks
         _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
 
         net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
@@ -633,6 +635,7 @@ def deploy_project_async(project_id: str):
         external_ips = topology.get("externalIps", [])
         if external_ips:
             _deploy_progress[project_id] = {"step": "eips", "detail": "allocating elastic IPs"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
             logger.info("Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips))
             from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
             from app.models.elastic_ip import ElasticIp
@@ -686,24 +689,29 @@ def deploy_project_async(project_id: str):
 
         # Step 2: Create cloud-init seed ISOs
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
         _create_seed_isos_via_troshkad(host, project_id, topology)
 
         # Step 2b: Deploy metadata service
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: deploying metadata service", project_id[:8])
         _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
         # Step 3: Cache library images on host
         _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: caching library images", project_id[:8])
         def _deploy_dl_progress(downloaded, total):
             pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
             _deploy_progress[project_id] = {"step": "downloading images", "detail": pct}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
         # Step 4: Create VM disks and definitions
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vms = _extract_vms(topology)
         for vm in vms:
@@ -713,6 +721,7 @@ def deploy_project_async(project_id: str):
 
         # Step 5: Start VMs
         _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: starting VMs", project_id[:8])
         _start_vms_via_troshkad(host, project_id, topology)
 
@@ -720,6 +729,7 @@ def deploy_project_async(project_id: str):
         project.deploy_error = None
         project.deployed_topology = project.topology
         s.commit()
+        notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
         _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
@@ -732,6 +742,7 @@ def deploy_project_async(project_id: str):
                 project.state = "error"
                 project.deploy_error = "Unexpected deploy error. Check server logs."
                 s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
         except Exception:
             pass
     finally:
@@ -785,6 +796,7 @@ def stop_project_async(project_id: str):
         project.state = "stopped"
         project.deploy_error = None
         s.commit()
+        notify_project(project_id, {"type": "project-state", "state": "stopped", "deploy_error": None})
         logger.info("Stop %s: complete", project_id[:8])
 
     except Exception:
@@ -795,6 +807,7 @@ def stop_project_async(project_id: str):
                 project.state = "error"
                 project.deploy_error = "Stop failed unexpectedly. Check server logs."
                 s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
         except Exception:
             pass
     finally:
@@ -884,6 +897,7 @@ def start_project_async(project_id: str):
         project.state = "active"
         project.deploy_error = None
         s.commit()
+        notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
         logger.info("Start %s: complete", project_id[:8])
 
     except Exception:
@@ -894,6 +908,7 @@ def start_project_async(project_id: str):
                 project.state = "error"
                 project.deploy_error = "Start failed unexpectedly. Check server logs."
                 s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
         except Exception:
             pass
     finally:
