@@ -12,6 +12,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
+import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -26,6 +27,7 @@ export default function ProjectCanvasPage() {
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectState, setProjectState] = useState("draft");
+  const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
     document.title = projectName ? `${projectName} — Troshka` : "Troshka";
@@ -34,7 +36,6 @@ export default function ProjectCanvasPage() {
 
   useEffect(() => {
     if (projectId) {
-      // Always reload if nodes are empty (e.g., returning from another page)
       const store = useCanvasStore.getState();
       if (projectId !== currentProjectId || store.nodes.length === 0) {
         loadProject(projectId);
@@ -44,99 +45,16 @@ export default function ProjectCanvasPage() {
 
   const [deployError, setDeployError] = useState<string | null>(null);
 
-  const prevStateRef = React.useRef(projectState);
-  const fetchProjectState = () => {
-    fetch(`/api/v1/projects/${projectId}`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (data) {
-          const wasTransitional = ["reconfiguring", "deploying", "starting"].includes(prevStateRef.current);
-          setProjectName(data.name);
-          setProjectState(data.state);
-          setDeployError(data.deploy_error || null);
-          prevStateRef.current = data.state;
-          if (wasTransitional && data.state === "active") {
-            loadProject(projectId);
-          }
-        }
-      })
-      .catch(() => {});
-  };
-
+  // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
   useEffect(() => {
-    fetchProjectState();
-  }, [projectId]);
-
-  const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string } | null>(null);
-
-  // Poll during transitional states
-  useEffect(() => {
-    if (["deploying", "reconfiguring", "stopping", "starting"].includes(projectState)) {
-      const interval = setInterval(fetchProjectState, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [projectState]);
-
-  // Poll deploy progress during deploying state
-  useEffect(() => {
-    if (projectState !== "deploying" && projectState !== "reconfiguring") { setDeployProgress(null); return; }
-    const poll = () => {
-      fetch(`/api/v1/projects/${projectId}/deploy-progress`)
-        .then((r) => r.ok ? r.json() : null)
-        .then((d) => { if (d?.progress) setDeployProgress(d.progress); })
-        .catch(() => {});
-    };
-    poll();
-    const interval = setInterval(poll, 3000);
-    return () => clearInterval(interval);
-  }, [projectState, projectId]);
-
-  const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
-  const topologyDirty = useCanvasStore((s) => s.topologyDirty);
-
-  // Sync project state into the store
-  useEffect(() => {
-    useCanvasStore.setState({ projectState });
-  }, [projectState]);
-
-  // Sync VM status from libvirt via API
-  const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
-
-  const syncVmStates = () => {
-    if (projectState !== "active" && projectState !== "stopped") return;
-    fetch(`/api/v1/projects/${projectId}/vm-states`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (!data?.states) return;
-        const states: Record<string, string> = data.states;
-        const ids = new Set<string>(Object.keys(states));
-        const hasUndeployed = Object.values(states).some((s) => s === "not_found");
-        setDeployedVmIds(ids);
-        useCanvasStore.setState({ deployedVmIds: ids });
-        if (hasUndeployed) {
-          useCanvasStore.setState({ topologyDirty: true });
-        }
-
-        // Set per-VM status from libvirt + redeploy progress
-        const progressMap: Record<string, Record<string, string>> = data.progress || {};
-        const store = useCanvasStore.getState();
-        useCanvasStore.setState({
-          nodes: store.nodes.map((node) => {
-            if (node.type !== "vmNode") return node;
-            if (node.id in states) {
-              const redeployInfo = progressMap[node.id];
-              return { ...node, data: { ...node.data, status: states[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null } };
-            }
-            return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
-          }),
-        });
-      });
-
-    // Check dirty flag
     fetch(`/api/v1/projects/${projectId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
         if (!data) return;
+        setProjectName(data.name);
+        setProjectState(data.state);
+        setDeployError(data.deploy_error || null);
+        prevStateRef.current = data.state;
         const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
         const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
         if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
@@ -149,29 +67,64 @@ export default function ProjectCanvasPage() {
           }
         }
         useCanvasStore.setState({ deployedDiskSizes: depSizes });
-        });
-  };
+      })
+      .catch(() => {});
+  }, [projectId]);
 
-  useEffect(() => {
-    syncVmStates();
-  }, [projectState, projectId]);
+  const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string } | null>(null);
 
-  // Poll vm-states when any VM is redeploying
+  // WebSocket → project state
+  const prevStateRef = React.useRef(projectState);
   useEffect(() => {
-    const hasRedeploying = nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).status === "redeploying");
-    if (hasRedeploying) {
-      const interval = setInterval(syncVmStates, 3000);
-      return () => clearInterval(interval);
+    if (!ws.projectState) return;
+    const wasTransitional = ["reconfiguring", "deploying", "starting"].includes(prevStateRef.current);
+    setProjectState(ws.projectState);
+    setDeployError(ws.deployError || null);
+    prevStateRef.current = ws.projectState;
+    if (wasTransitional && ws.projectState === "active") {
+      loadProject(projectId);
     }
-  }, [nodes]);
+  }, [ws.projectState, ws.deployError]);
+
+  // WebSocket → deploy progress
+  useEffect(() => {
+    setDeployProgress(ws.deployProgress);
+  }, [ws.deployProgress]);
+
+  const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
+  const topologyDirty = useCanvasStore((s) => s.topologyDirty);
+
+  // Sync project state into the store
+  useEffect(() => {
+    useCanvasStore.setState({ projectState });
+  }, [projectState]);
+
+  // WebSocket → VM states into canvas store
+  const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "troshka-vm-power") syncVmStates();
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
+    if (!Object.keys(ws.vmStates).length) return;
+
+    const ids = new Set<string>(Object.keys(ws.vmStates));
+    const hasUndeployed = Object.values(ws.vmStates).some((s) => s === "not_found");
+    setDeployedVmIds(ids);
+    useCanvasStore.setState({ deployedVmIds: ids });
+    if (hasUndeployed) {
+      useCanvasStore.setState({ topologyDirty: true });
+    }
+
+    const store = useCanvasStore.getState();
+    useCanvasStore.setState({
+      nodes: store.nodes.map((node) => {
+        if (node.type !== "vmNode") return node;
+        if (node.id in ws.vmStates) {
+          const redeployInfo = ws.vmProgress[node.id];
+          return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null } };
+        }
+        return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
+      }),
+    });
+  }, [ws.vmStates, ws.vmProgress]);
 
   useEffect(() => {
     if (projectState === "draft") {
