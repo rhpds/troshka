@@ -2,10 +2,11 @@
 
 import React, { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { StorageNodeData } from "@/stores/canvasStore";
+import { useCanvasStore, type StorageNodeData } from "@/stores/canvasStore";
 
 function StorageNodeComponent({ data, selected }: NodeProps) {
   const d = data as unknown as StorageNodeData;
+  const projectState = useCanvasStore((s) => s.projectState);
 
   const formatLabel =
     d.format === "iso" ? "iso" : d.format === "raw" ? "raw" : "qcow2";
@@ -20,6 +21,8 @@ function StorageNodeComponent({ data, selected }: NodeProps) {
         boxShadow: selected
           ? "0 0 0 3px rgba(251,191,36,0.2)"
           : "none",
+        opacity: projectState === "draft" ? 0.55 : 1,
+        transition: "opacity 0.3s",
       }}
     >
       <div className="storage-node-icon">{d.format === "iso" ? "💿" : "🛢"}</div>

@@ -591,7 +591,7 @@ export default function PropertiesPanel() {
                 <div className="props-field">
                   <label className="props-label">root password</label>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, any>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <input className="props-input" style={{ flex: 1, WebkitTextSecurity: showPassword ? "none" : "disc" } as React.CSSProperties} type="text" autoComplete="off" value={(data as Record<string, any>).ciRootPassword as string || ""} onChange={(e) => update("ciRootPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
                     <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
                       {showPassword ? "🙈" : "👁"}
                     </button>
@@ -600,7 +600,7 @@ export default function PropertiesPanel() {
                 <div className="props-field">
                   <label className="props-label">cloud-user password</label>
                   <div style={{ display: "flex", gap: 4 }}>
-                    <input className="props-input" style={{ flex: 1 }} type={showPassword ? "text" : "password"} value={(data as Record<string, any>).ciCloudUserPassword as string || ""} onChange={(e) => update("ciCloudUserPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
+                    <input className="props-input" style={{ flex: 1, WebkitTextSecurity: showPassword ? "none" : "disc" } as React.CSSProperties} type="text" autoComplete="off" value={(data as Record<string, any>).ciCloudUserPassword as string || ""} onChange={(e) => update("ciCloudUserPassword", e.target.value)} placeholder="Leave blank for key-only auth" />
                     <button onClick={() => setShowPassword(!showPassword)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "0 4px" }} title={showPassword ? "Hide" : "Show"}>
                       {showPassword ? "🙈" : "👁"}
                     </button>

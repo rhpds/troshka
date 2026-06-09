@@ -33,6 +33,7 @@ function BmcWarning({ nodeId }: { nodeId: string }) {
 function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
   const [fwdExpanded, setFwdExpanded] = useState(false);
+  const projectState = useCanvasStore((s) => s.projectState);
 
   const networkType = (data as Record<string, any>).networkType;
   const isBmc = networkType === "bmc";
@@ -52,6 +53,8 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           background: c.bg,
           borderColor: selected ? c.selected : c.border,
           boxShadow: selected ? `0 0 0 3px ${c.glow}` : "none",
+          opacity: projectState === "draft" ? 0.55 : 1,
+          transition: "opacity 0.3s",
         };
       })()}
     >

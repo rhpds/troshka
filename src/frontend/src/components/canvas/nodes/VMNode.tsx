@@ -166,6 +166,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         boxShadow: selected
           ? "0 0 0 3px var(--troshka-accent-glow)"
           : "0 2px 8px rgba(0,0,0,0.2)",
+        opacity: projectState === "draft" ? 0.55 : 1,
+        transition: "opacity 0.3s",
       }}
     >
       {/* Header */}
