@@ -1077,6 +1077,16 @@ def delete_project(
 
     notify_project(project_id, {"type": "project-deleted"})
 
+    # Release EIPs before deleting DB record (delete cascades null the FK)
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import release_eip
+    project_eips = db.query(ElasticIp).filter_by(project_id=project_id).all()
+    for eip in project_eips:
+        try:
+            release_eip(db, eip)
+        except Exception:
+            logger.warning("Failed to release EIP %s on delete", eip.public_ip)
+
     # Clean up infrastructure in background, delete DB record immediately
     if project.host_id and project.state in ("active", "stopped", "error"):
         import threading
