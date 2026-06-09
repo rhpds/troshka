@@ -23,8 +23,10 @@ start_db() {
     if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
         podman start "$DB_CONTAINER"
     else
+        podman volume create troshka-pgdata 2>/dev/null || true
         podman run -d --name "$DB_CONTAINER" \
             --restart=always \
+            -v troshka-pgdata:/var/lib/postgresql/data \
             -e POSTGRES_USER="$DB_USER" \
             -e POSTGRES_PASSWORD="$DB_PASS" \
             -e POSTGRES_DB="$DB_NAME" \
