@@ -16,6 +16,9 @@ init_db()
 @asynccontextmanager
 async def lifespan(app):
     from app.services.health_poller import start_health_poller
+    from app.services.ws_pubsub import set_event_loop
+    import asyncio
+    set_event_loop(asyncio.get_running_loop())
     start_health_poller()
     yield
 
@@ -47,6 +50,7 @@ from app.api import providers as provider_routes  # noqa: E402
 from app.api import library as library_routes  # noqa: E402
 from app.api import patterns as pattern_routes  # noqa: E402
 from app.api import eips as eip_routes  # noqa: E402
+from app.api import ws as ws_routes  # noqa: E402
 
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(project_routes.router, prefix="/api/v1")
@@ -59,6 +63,7 @@ app.include_router(provider_routes.router, prefix="/api/v1")
 app.include_router(library_routes.router, prefix="/api/v1")
 app.include_router(pattern_routes.router, prefix="/api/v1")
 app.include_router(eip_routes.router, prefix="/api/v1")
+app.include_router(ws_routes.router)
 
 
 @app.get("/api/v1/health")
