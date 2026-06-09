@@ -23,11 +23,24 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 ## Running Tests
 
 ```bash
-cd src/backend
-./venv/bin/python3 -m pytest tests/ -v
+cd src/backend && ./venv/bin/python3 -m pytest tests/ -v
 ```
 
 Tests use SQLite with type compiler overrides for JSONB/UUID. Auth is dev-mode (auto-authenticates).
+
+### Git Commands — ALWAYS Use Absolute Paths
+
+Never `cd` into a subdirectory and then run `git add` with relative paths — this doubles the path segment and fails. Always use one of:
+
+```bash
+# Option 1: absolute path (preferred)
+git add /Users/prutledg/troshka/src/backend/app/api/file.py
+
+# Option 2: cd to project root first
+cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
+
+# Option 3: git status --short to see actual paths, then use those
+```
 
 ## Key Patterns
 
