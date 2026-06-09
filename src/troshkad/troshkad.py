@@ -1140,19 +1140,23 @@ def _handle_pxe_setup(job, params):
     _run_cmd(job, ["mount", "-o", "loop,ro", iso_path, mount_point], timeout=30)
     job["output"].append(f"Mounted ISO at {mount_point}")
 
-    # Copy kernel + initrd from mounted ISO
-    kernel_dest = os.path.join(tftp_root, "vmlinuz")
-    initrd_dest = os.path.join(tftp_root, "initrd.img")
+    # Copy kernel + initrd preserving directory structure so GRUB finds them
     found = False
     for paths in _PXE_BOOT_PATHS:
         k_src = mount_point + paths["kernel"]
         i_src = mount_point + paths["initrd"]
         if os.path.isfile(k_src) and os.path.isfile(i_src):
             import shutil
-            shutil.copy2(k_src, kernel_dest)
-            shutil.copy2(i_src, initrd_dest)
-            job["output"].append(f"Copied kernel from {paths['kernel']}")
-            job["output"].append(f"Copied initrd from {paths['initrd']}")
+            k_dest = os.path.join(tftp_root, paths["kernel"].lstrip("/"))
+            i_dest = os.path.join(tftp_root, paths["initrd"].lstrip("/"))
+            os.makedirs(os.path.dirname(k_dest), exist_ok=True)
+            os.makedirs(os.path.dirname(i_dest), exist_ok=True)
+            shutil.copy2(k_src, k_dest)
+            shutil.copy2(i_src, i_dest)
+            os.chmod(k_dest, 0o644)
+            os.chmod(i_dest, 0o644)
+            job["output"].append(f"Copied kernel to {paths['kernel']}")
+            job["output"].append(f"Copied initrd to {paths['initrd']}")
             found = True
             break
     if not found:
