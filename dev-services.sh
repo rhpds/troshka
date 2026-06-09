@@ -24,6 +24,7 @@ start_db() {
         podman start "$DB_CONTAINER"
     else
         podman run -d --name "$DB_CONTAINER" \
+            --restart=always \
             -e POSTGRES_USER="$DB_USER" \
             -e POSTGRES_PASSWORD="$DB_PASS" \
             -e POSTGRES_DB="$DB_NAME" \

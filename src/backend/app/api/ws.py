@@ -37,6 +37,7 @@ def _authenticate_ws(token: str | None, db) -> User | None:
 
 
 def _build_snapshot(project: Project, db) -> dict:
+    """Build initial WS snapshot. DB session is used then closed before troshkad calls."""
     from app.services.deploy_service import _deploy_progress
     from app.api.projects import _redeploy_progress, _domain_name
     from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
@@ -58,16 +59,28 @@ def _build_snapshot(project: Project, db) -> dict:
     if not host or not host.ip_address:
         return snapshot
 
-    for node in (project.topology or {}).get("nodes", []):
+    # Collect all data we need from DB objects before closing the session
+    project_id = project.id
+    topology_nodes = (project.topology or {}).get("nodes", [])
+    host_copy = type("H", (), {
+        "ip_address": host.ip_address,
+        "agent_token": host.agent_token,
+        "agent_cert_fingerprint": host.agent_cert_fingerprint,
+    })()
+
+    # Close DB session before making network calls to troshkad
+    db.close()
+
+    for node in topology_nodes:
         if node.get("type") != "vmNode":
             continue
-        dom_name = _domain_name(project.id, node["id"])
+        dom_name = _domain_name(project_id, node["id"])
         if dom_name in _redeploy_progress:
             snapshot["vm_states"][node["id"]] = "redeploying"
             snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
         else:
             try:
-                state = troshkad_get_vm_state(host, dom_name, timeout=5)
+                state = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
                 if state == "shut_off":
                     state = "stopped"
                 snapshot["vm_states"][node["id"]] = state
@@ -99,12 +112,9 @@ async def project_websocket(websocket: WebSocket, project_id: str):
         await websocket.accept()
         subscribe(project_id, websocket)
 
-        try:
-            snapshot = _build_snapshot(project, db)
-            await websocket.send_json(snapshot)
-        finally:
-            db.close()
-            db = None
+        snapshot = _build_snapshot(project, db)
+        db = None  # _build_snapshot closes the session before troshkad calls
+        await websocket.send_json(snapshot)
 
         # Keep alive: listen for client messages, send heartbeat pings
         while True:
