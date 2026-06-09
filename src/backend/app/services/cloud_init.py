@@ -10,10 +10,67 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _sha512_crypt(password: str, rounds: int = 5000) -> str:
+    """SHA-512 crypt hash compatible with /etc/shadow (stdlib, no passlib)."""
+    import hashlib
+    import os
+
+    SALT_CHARS = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    salt = "".join(SALT_CHARS[b % len(SALT_CHARS)] for b in os.urandom(16))
+
+    salted = f"{password}{salt}".encode()
+    alt = hashlib.sha512(f"{password}{salt}{password}".encode()).digest()
+
+    ctx = hashlib.sha512(salted + alt[:len(password)])
+    plen = len(password)
+    while plen > 0:
+        ctx.update(alt if plen & 1 else password.encode())
+        plen >>= 1
+
+    result = ctx.digest()
+    for i in range(rounds):
+        c = hashlib.sha512()
+        if i & 1:
+            c.update(password.encode())
+        else:
+            c.update(result)
+        if i % 3:
+            c.update(salt.encode())
+        if i % 7:
+            c.update(password.encode())
+        if i & 1:
+            c.update(result)
+        else:
+            c.update(password.encode())
+        result = c.digest()
+
+    itoa64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    def _to64(v, n):
+        out = ""
+        for _ in range(n):
+            out += itoa64[v & 0x3f]
+            v >>= 6
+        return out
+
+    output = ""
+    for a, b, c in [
+        (0, 21, 42), (22, 43, 1), (44, 2, 23), (3, 24, 45),
+        (25, 46, 4), (47, 5, 26), (6, 27, 48), (28, 49, 7),
+        (50, 8, 29), (9, 30, 51), (31, 52, 10), (53, 11, 32),
+        (12, 33, 54), (34, 55, 13), (56, 14, 35), (15, 36, 57),
+        (37, 58, 16), (59, 17, 38), (18, 39, 60), (40, 61, 19),
+        (62, 20, 41),
+    ]:
+        output += _to64(result[a] << 16 | result[b] << 8 | result[c], 4)
+    output += _to64(result[63], 2)
+
+    if rounds == 5000:
+        return f"$6${salt}${output}"
+    return f"$6$rounds={rounds}${salt}${output}"
+
+
 def generate_userdata(vm_data: dict) -> str:
     """Generate cloud-init user-data YAML for a VM."""
-    from passlib.hash import sha512_crypt
-
     lines = ["#cloud-config"]
 
     hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
@@ -32,8 +89,8 @@ def generate_userdata(vm_data: dict) -> str:
     # Passwords
     root_pw = vm_data.get("ciRootPassword", "")
     cloud_user_pw = vm_data.get("ciCloudUserPassword", "")
-    root_hash = sha512_crypt.using(rounds=5000).hash(root_pw) if root_pw else None
-    cloud_user_hash = sha512_crypt.using(rounds=5000).hash(cloud_user_pw) if cloud_user_pw else None
+    root_hash = _sha512_crypt(root_pw) if root_pw else None
+    cloud_user_hash = _sha512_crypt(cloud_user_pw) if cloud_user_pw else None
 
     chpasswd_users = []
     if root_hash:
