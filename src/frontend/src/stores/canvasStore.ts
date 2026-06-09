@@ -905,7 +905,9 @@ export function syncBmcNetwork() {
   if (hasBmcVm && !bmcNetNode) {
     // Auto-create BMC network node
     const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const password = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    const randomBytes = new Uint8Array(16);
+    crypto.getRandomValues(randomBytes);
+    const password = Array.from(randomBytes, (b) => chars[b % chars.length]).join("");
 
     // Position near the center of existing BMC-enabled VM nodes
     const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
