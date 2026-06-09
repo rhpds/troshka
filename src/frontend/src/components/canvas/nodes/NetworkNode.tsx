@@ -46,19 +46,30 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
       })()}
     >
       <span className="network-node-icon">
-        {d.subtype === "router" ? "🔀" : d.subtype === "gateway" ? "🌐" : <RJ45Icon />}
+        {d.subtype === "router" ? "🔀" : d.subtype === "gateway" ? "🌐" : isBmc ? (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="4" width="20" height="16" rx="2" />
+            <circle cx="6" cy="12" r="1.5" fill="currentColor" />
+            <line x1="10" y1="9" x2="20" y2="9" />
+            <line x1="10" y1="12" x2="20" y2="12" />
+            <line x1="10" y1="15" x2="20" y2="15" />
+          </svg>
+        ) : <RJ45Icon />}
       </span>
       <div className="network-node-info">
         <div className="network-node-name">{d.name}</div>
         {d.subtype === "network" && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span className="network-node-cidr">{d.cidr}</span>
-            {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
-            {d.dns && <span className="network-node-badge dns">DNS</span>}
-            {isBmc && (
+            {isBmc ? (
               <span style={{ background: "rgba(168,85,247,0.2)", color: "rgba(168,85,247,1)", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>
                 BMC
               </span>
+            ) : (
+              <>
+                {d.dhcp && <span className="network-node-badge dhcp">DHCP</span>}
+                {d.dns && <span className="network-node-badge dns">DNS</span>}
+              </>
             )}
           </div>
         )}
