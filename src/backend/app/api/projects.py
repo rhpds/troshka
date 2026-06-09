@@ -467,7 +467,7 @@ def forcestop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_u
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
     try:
-        job_id = start_job(host, "/vms/destroy", {"domain_name": dom})
+        job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
         wait_for_job(host, job_id, timeout=30, poll_interval=2)
         return {"action": "forcestop", "success": True}
     except TroshkadError as e:

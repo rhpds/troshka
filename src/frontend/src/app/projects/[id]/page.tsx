@@ -109,7 +109,7 @@ export default function ProjectCanvasPage() {
       .then((data) => {
         if (!data?.states) return;
         const states: Record<string, string> = data.states;
-        const ids = new Set<string>(Object.keys(states).filter((id) => states[id] !== "not_found"));
+        const ids = new Set<string>(Object.keys(states));
         const hasUndeployed = Object.values(states).some((s) => s === "not_found");
         setDeployedVmIds(ids);
         useCanvasStore.setState({ deployedVmIds: ids });
@@ -164,6 +164,14 @@ export default function ProjectCanvasPage() {
       return () => clearInterval(interval);
     }
   }, [nodes]);
+
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "troshka-vm-power") syncVmStates();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   useEffect(() => {
     if (projectState === "draft") {

@@ -537,6 +537,14 @@ def _handle_vm_destroy(job, params):
 COMMAND_HANDLERS["vms/destroy"] = _handle_vm_destroy
 
 
+def _handle_vm_force_off(job, params):
+    domain = _validate_domain_name(params["domain_name"])
+    _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+    return {"domain": domain, "status": "off"}
+
+COMMAND_HANDLERS["vms/force-off"] = _handle_vm_force_off
+
+
 def _handle_vm_start(job, params):
     domain = _validate_domain_name(params["domain_name"])
     _run_cmd(job, ["virsh", "start", domain], timeout=60)

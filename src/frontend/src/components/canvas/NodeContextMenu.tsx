@@ -24,8 +24,10 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
   const isVm = node?.type === "vmNode";
   const isDeployed = isVm && deployedVmIds.has(nodeId);
   const vmName = isVm ? (node?.data as Record<string, any>).name as string : "";
-  const isRunning = isVm && (node?.data as Record<string, any>).status === "running";
-  const isRedeploying = isVm && (node?.data as Record<string, any>).status === "redeploying";
+  const vmStatus = isVm ? (node?.data as Record<string, any>).status as string : "";
+  const isRunning = vmStatus === "running";
+  const isRedeploying = vmStatus === "redeploying";
+  const isNotFound = vmStatus === "not_found";
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -41,7 +43,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
       className="node-context-menu"
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
-      {isDeployed && isRunning && !isRedeploying && (
+      {isDeployed && isRunning && !isRedeploying && !isNotFound && (
         <>
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
             ■ Graceful Shutdown
@@ -54,12 +56,12 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
           </button>
         </>
       )}
-      {isDeployed && !isRunning && !isRedeploying && (
+      {isDeployed && !isRunning && !isRedeploying && !isNotFound && (
         <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>
       )}
-      {isDeployed && (
+      {isDeployed && !isNotFound && (
         <button onClick={() => {
           window.open(`/console?vm=${encodeURIComponent(nodeId)}&project=${projectId}&name=${encodeURIComponent(vmName)}`, `console_${(projectId ?? "").replace(/-/g, "")}_${nodeId.replace(/-/g, "")}`, "width=1024,height=768,menubar=no,toolbar=no,location=no");
           onClose();
@@ -67,7 +69,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
           🖥 Console
         </button>
       )}
-      {isVm && isDeployed && onSnapshotVM && (
+      {isVm && isDeployed && !isNotFound && onSnapshotVM && (
         <button onClick={() => { onSnapshotVM(nodeId, vmName, isRunning); onClose(); }}>
           📸 Save VM Snapshot
         </button>

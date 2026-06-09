@@ -21,7 +21,9 @@ function ConsolePage() {
   const [wsPort, setWsPort] = useState<number | null>(null);
   const [scaled, setScaled] = useState(true);
   const [focused, setFocused] = useState(false);
-  const [openMenu, setOpenMenu] = useState<"linux" | "windows" | null>(null);
+  const [openMenu, setOpenMenu] = useState<"linux" | "windows" | "power" | null>(null);
+  const [vmState, setVmState] = useState<string | null>(null);
+  const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -121,7 +123,7 @@ function ConsolePage() {
 
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
       r.addEventListener("connect", () => {
-        if (mountedRef.current) setStatus("Connected");
+        if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
       r.addEventListener("disconnect", () => {
         if (mountedRef.current) {
@@ -173,6 +175,20 @@ function ConsolePage() {
     document.title = `Console: ${vmName}`;
   }, [vmName]);
 
+  const fetchVmState = useCallback(() => {
+    if (!projectId || !vmId) return;
+    fetch(`/api/v1/projects/${projectId}/vms/${vmId}/status`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => { if (data?.state) setVmState(data.state); })
+      .catch(() => {});
+  }, [projectId, vmId]);
+
+  useEffect(() => {
+    fetchVmState();
+    const timer = setInterval(fetchVmState, 5000);
+    return () => clearInterval(timer);
+  }, [fetchVmState]);
+
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -204,6 +220,7 @@ function ConsolePage() {
   // Listen for key combos from the virtual keyboard popup
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
       if (e.data?.type === "vkb-combo" && Array.isArray(e.data.keysyms)) {
         sendCombo(e.data.keysyms);
       }
@@ -228,6 +245,24 @@ function ConsolePage() {
       "width=900,height=290,menubar=no,toolbar=no,location=no,status=no",
     );
   }, []);
+
+  const vmPowerAction = useCallback(async (action: string, label: string, confirm?: string) => {
+    if (confirm && !window.confirm(confirm)) return;
+    if (action === "start") { startingRef.current = true; setStatus("Starting..."); }
+    try {
+      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/${action}`, { method: "POST" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: `${label} failed` }));
+        alert(err.detail || `${label} failed`);
+      }
+    } catch {
+      alert("Failed to connect to server");
+    }
+    setTimeout(() => {
+      fetchVmState();
+      localStorage.setItem("troshka-vm-power", `${vmId}:${action}:${Date.now()}`);
+    }, 1500);
+  }, [projectId, vmId, fetchVmState]);
 
   const XK = {
     Ctrl: 0xffe3, Alt: 0xffe9, Shift: 0xffe1, Super: 0xffeb,
@@ -271,7 +306,9 @@ function ConsolePage() {
     );
   }
 
-  const statusColor = status === "Connected" ? "#4ade80" : status.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
+  const poweredOff = vmState !== null && vmState !== "running";
+  const displayStatus = startingRef.current ? "Starting..." : poweredOff && status !== "Connected" ? "Powered Off" : status;
+  const statusColor = displayStatus === "Connected" ? "#4ade80" : displayStatus === "Starting..." ? "#4ade80" : displayStatus === "Powered Off" ? "#ef4444" : displayStatus.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
 
   return (
     <div style={{ background: "#000", height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -290,8 +327,8 @@ function ConsolePage() {
           <span>{vmName}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ color: statusColor }}>{status}</span>
-          {status === "Connected" && (
+          <span style={{ color: statusColor }}>{displayStatus}</span>
+          {displayStatus === "Connected" && (
             <span
               title={focused ? "Keyboard active — typing goes to VM" : "Click console to activate keyboard"}
               style={{ display: "flex", alignItems: "center", gap: 5, transition: "opacity 0.2s", opacity: focused ? 1 : 0.5 }}
@@ -435,6 +472,48 @@ function ConsolePage() {
               </div>
             );
           })}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === "power" ? null : "power"); }}
+              style={{ ...btnStyle, background: openMenu === "power" ? "rgba(251,191,36,0.15)" : "none", borderColor: openMenu === "power" ? "#fbbf24" : "#555", color: openMenu === "power" ? "#fbbf24" : "#fff" }}
+            >
+              Power ▾
+            </button>
+            {openMenu === "power" && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: "absolute", top: "100%", right: 0, marginTop: 4,
+                  background: "#1a1a2e", border: "1px solid #444", borderRadius: 6,
+                  padding: "4px 0", minWidth: 180, zIndex: 100,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                }}
+              >
+                {([
+                  ...(vmState !== "running" ? [{ action: "start", label: "Start" }] : []),
+                  ...(vmState === "running" ? [{ action: "restart", label: "Restart", confirm: `Restart "${vmName}"?` }] : []),
+                  ...(vmState === "running" ? [{ action: "stop", label: "Shutdown", confirm: `Shut down "${vmName}"?` }] : []),
+                  ...(vmState === "running" ? [{ action: "forcestop", label: "Force Off", confirm: `Force off "${vmName}"? This may cause data loss.` }] : []),
+                ] as { action: string; label: string; confirm?: string }[]).map((item) => (
+                  <button
+                    key={item.action}
+                    onClick={() => { setOpenMenu(null); vmPowerAction(item.action, item.label, "confirm" in item ? item.confirm : undefined); }}
+                    style={{
+                      display: "block", width: "100%", textAlign: "left",
+                      background: "none", border: "none",
+                      color: item.action === "forcestop" ? "#f87171" : "#fff",
+                      padding: "5px 12px", fontSize: 11, cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                    onMouseEnter={(e) => { (e.target as HTMLElement).style.background = "rgba(255,255,255,0.08)"; }}
+                    onMouseLeave={(e) => { (e.target as HTMLElement).style.background = "none"; }}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div style={{
@@ -444,22 +523,29 @@ function ConsolePage() {
       }} />
       <div style={{ flex: 1, position: "relative", background: "#000" }}>
         <div ref={canvasRef} style={{ width: "100%", height: "100%" }} />
-        {status !== "Connected" && (
+        {displayStatus !== "Connected" && (
           <div style={{
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
             pointerEvents: "none",
           }}>
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="2" y="3" width="20" height="14" rx="2" />
-              <line x1="8" y1="21" x2="16" y2="21" />
-              <line x1="12" y1="17" x2="12" y2="21" />
-              <line x1="2" y1="3" x2="22" y2="17" stroke="#ef4444" strokeWidth="2" />
-            </svg>
-            <span style={{ fontSize: 13 }}>{status}</span>
+            {startingRef.current ? (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" style={{ animation: "vkb-spin 1s linear infinite" }}>
+                <path d="M12 2a10 10 0 0 1 10 10" />
+              </svg>
+            ) : (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+                <line x1="2" y1="3" x2="22" y2="17" stroke="#ef4444" strokeWidth="2" />
+              </svg>
+            )}
+            <span style={{ fontSize: 13, color: startingRef.current ? "#4ade80" : undefined }}>{displayStatus}</span>
           </div>
         )}
+        <style>{`@keyframes vkb-spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     </div>
   );

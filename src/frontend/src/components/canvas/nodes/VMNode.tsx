@@ -16,6 +16,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
   const isRedeploying = d.status === "redeploying";
+  const isNotFound = d.status === "not_found";
 
   const nicCount = (d.nics || []).length;
   const dcCount = (d.diskControllers || []).length;
@@ -179,9 +180,11 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           style={{
             background: isRunning
               ? "var(--troshka-green)"
-              : isDeployed
-                ? "var(--troshka-red)"
-                : "#6b7280",
+              : d.status === "not_found"
+                ? "#6b7280"
+                : isDeployed
+                  ? "var(--troshka-red)"
+                  : "#6b7280",
             boxShadow: isRunning ? "0 0 6px var(--troshka-green)" : "none",
           }}
         />
@@ -300,7 +303,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       <div className="vm-node-footer nopan nodrag">
-        {isDeployed && !isRunning && !isRedeploying && (
+        {isDeployed && !isRunning && !isRedeploying && !isNotFound && (
           <button
             className="vm-node-action power-stopped"
             title="Start"
@@ -310,7 +313,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             {actionPending === "start" ? <span className="vm-btn-spinner" /> : "▶"}
           </button>
         )}
-        {isDeployed && isRunning && !isRedeploying && (
+        {isDeployed && isRunning && !isRedeploying && !isNotFound && (
           <>
             <button
               className="vm-node-action power-running"
@@ -337,7 +340,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateNode(id); }}>
           ⧉
         </button>
-        <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); if (isDeployed) openConsole(); }} disabled={!isDeployed}>
+        {!isNotFound && <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); if (isDeployed) openConsole(); }} disabled={!isDeployed}>
           <svg
             width="14"
             height="14"
@@ -352,7 +355,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             <line x1="8" y1="21" x2="16" y2="21" />
             <line x1="12" y1="17" x2="12" y2="21" />
           </svg>
-        </button>
+        </button>}
       </div>
 
       {/* Network handles — one pair (top+bottom) per NIC */}
