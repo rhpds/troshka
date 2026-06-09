@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import LibraryPicker from "./LibraryPicker";
-import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac } from "@/stores/canvasStore";
+import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import type {
   VMNodeData,
   NetworkNodeData,
@@ -859,6 +859,111 @@ export default function PropertiesPanel() {
               );
             })()}
           </div>
+          <div className="props-divider" />
+
+          {/* ── BMC (Baseboard Management Controller) ── */}
+          <div className="props-section">
+            <div className="props-section-header" style={{ cursor: "pointer" }}
+              onClick={() => toggleSection("bmc")}>
+              <span style={{ transform: isCollapsed("bmc") ? "rotate(-90deg)" : undefined, display: "inline-block", transition: "transform 0.15s", marginRight: 4 }}>▾</span>
+              BMC
+            </div>
+            {!isCollapsed("bmc") && (
+              <div className="props-section-body">
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginBottom: 8 }}>
+                  <input type="checkbox" checked={!!(node.data as Record<string, any>).bmcEnabled}
+                    disabled={projectState === "active" || projectState === "deploying"}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      if (enabled) {
+                        const ip = allocateBmcIp();
+                        updateNodeData(node.id, { bmcEnabled: true, bmcIp: ip });
+                      } else {
+                        updateNodeData(node.id, { bmcEnabled: false, bmcIp: "" });
+                      }
+                      setTimeout(() => syncBmcNetwork(), 0);
+                    }}
+                  />
+                  Enable BMC
+                </label>
+
+                {(node.data as Record<string, any>).bmcEnabled && (
+                  <>
+                    <div className="props-field">
+                      <label className="props-label">BMC IP</label>
+                      <input className="props-input" value={(node.data as Record<string, any>).bmcIp || ""} readOnly
+                        style={{ fontFamily: "monospace", opacity: 0.7 }} />
+                    </div>
+
+                    {/* Show addresses when deployed */}
+                    {(() => {
+                      const deployedTopo = (window as any).__deployedTopology;
+                      const bmcData = deployedTopo?.bmc?.vms?.[node.id];
+                      if (!bmcData) return null;
+                      const bmcCreds = deployedTopo?.bmc;
+
+                      const CopyBtn = ({ value, label }: { value: string; label: string }) => (
+                        <button
+                          style={{ background: "none", border: "none", color: "var(--troshka-cyan)", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7, transition: "opacity 0.15s" }}
+                          onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                          onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
+                          title={`Copy ${label}`}
+                          onClick={(e) => {
+                            navigator.clipboard.writeText(value);
+                            const btn = e.currentTarget;
+                            const orig = btn.innerHTML;
+                            btn.innerHTML = `<span style="font-size:10px">Copied</span>`;
+                            setTimeout(() => { btn.innerHTML = orig; }, 1000);
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        </button>
+                      );
+
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                          <div className="props-field">
+                            <label className="props-label">Redfish URL</label>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input className="props-input" value={bmcData.redfish_url} readOnly
+                                style={{ fontFamily: "monospace", fontSize: 10, flex: 1 }} />
+                              <CopyBtn value={bmcData.redfish_url} label="Redfish URL" />
+                            </div>
+                          </div>
+                          <div className="props-field">
+                            <label className="props-label">IPMI Address</label>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input className="props-input" value={bmcData.ipmi_address} readOnly
+                                style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }} />
+                              <CopyBtn value={bmcData.ipmi_address} label="IPMI address" />
+                            </div>
+                          </div>
+                          <div className="props-field">
+                            <label className="props-label">Username</label>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input className="props-input" value={bmcCreds?.username || "admin"} readOnly
+                                style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }} />
+                              <CopyBtn value={bmcCreds?.username || "admin"} label="username" />
+                            </div>
+                          </div>
+                          <div className="props-field">
+                            <label className="props-label">Password</label>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input className="props-input" type="password" value={bmcCreds?.password || ""} readOnly
+                                style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }}
+                                onFocus={(e) => (e.currentTarget.type = "text")}
+                                onBlur={(e) => (e.currentTarget.type = "password")} />
+                              <CopyBtn value={bmcCreds?.password || ""} label="password" />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </>
       )}
 
@@ -1060,6 +1165,50 @@ export default function PropertiesPanel() {
                           When off, DNS only resolves internal names.
                         </span>
                       </div>
+                    </>
+                  )}
+
+                  {/* BMC Network Properties */}
+                  {(node.data as Record<string, any>).networkType === "bmc" && (
+                    <>
+                      <div className="props-divider" />
+                      <div className="props-field">
+                        <label className="props-label">BMC Username</label>
+                        <input className="props-input" value={(node.data as Record<string, any>).bmcUsername || "admin"}
+                          style={{ fontFamily: "monospace" }}
+                          onChange={(e) => update("bmcUsername", e.target.value)} />
+                      </div>
+                      <div className="props-field">
+                        <label className="props-label">BMC Password</label>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input className="props-input" type="password"
+                            value={(node.data as Record<string, any>).bmcPassword || ""}
+                            style={{ fontFamily: "monospace", flex: 1 }}
+                            onFocus={(e) => (e.currentTarget.type = "text")}
+                            onBlur={(e) => (e.currentTarget.type = "password")}
+                            onChange={(e) => update("bmcPassword", e.target.value)} />
+                        </div>
+                      </div>
+
+                      {/* List BMC-enabled VMs */}
+                      {(() => {
+                        const allNodes = useCanvasStore.getState().nodes;
+                        const bmcVms = allNodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
+                        if (bmcVms.length === 0) return null;
+                        return (
+                          <div style={{ marginTop: 8 }}>
+                            <label className="props-label">BMC-Enabled VMs</label>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                              {bmcVms.map((vm) => (
+                                <div key={vm.id} style={{ fontSize: 11, fontFamily: "monospace", color: "var(--troshka-text-dim)", display: "flex", justifyContent: "space-between" }}>
+                                  <span>{(vm.data as Record<string, any>).name || vm.id.slice(0, 8)}</span>
+                                  <span>{(vm.data as Record<string, any>).bmcIp || "—"}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
                 </div>
