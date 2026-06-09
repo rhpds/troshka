@@ -922,7 +922,6 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             _vm_domain_name, _deploy_progress,
             _create_seed_isos_via_troshkad,
             _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
-            _setup_pxe_via_troshkad,
         )
 
         s = SessionLocal()
