@@ -30,7 +30,7 @@ fi
 if ! which virsh &>/dev/null || ! which virt-install &>/dev/null || ! which nc &>/dev/null; then
     echo "Installing prerequisites..."
     dnf install -y qemu-kvm libvirt libvirt-client virt-install \
-        python3 python3-libvirt python3-devel pkg-config gcc dnsmasq nftables xorriso nmap-ncat || true
+        python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat || true
 else
     echo "Prerequisites already installed, skipping dnf"
 fi
@@ -217,9 +217,11 @@ fi
 echo "troshkad: service started"
 
 # BMC tools venv (sushy-tools for Redfish, virtualbmc for IPMI)
+# Uses --system-site-packages to access the system python3-libvirt RPM
+# (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
 echo "=== Setting up BMC tools venv ==="
-python3 -m venv /opt/troshka/venv
-/opt/troshka/venv/bin/pip install --quiet sushy-tools virtualbmc libvirt-python
+python3 -m venv --system-site-packages /opt/troshka/venv
+/opt/troshka/venv/bin/pip install --quiet sushy-tools virtualbmc
 echo "BMC venv ready at /opt/troshka/venv"
 
 # Output credentials for backend to capture (tab-separated to avoid colon ambiguity)
