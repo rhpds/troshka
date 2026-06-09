@@ -2949,6 +2949,46 @@ def _handle_bmc_setup(job, params):
 COMMAND_HANDLERS["bmc/setup"] = _handle_bmc_setup
 
 
+def _handle_bmc_create_bridge(job, params):
+    """Create BMC bridge only (no services). Called before VM creation so libvirt can validate the bridge name."""
+    project_id = _validate_project_id(params["project_id"])
+    bmc_cidr = params["bmc_cidr"]
+    bmc_gateway_ip = params["bmc_gateway_ip"]
+
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    bridge = f"br-bmc-{pid}"
+    prefix = bmc_cidr.split("/")[1] if "/" in bmc_cidr else "24"
+
+    # Create bridge inside namespace
+    try:
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", bridge], timeout=10)
+    except RuntimeError:
+        pass
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                    f"{bmc_gateway_ip}/{prefix}", "dev", bridge], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
+
+    # Dummy bridge in host namespace for libvirt validation
+    try:
+        subprocess.run(["ip", "link", "show", bridge], capture_output=True, check=True, timeout=5)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+    _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
+
+    # Assign BMC IPs to the bridge
+    for vm in params.get("vms", []):
+        bmc_ip = _validate_ip(vm["bmc_ip"])
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                        f"{bmc_ip}/{prefix}", "dev", bridge], timeout=10)
+
+    job["output"].append(f"BMC bridge {bridge} created (services not started)")
+    return {"status": "ok", "bridge": bridge}
+
+COMMAND_HANDLERS["bmc/create-bridge"] = _handle_bmc_create_bridge
+
+
 def _handle_bmc_teardown(job, params):
     """Tear down all BMC endpoints for a project."""
     project_id = _validate_project_id(params["project_id"])

@@ -874,6 +874,21 @@ def deploy_project_async(project_id: str):
         logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
         _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
+        # Step 3c: Create BMC bridge (before VMs so libvirt can validate the bridge name)
+        bmc_config = _extract_bmc_config(topology, project_id)
+        if bmc_config:
+            from app.services.troshkad_client import start_job as _sj, wait_for_job as _wj
+            net_data = bmc_config["bmc_network"]
+            cidr = net_data.get("cidr", "192.168.100.0/24")
+            _bj = _sj(host, "/bmc/create-bridge", {
+                "project_id": project_id,
+                "bmc_cidr": cidr,
+                "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+                "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+            })
+            _wj(host, _bj, timeout=30)
+            logger.info("Deploy %s: BMC bridge created", project_id[:8])
+
         # Step 4: Create VM disks and definitions
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
