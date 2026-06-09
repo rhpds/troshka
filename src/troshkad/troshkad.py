@@ -1629,9 +1629,15 @@ def _handle_network_full_setup(job, params):
         pxe = net.get("pxe_config")
         if pxe:
             if pxe.get("server_mode") == "builtin" and pxe.get("tftp_root"):
+                tftp_r = pxe["tftp_root"]
                 conf_lines.append("enable-tftp")
-                conf_lines.append(f"tftp-root={pxe['tftp_root']}")
-                conf_lines.append("dhcp-boot=pxelinux.0")
+                conf_lines.append(f"tftp-root={tftp_r}")
+                boot_file = "pxelinux.0"
+                for candidate in ["BOOTX64.EFI", "grubx64.efi", "pxelinux.0"]:
+                    if os.path.isfile(os.path.join(tftp_r, candidate)):
+                        boot_file = candidate
+                        break
+                conf_lines.append(f"dhcp-boot={boot_file}")
             else:
                 method = pxe.get("method", "legacy")
                 if method == "legacy" and pxe.get("next_server") and pxe.get("boot_file"):
