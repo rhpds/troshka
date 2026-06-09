@@ -515,6 +515,19 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         }
+
+        // Expose BMC data to properties panel
+        if (project?.bmc) {
+          (window as any).__deployedTopology = { bmc: project.bmc };
+        } else if (project?.deployed_topology?.bmc) {
+          (window as any).__deployedTopology = project.deployed_topology;
+        }
+
+        // Clean up BMC data when project is in draft
+        if (project?.state === "draft") {
+          delete (window as any).__deployedTopology;
+        }
+
         _loadingProject = false;
       })
       .catch(() => { _loadingProject = false; });

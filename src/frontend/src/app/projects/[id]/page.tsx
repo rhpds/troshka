@@ -73,6 +73,18 @@ export default function ProjectCanvasPage() {
           }
         }
         useCanvasStore.setState({ deployedDiskSizes: depSizes });
+
+        // Expose BMC data to properties panel
+        if (data.bmc) {
+          (window as any).__deployedTopology = { bmc: data.bmc };
+        } else if (data.deployed_topology?.bmc) {
+          (window as any).__deployedTopology = data.deployed_topology;
+        }
+
+        // Clean up BMC data when project is in draft
+        if (data.state === "draft") {
+          delete (window as any).__deployedTopology;
+        }
       })
       .catch(() => {});
   }, [projectId]);
