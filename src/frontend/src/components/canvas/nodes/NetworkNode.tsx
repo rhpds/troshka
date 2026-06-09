@@ -20,6 +20,16 @@ function RJ45Icon() {
   );
 }
 
+function BmcWarning({ nodeId }: { nodeId: string }) {
+  const hasConnection = useCanvasStore((s) => s.edges.some((e) => e.source === nodeId || e.target === nodeId));
+  if (hasConnection) return null;
+  return (
+    <div style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", fontSize: 9, padding: "3px 6px", borderRadius: 4, marginTop: 4, textAlign: "center" }}>
+      Connect a provisioner VM
+    </div>
+  );
+}
+
 function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
   const [fwdExpanded, setFwdExpanded] = useState(false);
@@ -73,15 +83,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             )}
           </div>
         )}
-        {isBmc && (() => {
-          const edges = useCanvasStore.getState().edges;
-          const hasConnection = edges.some((e) => e.source === id || e.target === id);
-          return !hasConnection ? (
-            <div style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", fontSize: 9, padding: "3px 6px", borderRadius: 4, marginTop: 4, textAlign: "center" }}>
-              Connect a provisioner VM
-            </div>
-          ) : null;
-        })()}
+        {isBmc && <BmcWarning nodeId={id} />}
         {d.subtype === "router" && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span className="network-node-cidr" style={{ fontSize: 10 }}>L3 Router</span>
