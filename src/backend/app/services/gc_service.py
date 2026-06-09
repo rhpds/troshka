@@ -58,10 +58,21 @@ def discover_orphans(db: Session, host) -> dict:
             pid_short = p.id[:8]
             known_domains.append(f"troshka-{pid_short}")
 
+    # Build list of project IDs that should have BMC
+    bmc_project_ids = set()
+    for p in db.query(Project).filter(Project.host_id == host.id).all():
+        if p.state in ("active", "stopped"):
+            topo = p.deployed_topology or p.topology or {}
+            for node in topo.get("nodes", []):
+                if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "bmc":
+                    bmc_project_ids.add(p.id)
+                    break
+
     # Call troshkad to discover orphans
     job_id = start_job(host, "/gc/discover", {
         "known_project_ids": active_project_ids,
         "known_domains": known_domains,
+        "known_bmc_project_ids": list(bmc_project_ids),
     })
     job = wait_for_job(host, job_id, timeout=30)
     if job["status"] == "failed":
@@ -92,6 +103,7 @@ def clean_orphans(host, orphans: dict) -> dict:
         "orphan_bridges": orphans.get("orphaned_bridges", []),
         "orphan_namespaces": orphans.get("orphaned_namespaces", []),
         "cache_items": cache_items,
+        "orphan_bmc_project_ids": orphans.get("orphaned_bmc_project_ids", []),
     })
     job = wait_for_job(host, job_id, timeout=120)
 

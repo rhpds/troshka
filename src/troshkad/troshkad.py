@@ -2198,12 +2198,24 @@ def _handle_gc_discover(job, params):
             except Exception as e:
                 job["output"].append(f"Failed to scan {cache_dir}: {e}")
 
+    # 6. Discover orphaned BMC directories
+    orphaned_bmc = []
+    bmc_base = "/var/lib/troshka/bmc"
+    known_bmc = set(params.get("known_bmc_project_ids", []))
+    if os.path.isdir(bmc_base):
+        for entry in os.listdir(bmc_base):
+            full = os.path.join(bmc_base, entry)
+            if os.path.isdir(full) and entry not in known_bmc:
+                orphaned_bmc.append(entry)
+                job["output"].append(f"Orphaned BMC dir: {entry}")
+
     return {
         "orphan_dirs": orphan_dirs,
         "orphan_domains": orphan_domains,
         "orphan_bridges": orphan_bridges,
         "orphan_namespaces": orphan_namespaces,
         "cache_items": cache_items,
+        "orphaned_bmc_project_ids": orphaned_bmc,
     }
 
 COMMAND_HANDLERS["gc/discover"] = _handle_gc_discover
@@ -2287,12 +2299,48 @@ def _handle_gc_clean(job, params):
         except Exception as e:
             job["output"].append(f"Failed to remove cache item {path}: {e}")
 
+    # 6. Clean up orphaned BMC resources
+    orphan_bmc_ids = params.get("orphan_bmc_project_ids", [])
+    removed_bmc = 0
+    for project_id in orphan_bmc_ids:
+        bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+        if os.path.isdir(bmc_dir):
+            # Kill any running BMC processes
+            for fname in os.listdir(bmc_dir):
+                if fname.endswith(".pid"):
+                    pid_path = os.path.join(bmc_dir, fname)
+                    try:
+                        with open(pid_path) as f:
+                            p = int(f.read().strip())
+                        os.kill(p, signal.SIGTERM)
+                        job["output"].append(f"Killed BMC process PID {p} ({fname})")
+                    except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+                        pass
+            # Remove directory
+            shutil.rmtree(bmc_dir, ignore_errors=True)
+            job["output"].append(f"Removed BMC dir: {bmc_dir}")
+            removed_bmc += 1
+
+        # Remove BMC bridge
+        pid_short = project_id[:8]
+        bridge = f"br-bmc-{pid_short}"
+        ns = f"troshka-{pid_short}"
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", bridge], timeout=10)
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
+        except RuntimeError:
+            pass
+
     return {
         "removed_dirs": removed_dirs,
         "removed_domains": removed_domains,
         "removed_bridges": removed_bridges,
         "removed_namespaces": removed_namespaces,
         "removed_cache": removed_cache,
+        "removed_bmc": removed_bmc,
     }
 
 COMMAND_HANDLERS["gc/clean"] = _handle_gc_clean
