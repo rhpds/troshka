@@ -132,7 +132,7 @@ export default function PropertiesPanel() {
   const [showPxeIsoPicker, setShowPxeIsoPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true });
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true });
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -872,7 +872,7 @@ export default function PropertiesPanel() {
               <div className="props-section-body">
                 <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginBottom: 8 }}>
                   <input type="checkbox" checked={!!(node.data as Record<string, any>).bmcEnabled}
-                    disabled={projectState === "active" || projectState === "deploying"}
+                    disabled={projectState === "deploying"}
                     onChange={(e) => {
                       const enabled = e.target.checked;
                       if (enabled) {
