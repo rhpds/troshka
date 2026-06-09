@@ -1552,11 +1552,17 @@ def _handle_network_full_setup(job, params):
                 except (ValueError, RuntimeError):
                     job["output"].append(f"Warning: skipping peer {peer}")
 
-        # Move VXLAN into namespace
-        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
+        # Move VXLAN into namespace (may already be there)
+        try:
+            _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
+        except RuntimeError:
+            job["output"].append(f"VXLAN {vxlan_if} already in namespace, reusing")
 
-        # Create bridge inside namespace
-        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        # Create bridge inside namespace (may already exist)
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        except RuntimeError:
+            job["output"].append(f"Bridge {bridge} already exists, reusing")
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge], timeout=10)
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"], timeout=10)
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
