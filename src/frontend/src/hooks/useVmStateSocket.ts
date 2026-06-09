@@ -23,7 +23,7 @@ interface VmStateSocket {
 }
 
 const BACKOFF_BASE = 1000;
-const BACKOFF_MAX = 10000;
+const BACKOFF_MAX = 30000;
 
 export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [connected, setConnected] = useState(false);
