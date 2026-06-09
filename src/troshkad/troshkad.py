@@ -2893,9 +2893,25 @@ def _handle_bmc_setup(job, params):
             with open(vbmcd_pid_path) as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, signal.SIGTERM)
-            time.sleep(1)
+            # Wait for process to exit before removing PID file
+            for _ in range(10):
+                time.sleep(0.5)
+                try:
+                    os.kill(old_pid, 0)
+                except ProcessLookupError:
+                    break
         except (ValueError, ProcessLookupError, PermissionError):
             pass
+        # Only remove PID file if process is confirmed dead
+        try:
+            with open(vbmcd_pid_path) as f:
+                check_pid = int(f.read().strip())
+            os.kill(check_pid, 0)
+        except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+            try:
+                os.remove(vbmcd_pid_path)
+            except FileNotFoundError:
+                pass
 
     env = os.environ.copy()
     env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
