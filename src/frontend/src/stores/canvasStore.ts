@@ -486,8 +486,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       .then((project) => {
         if (project?.topology) {
           const t = project.topology;
+          const prevNodes = get().nodes;
+          const prevStatusMap: Record<string, string> = {};
+          for (const n of prevNodes) {
+            if (n.type === "vmNode" && n.data?.status) {
+              prevStatusMap[n.id] = (n.data as Record<string, unknown>).status as string;
+            }
+          }
+          const nodes = (t.nodes || []).map((n: Record<string, unknown>) => {
+            if (n.type === "vmNode" && n.id && prevStatusMap[n.id as string]) {
+              return { ...n, data: { ...(n.data as Record<string, unknown>), status: prevStatusMap[n.id as string] } };
+            }
+            return n;
+          });
           set({
-            nodes: t.nodes || [],
+            nodes,
             edges: t.edges || [],
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
