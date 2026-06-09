@@ -51,6 +51,7 @@ def _remap_topology(topology: dict) -> dict:
     - NIC MAC addresses are regenerated
     - NIC ids and diskController ids are regenerated
     - Network CIDRs, DHCP ranges, DNS domains are preserved
+    - BMC network credentials (bmcPassword) are preserved for pattern stability
     """
     topo = copy.deepcopy(topology)
 

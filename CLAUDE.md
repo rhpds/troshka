@@ -141,7 +141,18 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Snapshot cache: `/var/lib/troshka/cache/snapshots/{item_id}/`
 - PXE boot files: `/var/lib/troshka/pxe/{vni}/tftpboot/` and `/var/lib/troshka/pxe/{vni}/mnt/`
 - Domain names: `troshka-{project_id[:8]}-{vm_id[:8]}`
+- BMC config: `/var/lib/troshka/bmc/{project_id}/` (sushy configs, vbmcd PID, htpasswd)
 - Flatten qcow2 before S3 upload (merge backing chain for standalone images)
+
+### Virtual BMC (IPMI & Redfish)
+- Per-VM BMC endpoints: one sushy-emulator + one vbmc per BMC-enabled VM
+- BMC tools live in `/opt/troshka/venv/` (sushy-tools, virtualbmc, libvirt-python)
+- BMC bridge: `br-bmc-{project_id[:8]}` inside project namespace
+- BMC config: `/var/lib/troshka/bmc/{project_id}/` (sushy configs, vbmcd config, htpasswd)
+- BMC network node: `networkType: "bmc"` on a networkNode, auto-created when first VM enables BMC
+- Credentials stored in topology JSONB (preserved in patterns for lab instruction stability)
+- Troshkad endpoints: `/bmc/setup`, `/bmc/teardown`, `/bmc/status`
+- Deploy order: BMC setup runs after VM definition but before VM startup
 
 ### Garbage Collector
 - Runs on host agent connect, admin Clean button, or future cron
