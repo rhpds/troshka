@@ -5,6 +5,7 @@ Single-file Python daemon managing QEMU/libvirt on the host.
 Exposes a structured HTTPS REST API for the Troshka backend.
 Requires only Python 3.9+ stdlib — no pip dependencies.
 """
+import base64
 import glob
 import hashlib
 import hmac
@@ -2704,6 +2705,266 @@ def main():
     finally:
         server.server_close()
         logger.info("troshkad stopped")
+
+
+def _handle_bmc_setup(job, params):
+    """Set up virtual BMC endpoints for a project's VMs.
+
+    Creates a BMC bridge inside the project namespace, starts sushy-emulator
+    (Redfish) and vbmcd/vbmc (IPMI) for each BMC-enabled VM.
+    """
+    project_id = _validate_project_id(params["project_id"])
+    bmc_cidr = params["bmc_cidr"]
+    bmc_gateway_ip = params["bmc_gateway_ip"]
+    bmc_username = params.get("bmc_username", "admin")
+    bmc_password = params.get("bmc_password", "password")
+    vms = params.get("vms", [])
+
+    if not vms:
+        job["output"].append("No BMC-enabled VMs, skipping")
+        return {"status": "skipped"}
+
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    bridge = f"br-bmc-{pid}"
+    prefix = bmc_cidr.split("/")[1] if "/" in bmc_cidr else "24"
+    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+    venv_bin = "/opt/troshka/venv/bin"
+
+    os.makedirs(bmc_dir, exist_ok=True)
+
+    # 1. Create BMC bridge inside namespace
+    try:
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", bridge], timeout=10)
+    except RuntimeError:
+        pass
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                    f"{bmc_gateway_ip}/{prefix}", "dev", bridge], timeout=10)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
+
+    # Dummy bridge in host namespace for libvirt validation
+    try:
+        subprocess.run(["ip", "link", "show", bridge], capture_output=True, check=True, timeout=5)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+    _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
+
+    job["output"].append(f"BMC bridge {bridge} created in namespace {ns}")
+
+    # 2. Assign BMC IPs to the bridge
+    for vm in vms:
+        bmc_ip = _validate_ip(vm["bmc_ip"])
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                        f"{bmc_ip}/{prefix}", "dev", bridge], timeout=10)
+
+    # 3. Create htpasswd file for sushy basic auth
+    htpasswd_path = os.path.join(bmc_dir, "htpasswd")
+    sha_hash = base64.b64encode(hashlib.sha1(bmc_password.encode()).digest()).decode()
+    with open(htpasswd_path, "w") as f:
+        f.write(f"{bmc_username}:{{SHA}}{sha_hash}\n")
+
+    # 4. Start sushy-emulator per VM
+    for vm in vms:
+        domain_name = _validate_domain_name(vm["domain_name"])
+        bmc_ip = _validate_ip(vm["bmc_ip"])
+        vm_short = domain_name.split("-")[-1] if "-" in domain_name else domain_name[:8]
+
+        conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}.conf")
+        with open(conf_path, "w") as f:
+            f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
+            f.write("SUSHY_EMULATOR_LISTEN_PORT = 8000\n")
+            f.write("SUSHY_EMULATOR_LIBVIRT_URI = 'qemu:///system'\n")
+            f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
+            f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
+            f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
+            f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{domain_name}']\n")
+
+        pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}.pid")
+
+        if os.path.exists(pid_path):
+            try:
+                with open(pid_path) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+
+        proc = subprocess.Popen(
+            ["ip", "netns", "exec", ns, f"{venv_bin}/sushy-emulator", "--config", conf_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        with open(pid_path, "w") as f:
+            f.write(str(proc.pid))
+
+        job["output"].append(f"sushy-emulator started for {domain_name} at {bmc_ip}:8000 (PID {proc.pid})")
+
+    # 5. Start vbmcd and register VMs for IPMI
+    vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
+    os.makedirs(vbmcd_conf_dir, exist_ok=True)
+
+    vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")
+    with open(vbmcd_conf_path, "w") as f:
+        f.write("[default]\n")
+        f.write(f"config_dir = {vbmcd_conf_dir}\n")
+        f.write(f"pid_file = {bmc_dir}/vbmcd.pid\n")
+        f.write("[log]\n")
+        f.write(f"logfile = {bmc_dir}/vbmcd.log\n")
+
+    vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
+    if os.path.exists(vbmcd_pid_path):
+        try:
+            with open(vbmcd_pid_path) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, signal.SIGTERM)
+            time.sleep(1)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+
+    env = os.environ.copy()
+    env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
+    proc = subprocess.Popen(
+        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd", "--foreground"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env, start_new_session=True,
+    )
+    with open(vbmcd_pid_path, "w") as f:
+        f.write(str(proc.pid))
+    time.sleep(2)
+
+    job["output"].append(f"vbmcd started (PID {proc.pid})")
+
+    for vm in vms:
+        domain_name = _validate_domain_name(vm["domain_name"])
+        bmc_ip = _validate_ip(vm["bmc_ip"])
+
+        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "add", domain_name,
+                        "--port", "623", "--address", bmc_ip,
+                        "--username", bmc_username, "--password", bmc_password,
+                        "--libvirt-uri", "qemu:///system"], timeout=30)
+        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "start", domain_name], timeout=30)
+        job["output"].append(f"vbmc registered {domain_name} at {bmc_ip}:623")
+
+    return {
+        "status": "ok",
+        "bmc_bridge": bridge,
+        "vm_count": len(vms),
+    }
+
+COMMAND_HANDLERS["bmc/setup"] = _handle_bmc_setup
+
+
+def _handle_bmc_teardown(job, params):
+    """Tear down all BMC endpoints for a project."""
+    project_id = _validate_project_id(params["project_id"])
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    bridge = f"br-bmc-{pid}"
+    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+    venv_bin = "/opt/troshka/venv/bin"
+
+    killed = 0
+
+    if os.path.isdir(bmc_dir):
+        for fname in os.listdir(bmc_dir):
+            if fname.startswith("sushy-") and fname.endswith(".pid"):
+                pid_path = os.path.join(bmc_dir, fname)
+                try:
+                    with open(pid_path) as f:
+                        p = int(f.read().strip())
+                    os.kill(p, signal.SIGTERM)
+                    killed += 1
+                    job["output"].append(f"Killed sushy-emulator PID {p}")
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+
+    vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
+    vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")
+    if os.path.exists(vbmcd_pid_path):
+        env = os.environ.copy()
+        if os.path.exists(vbmcd_conf_path):
+            env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
+        try:
+            result = subprocess.run(
+                ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "list"],
+                capture_output=True, text=True, env=env, timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if parts and parts[0].startswith("troshka-"):
+                    domain = parts[0]
+                    try:
+                        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "stop", domain], timeout=10)
+                        _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "delete", domain], timeout=10)
+                    except RuntimeError:
+                        pass
+        except (subprocess.TimeoutExpired, RuntimeError):
+            pass
+
+        try:
+            with open(vbmcd_pid_path) as f:
+                p = int(f.read().strip())
+            os.kill(p, signal.SIGTERM)
+            killed += 1
+            job["output"].append(f"Killed vbmcd PID {p}")
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+
+    try:
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", bridge], timeout=10)
+        job["output"].append(f"Removed BMC bridge {bridge} from namespace")
+    except RuntimeError:
+        pass
+
+    try:
+        _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
+    except RuntimeError:
+        pass
+
+    if os.path.isdir(bmc_dir):
+        shutil.rmtree(bmc_dir, ignore_errors=True)
+        job["output"].append(f"Removed BMC config dir: {bmc_dir}")
+
+    return {"status": "ok", "killed": killed}
+
+COMMAND_HANDLERS["bmc/teardown"] = _handle_bmc_teardown
+
+
+def _handle_bmc_status(job, params):
+    """Check status of BMC processes for a project."""
+    project_id = _validate_project_id(params["project_id"])
+    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+
+    result = {"sushy_processes": [], "vbmcd_running": False}
+
+    if not os.path.isdir(bmc_dir):
+        return result
+
+    for fname in os.listdir(bmc_dir):
+        if fname.startswith("sushy-") and fname.endswith(".pid"):
+            pid_path = os.path.join(bmc_dir, fname)
+            try:
+                with open(pid_path) as f:
+                    p = int(f.read().strip())
+                os.kill(p, 0)
+                result["sushy_processes"].append({"pid": p, "file": fname, "alive": True})
+            except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+                result["sushy_processes"].append({"file": fname, "alive": False})
+
+    vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
+    if os.path.exists(vbmcd_pid_path):
+        try:
+            with open(vbmcd_pid_path) as f:
+                p = int(f.read().strip())
+            os.kill(p, 0)
+            result["vbmcd_running"] = True
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+
+    return result
+
+COMMAND_HANDLERS["bmc/status"] = _handle_bmc_status
 
 
 if __name__ == "__main__":
