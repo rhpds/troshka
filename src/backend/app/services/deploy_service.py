@@ -1091,6 +1091,9 @@ def start_project_async(project_id: str):
         # Re-cache any missing library images (ISOs, base disks)
         cache_library_images(topology, host, s)
 
+        # Re-start PXE boot services if needed
+        _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
+
         # Start VMs via troshkad
         _start_vms_via_troshkad(host, project_id, topology)
 
