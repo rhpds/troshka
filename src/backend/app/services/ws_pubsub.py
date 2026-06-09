@@ -142,7 +142,7 @@ def _poll_active_projects():
                             vm_progress[node["id"]] = _redeploy_progress[dom_name]
                         else:
                             state = troshkad_get_vm_state(host, dom_name)
-                            if state == "shut_off":
+                            if state in ("shut_off", "shutting_down", "crashed", "suspended", "paused"):
                                 state = "stopped"
                             vm_states[node["id"]] = state
 
