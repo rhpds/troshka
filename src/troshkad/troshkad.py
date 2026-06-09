@@ -2916,15 +2916,18 @@ def _handle_bmc_setup(job, params):
     env = os.environ.copy()
     env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
     proc = subprocess.Popen(
-        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd", "--foreground"],
+        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env=env, start_new_session=True,
     )
-    with open(vbmcd_pid_path, "w") as f:
-        f.write(str(proc.pid))
-    time.sleep(2)
+    # Don't write PID file — vbmcd manages its own via pid_file in config.
+    # Wait for vbmcd to be ready (writes its PID file and opens ZMQ port).
+    for _ in range(20):
+        time.sleep(0.5)
+        if os.path.exists(vbmcd_pid_path):
+            break
 
-    job["output"].append(f"vbmcd started (PID {proc.pid})")
+    job["output"].append(f"vbmcd started (wrapper PID {proc.pid})")
 
     for vm in vms:
         domain_name = _validate_domain_name(vm["domain_name"])
