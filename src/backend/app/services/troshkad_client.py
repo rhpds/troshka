@@ -125,7 +125,7 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
         conn.close()
 
 
-def start_job(host, path, params):
+def start_job(host, path, params, request_timeout=30):
     """Start an operation on a host. Returns job_id.
 
     If troshkad is draining (503), waits and retries until it comes back up
@@ -135,6 +135,7 @@ def start_job(host, path, params):
         host: Host model instance
         path: Operation path (e.g., /vms/create)
         params: Operation parameters dict
+        request_timeout: HTTP connection/request timeout in seconds
 
     Returns:
         job_id string
@@ -143,7 +144,7 @@ def start_job(host, path, params):
 
     while True:
         try:
-            result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=30)
+            result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=request_timeout)
             return result["job_id"]
         except TroshkadError as e:
             if e.status_code == 503 and e.response and e.response.get("status") == "draining":
@@ -222,7 +223,8 @@ def push_update(host, script_bytes, version, force=False):
 def get_vm_state(host, domain_name, timeout=15):
     """Get VM state. Returns state string or 'not_found'."""
     try:
-        job_id = start_job(host, "/vms/state", {"domain_name": domain_name})
+        conn_timeout = min(timeout, 5)
+        job_id = start_job(host, "/vms/state", {"domain_name": domain_name}, request_timeout=conn_timeout)
         job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         if job["status"] == "completed":
             return job["result"].get("state", "unknown")
