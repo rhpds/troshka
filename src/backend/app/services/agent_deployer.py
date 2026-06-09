@@ -221,7 +221,19 @@ echo "troshkad: service started"
 # (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
 echo "=== Setting up BMC tools venv ==="
 python3 -m venv --system-site-packages /opt/troshka/venv
-/opt/troshka/venv/bin/pip install --quiet sushy-tools virtualbmc
+PIP_ARGS="--quiet"
+# Check if libvirt is available from system site-packages; if so, skip libvirt-python
+# (libvirt-devel is not available on RHEL 10 so it can't compile from source)
+if /opt/troshka/venv/bin/python3 -c "import libvirt" 2>/dev/null; then
+    echo "System libvirt module available, installing without libvirt-python"
+    /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps sushy-tools
+    # Install sushy-tools runtime deps except libvirt-python
+    /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity
+    /opt/troshka/venv/bin/pip install $PIP_ARGS virtualbmc
+else
+    echo "No system libvirt, attempting full install"
+    /opt/troshka/venv/bin/pip install $PIP_ARGS sushy-tools virtualbmc
+fi
 echo "BMC venv ready at /opt/troshka/venv"
 
 # Output credentials for backend to capture (tab-separated to avoid colon ambiguity)
