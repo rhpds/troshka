@@ -1207,12 +1207,28 @@ def _handle_pxe_setup(job, params):
         boot_filename = "pxelinux.0"
         job["output"].append("WARNING: No bootloader found in ISO or on host")
 
-    # Generate PXE boot config
+    # Patch GRUB config to add inst.repo pointing to our HTTP server
     install_url = f"http://{gateway_ip}:{http_port}/" if gateway_ip else ""
+    grub_cfg_path = os.path.join(tftp_root, "grub.cfg")
+    if install_url and os.path.isfile(grub_cfg_path):
+        with open(grub_cfg_path) as f:
+            grub_cfg = f.read()
+        if "inst.repo" not in grub_cfg and "inst.stage2" not in grub_cfg:
+            grub_cfg = grub_cfg.replace(" quiet", f" inst.repo={install_url} quiet")
+            with open(grub_cfg_path, "w") as f:
+                f.write(grub_cfg)
+            job["output"].append(f"Patched grub.cfg with inst.repo={install_url}")
+        elif "inst.stage2" in grub_cfg:
+            import re
+            grub_cfg = re.sub(r'inst\.stage2=\S+', f'inst.repo={install_url}', grub_cfg)
+            with open(grub_cfg_path, "w") as f:
+                f.write(grub_cfg)
+            job["output"].append(f"Replaced inst.stage2 with inst.repo={install_url} in grub.cfg")
+
+    # Generate BIOS PXE boot config (pxelinux.cfg/default)
     append_line = "initrd=initrd.img"
     if install_url:
         append_line += f" inst.repo={install_url}"
-
     pxe_cfg = f"DEFAULT install\nLABEL install\n  KERNEL vmlinuz\n  APPEND {append_line}\n"
     with open(os.path.join(tftp_root, "pxelinux.cfg", "default"), "w") as f:
         f.write(pxe_cfg)
