@@ -168,6 +168,26 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Projects, patterns, library items, and snapshots enforce unique names per user
 - Frontend pre-checks before destructive operations (e.g., check before VM shutdown for snapshot)
 
+### AWS Provider Setup
+- IAM user: `troshka` with inline policy `troshka-policy`
+- Credentials stored in `~/secrets/troshka-aws.env`
+- Required IAM permissions:
+  - **EC2**: RunInstances, TerminateInstances, Describe{Instances,InstanceTypes,Images,Vpcs,Subnets,AvailabilityZones}, CreateKeyPair, DeleteKeyPair, CreateTags
+  - **VPC**: Create/Delete/Modify{Vpc,Subnet,VpcAttribute,SubnetAttribute}, Create/Delete/Attach/Detach InternetGateway, Create/DeleteRoute, Describe{RouteTables,InternetGateways}, AssociateRouteTable
+  - **Security Groups**: Create/Delete, Describe{SecurityGroups,SecurityGroupRules}, Authorize/RevokeSecurityGroupIngress
+  - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses
+  - **S3**: PutObject, GetObject, DeleteObject, HeadObject, ListBucket on `troshka-images`
+- VPC setup creates subnets in all AZs — provisioner retries across AZs if instance type not supported
+- Provisioner never falls back to default VPC — requires explicit VPC setup
+- `Setup VPC` auto-creates a troshka-managed VPC if none exists (tagged `ManagedBy: troshka`)
+- VPC discovery only lists troshka-managed VPCs, not all VPCs in the account
+
+### Dev Database
+- PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
+- `--restart=always` ensures container restarts after crashes
+- Never `podman rm` the container — data persists on the named volume but rm destroys the link
+- To fully reset: `podman volume rm troshka-pgdata` (intentional data loss)
+
 ## Database Migrations
 
 ```bash
