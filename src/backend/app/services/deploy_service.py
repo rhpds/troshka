@@ -5,6 +5,7 @@ Translates canvas topology into libvirt VMs and VXLAN networks,
 then sends structured commands to the troshkad agent on the host.
 """
 import logging
+import threading
 import time as _time
 
 from app.models.host import Host
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 # In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ...}
 _deploy_progress: dict[str, dict] = {}
+
+# Serializes nftables-touching network setup across concurrent deploys
+_network_lock = threading.Lock()
 
 
 # ── Topology parsing ──
@@ -617,12 +621,15 @@ def deploy_project_async(project_id: str):
         topology = project.topology
         vni_map = project.vni_map or {}
 
-        # Step 1: Set up VXLAN networks
-        _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
+        # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
+        _deploy_progress[project_id] = {"step": "networking", "detail": "waiting for lock"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-        logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
+        with _network_lock:
+            _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
 
-        net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
         if net_result is not True:
             logger.error("Deploy %s: %s", project_id[:8], net_result)
             project.state = "error"
@@ -780,10 +787,11 @@ def stop_project_async(project_id: str):
             except TroshkadError as e:
                 logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
 
-        # Tear down networks via troshkad
+        # Tear down networks via troshkad (serialized to avoid nftables contention)
         vni_map = project.vni_map or {}
         if vni_map:
-            _teardown_networks_via_troshkad(host, project_id, vni_map)
+            with _network_lock:
+                _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         # Disassociate EIPs (but don't release — keep for redeploy)
         from app.models.elastic_ip import ElasticIp
@@ -881,9 +889,10 @@ def start_project_async(project_id: str):
                     ]
                     sync_security_group_rules(s, provider, desired_sg)
 
-        # Recreate networks via troshkad
+        # Recreate networks via troshkad (serialized to avoid nftables contention)
         if vni_map:
-            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+            with _network_lock:
+                net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
             if net_result is not True:
                 project.state = "error"
                 project.deploy_error = f"Network setup failed on restart: {net_result}"
@@ -954,8 +963,9 @@ def destroy_project_sync(project_id: str):
         except TroshkadError as e:
             logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
 
-        # Tear down networks via troshkad
-        _teardown_networks_via_troshkad(host, project_id, vni_map)
+        # Tear down networks via troshkad (serialized to avoid nftables contention)
+        with _network_lock:
+            _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         from app.services.placement import sync_host_capacity
         sync_host_capacity(s, host)
