@@ -220,6 +220,7 @@ echo "troshkad: service started"
 # Uses --system-site-packages to access the system python3-libvirt RPM
 # (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
 echo "=== Setting up BMC tools venv ==="
+rm -rf /opt/troshka/venv
 python3 -m venv --system-site-packages /opt/troshka/venv
 PIP_ARGS="--quiet"
 # Check if libvirt is available from system site-packages; if so, skip libvirt-python
