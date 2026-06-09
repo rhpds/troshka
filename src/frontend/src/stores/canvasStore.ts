@@ -300,6 +300,40 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       return;
     }
 
+    // Auto-add a BMC NIC to the VM when connecting to a BMC network
+    if (isBmcSource || isBmcTarget) {
+      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      const bmcNode = isBmcSource ? sourceNode : targetNode;
+      const vmIsSource = sType === "vmNode";
+
+      const nicId = generateNicId();
+      const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+      const bmcMac = `52:54:01:${hex()}:${hex()}:${hex()}`;
+      const newNic = { id: nicId, name: "bmc0", mac: bmcMac, model: "virtio" };
+
+      const nics = [...((vmNode.data as Record<string, any>).nics || []), newNic];
+      get().updateNodeData(vmNode.id, { nics });
+
+      const nicHandle = `${nicId}-top`;
+      get().pushHistory();
+      set({
+        edges: addEdge(
+          {
+            source: vmIsSource ? vmNode.id : bmcNode.id,
+            target: vmIsSource ? bmcNode.id : vmNode.id,
+            sourceHandle: vmIsSource ? nicHandle : "top",
+            targetHandle: vmIsSource ? "top" : nicHandle,
+            type: "smoothstep",
+            style: { stroke: "rgba(168,85,247,0.5)", strokeWidth: 2, strokeDasharray: "6 4" },
+            animated: true,
+          },
+          get().edges,
+        ),
+        topologyDirty: true,
+      });
+      return;
+    }
+
     let edgeStyle: React.CSSProperties;
     let animated = false;
 
