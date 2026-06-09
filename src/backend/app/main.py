@@ -16,10 +16,11 @@ init_db()
 @asynccontextmanager
 async def lifespan(app):
     from app.services.health_poller import start_health_poller
-    from app.services.ws_pubsub import set_event_loop
+    from app.services.ws_pubsub import set_event_loop, start_state_poller
     import asyncio
     set_event_loop(asyncio.get_running_loop())
     start_health_poller()
+    start_state_poller()
     yield
 
 
