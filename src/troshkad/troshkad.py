@@ -1486,30 +1486,24 @@ def _handle_network_full_setup(job, params):
 
     # qemu hook is installed by the agent install script — not managed here
 
-    # ── Namespace + veth setup ──
-    try:
-        _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
-    except RuntimeError:
-        pass
-    try:
-        _run_cmd(job, ["ip", "link", "del", veth_host], timeout=10)
-    except RuntimeError:
-        pass
-
-    _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
-    _run_cmd(job, ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns], timeout=10)
-    _run_cmd(job, ["ip", "link", "set", veth_ns, "netns", ns], timeout=10)
-    _run_cmd(job, ["ip", "addr", "add", f"{transit_host_ip}/24", "dev", veth_host], timeout=10)
-    _run_cmd(job, ["ip", "link", "set", veth_host, "up"], timeout=10)
-    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add", f"{transit_ns_ip}/24", "dev", veth_ns], timeout=10)
-    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", veth_ns, "up"], timeout=10)
-    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"], timeout=10)
-    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", transit_host_ip], timeout=10)
-
+    # ── Namespace + veth setup (idempotent — reuse if already exists) ──
+    ns_exists = subprocess.run(["ip", "netns", "exec", ns, "true"], capture_output=True, timeout=5).returncode == 0
+    if ns_exists:
+        job["output"].append(f"Namespace {ns} already exists, reusing")
+    else:
+        _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
+        _run_cmd(job, ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns], timeout=10)
+        _run_cmd(job, ["ip", "link", "set", veth_ns, "netns", ns], timeout=10)
+        _run_cmd(job, ["ip", "addr", "add", f"{transit_host_ip}/24", "dev", veth_host], timeout=10)
+        _run_cmd(job, ["ip", "link", "set", veth_host, "up"], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add", f"{transit_ns_ip}/24", "dev", veth_ns], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", veth_ns, "up"], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"], timeout=10)
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", transit_host_ip], timeout=10)
     try:
         _run_cmd(job, ["ip", "route", "add", transit_cidr, "dev", veth_host], timeout=10)
     except RuntimeError:
-        job["output"].append(f"Route to {transit_cidr} may already exist, continuing")
+        pass
 
     _run_cmd(job, ["sysctl", "-w", "net.ipv4.ip_forward=1"], timeout=10)
     job["output"].append("Namespace and veth pair configured")
@@ -1563,9 +1557,18 @@ def _handle_network_full_setup(job, params):
             _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
         except RuntimeError:
             job["output"].append(f"Bridge {bridge} already exists, reusing")
-        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge], timeout=10)
-        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"], timeout=10)
-        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge], timeout=10)
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"], timeout=10)
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"], timeout=10)
+        except RuntimeError:
+            pass
 
         # Create dummy bridge in host namespace for libvirt validation
         try:
@@ -1580,8 +1583,11 @@ def _handle_network_full_setup(job, params):
             gateway_ip = dhcp_cfg.get("gateway", "")
             if gateway_ip and cidr:
                 prefix = cidr.split("/")[1] if "/" in cidr else "24"
-                _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
-                                f"{gateway_ip}/{prefix}", "dev", bridge], timeout=10)
+                try:
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                                    f"{gateway_ip}/{prefix}", "dev", bridge], timeout=10)
+                except RuntimeError:
+                    pass
 
         job["output"].append(f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
 
@@ -1655,7 +1661,13 @@ def _handle_network_full_setup(job, params):
         _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
         job["output"].append(f"dnsmasq started for VNI {vni} on {bridge}")
 
-    # ── nftables inside namespace ──
+    # ── nftables inside namespace (flush if already exists) ──
+    for tbl in ["filter", "nat"]:
+        try:
+            _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "flush", "table", "inet", tbl], timeout=10)
+            _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "delete", "table", "inet", tbl], timeout=10)
+        except RuntimeError:
+            pass
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "table", "inet", "filter"], timeout=10)
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "filter", "forward",
                     "{ type filter hook forward priority 0; policy drop; }"], timeout=10)
