@@ -239,7 +239,7 @@ def start_project(
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    if project.state != "stopped":
+    if project.state not in ("stopped", "error"):
         raise HTTPException(status_code=409, detail=f"Project is {project.state}, not stopped")
 
     project.state = "starting"
@@ -802,17 +802,20 @@ def reconfigure_project(
                 _create_seed_isos_via_troshkad(h, p_id, current)
                 _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
                 for vm_node in diff["added_vms"]:
+                    vd = vm_node.get("data", {})
                     vm_data = {
                         "node_id": vm_node["id"],
-                        "name": vm_node.get("data", {}).get("name", "vm"),
-                        "vcpus": vm_node.get("data", {}).get("vcpus", 2),
-                        "ram_gb": vm_node.get("data", {}).get("ram", 4),
-                        "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
-                        "boot_devices": vm_node.get("data", {}).get("bootDevices"),
+                        "name": vd.get("name", "vm"),
+                        "vcpus": vd.get("vcpus", 2),
+                        "ram_gb": vd.get("ram", 4),
+                        "cloud_init": vd.get("cloudInit", False),
+                        "boot_devices": vd.get("bootDevices"),
+                        "firmware": vd.get("firmware", "bios"),
+                        "secure_boot": vd.get("secureBoot", False),
                     }
                     vm_disks_add = _find_vm_disks(vm_node["id"], current)
                     try:
-                        _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add, current)
+                        _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
                         _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
                         # Start if auto-start not disabled
                         no_auto_start = {e["vmId"] for e in current.get("startOrder", []) if e.get("autoStart") is False}
@@ -870,6 +873,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             _vm_domain_name, _deploy_progress,
             _create_seed_isos_via_troshkad,
             _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
+            _setup_pxe_via_troshkad,
         )
 
         s = SessionLocal()
@@ -924,20 +928,25 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                 _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
             cache_library_images(vm_topo, h, s, progress_callback=_progress)
 
+            _setup_pxe_via_troshkad(h, topology, vni_map, p_id)
+
             _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
             _create_seed_isos_via_troshkad(h, p_id, topology)
 
             _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+            vdata = vm_node.get("data", {})
             vm_data = {
                 "node_id": vm_node["id"],
-                "name": vm_node.get("data", {}).get("name", "vm"),
-                "vcpus": vm_node.get("data", {}).get("vcpus", 2),
-                "ram_gb": vm_node.get("data", {}).get("ram", 4),
-                "cloud_init": vm_node.get("data", {}).get("cloudInit", False),
-                "boot_devices": vm_node.get("data", {}).get("bootDevices"),
+                "name": vdata.get("name", "vm"),
+                "vcpus": vdata.get("vcpus", 2),
+                "ram_gb": vdata.get("ram", 4),
+                "cloud_init": vdata.get("cloudInit", False),
+                "boot_devices": vdata.get("bootDevices"),
+                "firmware": vdata.get("firmware", "bios"),
+                "secure_boot": vdata.get("secureBoot", False),
             }
             vm_disks = _find_vm_disks(target_vm_id, topology)
-            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, topology)
+            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks)
             _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map)
 
             if was_running:

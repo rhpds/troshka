@@ -494,7 +494,12 @@ export default function AdminHostsPage() {
                         return;
                       }
                       const data = await resp.json();
+                      const targetVersion = data.version;
                       const oldVersion = h.agent_version;
+                      if (targetVersion && targetVersion === oldVersion) {
+                        alert(`Already up to date (v${oldVersion})`);
+                        return;
+                      }
                       // Poll: wait for agent to restart (version changes or health recovers)
                       let sawDown = false;
                       for (let i = 0; i < 60; i++) {

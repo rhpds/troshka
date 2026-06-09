@@ -48,6 +48,7 @@ export default function ProjectCanvasPage() {
   }, [projectId, currentProjectId, loadProject]);
 
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [hasDeployedTopology, setHasDeployedTopology] = useState(false);
 
   // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
   useEffect(() => {
@@ -59,6 +60,7 @@ export default function ProjectCanvasPage() {
         setProjectState(data.state);
         setDeployError(data.deploy_error || null);
         prevStateRef.current = data.state;
+        setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
         const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
         const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
         if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
@@ -422,6 +424,17 @@ export default function ProjectCanvasPage() {
               }}>
                 Reset to Draft
               </button>
+              {hasDeployedTopology && (
+                <button className="project-publish-btn" onClick={() => {
+                  fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
+                    .then((r) => {
+                      if (r.ok) { setProjectState("starting"); setDeployError(null); }
+                      else r.json().then((d) => alert(d.detail || "Start failed"));
+                    });
+                }}>
+                  ▶ Retry Start
+                </button>
+              )}
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })

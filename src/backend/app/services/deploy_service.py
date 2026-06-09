@@ -10,7 +10,7 @@ import time as _time
 
 from app.models.host import Host
 from app.services.troshkad_client import (
-    start_job, wait_for_job, check_disk_usage, poll_job, TroshkadError,
+    start_job, wait_for_job, TroshkadError,
 )
 from app.services.ws_pubsub import notify_project
 
@@ -42,6 +42,8 @@ def _extract_vms(topology: dict) -> list[dict]:
             "disk_controllers": data.get("diskControllers", []),
             "boot_devices": data.get("bootDevices", ["hd"]),
             "cloud_init": data.get("cloudInit", False),
+            "firmware": data.get("firmware", "bios"),
+            "secure_boot": data.get("secureBoot", False),
         })
     return vms
 
@@ -274,6 +276,23 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     "expected_size": item.size_bytes,
                 })
 
+    # Collect PXE boot ISOs from VM nodes
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        item_id = node.get("data", {}).get("pxeBootIsoId")
+        if item_id:
+            item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+            if item and item.s3_key:
+                cache_path = f"/var/lib/troshka/images/{item_id}.iso"
+                items_to_cache.append({
+                    "item_id": item_id,
+                    "name": item.name,
+                    "s3_key": item.s3_key,
+                    "cache_path": cache_path,
+                    "expected_size": item.size_bytes,
+                })
+
     # Collect pattern disks
     for node in nodes:
         if node.get("type") != "storageNode":
@@ -413,6 +432,46 @@ def _teardown_networks_via_troshkad(host, project_id, vni_map):
         logger.warning("Network teardown error for %s: %s", project_id[:8], e)
 
 
+def _setup_pxe_via_troshkad(host, topology, vni_map, project_id=""):
+    """Set up PXE boot services for managed-mode PXE networks.
+
+    Extracts kernel/initrd from cached ISOs and starts HTTP install source
+    server inside the network namespace.
+    """
+    from app.services.vxlan import build_host_network_config
+
+    network_config = build_host_network_config(topology, vni_map, [])
+
+    for net in network_config.get("networks", []):
+        pxe = net.get("pxe_config")
+        if not pxe or pxe.get("server_mode") != "builtin":
+            continue
+        iso_path = pxe.get("iso_path")
+        if not iso_path:
+            continue
+
+        gateway_ip = ""
+        dhcp_config = net.get("dhcp_config", {})
+        if dhcp_config:
+            gateway_ip = dhcp_config.get("gateway", "")
+
+        try:
+            job_id = start_job(host, "/pxe/setup", {
+                "project_id": project_id,
+                "vni": net["vni"],
+                "iso_path": iso_path,
+                "gateway_ip": gateway_ip,
+                "http_port": pxe.get("http_port", 8080),
+                "tftp_root": pxe.get("tftp_root", ""),
+            })
+            job = wait_for_job(host, job_id, timeout=120)
+            if job["status"] == "failed":
+                logger.error("PXE setup failed for VNI %s: %s",
+                             net["vni"], job.get("result", {}).get("error", ""))
+        except TroshkadError as e:
+            logger.error("PXE setup failed for VNI %s: %s", net["vni"], e)
+
+
 def _create_seed_isos_via_troshkad(host, project_id, topology):
     """Create cloud-init seed ISOs via troshkad seeds/create-batch."""
     from app.services.cloud_init import generate_userdata, generate_metadata
@@ -450,7 +509,7 @@ def _create_seed_isos_via_troshkad(host, project_id, topology):
         logger.error("Seed ISO creation failed: %s", e)
 
 
-def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, topology):
+def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks):
     """Create disk images for a VM via troshkad disks/create."""
     for disk in vm_disks:
         if disk["format"] == "iso":
@@ -509,12 +568,32 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
             entry["mac"] = net["mac"]
         networks.append(entry)
 
+    # Translate canvas boot device IDs to libvirt boot types
+    boot_devs = []
+    seen_boot = set()
+    all_nodes = {n["id"]: n for n in topology.get("nodes", [])}
+    for dev in vm.get("boot_devices", []):
+        if dev == "network":
+            bt = "network"
+        else:
+            snode = all_nodes.get(dev)
+            if snode and snode.get("type") == "storageNode":
+                bt = "cdrom" if snode.get("data", {}).get("format") == "iso" else "hd"
+            else:
+                bt = "hd"
+        if bt not in seen_boot:
+            boot_devs.append(bt)
+            seen_boot.add(bt)
+
     params = {
         "domain_name": vm_name,
         "vcpus": vm["vcpus"],
         "ram_mb": vm["ram_gb"] * 1024,
         "disks": disks,
         "networks": networks,
+        "firmware": vm.get("firmware", "bios"),
+        "secure_boot": vm.get("secure_boot", False),
+        "boot_devs": boot_devs,
     }
 
     job_id = start_job(host, "/vms/create", params)
@@ -616,9 +695,10 @@ def deploy_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
+            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
             return
 
-        topology = project.topology
+        topology = project.topology or {}
         vni_map = project.vni_map or {}
 
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
@@ -716,6 +796,10 @@ def deploy_project_async(project_id: str):
             notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
+        # Step 3b: Set up PXE boot services (extract kernel/initrd, start HTTP server)
+        logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
+        _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
+
         # Step 4: Create VM disks and definitions
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
@@ -723,7 +807,7 @@ def deploy_project_async(project_id: str):
         vms = _extract_vms(topology)
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
-            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, topology)
+            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks)
             _create_vm_via_troshkad(host, project_id, vm, topology, vni_map)
 
         # Step 5: Start VMs
@@ -775,10 +859,11 @@ def stop_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
+            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
             return
 
         # Stop VMs via troshkad
-        vms = _extract_vms(project.topology)
+        vms = _extract_vms(project.topology or {})
         for vm in vms:
             vm_name = _vm_domain_name(project_id, vm["node_id"])
             try:
@@ -841,9 +926,10 @@ def start_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
+            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
             return
 
-        topology = project.topology
+        topology = project.topology or {}
         vni_map = project.vni_map or {}
 
         # Re-associate EIPs first so topology has _private_ip for DNAT rules
@@ -867,7 +953,7 @@ def start_project_async(project_id: str):
                       {"topo": json.dumps(topology), "pid": project_id})
             s.commit()
             s.refresh(project)
-            topology = project.topology
+            topology = project.topology or {}
 
             from app.models.provider import Provider
             from app.services.eip_service import sync_security_group_rules
@@ -943,7 +1029,7 @@ def destroy_project_sync(project_id: str):
             return
 
         vni_map = project.vni_map or {}
-        topo = project.deployed_topology or project.topology
+        topo = project.deployed_topology or project.topology or {}
 
         # Destroy VMs via troshkad
         vms = _extract_vms(topo)

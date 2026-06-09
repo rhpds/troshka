@@ -101,6 +101,19 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
   - `startOrder[].vmId`, `startOrder[].waitForVm`
   - `externalIps[].vmId`, `hiddenNodeIds[]`
 
+### PXE Network Boot
+- Firmware (BIOS/UEFI) and Secure Boot are per-VM settings, not per-network
+- Two modes: **Troshka managed** (auto-extracts kernel/initrd from library ISO) and **BYO** (user provides boot server)
+- Managed mode: VM selects an install ISO via `pxeBootIsoId` on the VM node data
+- Deploy flow: cache ISO → extract kernel/initrd with `isoinfo` → enable dnsmasq TFTP → start HTTP server for install source
+- PXE boot files: `/var/lib/troshka/pxe/{vni}/tftpboot/` (kernel, initrd, pxelinux.0, pxelinux.cfg/default)
+- ISO mount: `/var/lib/troshka/pxe/{vni}/mnt/` (loop-mounted read-only, served via HTTP)
+- HTTP install source port: `8080 + (vni % 1000)`, deterministic per network
+- Troshkad handler: `/pxe/setup` (extract + mount + serve), cleaned up by `/networks/full-teardown`
+- Auto-detects kernel/initrd paths for RHEL, Ubuntu, Debian, SLES ISOs
+- The deploy path reads PXE config from topology JSONB, not from Network model/schemas
+- `virt-install --boot uefi` for UEFI VMs; `firmware.feature0` flags for Secure Boot
+
 ### Cloud-Init
 - Seed ISO with NoCloud datasource (cidata volume label)
 - `instance-id` must be unique per deploy (UUID suffix) for cloud-init to re-run
@@ -126,6 +139,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Image cache: `/var/lib/troshka/images/{item_id}.{format}`
 - Pattern cache: `/var/lib/troshka/cache/patterns/{pattern_id}/`
 - Snapshot cache: `/var/lib/troshka/cache/snapshots/{item_id}/`
+- PXE boot files: `/var/lib/troshka/pxe/{vni}/tftpboot/` and `/var/lib/troshka/pxe/{vni}/mnt/`
 - Domain names: `troshka-{project_id[:8]}-{vm_id[:8]}`
 - Flatten qcow2 before S3 upload (merge backing chain for standalone images)
 

@@ -129,8 +129,10 @@ export default function PropertiesPanel() {
   const projectState = useCanvasStore((s) => s.projectState);
   const panelLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
   const [showLibraryPicker, setShowLibraryPicker] = useState<"iso" | "image" | null>(null);
+  const [showPxeIsoPicker, setShowPxeIsoPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true });
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -162,6 +164,9 @@ export default function PropertiesPanel() {
   const update = (field: string, value: unknown) => {
     updateNodeData(node.id, { [field]: value });
   };
+
+  const isCollapsed = (key: string) => collapsed[key] ?? false;
+  const toggleSection = (key: string) => setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <div className="canvas-properties" style={panelLocked ? { pointerEvents: "none", opacity: 0.6 } : {}}>
@@ -210,21 +215,52 @@ export default function PropertiesPanel() {
       {nodeType === "vmNode" && (
         <>
           <div className="props-section">
-            <div className="props-section-title">General</div>
-            <div className="props-field">
-              <label className="props-label">Name</label>
-              <input
-                className="props-input"
-                value={(data.name as string) || ""}
-                onChange={(e) => update("name", e.target.value)}
-              />
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("general")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("general") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              General
             </div>
+            {!isCollapsed("general") && (<>
+              <div className="props-field">
+                <label className="props-label">Name</label>
+                <input
+                  className="props-input"
+                  value={(data.name as string) || ""}
+                  onChange={(e) => update("name", e.target.value)}
+                />
+              </div>
+              <div className="props-field">
+                <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={(() => {
+                      const entry = useCanvasStore.getState().startOrder.find((e) => e.vmId === node.id);
+                      return entry ? entry.autoStart : true;
+                    })()}
+                    onChange={(e) => {
+                      const store = useCanvasStore.getState();
+                      const order = [...store.startOrder];
+                      const idx = order.findIndex((o) => o.vmId === node.id);
+                      if (idx >= 0) {
+                        order[idx] = { ...order[idx], autoStart: e.target.checked };
+                      } else {
+                        order.push({ vmId: node.id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
+                      }
+                      store.setStartOrder(order);
+                    }}
+                  />
+                  Power on at deploy
+                </label>
+              </div>
+            </>)}
           </div>
           <div className="props-divider" />
 
           <div className="props-section">
-            <div className="props-section-title">Compute</div>
-            <div className="props-row">
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("compute")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("compute") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Compute
+            </div>
+            {!isCollapsed("compute") && (<><div className="props-row">
               <div className="props-field">
                 <label className="props-label">vCPUs</label>
                 <input
@@ -299,12 +335,41 @@ export default function PropertiesPanel() {
                   <option value="generic">Generic OS</option>
                 </optgroup>
               </select>
-            </div>
+            </div></>)}
           </div>
           <div className="props-divider" />
 
           <div className="props-section">
-            <div className="props-section-title">Boot Devices</div>
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("boot")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("boot") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Boot
+            </div>
+            {!isCollapsed("boot") && <><div className="props-field">
+              <label className="props-label">Firmware</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).firmware as string || "bios"}
+                onChange={(e) => {
+                  update("firmware", e.target.value);
+                  if (e.target.value === "bios") update("secureBoot", false);
+                }}
+              >
+                <option value="bios">BIOS (SeaBIOS)</option>
+                <option value="uefi">UEFI (OVMF)</option>
+              </select>
+            </div>
+            {(data as Record<string, any>).firmware === "uefi" && (
+              <div className="props-field">
+                <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={(data as Record<string, any>).secureBoot as boolean ?? false}
+                    onChange={(e) => update("secureBoot", e.target.checked)}
+                  />
+                  Secure Boot
+                </label>
+              </div>
+            )}
             <div className="props-field">
               <label className="props-label">Boot Order</label>
               {(() => {
@@ -409,37 +474,107 @@ export default function PropertiesPanel() {
                 );
               })()}
             </div>
-            <div className="props-field">
+            {((data as Record<string, any>).bootDevices as string[] || []).includes("network") && (() => {
+              const pxeMode = (data as Record<string, any>).pxeServerMode as string || "builtin";
+              const pxeMethod = (data as Record<string, any>).pxeMethod as string || "legacy";
+              return (
+                <>
+                  {pxeMode === "builtin" ? (
+                    <div className="props-field">
+                      <label className="props-label">Network Boot ISO</label>
+                      <button
+                        className="props-library-btn"
+                        onClick={() => setShowPxeIsoPicker(true)}
+                      >
+                        📚 Select Install ISO...
+                      </button>
+                      {(data as Record<string, any>).pxeBootIsoName ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                          <span style={{ fontSize: 12, color: "var(--troshka-green)" }}>
+                            💿 {(data as Record<string, any>).pxeBootIsoName as string}
+                          </span>
+                          <button
+                            style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 11 }}
+                            onClick={() => { update("pxeBootIsoId", undefined); update("pxeBootIsoName", undefined); }}
+                          >✕</button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
+                          Select an install ISO for PXE network boot. The kernel and initrd will be extracted and served automatically.
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="props-field">
+                        <label className="props-label">Boot Method</label>
+                        <select
+                          className="props-select"
+                          value={pxeMethod}
+                          onChange={(e) => update("pxeMethod", e.target.value)}
+                        >
+                          <option value="legacy">Legacy PXE (TFTP)</option>
+                          <option value="ipxe">iPXE (HTTP)</option>
+                          <option value="uefi-http">UEFI HTTP Boot</option>
+                        </select>
+                      </div>
+                      {pxeMethod === "legacy" && (
+                        <>
+                          <div className="props-field">
+                            <label className="props-label">Next Server (TFTP)</label>
+                            <input className="props-input" value={(data as Record<string, any>).pxeNextServer as string || ""} onChange={(e) => update("pxeNextServer", e.target.value)} placeholder="TFTP server IP" style={{ fontFamily: "monospace" }} />
+                          </div>
+                          <div className="props-field">
+                            <label className="props-label">Boot Filename</label>
+                            <input className="props-input" value={(data as Record<string, any>).pxeBootFile as string || ""} onChange={(e) => update("pxeBootFile", e.target.value)} placeholder="pxelinux.0" style={{ fontFamily: "monospace" }} />
+                          </div>
+                        </>
+                      )}
+                      {pxeMethod === "ipxe" && (
+                        <div className="props-field">
+                          <label className="props-label">iPXE Script URL</label>
+                          <input className="props-input" value={(data as Record<string, any>).ipxeScriptUrl as string || ""} onChange={(e) => update("ipxeScriptUrl", e.target.value)} placeholder="http://10.0.0.1/boot.ipxe" style={{ fontFamily: "monospace" }} />
+                        </div>
+                      )}
+                      {pxeMethod === "uefi-http" && (
+                        <div className="props-field">
+                          <label className="props-label">Boot URL</label>
+                          <input className="props-input" value={(data as Record<string, any>).uefiBootUrl as string || ""} onChange={(e) => update("uefiBootUrl", e.target.value)} placeholder="http://10.0.0.1/boot/grubx64.efi" style={{ fontFamily: "monospace" }} />
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {(data as unknown as VMNodeData).cloudInit && (() => {
+                    const devs = (data as Record<string, any>).bootDevices as string[] || [];
+                    const netIdx = devs.indexOf("network");
+                    const diskIdx = devs.findIndex((d) => d !== "network");
+                    const netFirst = netIdx >= 0 && (diskIdx < 0 || netIdx < diskIdx);
+                    return netFirst ? (
+                      <span style={{ fontSize: 10, color: "var(--troshka-yellow)", display: "block", marginTop: 2 }}>
+                        ⚠ Network boot is before disk — the VM will PXE boot again after the installer reboots. Move a disk above network in the boot order, or use a kickstart that sets the local disk as the boot target.
+                      </span>
+                    ) : null;
+                  })()}
+                </>
+              );
+            })()}
+            </>}
+          </div>
+          <div className="props-divider" />
+
+          <div className="props-section">
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("cloudinit")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("cloudinit") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Cloud-Init
+            </div>
+            {!isCollapsed("cloudinit") && (<><div className="props-field">
               <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <input
                   type="checkbox"
                   checked={(data as unknown as VMNodeData).cloudInit ?? false}
                   onChange={(e) => update("cloudInit", e.target.checked)}
                 />
-                Cloud-init enabled
-              </label>
-            </div>
-            <div className="props-field">
-              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={(() => {
-                    const entry = useCanvasStore.getState().startOrder.find((e) => e.vmId === node.id);
-                    return entry ? entry.autoStart : true;
-                  })()}
-                  onChange={(e) => {
-                    const store = useCanvasStore.getState();
-                    const order = [...store.startOrder];
-                    const idx = order.findIndex((o) => o.vmId === node.id);
-                    if (idx >= 0) {
-                      order[idx] = { ...order[idx], autoStart: e.target.checked };
-                    } else {
-                      order.push({ vmId: node.id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
-                    }
-                    store.setStartOrder(order);
-                  }}
-                />
-                Power on at deploy
+                Enabled
               </label>
             </div>
             {(data as unknown as VMNodeData).cloudInit && useCanvasStore.getState().deployedVmIds.has(node.id) && (
@@ -529,12 +664,16 @@ export default function PropertiesPanel() {
                 </div>
               </>
             )}
+            </>)}
           </div>
           <div className="props-divider" />
 
           <div className="props-section">
-            <div className="props-section-title">Network Interfaces</div>
-            {(() => {
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("nics")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("nics") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Network Interfaces
+            </div>
+            {!isCollapsed("nics") && (() => {
               let nics = ((data as unknown as VMNodeData).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
               if (nics.length === 0) {
                 nics = [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }];
@@ -666,8 +805,11 @@ export default function PropertiesPanel() {
           <div className="props-divider" />
 
           <div className="props-section">
-            <div className="props-section-title">Disk Controllers</div>
-            {(() => {
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("disks")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("disks") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Disk Controllers
+            </div>
+            {!isCollapsed("disks") && (() => {
               let ports = ((data as unknown as VMNodeData).diskControllers || []) as Array<{id: string; name: string; bus: string}>;
               if (ports.length === 0) {
                 ports = [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }];
@@ -864,107 +1006,17 @@ export default function PropertiesPanel() {
                       {(data as Record<string, any>).pxeEnabled && (
                         <>
                           <div className="props-field">
-                            <label className="props-label">Boot Method</label>
-                            <select
-                              className="props-select"
-                              value={(data as Record<string, any>).pxeMethod as string || "legacy"}
-                              onChange={(e) => update("pxeMethod", e.target.value)}
-                            >
-                              <option value="legacy">Legacy PXE (TFTP)</option>
-                              <option value="ipxe">iPXE (HTTP)</option>
-                              <option value="uefi-http">UEFI HTTP Boot</option>
+                            <label className="props-label">Provider</label>
+                            <select className="props-select" value={(data as Record<string, any>).pxeServerMode as string || "builtin"} onChange={(e) => update("pxeServerMode", e.target.value)}>
+                              <option value="builtin">Troshka managed</option>
+                              <option value="custom">User provided (BYO)</option>
                             </select>
                           </div>
-
-                          {(() => {
-                            const method = (data as Record<string, any>).pxeMethod as string || "legacy";
-                            const isByo = (data as Record<string, any>).pxeServerMode === "custom";
-
-                            return (
-                              <>
-                                {/* Firmware */}
-                                {method !== "uefi-http" ? (
-                                  <div className="props-field">
-                                    <label className="props-label">Firmware</label>
-                                    <select className="props-select" value={(data as Record<string, any>).pxeFirmware as string || "bios"} onChange={(e) => update("pxeFirmware", e.target.value)}>
-                                      <option value="bios">BIOS (SeaBIOS)</option>
-                                      <option value="uefi">UEFI (OVMF)</option>
-                                    </select>
-                                  </div>
-                                ) : (
-                                  <div className="props-field">
-                                    <label className="props-label">Firmware</label>
-                                    <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>UEFI (OVMF) — required for HTTP boot</span>
-                                  </div>
-                                )}
-
-                                {method === "uefi-http" && (
-                                  <div className="props-field">
-                                    <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <input type="checkbox" checked={(data as Record<string, any>).uefiSecureBoot as boolean ?? false} onChange={(e) => update("uefiSecureBoot", e.target.checked)} />
-                                      Secure Boot
-                                    </label>
-                                  </div>
-                                )}
-
-                                <div className="props-divider" />
-                                <div className="props-section-title">Boot Server</div>
-                                <div className="props-field">
-                                  <label className="props-label">Provider</label>
-                                  <select className="props-select" value={(data as Record<string, any>).pxeServerMode as string || "builtin"} onChange={(e) => update("pxeServerMode", e.target.value)}>
-                                    <option value="builtin">Troshka managed</option>
-                                    <option value="custom">User provided (BYO)</option>
-                                  </select>
-                                </div>
-
-                                {!isByo ? (
-                                  <>
-                                    <p style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginBottom: 8 }}>
-                                      Troshka runs {method === "legacy" ? "a TFTP server (dnsmasq)" : "an HTTP server (nginx)"} and serves boot images automatically.
-                                    </p>
-                                    <div className="props-field">
-                                      <button className="props-library-btn" onClick={() => alert("Boot image manager — coming in Phase 7.\n\nUpload kernels, initrds, kickstart/preseed files, or iPXE scripts.")}>
-                                        📚 Manage Boot Images...
-                                      </button>
-                                      <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 4, display: "block" }}>
-                                        Upload kernel, initrd, and kickstart/preseed files from your library.
-                                      </span>
-                                    </div>
-                                  </>
-                                ) : (
-                                  <>
-                                    <p style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginBottom: 8 }}>
-                                      You manage your own boot server VM. Configure the connection details below.
-                                    </p>
-                                    {method === "legacy" && (
-                                      <>
-                                        <div className="props-field">
-                                          <label className="props-label">Next Server (TFTP)</label>
-                                          <input className="props-input" value={(data as Record<string, any>).pxeNextServer as string || ""} onChange={(e) => update("pxeNextServer", e.target.value)} placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "TFTP server IP"} style={{ fontFamily: "monospace" }} />
-                                        </div>
-                                        <div className="props-field">
-                                          <label className="props-label">Boot Filename</label>
-                                          <input className="props-input" value={(data as Record<string, any>).pxeBootFile as string || ""} onChange={(e) => update("pxeBootFile", e.target.value)} placeholder="pxelinux.0" style={{ fontFamily: "monospace" }} />
-                                        </div>
-                                      </>
-                                    )}
-                                    {method === "ipxe" && (
-                                      <div className="props-field">
-                                        <label className="props-label">iPXE Script URL</label>
-                                        <input className="props-input" value={(data as Record<string, any>).ipxeScriptUrl as string || ""} onChange={(e) => update("ipxeScriptUrl", e.target.value)} placeholder="http://10.0.0.1/boot.ipxe" style={{ fontFamily: "monospace" }} />
-                                      </div>
-                                    )}
-                                    {method === "uefi-http" && (
-                                      <div className="props-field">
-                                        <label className="props-label">Boot URL</label>
-                                        <input className="props-input" value={(data as Record<string, any>).uefiBootUrl as string || ""} onChange={(e) => update("uefiBootUrl", e.target.value)} placeholder="http://10.0.0.1/boot/grubx64.efi" style={{ fontFamily: "monospace" }} />
-                                      </div>
-                                    )}
-                                  </>
-                                )}
-                              </>
-                            );
-                          })()}
+                          <p style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginBottom: 4 }}>
+                            {(data as Record<string, any>).pxeServerMode === "custom"
+                              ? "Boot server details are configured per-VM in the Boot Devices section."
+                              : "Troshka extracts kernel and initrd from the install ISO and serves them automatically. Select the boot ISO per-VM in the Boot Devices section."}
+                          </p>
                         </>
                       )}
                     </>
@@ -1447,6 +1499,18 @@ export default function PropertiesPanel() {
           ) : "Storage"}
         </button>
       </div>
+      {showPxeIsoPicker && node && (
+        <LibraryPicker
+          type="iso"
+          onSelect={(item) => {
+            updateNodeData(node.id, {
+              pxeBootIsoId: item.id,
+              pxeBootIsoName: item.name,
+            });
+          }}
+          onClose={() => setShowPxeIsoPicker(false)}
+        />
+      )}
       {showLibraryPicker && node && (
         <LibraryPicker
           type={showLibraryPicker}

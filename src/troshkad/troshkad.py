@@ -478,6 +478,9 @@ def _handle_vm_create(job, params):
     disks = params.get("disks", [])
     networks = params.get("networks", [])
     seed_iso = params.get("seed_iso")
+    firmware = params.get("firmware", "bios")
+    secure_boot = params.get("secure_boot", False)
+    boot_devs = params.get("boot_devs", [])
 
     cmd = [
         "virt-install",
@@ -487,8 +490,22 @@ def _handle_vm_create(job, params):
         "--os-variant", "generic",
         "--noautoconsole",
         "--noreboot",
-        "--import",
     ]
+
+    # Build --boot flag: firmware + boot device order
+    boot_parts = []
+    if firmware == "uefi":
+        boot_parts.append("uefi")
+        if secure_boot:
+            boot_parts.append("firmware.feature0.name=secure-boot")
+            boot_parts.append("firmware.feature0.enabled=yes")
+    if boot_devs:
+        boot_parts.extend(boot_devs)
+    else:
+        boot_parts.append("hd")
+    boot_parts.append("menu=on")
+    cmd.extend(["--boot", ",".join(boot_parts)])
+    cmd.extend(["--install", "no_install=yes"])
     for disk in disks:
         path = _validate_path(disk["path"])
         bus = _validate_bus(disk.get("bus", "virtio"))
@@ -1063,6 +1080,223 @@ def _handle_image_cache(job, params):
 COMMAND_HANDLERS["images/cache"] = _handle_image_cache
 
 
+# Known kernel/initrd paths inside install ISOs, tried in order
+_PXE_BOOT_PATHS = [
+    # RHEL / CentOS / Fedora
+    {"kernel": "/images/pxeboot/vmlinuz", "initrd": "/images/pxeboot/initrd.img"},
+    # Ubuntu Server
+    {"kernel": "/casper/vmlinuz", "initrd": "/casper/initrd"},
+    # Debian
+    {"kernel": "/install.amd/vmlinuz", "initrd": "/install.amd/initrd.gz"},
+    # SLES / openSUSE
+    {"kernel": "/boot/x86_64/loader/linux", "initrd": "/boot/x86_64/loader/initrd"},
+]
+
+# Known bootloader paths — UEFI first (preferred), then BIOS
+_UEFI_BOOTLOADER_PATHS = [
+    "/EFI/BOOT/BOOTX64.EFI",
+    "/EFI/BOOT/grubx64.efi",
+]
+
+_BIOS_BOOTLOADER_PATHS = [
+    "/isolinux/pxelinux.0",
+    "/syslinux/pxelinux.0",
+    "/pxelinux.0",
+]
+
+
+def _handle_pxe_setup(job, params):
+    """Extract kernel/initrd from a cached ISO and set up PXE boot services.
+
+    - Loop-mounts ISO, copies kernel + initrd + bootloader
+    - Keeps ISO mounted for HTTP install source
+    - Starts a Python HTTP server in the namespace
+    - Generates pxelinux.cfg/default boot config
+    """
+    project_id = params.get("project_id")
+    if not project_id:
+        raise RuntimeError("project_id is required for PXE setup")
+    vni = int(params["vni"])
+    iso_path = _validate_path(params["iso_path"])
+    gateway_ip = params.get("gateway_ip", "")
+    http_port = int(params.get("http_port", 8080))
+    tftp_root = params.get("tftp_root", f"/var/lib/troshka/pxe/{vni}/tftpboot")
+    mount_point = f"/var/lib/troshka/pxe/{vni}/mnt"
+    ns = f"troshka-{project_id[:8]}"
+
+    if not os.path.exists(iso_path):
+        raise RuntimeError(f"ISO not found: {iso_path}")
+
+    # Create directories
+    os.makedirs(tftp_root, exist_ok=True)
+    os.makedirs(os.path.join(tftp_root, "pxelinux.cfg"), exist_ok=True)
+    os.makedirs(mount_point, exist_ok=True)
+
+    # Mount ISO first — needed for both extraction and HTTP serving
+    try:
+        subprocess.run(["umount", mount_point], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    _run_cmd(job, ["mount", "-o", "loop,ro", iso_path, mount_point], timeout=30)
+    job["output"].append(f"Mounted ISO at {mount_point}")
+
+    # Copy kernel + initrd from mounted ISO
+    kernel_dest = os.path.join(tftp_root, "vmlinuz")
+    initrd_dest = os.path.join(tftp_root, "initrd.img")
+    found = False
+    for paths in _PXE_BOOT_PATHS:
+        k_src = mount_point + paths["kernel"]
+        i_src = mount_point + paths["initrd"]
+        if os.path.isfile(k_src) and os.path.isfile(i_src):
+            import shutil
+            shutil.copy2(k_src, kernel_dest)
+            shutil.copy2(i_src, initrd_dest)
+            job["output"].append(f"Copied kernel from {paths['kernel']}")
+            job["output"].append(f"Copied initrd from {paths['initrd']}")
+            found = True
+            break
+    if not found:
+        # List top-level dirs to help debug
+        try:
+            contents = os.listdir(mount_point)
+            job["output"].append(f"ISO contents: {contents}")
+        except OSError:
+            pass
+        raise RuntimeError("Could not find kernel/initrd in ISO — unsupported distro layout")
+
+    # Copy bootloader — try UEFI first, then BIOS
+    import shutil
+    boot_filename = None
+    efi_boot_dir = os.path.join(mount_point, "EFI", "BOOT")
+    if os.path.isdir(efi_boot_dir):
+        for fname in os.listdir(efi_boot_dir):
+            src = os.path.join(efi_boot_dir, fname)
+            if os.path.isfile(src):
+                dest = os.path.join(tftp_root, fname)
+                shutil.copy2(src, dest)
+                os.chmod(dest, 0o644)
+        job["output"].append(f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)")
+        for bl_path in _UEFI_BOOTLOADER_PATHS:
+            bl_name = os.path.basename(bl_path)
+            if os.path.isfile(os.path.join(tftp_root, bl_name)):
+                boot_filename = bl_name
+                break
+    if not boot_filename:
+        for bl_path in _BIOS_BOOTLOADER_PATHS:
+            bl_src = mount_point + bl_path
+            if os.path.isfile(bl_src):
+                bl_name = os.path.basename(bl_path)
+                bl_dest = os.path.join(tftp_root, bl_name)
+                shutil.copy2(bl_src, bl_dest)
+                os.chmod(bl_dest, 0o644)
+                job["output"].append(f"Copied BIOS bootloader from {bl_path}")
+                boot_filename = bl_name
+                break
+    if not boot_filename:
+        for syslinux_path in ["/usr/share/syslinux/pxelinux.0", "/usr/lib/syslinux/pxelinux.0"]:
+            if os.path.exists(syslinux_path):
+                shutil.copy2(syslinux_path, os.path.join(tftp_root, "pxelinux.0"))
+                boot_filename = "pxelinux.0"
+                job["output"].append(f"Copied pxelinux.0 from {syslinux_path}")
+                break
+    if not boot_filename:
+        boot_filename = "pxelinux.0"
+        job["output"].append("WARNING: No bootloader found in ISO or on host")
+
+    # Generate PXE boot config
+    install_url = f"http://{gateway_ip}:{http_port}/" if gateway_ip else ""
+    append_line = "initrd=initrd.img"
+    if install_url:
+        append_line += f" inst.repo={install_url}"
+
+    pxe_cfg = f"DEFAULT install\nLABEL install\n  KERNEL vmlinuz\n  APPEND {append_line}\n"
+    with open(os.path.join(tftp_root, "pxelinux.cfg", "default"), "w") as f:
+        f.write(pxe_cfg)
+    job["output"].append("Generated pxelinux.cfg/default")
+
+    # Ensure dnsmasq config has TFTP enabled and restart it
+    dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{vni}.conf"
+    dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
+    if os.path.exists(dnsmasq_conf):
+        with open(dnsmasq_conf) as f:
+            lines = f.readlines()
+        filtered = [l for l in lines if not l.strip().startswith(("enable-tftp", "tftp-root=", "dhcp-boot="))]
+        filtered.append(f"enable-tftp\n")
+        filtered.append(f"tftp-root={tftp_root}\n")
+        filtered.append(f"dhcp-boot={boot_filename}\n")
+        with open(dnsmasq_conf, "w") as f:
+            f.writelines(filtered)
+        job["output"].append(f"Configured dnsmasq TFTP with boot file {boot_filename}")
+        # Always kill and restart dnsmasq in the correct namespace
+        if os.path.exists(dnsmasq_pid):
+            try:
+                with open(dnsmasq_pid) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, signal.SIGTERM)
+                import time as _t2
+                _t2.sleep(0.5)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
+        job["output"].append("Restarted dnsmasq with TFTP enabled")
+
+    # Start HTTP server in namespace to serve ISO contents (ISO already mounted above)
+    pid_file = f"/run/troshka-pxe-http-{vni}.pid"
+    # Kill existing server
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file) as f:
+                old_pid = int(f.read().strip())
+            os.kill(old_pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+
+    http_script = f'''#!/usr/bin/env python3
+import http.server
+import os
+import socketserver
+
+os.chdir("{mount_point}")
+socketserver.TCPServer.allow_reuse_address = True
+httpd = socketserver.TCPServer(("0.0.0.0", {http_port}), http.server.SimpleHTTPRequestHandler)
+httpd.serve_forever()
+'''
+    script_path = f"/var/lib/troshka/pxe/{vni}/http_server.py"
+    with open(script_path, "w") as f:
+        f.write(http_script)
+
+    subprocess.Popen(
+        ["ip", "netns", "exec", ns, "python3", script_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    # Write PID file (give process a moment to start)
+    import time as _t
+    _t.sleep(0.5)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", script_path],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.stdout.strip():
+            pid = result.stdout.strip().split("\n")[0]
+            with open(pid_file, "w") as f:
+                f.write(pid)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    job["output"].append(f"Started HTTP install source on port {http_port}")
+    return {
+        "status": "ok",
+        "tftp_root": tftp_root,
+        "http_port": http_port,
+        "mount_point": mount_point,
+    }
+
+COMMAND_HANDLERS["pxe/setup"] = _handle_pxe_setup
+
+
 def _handle_library_import(job, params):
     """Download image, optionally flatten, optionally upload to S3 multipart."""
     download_url = _validate_url(params["download_url"])
@@ -1358,11 +1592,18 @@ def _handle_network_full_setup(job, params):
         # PXE config
         pxe = net.get("pxe_config")
         if pxe:
-            method = pxe.get("method", "legacy")
-            if method == "legacy" and pxe.get("next_server") and pxe.get("boot_file"):
-                conf_lines.append(f"dhcp-boot={pxe['boot_file']},{pxe['next_server']},{pxe['next_server']}")
-            elif method == "ipxe" and pxe.get("ipxe_script_url"):
-                conf_lines.append(f"dhcp-boot={pxe['ipxe_script_url']}")
+            if pxe.get("server_mode") == "builtin" and pxe.get("tftp_root"):
+                conf_lines.append("enable-tftp")
+                conf_lines.append(f"tftp-root={pxe['tftp_root']}")
+                conf_lines.append("dhcp-boot=pxelinux.0")
+            else:
+                method = pxe.get("method", "legacy")
+                if method == "legacy" and pxe.get("next_server") and pxe.get("boot_file"):
+                    conf_lines.append(f"dhcp-boot={pxe['boot_file']},{pxe['next_server']},{pxe['next_server']}")
+                elif method == "ipxe" and pxe.get("ipxe_script_url"):
+                    conf_lines.append(f"dhcp-boot={pxe['ipxe_script_url']}")
+                elif method == "uefi-http" and pxe.get("uefi_boot_url"):
+                    conf_lines.append(f"dhcp-boot={pxe['uefi_boot_url']}")
 
         os.makedirs("/etc/dnsmasq.d", exist_ok=True)
         with open(dnsmasq_conf, "w") as f:
@@ -1556,7 +1797,7 @@ def _handle_network_full_teardown(job, params):
         except RuntimeError:
             pass
 
-    # Kill dnsmasq processes inside namespace
+    # Kill dnsmasq and PXE HTTP server processes inside namespace
     try:
         _run_cmd(job, ["ip", "netns", "exec", ns, "pkill", "-9", "dnsmasq"], timeout=10)
     except RuntimeError:
@@ -1595,6 +1836,33 @@ def _handle_network_full_teardown(job, params):
             try:
                 os.remove(path)
             except FileNotFoundError:
+                pass
+
+    # Clean up PXE boot services
+    for vni in vni_list:
+        pid_file = f"/run/troshka-pxe-http-{vni}.pid"
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file) as f:
+                    http_pid = int(f.read().strip())
+                os.kill(http_pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+            try:
+                os.remove(pid_file)
+            except FileNotFoundError:
+                pass
+        mount_point = f"/var/lib/troshka/pxe/{vni}/mnt"
+        try:
+            subprocess.run(["umount", mount_point], capture_output=True, timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        pxe_dir = f"/var/lib/troshka/pxe/{vni}"
+        if os.path.isdir(pxe_dir):
+            import shutil
+            try:
+                shutil.rmtree(pxe_dir)
+            except OSError:
                 pass
 
     # Clean up dummy bridges in host namespace

@@ -107,6 +107,8 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
 
         connected_vms = []
         dhcp_hosts = []
+        pxe_boot_iso_ids = set()
+        pxe_vm_boot_config = {}
         for vm_node in nodes:
             if vm_node["id"] in connected_vm_ids and vm_node.get("type") == "vmNode":
                 vm_data = vm_node.get("data", {})
@@ -114,6 +116,13 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                     "vm_id": vm_node["id"],
                     "name": vm_data.get("name"),
                 })
+                pxe_iso_id = vm_data.get("pxeBootIsoId")
+                if pxe_iso_id:
+                    pxe_boot_iso_ids.add(pxe_iso_id)
+                if not pxe_vm_boot_config:
+                    for field in ("pxeMethod", "pxeNextServer", "pxeBootFile", "ipxeScriptUrl", "uefiBootUrl"):
+                        if vm_data.get(field):
+                            pxe_vm_boot_config[field] = vm_data[field]
                 for vm_nic in vm_data.get("nics", []):
                     if vm_nic.get("ip") and vm_nic.get("mac"):
                         nic_handle_top = f"nic-{vm_nic['id']}-top"
@@ -177,15 +186,21 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
 
         # PXE config
         if data.get("pxeEnabled"):
-            net_config["pxe_config"] = {
-                "method": data.get("pxeMethod", "legacy"),
-                "server_mode": data.get("pxeServerMode", "builtin"),
-                "firmware": data.get("pxeFirmware", "bios"),
-                "next_server": data.get("pxeNextServer", ""),
-                "boot_file": data.get("pxeBootFile", ""),
-                "ipxe_script_url": data.get("ipxeScriptUrl", ""),
-                "uefi_boot_url": data.get("uefiBootUrl", ""),
+            server_mode = data.get("pxeServerMode", "builtin")
+            pxe_config = {
+                "method": pxe_vm_boot_config.get("pxeMethod", "legacy"),
+                "server_mode": server_mode,
+                "next_server": pxe_vm_boot_config.get("pxeNextServer", ""),
+                "boot_file": pxe_vm_boot_config.get("pxeBootFile", ""),
+                "ipxe_script_url": pxe_vm_boot_config.get("ipxeScriptUrl", ""),
+                "uefi_boot_url": pxe_vm_boot_config.get("uefiBootUrl", ""),
             }
+            if server_mode == "builtin" and pxe_boot_iso_ids:
+                iso_id = next(iter(pxe_boot_iso_ids))
+                pxe_config["iso_path"] = f"/var/lib/troshka/images/{iso_id}.iso"
+                pxe_config["tftp_root"] = f"/var/lib/troshka/pxe/{vni}/tftpboot"
+                pxe_config["http_port"] = 8080 + (vni % 1000)
+            net_config["pxe_config"] = pxe_config
 
         networks.append(net_config)
 
