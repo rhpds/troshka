@@ -173,14 +173,20 @@ def _poll_fsx_until_available(pool_id: str, credentials: dict, region: str, file
 def provision_fsx_pool(pool_id: str, credentials: dict, region: str,
                        subnet_id: str, security_group_id: str,
                        storage_gb: int, throughput_mbps: int):
-    result = create_fsx_filesystem(credentials, region, subnet_id, security_group_id,
-                                    storage_gb, throughput_mbps)
     db = SessionLocal()
     try:
+        result = create_fsx_filesystem(credentials, region, subnet_id, security_group_id,
+                                        storage_gb, throughput_mbps)
         pool = db.query(StoragePool).get(pool_id)
         pool.fsx_filesystem_id = result["filesystem_id"]
         pool.fsx_dns_name = result.get("dns_name")
         db.commit()
+    except Exception as e:
+        logger.error("FSx provisioning failed for pool %s: %s", pool_id[:8], e)
+        pool = db.query(StoragePool).get(pool_id)
+        pool.status = "error"
+        db.commit()
+        return
     finally:
         db.close()
 
