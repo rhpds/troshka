@@ -843,3 +843,29 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
 
     threading.Thread(target=_push, daemon=True).start()
     return {"status": "updating", "version": version, "force": force}
+
+
+@router.post("/{host_id}/evacuate")
+def evacuate_host_endpoint(host_id: str,
+                           user: User = Depends(require_role("admin")),
+                           db: Session = Depends(get_db)):
+    from app.models.storage_pool import StoragePool
+    from app.services.migration_service import evacuate_host
+    from app.models.project import Project
+
+    host = db.query(Host).get(host_id)
+    if not host:
+        raise HTTPException(404, "Host not found")
+    if not host.storage_pool_id:
+        raise HTTPException(400, "Host is not in a storage pool")
+
+    pool = db.query(StoragePool).get(host.storage_pool_id)
+    if pool.mode == "local":
+        raise HTTPException(400, "Cannot evacuate hosts in local-mode pools")
+
+    project_count = db.query(Project).filter(Project.host_id == host_id, Project.state == "active").count()
+    if project_count == 0:
+        raise HTTPException(400, "No active projects to evacuate")
+
+    evacuate_host(host_id)
+    return {"status": "evacuating", "host_id": host_id, "project_count": project_count}

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_role
 from app.core.database import get_db
 from app.models.project import Project
 from app.models.user import User
@@ -1402,3 +1402,25 @@ def import_vm_from_snapshot(
     db.commit()
     db.refresh(project)
     return project
+
+
+class MigrateRequest(PydanticBaseModel):
+    target_host_id: str
+
+
+@router.post("/{project_id}/migrate")
+def migrate_project_endpoint(project_id: str, body: MigrateRequest,
+                    user: User = Depends(require_role("operator")),
+                    db: Session = Depends(get_db)):
+    from app.services.migration_service import validate_migration, migrate_project
+
+    project = db.query(Project).get(project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    errors = validate_migration(db, project_id, project.host_id, body.target_host_id)
+    if errors:
+        raise HTTPException(400, "; ".join(errors))
+
+    migrate_project(project_id, project.host_id, body.target_host_id)
+    return {"status": "migrating", "project_id": project_id, "target_host_id": body.target_host_id}
