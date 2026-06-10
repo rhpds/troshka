@@ -193,14 +193,19 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Per-second billing, no minimum commitment (~$53/month for 128 GB/160 MBps)
 - Hosts without a `storage_pool_id` operate in local mode (backward compatible)
 - **Download coordination**: `SharedCacheEntry` tracks what's cached on shared storage — one download serves all hosts in the pool
-- **Live migration**: `virsh migrate --live --persistent --undefinesource` via troshkad `vm/migrate` endpoint
+- **Migration**: `virsh migrate --persistent --undefinesource` via troshkad `vm/migrate` endpoint; `--live` added for running VMs, omitted for stopped VMs (cold migration)
+- Migration uses **private IP** for intra-VPC traffic (Host.private_ip field)
 - Migration orchestration: set up networks/BMC on target → migrate VMs in start order → tear down source
 - **Host evacuation**: moves all projects off a host to other hosts in the same pool
 - **Path resolution**: troshkad `_storage_path()` routes to `/var/lib/troshka/shared/` or `/var/lib/troshka/local/` based on `storage_mode` config
 - **Pool-level GC**: cache eviction uses `SharedCacheEntry` table, checks all projects in pool before evicting
 - BYO NFS pools don't require an AZ or provider — user manages their own NFS infrastructure
-- Security group rules: NFS (TCP 2049) added only for FSx pools, migration ports (TCP 49152-49215) for all shared pools
+- Security group rules: NFS (TCP 2049) for FSx, libvirt TLS (TCP 16514) + migration data (TCP 49152-49215) for all shared pools
+- **PKI**: pool-level CA (10-year, stored on StoragePool.ca_cert/ca_key), host certs signed with both public+private IPs as SANs (1-year, re-signed hourly by health poller)
+- Libvirt TLS: mutual TLS with pool CA verification, no `tls_no_verify_certificate`
+- Auto-renewal: health poller checks CA expiry (renews at 90 days), re-signs and pushes host certs hourly via troshkad `tls/update-certs` endpoint
 - Provider credentials mapping: use `_boto_client()` helper — `get_credentials()` returns `access_key_id` which must be mapped to `aws_access_key_id` for boto3
+- **Placement**: auto-selects pool with most free RAM, syncs capacity before placing, sorts by least-loaded host. Admins can override pool at deploy time.
 
 ### Dev Database
 - PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
