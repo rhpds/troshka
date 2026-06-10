@@ -9,6 +9,7 @@ from app.models.library import Library, LibraryItem, LibraryItemDisk, LibrarySha
 from app.models.api_key import ApiKey
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.elastic_ip import ElasticIp
+from app.models.storage_pool import StoragePool, SharedCacheEntry
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -20,4 +21,5 @@ __all__ = [
     "ApiKey",
     "Pattern", "PatternDisk", "PatternShare",
     "ElasticIp",
+    "StoragePool", "SharedCacheEntry",
 ]

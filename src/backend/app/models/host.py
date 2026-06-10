@@ -32,11 +32,13 @@ class Host(Base):
     agent_token: Mapped[str | None] = mapped_column(Text)
     agent_cert_fingerprint: Mapped[str | None] = mapped_column(String(100))
     agent_version: Mapped[str | None] = mapped_column(String(50))
+    storage_pool_id: Mapped[str | None] = mapped_column(ForeignKey("storage_pools.id"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     provider: Mapped["Provider | None"] = relationship(back_populates="hosts")
+    storage_pool: Mapped["StoragePool | None"] = relationship(back_populates="hosts")
     vms: Mapped[list["VM"]] = relationship(back_populates="host")
 
 
