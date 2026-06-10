@@ -23,6 +23,81 @@ _deploy_progress: dict[str, dict] = {}
 _network_lock = threading.Lock()
 
 
+# ── Shared storage pool helpers ──
+
+def _get_host_pool(host, db_session):
+    """Get the storage pool for a host, if any."""
+    if not host.storage_pool_id:
+        return None
+    from app.models.storage_pool import StoragePool
+    return db_session.query(StoragePool).get(host.storage_pool_id)
+
+
+def _check_shared_cache(db_session, pool, item_id, item_type):
+    """Check if an item is cached on shared storage. Returns (status, entry) or (None, None)."""
+    if not pool:
+        return None, None
+    from app.models.storage_pool import SharedCacheEntry
+    entry = db_session.query(SharedCacheEntry).filter(
+        SharedCacheEntry.storage_pool_id == pool.id,
+        SharedCacheEntry.item_id == item_id,
+        SharedCacheEntry.item_type == item_type,
+    ).first()
+    if entry:
+        return entry.status, entry
+    return None, None
+
+
+def _create_shared_cache_entry(db_session, pool, item_id, item_type, file_path):
+    """Create a SharedCacheEntry with status='downloading'."""
+    from app.models.storage_pool import SharedCacheEntry
+    entry = SharedCacheEntry(
+        storage_pool_id=pool.id,
+        item_type=item_type,
+        item_id=item_id,
+        status="downloading",
+        file_path=file_path,
+    )
+    db_session.add(entry)
+    db_session.commit()
+    return entry
+
+
+def _mark_shared_cache_ready(db_session, pool_id, item_id, item_type, size_bytes=None):
+    """Mark a shared cache entry as ready."""
+    from app.models.storage_pool import SharedCacheEntry
+    entry = db_session.query(SharedCacheEntry).filter(
+        SharedCacheEntry.storage_pool_id == pool_id,
+        SharedCacheEntry.item_id == item_id,
+        SharedCacheEntry.item_type == item_type,
+    ).first()
+    if entry:
+        entry.status = "ready"
+        if size_bytes:
+            entry.size_bytes = size_bytes
+        db_session.commit()
+
+
+def _wait_for_shared_cache(db_session, pool_id, item_id, item_type, timeout=600):
+    """Wait for another download to complete. Returns True if ready."""
+    import time as _t
+    from app.models.storage_pool import SharedCacheEntry
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        db_session.expire_all()
+        entry = db_session.query(SharedCacheEntry).filter(
+            SharedCacheEntry.storage_pool_id == pool_id,
+            SharedCacheEntry.item_id == item_id,
+            SharedCacheEntry.item_type == item_type,
+        ).first()
+        if entry and entry.status == "ready":
+            return True
+        if entry and entry.status == "error":
+            return False
+        _t.sleep(5)
+    return False
+
+
 # ── Topology parsing ──
 
 def _extract_vms(topology: dict) -> list[dict]:
@@ -234,16 +309,32 @@ def _teardown_bmc_via_troshkad(host, project_id: str):
         logger.warning("BMC teardown failed for %s: %s", project_id[:8], job.get("result"))
 
 
-def _vm_dir(project_id: str) -> str:
+def _vm_dir(project_id: str, pool=None) -> str:
+    if pool and pool.mode.startswith("shared"):
+        return f"/var/lib/troshka/shared/vms/{project_id}"
     return f"/var/lib/troshka/vms/{project_id}"
 
 
-def _disk_path(project_id: str, vm_node_id: str, disk_node_id: str, fmt: str) -> str:
-    return f"{_vm_dir(project_id)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"
+def _disk_path(project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, pool=None) -> str:
+    return f"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"
 
 
-def _seed_path(project_id: str, vm_node_id: str) -> str:
+def _seed_path(project_id: str, vm_node_id: str, pool=None) -> str:
+    if pool and pool.mode.startswith("shared"):
+        return f"/var/lib/troshka/seeds/{project_id}/{vm_node_id[:8]}-seed.iso"
     return f"{_vm_dir(project_id)}/{vm_node_id[:8]}-seed.iso"
+
+
+def _image_cache_path(item_id: str, fmt: str, pool=None) -> str:
+    if pool and pool.mode.startswith("shared"):
+        return f"/var/lib/troshka/shared/images/{item_id}.{fmt}"
+    return f"/var/lib/troshka/images/{item_id}.{fmt}"
+
+
+def _pattern_cache_path(pattern_id: str, disk_id: str, fmt: str, pool=None) -> str:
+    if pool and pool.mode.startswith("shared"):
+        return f"/var/lib/troshka/shared/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+    return f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
 
 def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[str]:
@@ -339,6 +430,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
     from app.services import s3_storage
     from app.services.troshkad_client import poll_job
 
+    pool = _get_host_pool(host, db_session)
     nodes = topology.get("nodes", [])
     items_to_cache = []
 
@@ -351,7 +443,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             item = db_session.query(LibraryItem).filter_by(id=item_id).first()
             if item and item.s3_key:
                 fmt = node.get("data", {}).get("format", "qcow2")
-                cache_path = f"/var/lib/troshka/images/{item_id}.{fmt}"
+                cache_path = _image_cache_path(item_id, fmt, pool)
                 items_to_cache.append({
                     "item_id": item_id,
                     "name": item.name,
@@ -368,7 +460,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         if item_id:
             item = db_session.query(LibraryItem).filter_by(id=item_id).first()
             if item and item.s3_key:
-                cache_path = f"/var/lib/troshka/images/{item_id}.iso"
+                cache_path = _image_cache_path(item_id, "iso", pool)
                 items_to_cache.append({
                     "item_id": item_id,
                     "name": item.name,
@@ -387,7 +479,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         if pattern_id and pattern_disk_id:
             pd = db_session.query(PatternDisk).filter_by(id=pattern_disk_id, pattern_id=pattern_id).first()
             if pd and pd.s3_key:
-                cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{pattern_disk_id}.{pd.format}"
+                cache_path = _pattern_cache_path(pattern_id, pattern_disk_id, pd.format, pool)
                 items_to_cache.append({
                     "item_id": pattern_disk_id,
                     "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
@@ -407,6 +499,27 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
     logger.info("cache_library_images: %d items to cache", len(items_to_cache))
     if not items_to_cache:
         return
+
+    # For shared pools: skip items already cached, coordinate downloads
+    if pool and pool.mode.startswith("shared"):
+        items_needing_download = []
+        for ic in items_to_cache:
+            status, entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
+            if status == "ready":
+                logger.info("  %s already on shared storage, skipping", ic["name"])
+                continue
+            elif status == "downloading":
+                logger.info("  %s being downloaded by another host, waiting...", ic["name"])
+                if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
+                    logger.info("  %s now available on shared storage", ic["name"])
+                    continue
+                else:
+                    logger.warning("  %s download timed out, will retry", ic["name"])
+            # Need to download — create/update cache entry
+            rel_path = ic["cache_path"].replace("/var/lib/troshka/shared/", "")
+            _create_shared_cache_entry(db_session, pool, ic["item_id"], "image", rel_path)
+            items_needing_download.append(ic)
+        items_to_cache = items_needing_download
 
     # Generate presigned URLs and start download jobs
     active_jobs = []
@@ -444,6 +557,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 if job["status"] == "completed":
                     completed.add(aj["job_id"])
                     logger.info("cache: %s downloaded", aj["name"])
+                    if pool and pool.mode.startswith("shared"):
+                        _mark_shared_cache_ready(db_session, pool.id, aj["item_id"], "image")
                 elif job["status"] == "failed":
                     failed.add(aj["job_id"])
                     logger.error("cache: %s failed: %s", aj["name"], job.get("result", {}).get("error", ""))
