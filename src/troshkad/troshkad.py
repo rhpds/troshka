@@ -2844,11 +2844,15 @@ def _handle_bmc_setup(job, params):
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
                         f"{bmc_ip}/{prefix}", "dev", bridge], timeout=10)
 
-    # 3. Create htpasswd file for sushy basic auth
+    # 3. Create htpasswd file for sushy basic auth (bcrypt format required by sushy-tools)
     htpasswd_path = os.path.join(bmc_dir, "htpasswd")
-    sha_hash = base64.b64encode(hashlib.sha1(bmc_password.encode()).digest()).decode()
+    bcrypt_hash = subprocess.run(
+        [f"{venv_bin}/python3", "-c",
+         f"import bcrypt; print(bcrypt.hashpw({bmc_password!r}.encode(), bcrypt.gensalt()).decode())"],
+        capture_output=True, text=True, timeout=10,
+    ).stdout.strip()
     with open(htpasswd_path, "w") as f:
-        f.write(f"{bmc_username}:{{SHA}}{sha_hash}\n")
+        f.write(f"{bmc_username}:{bcrypt_hash}\n")
 
     # 4. Start sushy-emulator per VM
     for vm in vms:
