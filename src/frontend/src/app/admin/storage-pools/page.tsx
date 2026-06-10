@@ -79,7 +79,7 @@ export default function StoragePoolsPage() {
 
   const loadData = () => {
     Promise.all([
-      fetch("/api/v1/storage-pools").then((r) => (r.ok ? r.json() : [])),
+      fetch("/api/v1/storage-pools/").then((r) => (r.ok ? r.json() : [])),
       fetch("/api/v1/providers/").then((r) => (r.ok ? r.json() : [])),
     ]).then(([p, prov]) => {
       setPools(p);
