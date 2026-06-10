@@ -89,9 +89,14 @@ export default function AdminHostsPage() {
     return () => clearInterval(interval);
   }, []);
 
+  const [pendingHosts, setPendingHosts] = useState<Array<{ id: string; instance_type: string; region: string }>>([]);
+
   const addHost = async () => {
     if (!newProviderId) { setError("Select a provider"); return; }
     setError("");
+    const placeholderId = `pending-${Date.now()}`;
+    const placeholder = { id: placeholderId, instance_type: newInstanceType, region: newRegion || "us-east-1" };
+    setPendingHosts((prev) => [...prev, placeholder]);
     try {
       const resp = await fetch("/api/v1/hosts/", {
         method: "POST",
@@ -111,6 +116,7 @@ export default function AdminHostsPage() {
     } catch {
       setError("Failed to connect to server");
     }
+    setPendingHosts((prev) => prev.filter((p) => p.id !== placeholderId));
   };
 
   const instanceTypes = [
@@ -431,7 +437,25 @@ export default function AdminHostsPage() {
 
       {/* Host List */}
       <PageSection>
-        {filteredHosts.length === 0 && (
+        {pendingHosts.map((ph) => (
+          <Card key={ph.id} style={{ marginBottom: 8, opacity: 0.6 }}>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <strong>provisioning...</strong>
+                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "#fbbf2422", color: "#fbbf24" }}>
+                    provisioning
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+                  {ph.instance_type} · {ph.region} · waiting for EC2
+                </div>
+              </div>
+              <Button variant="plain" isDisabled isLoading>Provisioning...</Button>
+            </CardBody>
+          </Card>
+        ))}
+        {filteredHosts.length === 0 && pendingHosts.length === 0 && (
           <p style={{ opacity: 0.6 }}>No hosts{filterRegion ? ` in ${filterRegion}` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
         )}
         {filteredHosts.map((h) => (
