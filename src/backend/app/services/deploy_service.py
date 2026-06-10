@@ -1020,7 +1020,7 @@ def stop_project_async(project_id: str):
             vm_name = _vm_domain_name(project_id, vm["node_id"])
             try:
                 job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
-                wait_for_job(host, job_id, timeout=60)
+                wait_for_job(host, job_id, timeout=90)
             except TroshkadError as e:
                 logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
 

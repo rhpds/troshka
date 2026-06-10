@@ -584,8 +584,26 @@ COMMAND_HANDLERS["vms/start"] = _handle_vm_start
 
 def _handle_vm_stop(job, params):
     domain = _validate_domain_name(params["domain_name"])
-    _run_cmd(job, ["virsh", "shutdown", domain], timeout=60)
-    return {"domain": domain, "status": "stopped"}
+    grace = params.get("timeout", 30)
+    # Graceful shutdown via ACPI
+    try:
+        _run_cmd(job, ["virsh", "shutdown", domain], timeout=60)
+    except RuntimeError:
+        pass
+    # Wait for VM to stop
+    import time
+    for _ in range(grace):
+        time.sleep(1)
+        result = subprocess.run(["virsh", "domstate", domain], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0 or result.stdout.strip() in ("shut off", ""):
+            return {"domain": domain, "status": "stopped", "method": "shutdown"}
+    # Force destroy if graceful shutdown didn't work
+    job["output"].append(f"Graceful shutdown timed out after {grace}s, forcing destroy")
+    try:
+        _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+    except RuntimeError:
+        pass
+    return {"domain": domain, "status": "stopped", "method": "destroy"}
 
 COMMAND_HANDLERS["vms/stop"] = _handle_vm_stop
 
