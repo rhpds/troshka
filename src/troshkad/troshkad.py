@@ -2877,7 +2877,8 @@ def _handle_bmc_setup(job, params):
             f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
             f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
             f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
-            f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{domain_name}']\n")
+            # Don't filter by ALLOWED_INSTANCES — each sushy has its own IP, and
+            # domain name lookup fails because sushy uses UUIDs internally
 
         pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}.pid")
 
