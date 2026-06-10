@@ -927,11 +927,18 @@ def reconfigure_project(
                 for n in deployed.get("nodes", [])
             )
             if deployed_had_bmc:
-                _teardown_bmc_via_troshkad(h, p_id)
+                try:
+                    _teardown_bmc_via_troshkad(h, p_id)
+                except Exception:
+                    logger.warning("Reconfigure %s: BMC teardown failed (non-fatal)", p_id[:8])
             if bmc_config:
-                bmc_result = _setup_bmc_via_troshkad(h, p_id, bmc_config)
-                if bmc_result is not True:
-                    errors.append(f"BMC setup failed: {bmc_result}")
+                try:
+                    bmc_result = _setup_bmc_via_troshkad(h, p_id, bmc_config)
+                    if bmc_result is not True:
+                        errors.append(f"BMC setup failed: {bmc_result}")
+                except Exception:
+                    logger.warning("Reconfigure %s: BMC setup failed (non-fatal)", p_id[:8])
+                    errors.append("BMC setup failed — check server logs")
 
             s.refresh(proj)
             final_topo = proj.topology or {}
