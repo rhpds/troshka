@@ -149,7 +149,15 @@ export default function AdminHostsPage() {
   const [removing, setRemoving] = useState<string | null>(null);
 
   const removeHost = async (hostId: string, instanceId: string | null) => {
-    if (!window.confirm(`Remove host ${instanceId || hostId}? This will terminate the EC2 instance.`)) return;
+    const projectsResp = await fetch("/api/v1/projects/");
+    const projects = projectsResp.ok ? await projectsResp.json() : [];
+    const hostProjects = projects.filter((p: Record<string, string>) => p.host_id === hostId && p.state !== "draft");
+    let msg = `Remove host ${instanceId || hostId}? This will terminate the EC2 instance.`;
+    if (hostProjects.length > 0) {
+      const names = hostProjects.map((p: Record<string, string>) => p.name).join(", ");
+      msg += `\n\n⚠ ${hostProjects.length} project(s) will be reset to draft and their disk data will be lost: ${names}`;
+    }
+    if (!window.confirm(msg)) return;
     setRemoving(hostId);
     const resp = await fetch(`/api/v1/hosts/${hostId}`, { method: "DELETE" });
     if (resp.ok) {
