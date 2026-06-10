@@ -256,6 +256,7 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
 
   const fetchProjects = () => {
     fetch(`${API_BASE}/api/v1/projects/`)
@@ -327,6 +328,73 @@ export default function ProjectsPage() {
         </Toolbar>
       </PageSection>
       <PageSection>
+        {projects.length > 0 && (() => {
+          const selected = projects.filter((p) => selectedProjects.has(p.id));
+          const allSelected = selected.length === projects.length;
+          const someSelected = selected.length > 0;
+          const allActive = someSelected && selected.every((p) => p.state === "active");
+          const allStopped = someSelected && selected.every((p) => p.state === "stopped");
+          const allStoppedOrError = someSelected && selected.every((p) => p.state === "stopped" || p.state === "error");
+          const allDeployed = someSelected && selected.every((p) => ["active", "stopped", "error"].includes(p.state));
+          const allDraft = someSelected && selected.every((p) => p.state === "draft");
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() => {
+                    if (allSelected) setSelectedProjects(new Set());
+                    else setSelectedProjects(new Set(projects.map((p) => p.id)));
+                  }}
+                />
+                {someSelected ? `${selected.length} of ${projects.length} selected` : "Select all"}
+              </label>
+              {someSelected && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {allActive && (
+                    <Button variant="secondary" size="sm" onClick={() => {
+                      if (!window.confirm(`Stop ${selected.length} project(s)?`)) return;
+                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }); }
+                      setSelectedProjects(new Set());
+                      setTimeout(fetchProjects, 1000);
+                    }}>Stop ({selected.length})</Button>
+                  )}
+                  {allStoppedOrError && (
+                    <Button variant="secondary" size="sm" onClick={() => {
+                      if (!window.confirm(`Start ${selected.length} project(s)?`)) return;
+                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }); }
+                      setSelectedProjects(new Set());
+                      setTimeout(fetchProjects, 1000);
+                    }}>Start ({selected.length})</Button>
+                  )}
+                  {allDraft && (
+                    <Button variant="secondary" size="sm" onClick={() => {
+                      if (!window.confirm(`Deploy ${selected.length} project(s)?`)) return;
+                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }); }
+                      setSelectedProjects(new Set());
+                      setTimeout(fetchProjects, 1000);
+                    }}>Deploy ({selected.length})</Button>
+                  )}
+                  {allDeployed && (
+                    <Button variant="secondary" size="sm" onClick={() => {
+                      if (!window.confirm(`Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`)) return;
+                      for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }); }
+                      setSelectedProjects(new Set());
+                      setTimeout(fetchProjects, 1000);
+                    }}>Republish ({selected.length})</Button>
+                  )}
+                  <Button variant="danger" size="sm" onClick={() => {
+                    if (!window.confirm(`Delete ${selected.length} project(s)? This cannot be undone.`)) return;
+                    for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }); }
+                    setSelectedProjects(new Set());
+                    setTimeout(fetchProjects, 1000);
+                  }}>Delete ({selected.length})</Button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         <Gallery hasGutter minWidths={{ default: "300px" }}>
           {projects.map((p) => (
             <Card
@@ -338,6 +406,20 @@ export default function ProjectsPage() {
             >
               <CardTitle style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedProjects.has(p.id)}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      setSelectedProjects((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                        return next;
+                      });
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ cursor: "pointer" }}
+                  />
                   <strong>{p.name}</strong>
                   <span style={{
                     fontSize: 11, padding: "1px 6px", borderRadius: 4,
