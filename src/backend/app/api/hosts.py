@@ -329,6 +329,8 @@ def poweroff_host(host_id: str, user: User = Depends(require_role("admin")), db:
     host.state = "stopped"
     host.agent_status = "disconnected"
     host.ip_address = None
+    from app.services.placement import sync_host_capacity
+    sync_host_capacity(db, host)
     db.commit()
     return {"status": "stopped"}
 
@@ -557,6 +559,9 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
+    from app.services.placement import sync_host_capacity
+    sync_host_capacity(db, host)
+    db.flush()
     if host.used_vcpus > 0:
         raise HTTPException(status_code=409, detail="Host has active projects — drain first")
 
