@@ -88,6 +88,16 @@ export default function StoragePoolsPage() {
     });
   };
 
+  const pollUntilSettled = () => {
+    const settled = ["available", "error"];
+    const poll = setInterval(() => {
+      fetch("/api/v1/storage-pools/").then((r) => r.ok ? r.json() : []).then((data: StoragePool[]) => {
+        setPools(data);
+        if (data.every((p) => settled.includes(p.status))) clearInterval(poll);
+      }).catch(() => {});
+    }, 2000);
+  };
+
   useEffect(() => {
     loadData();
     const interval = setInterval(loadData, 10000);
@@ -148,6 +158,7 @@ export default function StoragePoolsPage() {
       setNewMode("shared-fsx");
       setNewAz("");
       loadData();
+      pollUntilSettled();
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to create pool");
@@ -166,8 +177,16 @@ export default function StoragePoolsPage() {
   };
 
   const saveEdit = async (pool: StoragePool) => {
-    setSaving(true);
     setError("");
+    if (pool.mode === "shared-fsx") {
+      if (editThroughput < 160) { setError("Throughput must be at least 160 MBps"); return; }
+      if (editStorageGb < (pool.fsx_storage_gb || 64)) { setError("Storage can only grow, not shrink"); return; }
+    }
+    if (pool.mode === "shared-byo") {
+      if (!editNfsEndpoint.trim()) { setError("NFS endpoint is required"); return; }
+      if (!editNfsEndpoint.includes(":")) { setError("NFS endpoint must be in host:/path format"); return; }
+    }
+    setSaving(true);
     const body: Record<string, unknown> = {};
     if (pool.mode === "shared-fsx") {
       body.fsx_throughput_mbps = editThroughput;
