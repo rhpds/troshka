@@ -596,6 +596,38 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
     peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
     network_config = build_host_network_config(topology, vni_map, peer_ips)
 
+    # If LB is present, add its frontend ports as port forwards to gateway
+    lb = network_config.get("loadbalancer")
+    if lb and lb.get("frontends"):
+        gw = network_config.get("gateway")
+        if not gw:
+            # Create minimal gateway config for LB port forwarding
+            first_vni = next(iter(vni_map.values()), None)
+            if first_vni:
+                from app.services.vxlan import _transit_subnet
+                transit = _transit_subnet(first_vni)
+                network_config["gateway"] = {
+                    "name": "lb-gateway",
+                    "mode": "nat-portforward",
+                    "outbound_policy": "allow-all",
+                    "outbound_ports": "",
+                    "port_forwards": [],
+                    "eip_private_ips": [],
+                    "transit_ns_ip": transit["ns_ip"],
+                }
+            gw = network_config.get("gateway")
+        if gw:
+            if gw.get("mode") not in ("nat", "nat-portforward"):
+                gw["mode"] = "nat-portforward"
+            pf_list = gw.get("port_forwards", [])
+            for fe in lb["frontends"]:
+                pf_list.append({
+                    "extPort": fe["bindPort"],
+                    "intIp": gw.get("transit_ns_ip", ""),
+                    "intPort": fe["bindPort"],
+                })
+            gw["port_forwards"] = pf_list
+
     # Build params for troshkad
     params = {
         "project_id": project_id,
@@ -926,6 +958,27 @@ def deploy_project_async(project_id: str):
             _deploy_progress.pop(project_id, None)
             return
 
+        # Step 1a: Set up load balancer (HAProxy) if present
+        from app.services.vxlan import build_host_network_config as _build_net_config
+        _net_config = _build_net_config(topology, vni_map, [])
+        lb_config = _net_config.get("loadbalancer")
+        if lb_config and lb_config.get("frontends"):
+            _deploy_progress[project_id] = {"step": "load balancer", "detail": "starting HAProxy"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: setting up load balancer", project_id[:8])
+            ns = f"troshka-{project_id[:8]}"
+            lb_params = {
+                "ns": ns,
+                "project_id": project_id,
+                "frontends": lb_config["frontends"],
+                "backends": lb_config["backends"],
+            }
+            try:
+                lb_job = start_job(host, "/lb/setup", lb_params)
+                wait_for_job(host, lb_job, timeout=30)
+            except TroshkadError as e:
+                logger.warning("Deploy %s: LB setup failed: %s", project_id[:8], e)
+
         # Step 1b: Allocate and associate EIPs
         external_ips = topology.get("externalIps", [])
         if external_ips:
@@ -965,14 +1018,14 @@ def deploy_project_async(project_id: str):
             project.topology = topology
             s.commit()
 
-            # Sync SG rules for port forwards
+            # Sync SG rules for all port forwards (gateway + LB)
+            desired_sg = []
             gateway_node = next(
                 (n for n in topology.get("nodes", [])
                  if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"),
                 None,
             )
             if gateway_node and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward":
-                desired_sg = []
                 for pf in gateway_node.get("data", {}).get("portForwards", []):
                     if pf.get("extPort"):
                         desired_sg.append({
@@ -980,6 +1033,14 @@ def deploy_project_async(project_id: str):
                             "ext_port": int(pf["extPort"]),
                             "protocol": "tcp",
                         })
+            if lb_config and lb_config.get("frontends"):
+                for fe in lb_config["frontends"]:
+                    desired_sg.append({
+                        "project_id": project_id,
+                        "ext_port": int(fe["bindPort"]),
+                        "protocol": "tcp",
+                    })
+            if desired_sg:
                 sync_security_group_rules(s, provider, desired_sg)
 
         # Step 2: Create cloud-init seed ISOs
