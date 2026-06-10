@@ -123,6 +123,59 @@ def _poll_hosts():
         db.close()
 
 
+_last_cert_check = 0
+_CERT_CHECK_INTERVAL = 3600
+
+
+def _check_cert_renewal():
+    """Check and renew libvirt TLS certs for hosts in shared pools (runs hourly)."""
+    global _last_cert_check
+    now = time.time()
+    if now - _last_cert_check < _CERT_CHECK_INTERVAL:
+        return
+    _last_cert_check = now
+
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.storage_pool import StoragePool
+    from app.services.storage_pool_service import sign_host_cert
+    from app.services.troshkad_client import start_job, wait_for_job
+    import base64
+
+    db = SessionLocal()
+    try:
+        pools = db.query(StoragePool).filter(
+            StoragePool.mode.in_(["shared-fsx", "shared-byo"]),
+            StoragePool.ca_cert.isnot(None),
+        ).all()
+
+        for pool in pools:
+            hosts = db.query(Host).filter(
+                Host.storage_pool_id == pool.id,
+                Host.state == "active",
+                Host.agent_status == "connected",
+            ).all()
+
+            for host in hosts:
+                if not host.ip_address:
+                    continue
+                try:
+                    host_cert, host_key = sign_host_cert(pool.ca_cert, pool.ca_key, host.ip_address)
+                    job_id = start_job(host, "/tls/update-certs", {
+                        "ca_cert_b64": base64.b64encode(pool.ca_cert.encode()).decode(),
+                        "host_cert_b64": base64.b64encode(host_cert.encode()).decode(),
+                        "host_key_b64": base64.b64encode(host_key.encode()).decode(),
+                    })
+                    wait_for_job(host, job_id, timeout=30)
+                    logger.debug("Renewed TLS cert for host %s", host.id[:8])
+                except Exception:
+                    logger.debug("Cert renewal failed for host %s", host.id[:8], exc_info=True)
+    except Exception:
+        logger.debug("Cert renewal check failed", exc_info=True)
+    finally:
+        db.close()
+
+
 def _poller_loop():
     """Background loop — polls forever."""
     logger.info("Health poller started (interval=%ds, disconnect_after=%ds)", _INTERVAL_SECONDS, _DISCONNECT_AFTER_SECONDS)
@@ -130,6 +183,7 @@ def _poller_loop():
         time.sleep(_INTERVAL_SECONDS)
         try:
             _poll_hosts()
+            _check_cert_renewal()
         except Exception:
             logger.exception("Health poller error")
 

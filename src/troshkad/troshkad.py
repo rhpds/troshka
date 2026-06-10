@@ -3327,5 +3327,34 @@ def _handle_vm_migrate(job, params):
 COMMAND_HANDLERS["vm/migrate"] = _handle_vm_migrate
 
 
+def _handle_tls_update_certs(job, params):
+    """Update libvirt TLS certificates (for auto-renewal)."""
+    import base64 as _b64
+    ca_cert = _b64.b64decode(params["ca_cert_b64"]).decode()
+    host_cert = _b64.b64decode(params["host_cert_b64"]).decode()
+    host_key = _b64.b64decode(params["host_key_b64"]).decode()
+
+    os.makedirs("/etc/pki/CA", exist_ok=True)
+    os.makedirs("/etc/pki/libvirt/private", exist_ok=True)
+
+    with open("/etc/pki/CA/cacert.pem", "w") as f:
+        f.write(ca_cert)
+    with open("/etc/pki/libvirt/servercert.pem", "w") as f:
+        f.write(host_cert)
+    with open("/etc/pki/libvirt/private/serverkey.pem", "w") as f:
+        f.write(host_key)
+    os.chmod("/etc/pki/libvirt/private/serverkey.pem", 0o600)
+    with open("/etc/pki/libvirt/clientcert.pem", "w") as f:
+        f.write(host_cert)
+    with open("/etc/pki/libvirt/private/clientkey.pem", "w") as f:
+        f.write(host_key)
+    os.chmod("/etc/pki/libvirt/private/clientkey.pem", 0o600)
+
+    _run_cmd(job, ["systemctl", "restart", "virtqemud"], timeout=30)
+    return {"status": "updated"}
+
+COMMAND_HANDLERS["tls/update-certs"] = _handle_tls_update_certs
+
+
 if __name__ == "__main__":
     main()
