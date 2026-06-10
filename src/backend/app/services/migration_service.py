@@ -123,9 +123,10 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
             domain = f"troshka-{project.id[:8]}-{vm_id[:8]}"
             logger.info("Migration %s: migrating VM %s", project_id[:8], domain)
 
+            target_ip = target.private_ip or target.ip_address
             job_id = start_job(source, "/vm/migrate", {
                 "domain": domain,
-                "target_host": target.ip_address,
+                "target_host": target_ip,
             })
             result = wait_for_job(source, job_id, timeout=600)
             if result.get("status") == "failed":

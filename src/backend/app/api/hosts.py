@@ -172,6 +172,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         total_vcpus=result["total_vcpus"],
         total_ram_mb=result["total_ram_mb"],
         ip_address=result["public_ip"],
+        private_ip=result.get("private_ip"),
         agent_status="disconnected",
         key_pair_name=result.get("key_pair_name"),
         private_key=result.get("private_key"),

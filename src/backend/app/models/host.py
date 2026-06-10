@@ -23,6 +23,7 @@ class Host(Base):
     used_vcpus: Mapped[int] = mapped_column(Integer, default=0)
     used_ram_mb: Mapped[int] = mapped_column(Integer, default=0)
     ip_address: Mapped[str | None] = mapped_column(String(45))
+    private_ip: Mapped[str | None] = mapped_column(String(45))
     agent_status: Mapped[str] = mapped_column(String(20), default="disconnected")
     key_pair_name: Mapped[str | None] = mapped_column(String(100))
     private_key: Mapped[str | None] = mapped_column(Text)
