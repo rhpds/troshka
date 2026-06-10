@@ -103,6 +103,7 @@ export default function PatternsPage() {
   const [previewPattern, setPreviewPattern] = useState<{ id: string; name: string } | null>(null);
   const [deployPattern, setDeployPattern] = useState<{ id: string; name: string } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
+  const [selectedPatterns, setSelectedPatterns] = useState<Set<string>>(new Set());
 
   const loadPatterns = () => {
     fetch("/api/v1/patterns/")
@@ -193,6 +194,31 @@ export default function PatternsPage() {
             </EmptyStateBody>
           </EmptyState>
         ) : (
+          <>
+          {(() => {
+            const selected = filtered.filter((p) => selectedPatterns.has(p.id));
+            const allSelected = selected.length === filtered.length && filtered.length > 0;
+            const someSelected = selected.length > 0;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={allSelected} onChange={() => {
+                    if (allSelected) setSelectedPatterns(new Set());
+                    else setSelectedPatterns(new Set(filtered.map((p) => p.id)));
+                  }} />
+                  {someSelected ? `${selected.length} of ${filtered.length} selected` : "Select all"}
+                </label>
+                {someSelected && (
+                  <Button variant="danger" size="sm" onClick={() => {
+                    if (!window.confirm(`Delete ${selected.length} pattern(s)? This cannot be undone.`)) return;
+                    for (const p of selected) { fetch(`/api/v1/patterns/${p.id}`, { method: "DELETE" }); }
+                    setSelectedPatterns(new Set());
+                    setTimeout(loadPatterns, 1000);
+                  }}>Delete ({selected.length})</Button>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
             {filtered.map((pattern) => {
               const saving = pattern.state === "creating" || pattern.state === "capturing";
@@ -200,7 +226,17 @@ export default function PatternsPage() {
               <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
                 <CardTitle>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <strong>{pattern.name}</strong>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={selectedPatterns.has(pattern.id)} onChange={(e) => {
+                        e.stopPropagation();
+                        setSelectedPatterns((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(pattern.id)) next.delete(pattern.id); else next.add(pattern.id);
+                          return next;
+                        });
+                      }} onClick={(e) => e.stopPropagation()} style={{ cursor: "pointer" }} />
+                      <strong>{pattern.name}</strong>
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {saving ? (
                         <Label color="orange">saving…</Label>
@@ -257,6 +293,7 @@ export default function PatternsPage() {
               );
             })}
           </div>
+          </>
         )}
       </PageSection>
 

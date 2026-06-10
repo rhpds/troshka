@@ -56,7 +56,11 @@ export default function AdminProvidersPage() {
       .catch(() => setLoading(false));
   };
 
-  useEffect(() => { loadProviders(); }, []);
+  useEffect(() => {
+    loadProviders();
+    const interval = setInterval(loadProviders, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   const createProvider = async () => {
     if (!name.trim() || !accessKey.trim() || !secretKey.trim()) {

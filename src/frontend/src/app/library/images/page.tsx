@@ -41,6 +41,7 @@ export default function ImagesPage() {
   const [selectedFileName, setSelectedFileName] = useState("");
 
   const [showUpload, setShowUpload] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [sourceMode, setSourceMode] = useState<"file" | "url">("file");
   const [importUrl, setImportUrl] = useState("");
   const [newName, setNewName] = useState("");
@@ -324,6 +325,30 @@ export default function ImagesPage() {
       )}
 
       <PageSection>
+        {items.length > 0 && (() => {
+          const selected = items.filter((i) => selectedItems.has(i.id));
+          const allSelected = selected.length === items.length;
+          const someSelected = selected.length > 0;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                <input type="checkbox" checked={allSelected} onChange={() => {
+                  if (allSelected) setSelectedItems(new Set());
+                  else setSelectedItems(new Set(items.map((i) => i.id)));
+                }} />
+                {someSelected ? `${selected.length} of ${items.length} selected` : "Select all"}
+              </label>
+              {someSelected && (
+                <Button variant="danger" size="sm" onClick={() => {
+                  if (!window.confirm(`Delete ${selected.length} library item(s)? Files will be removed from S3.`)) return;
+                  for (const i of selected) { fetch(`/api/v1/library/${i.id}`, { method: "DELETE" }); }
+                  setSelectedItems(new Set());
+                  setTimeout(loadItems, 1000);
+                }}>Delete ({selected.length})</Button>
+              )}
+            </div>
+          );
+        })()}
         {items.length === 0 && !showUpload && (
           <p style={{ opacity: 0.6 }}>No items in library. Click &quot;+ Upload&quot; to add ISOs or disk images.</p>
         )}
@@ -332,6 +357,11 @@ export default function ImagesPage() {
             <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="checkbox" checked={selectedItems.has(item.id)} onChange={() => setSelectedItems((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
+                    return next;
+                  })} style={{ cursor: "pointer" }} />
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
