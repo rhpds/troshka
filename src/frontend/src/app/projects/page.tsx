@@ -436,7 +436,7 @@ export default function ProjectsPage() {
               style={{ marginBottom: 8, cursor: "pointer" }}
             >
               {/* Row 1: Info */}
-              <CardBody style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={() => router.push(`/projects/${p.id}`)}>
+              <CardBody style={{ display: "flex", alignItems: "flex-start", gap: 8 }} onClick={() => router.push(`/projects/${p.id}`)}>
                 <input
                   type="checkbox"
                   checked={selectedProjects.has(p.id)}
@@ -449,7 +449,7 @@ export default function ProjectsPage() {
                     });
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  style={{ cursor: "pointer" }}
+                  style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }}
                 />
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

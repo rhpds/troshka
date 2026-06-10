@@ -569,7 +569,7 @@ export default function AdminHostsPage() {
         {filteredHosts.map((h) => (
           <Card key={h.id} style={{ marginBottom: 8 }}>
             {/* Row 1: Host info + stats */}
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <input
                 type="checkbox"
                 checked={selectedHosts.has(h.id)}
@@ -578,7 +578,7 @@ export default function AdminHostsPage() {
                   if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
                   return next;
                 })}
-                style={{ marginRight: 8, cursor: "pointer" }}
+                style={{ width: 18, height: 18, minWidth: 18, marginRight: 8, cursor: "pointer", marginTop: 2 }}
               />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

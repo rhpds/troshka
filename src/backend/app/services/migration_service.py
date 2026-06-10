@@ -75,7 +75,7 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
 
 
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
-    from app.services.troshkad_client import send_command
+    from app.services.troshkad_client import start_job, wait_for_job
     from app.services.deploy_service import (
         _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
         _setup_bmc_via_troshkad, _teardown_bmc_via_troshkad, _extract_bmc_config,
@@ -119,10 +119,11 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
             domain = f"troshka-{project.id[:8]}-{vm_id[:8]}"
             logger.info("Migration %s: migrating VM %s", project_id[:8], domain)
 
-            result = send_command(source, "vm/migrate", {
+            job_id = start_job(source, "/vm/migrate", {
                 "domain": domain,
                 "target_host": target.ip_address,
             })
+            result = wait_for_job(source, job_id, timeout=600)
             logger.info("Migration %s: VM %s migrated: %s", project_id[:8], domain, result)
 
         # Step 4: Tear down source infrastructure
