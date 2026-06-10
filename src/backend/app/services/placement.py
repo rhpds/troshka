@@ -110,7 +110,34 @@ def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int,
     return candidates[0][0]
 
 
-def place_project(db: Session, project: Project) -> dict:
+def _auto_select_pool(db: Session) -> str | None:
+    """Auto-select the best storage pool — the one with the most free RAM across its hosts."""
+    from app.models.storage_pool import StoragePool
+    pools = db.query(StoragePool).filter(StoragePool.status == "available").all()
+    if not pools:
+        return None
+    if len(pools) == 1:
+        return pools[0].id
+
+    best_pool = None
+    best_free = -1
+    for pool in pools:
+        hosts = db.query(Host).filter(
+            Host.storage_pool_id == pool.id,
+            Host.state == "active",
+            Host.agent_status == "connected",
+        ).all()
+        total_free = 0
+        for h in hosts:
+            alloc_vcpus, alloc_ram = get_allocatable(h)
+            total_free += alloc_ram - h.used_ram_mb
+        if total_free > best_free:
+            best_free = total_free
+            best_pool = pool.id
+    return best_pool
+
+
+def place_project(db: Session, project: Project, storage_pool_id: str | None = None) -> dict:
     """Assign a project to a host. Returns placement result."""
     if not project.topology:
         return {"error": "Project has no topology"}
@@ -119,7 +146,12 @@ def place_project(db: Session, project: Project) -> dict:
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
-    host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"], reqs["requested_eips"])
+    # Auto-select pool if not specified
+    if not storage_pool_id:
+        storage_pool_id = _auto_select_pool(db)
+
+    host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"],
+                               reqs["requested_eips"], storage_pool_id=storage_pool_id)
     if not host:
         logger.info("No host with capacity — auto-provisioning a new one")
         try:

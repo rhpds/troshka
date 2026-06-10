@@ -154,6 +154,7 @@ def update_project(
 @router.post("/{project_id}/deploy")
 def deploy_project(
     project_id: str,
+    storage_pool_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -191,7 +192,18 @@ def deploy_project(
 
     _check_library_items_ready(project.topology, db)
 
-    result = place_project(db, project)
+    # Pool selection: admin can specify, otherwise auto-select
+    if storage_pool_id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can select a storage pool")
+    if storage_pool_id:
+        from app.models.storage_pool import StoragePool
+        pool = db.query(StoragePool).get(storage_pool_id)
+        if not pool:
+            raise HTTPException(status_code=404, detail="Storage pool not found")
+        if pool.mode.startswith("shared") and pool.status != "available":
+            raise HTTPException(status_code=400, detail=f"Pool is not available (status: {pool.status})")
+
+    result = place_project(db, project, storage_pool_id=storage_pool_id)
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 

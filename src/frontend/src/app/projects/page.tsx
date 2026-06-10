@@ -257,6 +257,9 @@ export default function ProjectsPage() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+  const [userRole, setUserRole] = useState("");
+  const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
+  const [deployPoolId, setDeployPoolId] = useState("");
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -288,6 +291,8 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => setUserRole(d.role || ""));
+    fetch("/api/v1/storage-pools/").then(r => r.ok ? r.json() : []).then(d => setPools(d.filter((p: any) => p.status === "available")));
     const interval = setInterval(fetchProjects, 10000);
     return () => clearInterval(interval);
   }, []);
@@ -469,14 +474,28 @@ export default function ProjectsPage() {
               {/* Row 2: Buttons */}
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
                 {p.state === "draft" && (
-                  <Button variant="primary" onClick={() => {
-                    if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
-                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-                    fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }).then(r => r.json()).then(d => {
-                      if (d.status === "deploying") { pollUntilSettled(); }
-                      else { alert(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
-                    });
-                  }}>Deploy</Button>
+                  <>
+                    {userRole === "admin" && pools.length > 1 && (
+                      <select style={{
+                        padding: "4px 8px", borderRadius: 6, fontSize: 12,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }} value={deployPoolId} onChange={(e) => setDeployPoolId(e.target.value)}>
+                        <option value="">Auto (best pool)</option>
+                        {pools.map((pl) => <option key={pl.id} value={pl.id}>{pl.name} ({pl.mode})</option>)}
+                      </select>
+                    )}
+                    <Button variant="primary" onClick={() => {
+                      if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
+                      setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                      const poolParam = deployPoolId ? `?storage_pool_id=${deployPoolId}` : "";
+                      fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy${poolParam}`, { method: "POST" }).then(r => r.json()).then(d => {
+                        if (d.status === "deploying") { pollUntilSettled(); }
+                        else { alert(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
+                      });
+                    }}>Deploy</Button>
+                  </>
                 )}
                 {p.state === "active" && (
                   <Button variant="secondary" onClick={() => {
