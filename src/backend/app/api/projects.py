@@ -718,6 +718,13 @@ def reconfigure_project(
                 _deploy_progress.pop(p_id, None)
                 return
 
+            # Cache any new library images (ISOs, disk images) before reconfiguring VMs
+            _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+            def _reconfig_dl_progress(downloaded, total):
+                pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+                _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+            cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
+
             # Deploy metadata service via troshkad
             _deploy_progress[p_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
             from app.services.deploy_service import _setup_metadata_via_troshkad
