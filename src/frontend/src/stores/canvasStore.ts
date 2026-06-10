@@ -342,6 +342,18 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
+    // Auto-add a bmc0 NIC to provisioner VM for visibility (edge stays on original handle)
+    if (isBmcSource || isBmcTarget) {
+      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      const existingNics = (vmNode.data as Record<string, any>).nics || [];
+      if (!existingNics.some((n: Record<string, string>) => n.name.startsWith("bmc"))) {
+        const nicId = generateNicId();
+        const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+        const newNic = { id: nicId, name: "bmc0", mac: `52:54:01:${hex()}:${hex()}:${hex()}`, model: "virtio" };
+        get().updateNodeData(vmNode.id, { nics: [...existingNics, newNic] });
+      }
+    }
+
     get().pushHistory();
     set({
       edges: addEdge(
