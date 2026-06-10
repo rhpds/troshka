@@ -211,6 +211,14 @@ def update_fsx_throughput(credentials: dict, region: str, filesystem_id: str, th
     )
 
 
+def update_fsx_storage(credentials: dict, region: str, filesystem_id: str, storage_gb: int):
+    fsx = _boto_client("fsx", region, credentials)
+    fsx.update_file_system(
+        FileSystemId=filesystem_id,
+        StorageCapacity=storage_gb,
+    )
+
+
 def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_group_id: str,
                                      include_nfs: bool = True):
     """Add SG rules for shared storage. NFS rule only needed for FSx (managed by us), not BYO."""

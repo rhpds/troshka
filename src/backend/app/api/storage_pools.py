@@ -129,6 +129,12 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
             )
             pool.fsx_throughput_mbps = body.fsx_throughput_mbps
 
+        if body.fsx_storage_gb and body.fsx_storage_gb > (pool.fsx_storage_gb or 0):
+            storage_pool_service.update_fsx_storage(
+                credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_storage_gb
+            )
+            pool.fsx_storage_gb = body.fsx_storage_gb
+
     if pool.mode == "shared-byo":
         if body.nfs_endpoint is not None:
             pool.nfs_endpoint = body.nfs_endpoint

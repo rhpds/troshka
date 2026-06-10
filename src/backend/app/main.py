@@ -40,6 +40,32 @@ async def lifespan(app):
     finally:
         s.close()
 
+    # Resume polling for storage pools stuck in "creating" (poller thread died on restart)
+    from app.models.storage_pool import StoragePool
+    from app.models.provider import Provider
+    import threading
+    s = SessionLocal()
+    try:
+        creating_pools = s.query(StoragePool).filter(StoragePool.status == "creating").all()
+        for pool in creating_pools:
+            if pool.fsx_filesystem_id:
+                provider = s.query(Provider).get(pool.provider_id)
+                if provider:
+                    creds = provider.get_credentials()
+                    from app.services.storage_pool_service import _poll_fsx_until_available
+                    logger.info("Startup: resuming FSx poller for pool %s (%s)", pool.name, pool.fsx_filesystem_id)
+                    threading.Thread(
+                        target=_poll_fsx_until_available,
+                        args=(pool.id, creds, provider.default_region, pool.fsx_filesystem_id),
+                        daemon=True,
+                    ).start()
+            else:
+                logger.warning("Startup: pool %s stuck in creating with no FSx ID, marking error", pool.name)
+                pool.status = "error"
+        s.commit()
+    finally:
+        s.close()
+
     yield
 
 

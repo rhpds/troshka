@@ -74,6 +74,7 @@ export default function StoragePoolsPage() {
 
   const [editId, setEditId] = useState<string | null>(null);
   const [editThroughput, setEditThroughput] = useState(160);
+  const [editStorageGb, setEditStorageGb] = useState(128);
   const [editNfsEndpoint, setEditNfsEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -156,6 +157,7 @@ export default function StoragePoolsPage() {
   const startEdit = (pool: StoragePool) => {
     setEditId(pool.id);
     setEditThroughput(pool.fsx_throughput_mbps || 160);
+    setEditStorageGb(pool.fsx_storage_gb || 128);
     setEditNfsEndpoint(pool.nfs_endpoint || "");
   };
 
@@ -169,6 +171,7 @@ export default function StoragePoolsPage() {
     const body: Record<string, unknown> = {};
     if (pool.mode === "shared-fsx") {
       body.fsx_throughput_mbps = editThroughput;
+      body.fsx_storage_gb = editStorageGb;
     }
     if (pool.mode === "shared-byo") {
       body.nfs_endpoint = editNfsEndpoint;
@@ -299,11 +302,19 @@ export default function StoragePoolsPage() {
                   {editId === pool.id ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8, maxWidth: 400 }}>
                       {pool.mode === "shared-fsx" && (
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
-                          <input style={inputStyle} type="number" value={editThroughput}
-                                 onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={160} />
-                        </div>
+                        <>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
+                            <input style={inputStyle} type="number" value={editThroughput}
+                                   onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={160} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB) — can only grow</label>
+                            <input style={inputStyle} type="number" value={editStorageGb}
+                                   onChange={(e) => setEditStorageGb(parseInt(e.target.value) || 64)}
+                                   min={pool.fsx_storage_gb || 64} />
+                          </div>
+                        </>
                       )}
                       {pool.mode === "shared-byo" && (
                         <div>
