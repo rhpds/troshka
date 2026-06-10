@@ -91,7 +91,6 @@ export default function AdminHostsPage() {
 
   const addHost = async () => {
     if (!newProviderId) { setError("Select a provider"); return; }
-    setProvisioning(true);
     setError("");
     try {
       const resp = await fetch("/api/v1/hosts/", {
@@ -112,7 +111,6 @@ export default function AdminHostsPage() {
     } catch {
       setError("Failed to connect to server");
     }
-    setProvisioning(false);
   };
 
   const instanceTypes = [
@@ -379,8 +377,8 @@ export default function AdminHostsPage() {
                     ))}
                   </select>
                 </div>
-                <Button variant="primary" onClick={addHost} isLoading={provisioning} isDisabled={provisioning || !newProviderId || !selectedProviderReady}>
-                  {provisioning ? "Provisioning..." : "Provision Host"}
+                <Button variant="primary" onClick={addHost} isDisabled={!newProviderId || !selectedProviderReady}>
+                  Provision Host
                 </Button>
               </div>
             </CardBody>
