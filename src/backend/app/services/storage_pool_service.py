@@ -9,8 +9,17 @@ from app.models.storage_pool import StoragePool
 logger = logging.getLogger(__name__)
 
 
+def _boto_client(service: str, region: str, credentials: dict):
+    return boto3.client(
+        service,
+        region_name=region,
+        aws_access_key_id=credentials.get("access_key_id"),
+        aws_secret_access_key=credentials.get("secret_access_key"),
+    )
+
+
 def probe_az_capacity(credentials: dict, region: str, instance_types: list[str]) -> dict:
-    ec2 = boto3.client("ec2", region_name=region, **credentials)
+    ec2 = _boto_client("ec2", region, credentials)
     results = {}
 
     for itype in instance_types:
@@ -43,7 +52,7 @@ def find_best_az(az_results: dict, instance_types: list[str]) -> str | None:
 
 
 def ensure_subnet_in_az(credentials: dict, region: str, vpc_id: str, az: str) -> str:
-    ec2 = boto3.client("ec2", region_name=region, **credentials)
+    ec2 = _boto_client("ec2", region, credentials)
 
     existing = ec2.describe_subnets(Filters=[
         {"Name": "vpc-id", "Values": [vpc_id]},
@@ -90,7 +99,7 @@ def ensure_subnet_in_az(credentials: dict, region: str, vpc_id: str, az: str) ->
 
 def create_fsx_filesystem(credentials: dict, region: str, subnet_id: str,
                            security_group_id: str, storage_gb: int, throughput_mbps: int) -> dict:
-    fsx = boto3.client("fsx", region_name=region, **credentials)
+    fsx = _boto_client("fsx", region, credentials)
 
     resp = fsx.create_file_system(
         FileSystemType="OPENZFS",
@@ -124,7 +133,7 @@ def create_fsx_filesystem(credentials: dict, region: str, subnet_id: str,
 
 def _poll_fsx_until_available(pool_id: str, credentials: dict, region: str, filesystem_id: str):
     import time
-    fsx = boto3.client("fsx", region_name=region, **credentials)
+    fsx = _boto_client("fsx", region, credentials)
     db = SessionLocal()
     try:
         for _ in range(120):
@@ -137,7 +146,7 @@ def _poll_fsx_until_available(pool_id: str, credentials: dict, region: str, file
                 pool.status = "available"
                 pool.fsx_dns_name = fs.get("DNSName")
                 if fs.get("NetworkInterfaceIds"):
-                    enis = boto3.client("ec2", region_name=region, **credentials)
+                    enis = _boto_client("ec2", region, credentials)
                     eni_resp = enis.describe_network_interfaces(
                         NetworkInterfaceIds=fs["NetworkInterfaceIds"][:1]
                     )
@@ -184,12 +193,12 @@ def provision_fsx_pool(pool_id: str, credentials: dict, region: str,
 
 
 def delete_fsx_filesystem(credentials: dict, region: str, filesystem_id: str):
-    fsx = boto3.client("fsx", region_name=region, **credentials)
+    fsx = _boto_client("fsx", region, credentials)
     fsx.delete_file_system(FileSystemId=filesystem_id)
 
 
 def update_fsx_throughput(credentials: dict, region: str, filesystem_id: str, throughput_mbps: int):
-    fsx = boto3.client("fsx", region_name=region, **credentials)
+    fsx = _boto_client("fsx", region, credentials)
     fsx.update_file_system(
         FileSystemId=filesystem_id,
         OpenZFSConfiguration={"ThroughputCapacity": throughput_mbps},
@@ -199,7 +208,7 @@ def update_fsx_throughput(credentials: dict, region: str, filesystem_id: str, th
 def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_group_id: str,
                                      include_nfs: bool = True):
     """Add SG rules for shared storage. NFS rule only needed for FSx (managed by us), not BYO."""
-    ec2 = boto3.client("ec2", region_name=region, **credentials)
+    ec2 = _boto_client("ec2", region, credentials)
 
     existing = ec2.describe_security_group_rules(
         Filters=[{"Name": "group-id", "Values": [security_group_id]}]
