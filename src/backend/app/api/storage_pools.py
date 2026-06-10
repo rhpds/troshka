@@ -67,8 +67,6 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
     if body.mode == "shared-byo":
         if not body.nfs_endpoint:
             raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
-        if not body.az:
-            raise HTTPException(400, "AZ is required for shared-byo pools")
 
     pool = StoragePool(
         name=body.name,
@@ -107,16 +105,7 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
         t.start()
 
     elif body.mode == "shared-byo":
-        credentials = provider.get_credentials()
-        region = provider.default_region
-        subnet_id = storage_pool_service.ensure_subnet_in_az(
-            credentials, region, provider.vpc_id, body.az
-        )
-        pool.subnet_id = subnet_id
-        storage_pool_service.add_sg_rules_for_shared_storage(
-            credentials, region, provider.security_group_id, include_nfs=False
-        )
-        db.commit()
+        pass
 
     resp = StoragePoolResponse.model_validate(pool)
     resp.host_count = 0

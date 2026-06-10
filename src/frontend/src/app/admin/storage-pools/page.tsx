@@ -110,13 +110,8 @@ export default function StoragePoolsPage() {
   const handleModeChange = (mode: string) => {
     setNewMode(mode);
     setNewAz("");
-    if (mode === "shared-byo") {
-      const ec2Provider = providers.find((p) => p.type === "ec2");
-      if (ec2Provider) fetchAzs(ec2Provider.id);
-    } else {
-      if (newProviderId) fetchAzs(newProviderId);
-      else setAvailableAzs([]);
-    }
+    setAvailableAzs([]);
+    if (mode === "shared-fsx" && newProviderId) fetchAzs(newProviderId);
   };
 
   const handleCreate = async () => {
@@ -125,7 +120,6 @@ export default function StoragePoolsPage() {
     if (newMode === "shared-fsx" && !newProviderId) { setError("Provider is required for FSx pools"); return; }
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
-    if (newMode === "shared-byo" && !newAz) { setError("AZ is required for BYO NFS pools"); return; }
 
     // BYO NFS: auto-select first EC2 provider (needed for SG rules)
     const providerId = newProviderId || providers.find((p) => p.type === "ec2")?.id;
@@ -241,7 +235,7 @@ export default function StoragePoolsPage() {
                   </select>
                 </div>
               )}
-              {(newMode === "shared-fsx" || newMode === "shared-byo") && (
+              {newMode === "shared-fsx" && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Availability Zone</label>
                   <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
