@@ -665,7 +665,7 @@ export default function AdminHostsPage() {
               )}
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
-                  <Button variant={expectedVersion && h.agent_version && h.agent_version !== expectedVersion ? "primary" : "secondary"}
+                  {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
                           isLoading={updating === h.id} isDisabled={updating === h.id} onClick={async (e) => {
                     const force = e.shiftKey;
                     const msg = force
@@ -712,8 +712,8 @@ export default function AdminHostsPage() {
                       setUpdating(null);
                     }
                   }}>
-                    {updating === h.id ? "Updating..." : expectedVersion && h.agent_version && h.agent_version !== expectedVersion ? "Update Agent ●" : "Update Agent"}
-                  </Button>
+                    {updating === h.id ? "Updating..." : "Update Agent"}
+                  </Button>}
                   <Button variant="secondary" isLoading={installing === h.id} isDisabled={installing === h.id} onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
                     installAgent(h.id);
