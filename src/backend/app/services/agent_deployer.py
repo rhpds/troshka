@@ -103,48 +103,39 @@ elif systemctl is-active libvirtd &>/dev/null; then
     echo "libvirtd restarted"
 fi
 
-# Mount dedicated storage volume if present and not already mounted
-if [ -b /dev/nvme1n1 ] && ! mountpoint -q /var/lib/troshka; then
-    echo "Mounting dedicated storage volume..."
-    blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1
-    mkdir -p /var/lib/troshka
-    mount /dev/nvme1n1 /var/lib/troshka
-    grep -q '/var/lib/troshka' /etc/fstab || \
-        echo '/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2' >> /etc/fstab
-    echo "Storage volume mounted at /var/lib/troshka"
-elif mountpoint -q /var/lib/troshka; then
-    echo "Storage volume already mounted at /var/lib/troshka"
-else
-    echo "WARNING: No dedicated storage volume found — using root filesystem"
-fi
-
-# Detect and enable swap volume (/dev/sdg mapped to an NVMe device)
-SWAP_DEV=""
-if command -v nvme &>/dev/null; then
+# Detect NVMe device for a given /dev/sdX name via nvme id-ctrl
+find_nvme_dev() {
+    local target="$1"
     for dev in /dev/nvme*n1; do
         [ -b "$dev" ] || continue
         DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
-        if [ "$DEVNAME" = "/dev/sdg" ] || [ "$DEVNAME" = "sdg" ]; then
-            SWAP_DEV="$dev"
-            break
+        if [ "$DEVNAME" = "$target" ] || [ "$DEVNAME" = "/dev/$target" ]; then
+            echo "$dev"; return
         fi
     done
+}
+
+# Mount dedicated storage volume (/dev/sdf) if present and not already mounted
+if mountpoint -q /var/lib/troshka; then
+    echo "Storage volume already mounted at /var/lib/troshka"
+else
+    DATA_DEV=$(find_nvme_dev sdf)
+    if [ -n "$DATA_DEV" ]; then
+        echo "Mounting dedicated storage volume ($DATA_DEV -> /dev/sdf)..."
+        blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"
+        mkdir -p /var/lib/troshka
+        mount "$DATA_DEV" /var/lib/troshka
+        grep -q '/var/lib/troshka' /etc/fstab || \
+            echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab
+        echo "Storage volume mounted at /var/lib/troshka"
+    else
+        echo "ERROR: No dedicated storage volume (/dev/sdf) found — agent install cannot continue"
+        exit 1
+    fi
 fi
-if [ -z "$SWAP_DEV" ]; then
-    # Fallback: find unmounted block device that isn't root or data
-    ROOT_DEV=$(lsblk -ndo PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1)
-    DATA_DEV=$(lsblk -ndo PKNAME $(findmnt -n -o SOURCE /var/lib/troshka) 2>/dev/null | head -1)
-    for dev in /dev/nvme*n1; do
-        [ -b "$dev" ] || continue
-        BASENAME=$(basename "$dev")
-        [ "$BASENAME" = "$ROOT_DEV" ] && continue
-        [ "$BASENAME" = "$DATA_DEV" ] && continue
-        if ! findmnt -n "$dev" &>/dev/null && ! swapon --show=NAME --noheadings | grep -q "$dev"; then
-            SWAP_DEV="$dev"
-            break
-        fi
-    done
-fi
+
+# Detect and enable swap volume (/dev/sdg)
+SWAP_DEV=$(find_nvme_dev sdg)
 if [ -n "$SWAP_DEV" ]; then
     if swapon --show=NAME --noheadings | grep -q "$SWAP_DEV"; then
         echo "Swap already active on $SWAP_DEV"

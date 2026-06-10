@@ -167,25 +167,37 @@ runcmd:
   - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
   - systemctl enable --now nftables
   - systemctl disable --now dnsmasq 2>/dev/null || true
-  - bash -c 'while [ ! -b /dev/nvme1n1 ]; do sleep 1; done; blkid /dev/nvme1n1 || mkfs.xfs /dev/nvme1n1; mkdir -p /var/lib/troshka; mount /dev/nvme1n1 /var/lib/troshka; grep -q /var/lib/troshka /etc/fstab || echo "/dev/nvme1n1 /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab'
-  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
-  - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+  - dnf install -y nvme-cli 2>/dev/null || true
   - |
-    # Detect swap volume (/dev/sdg) and enable it
-    dnf install -y nvme-cli 2>/dev/null || true
-    SWAP_DEV=""
-    for dev in /dev/nvme*n1; do
-      [ -b "$dev" ] || continue
-      DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
-      if [ "$DEVNAME" = "/dev/sdg" ] || [ "$DEVNAME" = "sdg" ]; then
-        SWAP_DEV="$dev"; break
-      fi
-    done
+    # Detect data volume (/dev/sdf) via nvme id-ctrl — NVMe ordering is not guaranteed
+    find_nvme_dev() {{
+      local target="$1"
+      for dev in /dev/nvme*n1; do
+        [ -b "$dev" ] || continue
+        DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
+        if [ "$DEVNAME" = "$target" ] || [ "$DEVNAME" = "/dev/$target" ]; then
+          echo "$dev"; return
+        fi
+      done
+    }}
+    # Mount data volume
+    DATA_DEV=$(find_nvme_dev sdf)
+    if [ -n "$DATA_DEV" ]; then
+      blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"
+      mkdir -p /var/lib/troshka
+      mount "$DATA_DEV" /var/lib/troshka
+      grep -q /var/lib/troshka /etc/fstab || echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab
+    fi
+    # Mount swap volume
+    SWAP_DEV=$(find_nvme_dev sdg)
     if [ -n "$SWAP_DEV" ]; then
       mkswap "$SWAP_DEV" 2>/dev/null || true
       swapon "$SWAP_DEV" 2>/dev/null || true
       grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
     fi
+  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
+  - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+  - |
     # Kernel tuning for VM memory overcommit
     sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true
     cat > /etc/sysctl.d/99-troshka.conf << EOF2
