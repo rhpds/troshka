@@ -2888,6 +2888,8 @@ def _handle_bmc_setup(job, params):
 
     # 5. Start vbmcd and register VMs for IPMI
     vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
+    if os.path.isdir(vbmcd_conf_dir):
+        shutil.rmtree(vbmcd_conf_dir)
     os.makedirs(vbmcd_conf_dir, exist_ok=True)
 
     vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")

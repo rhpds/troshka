@@ -83,9 +83,15 @@ def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict, project_id
         # BMC networks use a dedicated bridge (no VNI)
         net_node = next((n for n in nodes if n["id"] == network_node_id), None)
         if net_node and net_node.get("data", {}).get("networkType") == "bmc":
+            # If the NIC MAC is already used by another network, generate a unique one
+            bmc_mac = mac
+            used_macs = {n["mac"] for n in networks}
+            if not bmc_mac or bmc_mac in used_macs:
+                import random
+                bmc_mac = "52:54:01:%02x:%02x:%02x" % (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
             networks.append({
                 "bridge": f"br-bmc-{project_id[:8]}",
-                "mac": mac,
+                "mac": bmc_mac,
                 "nic_id": handle,
             })
             continue
