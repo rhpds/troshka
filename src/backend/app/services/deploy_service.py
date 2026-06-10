@@ -320,9 +320,7 @@ def _disk_path(project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, po
 
 
 def _seed_path(project_id: str, vm_node_id: str, pool=None) -> str:
-    if pool and pool.mode.startswith("shared"):
-        return f"/var/lib/troshka/seeds/{project_id}/{vm_node_id[:8]}-seed.iso"
-    return f"{_vm_dir(project_id)}/{vm_node_id[:8]}-seed.iso"
+    return f"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-seed.iso"
 
 
 def _image_cache_path(item_id: str, fmt: str, pool=None) -> str:
