@@ -224,8 +224,8 @@ export default function PatternsPage() {
               return (
               <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, marginBottom: 8 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
                 <CardTitle>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                       <input type="checkbox" checked={selectedPatterns.has(pattern.id)} onChange={(e) => {
                         e.stopPropagation();
                         setSelectedPatterns((prev) => {
@@ -233,7 +233,7 @@ export default function PatternsPage() {
                           if (next.has(pattern.id)) next.delete(pattern.id); else next.add(pattern.id);
                           return next;
                         });
-                      }} onClick={(e) => e.stopPropagation()} style={{ cursor: "pointer" }} />
+                      }} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
                       <strong>{pattern.name}</strong>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

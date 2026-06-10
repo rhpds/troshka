@@ -354,14 +354,14 @@ export default function ImagesPage() {
         )}
         {items.map((item) => (
           <Card key={item.id} style={{ marginBottom: 8 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                   <input type="checkbox" checked={selectedItems.has(item.id)} onChange={() => setSelectedItems((prev) => {
                     const next = new Set(prev);
                     if (next.has(item.id)) next.delete(item.id); else next.add(item.id);
                     return next;
-                  })} style={{ cursor: "pointer" }} />
+                  })} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
                   <strong>{item.name}</strong>
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
