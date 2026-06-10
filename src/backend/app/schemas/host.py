@@ -8,6 +8,7 @@ class HostCreate(BaseModel):
     instance_type: str = "r8i.4xlarge"
     region: str | None = None
     host_type: str = "shared"
+    storage_pool_id: str | None = None
 
 
 class HostResponse(BaseModel):
@@ -30,5 +31,6 @@ class HostResponse(BaseModel):
     agent_version: str | None = None
     last_health_at: datetime.datetime | None = None
     created_at: datetime.datetime
+    storage_pool_id: str | None = None
 
     model_config = {"from_attributes": True}
