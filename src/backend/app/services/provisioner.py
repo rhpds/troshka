@@ -160,6 +160,7 @@ packages:
   - python3-pip
   - python3-libvirt
   - dnsmasq
+  - haproxy
   - nftables
   - nmap-ncat
   - nvme-cli
