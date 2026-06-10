@@ -129,17 +129,20 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
-    if pool.mode != "shared-fsx":
-        raise HTTPException(400, "Only shared-fsx pools can be updated")
 
-    provider = db.query(Provider).get(pool.provider_id)
-    credentials = provider.get_credentials()
+    if pool.mode == "shared-fsx":
+        provider = db.query(Provider).get(pool.provider_id)
+        credentials = provider.get_credentials()
 
-    if body.fsx_throughput_mbps and body.fsx_throughput_mbps != pool.fsx_throughput_mbps:
-        storage_pool_service.update_fsx_throughput(
-            credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_throughput_mbps
-        )
-        pool.fsx_throughput_mbps = body.fsx_throughput_mbps
+        if body.fsx_throughput_mbps and body.fsx_throughput_mbps != pool.fsx_throughput_mbps:
+            storage_pool_service.update_fsx_throughput(
+                credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_throughput_mbps
+            )
+            pool.fsx_throughput_mbps = body.fsx_throughput_mbps
+
+    if pool.mode == "shared-byo":
+        if body.nfs_endpoint is not None:
+            pool.nfs_endpoint = body.nfs_endpoint
 
     db.commit()
     db.refresh(pool)

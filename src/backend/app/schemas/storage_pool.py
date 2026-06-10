@@ -17,6 +17,7 @@ class StoragePoolCreate(BaseModel):
 class StoragePoolUpdate(BaseModel):
     fsx_throughput_mbps: int | None = None
     fsx_storage_gb: int | None = None
+    nfs_endpoint: str | None = None
 
 
 class StoragePoolResponse(BaseModel):

@@ -30,6 +30,7 @@ interface StoragePool {
 interface Provider {
   id: string;
   name: string;
+  type: string;
 }
 
 const statusColors: Record<string, string> = {
@@ -62,13 +63,18 @@ export default function StoragePoolsPage() {
   const [showCreate, setShowCreate] = useState(false);
 
   const [newName, setNewName] = useState("");
-  const [newMode, setNewMode] = useState("local");
+  const [newMode, setNewMode] = useState("shared-fsx");
   const [newProviderId, setNewProviderId] = useState("");
   const [newAz, setNewAz] = useState("");
   const [newThroughput, setNewThroughput] = useState(160);
   const [newStorageGb, setNewStorageGb] = useState(128);
   const [newNfsEndpoint, setNewNfsEndpoint] = useState("");
   const [creating, setCreating] = useState(false);
+
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editThroughput, setEditThroughput] = useState(160);
+  const [editNfsEndpoint, setEditNfsEndpoint] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const loadData = () => {
     Promise.all([
@@ -113,12 +119,47 @@ export default function StoragePoolsPage() {
     if (resp.ok) {
       setShowCreate(false);
       setNewName("");
-      setNewMode("local");
+      setNewMode("shared-fsx");
       setNewAz("");
       loadData();
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to create pool");
+    }
+  };
+
+  const startEdit = (pool: StoragePool) => {
+    setEditId(pool.id);
+    setEditThroughput(pool.fsx_throughput_mbps || 160);
+    setEditNfsEndpoint(pool.nfs_endpoint || "");
+  };
+
+  const cancelEdit = () => {
+    setEditId(null);
+  };
+
+  const saveEdit = async (pool: StoragePool) => {
+    setSaving(true);
+    setError("");
+    const body: Record<string, unknown> = {};
+    if (pool.mode === "shared-fsx") {
+      body.fsx_throughput_mbps = editThroughput;
+    }
+    if (pool.mode === "shared-byo") {
+      body.nfs_endpoint = editNfsEndpoint;
+    }
+    const resp = await fetch(`/api/v1/storage-pools/${pool.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    setSaving(false);
+    if (resp.ok) {
+      setEditId(null);
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update pool");
     }
   };
 
@@ -157,13 +198,12 @@ export default function StoragePoolsPage() {
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
                 <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
                   <option value="">Select provider...</option>
-                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {providers.filter((p) => p.type === "ec2").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
               <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
                 <select style={inputStyle} value={newMode} onChange={(e) => setNewMode(e.target.value)}>
-                  <option value="local">Local EBS</option>
                   <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
                   <option value="shared-byo">BYO NFS</option>
                 </select>
@@ -215,7 +255,7 @@ export default function StoragePoolsPage() {
           <Card key={pool.id}>
             <CardBody>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div>
+                <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                     <span style={{ fontWeight: 600, fontSize: 15 }}>{pool.name}</span>
                     <span style={{
@@ -227,19 +267,49 @@ export default function StoragePoolsPage() {
                       border: "1px solid var(--pf-t--global--border--color--default)",
                     }}>{modeLabels[pool.mode] || pool.mode}</span>
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16 }}>
-                    {pool.az && <span>AZ: {pool.az}</span>}
-                    <span>Hosts: {pool.host_count}</span>
-                    {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
-                    {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
-                    {pool.fsx_storage_gb && <span>Storage: {pool.fsx_storage_gb} GB</span>}
-                    {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
-                  </div>
+                  {editId === pool.id ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8, maxWidth: 400 }}>
+                      {pool.mode === "shared-fsx" && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
+                          <input style={inputStyle} type="number" value={editThroughput}
+                                 onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={160} />
+                        </div>
+                      )}
+                      {pool.mode === "shared-byo" && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>NFS Endpoint</label>
+                          <input style={inputStyle} value={editNfsEndpoint}
+                                 onChange={(e) => setEditNfsEndpoint(e.target.value)}
+                                 placeholder="10.0.1.50:/exports/troshka" />
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Button variant="primary" size="sm" onClick={() => saveEdit(pool)}
+                                isLoading={saving} isDisabled={saving}>Save</Button>
+                        <Button variant="secondary" size="sm" onClick={cancelEdit}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16 }}>
+                      {pool.az && <span>AZ: {pool.az}</span>}
+                      <span>Hosts: {pool.host_count}</span>
+                      {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
+                      {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
+                      {pool.fsx_storage_gb && <span>Storage: {pool.fsx_storage_gb} GB</span>}
+                      {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
+                    </div>
+                  )}
                 </div>
-                <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
-                        isDisabled={pool.host_count > 0 || pool.status === "creating"}>
-                  Delete
-                </Button>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {editId !== pool.id && pool.status === "available" && (
+                    <Button variant="secondary" size="sm" onClick={() => startEdit(pool)}>Edit</Button>
+                  )}
+                  <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
+                          isDisabled={pool.host_count > 0 || pool.status === "creating"}>
+                    Delete
+                  </Button>
+                </div>
               </div>
             </CardBody>
           </Card>
