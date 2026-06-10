@@ -318,20 +318,22 @@ export default function ProjectCanvasPage() {
 
     try {
       await saveTopology();
+      setProjectState("deploying");
       const resp = await fetch(`/api/v1/projects/${projectId}/deploy`, {
         method: "POST",
       });
       const data = await resp.json();
       if (resp.ok) {
-        setProjectState("deploying");
         useCanvasStore.setState({ topologyDirty: false });
         const userStr = localStorage.getItem("troshka-user");
         const isAdmin = userStr ? JSON.parse(userStr).role === "admin" : false;
         showToast(`Deploying ${data.requirements.vm_count} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
       } else {
+        setProjectState("draft");
         alert(data.detail || "Deployment failed");
       }
     } catch {
+      setProjectState("draft");
       alert("Failed to connect to server");
     }
   };
@@ -432,10 +434,11 @@ export default function ProjectCanvasPage() {
               </button>
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
+                  setProjectState("deploying");
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(async (r) => {
-                      if (r.ok) { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
+                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
                     });
                 }
               }}>
@@ -475,10 +478,11 @@ export default function ProjectCanvasPage() {
               </button>
               <button className="project-publish-btn" onClick={() => {
                 if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
+                  setProjectState("deploying");
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(async (r) => {
-                      if (r.ok) { setProjectState("deploying"); useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
+                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
                     });
                 }
               }}>
