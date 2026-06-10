@@ -10,6 +10,7 @@ from app.models.api_key import ApiKey
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.elastic_ip import ElasticIp
 from app.models.storage_pool import StoragePool, SharedCacheEntry
+from app.models.dns_provider import DnsProvider
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -22,4 +23,5 @@ __all__ = [
     "Pattern", "PatternDisk", "PatternShare",
     "ElasticIp",
     "StoragePool", "SharedCacheEntry",
+    "DnsProvider",
 ]
