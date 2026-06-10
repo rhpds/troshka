@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import config
 from app.core.database import init_db
 
+logger = logging.getLogger(__name__)
+
 init_db()
 
 
@@ -21,6 +23,23 @@ async def lifespan(app):
     set_event_loop(asyncio.get_running_loop())
     start_health_poller()
     start_state_poller()
+
+    # Reset projects stuck in transient states from a previous crash/restart
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    s = SessionLocal()
+    try:
+        stuck = s.query(Project).filter(Project.state.in_(("deploying", "reconfiguring", "starting", "stopping"))).all()
+        for p in stuck:
+            old_state = p.state
+            logger.warning("Startup: resetting stuck project %s (%s) from %s to error", p.name, p.id[:8], old_state)
+            p.state = "error"
+            p.deploy_error = f"Server restarted while project was {old_state}"
+        if stuck:
+            s.commit()
+    finally:
+        s.close()
+
     yield
 
 
