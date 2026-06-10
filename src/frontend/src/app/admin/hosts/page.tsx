@@ -34,6 +34,7 @@ interface Host {
   agent_version: string | null;
   last_health_at: string | null;
   created_at: string;
+  storage_pool_id: string | null;
 }
 
 interface RegionSummary {
@@ -63,16 +64,20 @@ export default function AdminHostsPage() {
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
 
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
+  const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string}[]>([]);
+  const [selectedPool, setSelectedPool] = useState("");
 
   const loadData = () => {
     Promise.all([
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/hosts/summary").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
-    ]).then(([h, s, p]) => {
+      fetch("/api/v1/storage-pools").then((r) => r.ok ? r.json() : []),
+    ]).then(([h, s, p, pools]) => {
       setHosts(Array.isArray(h) ? h : []);
       setSummary(Array.isArray(s) ? s : []);
       setProviders(Array.isArray(p) ? p : []);
+      setPools(Array.isArray(pools) ? pools : []);
       setLoading(false);
     }).catch(() => setLoading(false));
     // Storage fetched separately — SSH calls can be slow and shouldn't block the page
@@ -106,6 +111,7 @@ export default function AdminHostsPage() {
           provider_id: newProviderId,
           instance_type: newInstanceType,
           region: newRegion || undefined,
+          storage_pool_id: selectedPool || undefined,
         }),
       });
       if (!resp.ok) {
@@ -294,6 +300,18 @@ export default function AdminHostsPage() {
     setInstalling(null);
   };
 
+  const handleEvacuate = async (hostId: string) => {
+    if (!window.confirm("Evacuate all projects from this host? They will be migrated to other hosts in the same pool.")) return;
+    setError("");
+    const resp = await fetch(`/api/v1/hosts/${hostId}/evacuate`, { method: "POST" });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to evacuate host");
+    }
+  };
+
   if (loading) {
     return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
   }
@@ -381,6 +399,19 @@ export default function AdminHostsPage() {
                   >
                     {awsRegions.map((r) => (
                       <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ minWidth: 220 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
+                  <select
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    value={selectedPool}
+                    onChange={(e) => setSelectedPool(e.target.value)}
+                  >
+                    <option value="">None (local storage)</option>
+                    {pools.filter(p => p.status === "available").map((p) => (
+                      <option key={p.id} value={p.id}>{p.name} ({p.mode}{p.az ? `, ${p.az}` : ""})</option>
                     ))}
                   </select>
                 </div>
@@ -623,6 +654,11 @@ export default function AdminHostsPage() {
               {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && (
                 <Button variant="secondary" isDisabled isLoading>
                   Installing...
+                </Button>
+              )}
+              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && (
+                <Button variant="secondary" size="sm" onClick={() => handleEvacuate(h.id)}>
+                  Evacuate
                 </Button>
               )}
               {h.state === "active" && h.agent_status === "connected" && (

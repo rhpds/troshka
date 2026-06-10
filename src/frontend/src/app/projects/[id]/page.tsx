@@ -245,10 +245,52 @@ export default function ProjectCanvasPage() {
 
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
+  const [showMigrate, setShowMigrate] = useState(false);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null}[]>([]);
+  const [migrateTarget, setMigrateTarget] = useState("");
+  const [migrating, setMigrating] = useState(false);
 
   const showToast = (msg: string, duration = 4000) => {
     setToast(msg);
     setTimeout(() => setToast(null), duration);
+  };
+
+  const openMigrate = async () => {
+    const [hostsResp, projectResp] = await Promise.all([
+      fetch("/api/v1/hosts/"),
+      fetch(`/api/v1/projects/${projectId}`),
+    ]);
+    if (!hostsResp.ok || !projectResp.ok) return;
+    const hosts = await hostsResp.json();
+    const proj = await projectResp.json();
+    const currentHost = hosts.find((h: any) => h.id === proj.host_id);
+    if (!currentHost?.storage_pool_id) return;
+    const samePool = hosts.filter((h: any) =>
+      h.storage_pool_id === currentHost.storage_pool_id &&
+      h.id !== proj.host_id &&
+      h.state === "active" &&
+      h.agent_status === "connected"
+    );
+    setAvailableHosts(samePool);
+    setShowMigrate(true);
+  };
+
+  const handleMigrate = async () => {
+    if (!migrateTarget) return;
+    setMigrating(true);
+    const resp = await fetch(`/api/v1/projects/${projectId}/migrate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_host_id: migrateTarget }),
+    });
+    setMigrating(false);
+    if (resp.ok) {
+      setShowMigrate(false);
+      setMigrateTarget("");
+    } else {
+      const data = await resp.json();
+      alert(data.detail || "Migration failed");
+    }
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
@@ -292,6 +334,7 @@ export default function ProjectCanvasPage() {
     reconfiguring: "#fbbf24",
     starting: "#fbbf24",
     stopping: "#fbbf24",
+    migrating: "var(--troshka-yellow, #f0ab00)",
     active: "#4ade80",
     stopped: "#f87171",
     error: "#ef4444",
@@ -372,6 +415,9 @@ export default function ProjectCanvasPage() {
                 }
               }}>
                 ■ Stop
+              </button>
+              <button className="project-publish-btn" onClick={openMigrate} style={{ opacity: 0.85 }}>
+                Migrate
               </button>
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
@@ -535,6 +581,45 @@ export default function ProjectCanvasPage() {
           }}
           onClose={() => setSnapshotTarget(null)}
         />
+      )}
+      {showMigrate && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowMigrate(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 16 }}>Migrate Project</div>
+            {availableHosts.length === 0 ? (
+              <p style={{ color: "var(--pf-t--global--text--color--subtle)" }}>No available hosts in the same storage pool.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <label style={{ fontSize: 12 }}>Select target host:</label>
+                <select style={{
+                  width: "100%", padding: "6px 10px", borderRadius: 6,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)", fontSize: 13,
+                }} value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}>
+                  <option value="">Select host...</option>
+                  {availableHosts.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.ip_address} (CPU: {h.used_vcpus}/{h.total_vcpus}, RAM: {Math.round(h.used_ram_mb/1024)}/{Math.round(h.total_ram_mb/1024)} GB)
+                    </option>
+                  ))}
+                </select>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button className="project-stop-btn" onClick={() => setShowMigrate(false)}>Cancel</button>
+                  <button className="project-publish-btn" onClick={handleMigrate} disabled={!migrateTarget || migrating}
+                          style={(!migrateTarget || migrating) ? { opacity: 0.4 } : {}}>
+                    {migrating ? <><span className="project-btn-spinner" /> Migrating...</> : "Migrate"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </ReactFlowProvider>
   );
