@@ -639,7 +639,7 @@ export default function AdminHostsPage() {
                   Starting...
                 </Button>
               )}
-              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={h.used_vcpus > 0 || removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
+              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
                 {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
             </CardBody>
