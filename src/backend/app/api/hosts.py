@@ -38,10 +38,14 @@ def list_hosts(
     db: Session = Depends(get_db),
 ):
     from app.services.eip_service import get_host_eip_usage
+    from app.services.placement import sync_host_capacity
     query = db.query(Host)
     if region:
         query = query.filter(Host.region == region)
     hosts = query.order_by(Host.region, Host.created_at).all()
+    for host in hosts:
+        sync_host_capacity(db, host)
+    db.commit()
     results = []
     for host in hosts:
         resp = HostResponse.model_validate(host)
