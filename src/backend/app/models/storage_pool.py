@@ -25,6 +25,9 @@ class StoragePool(Base):
 
     nfs_endpoint: Mapped[str | None] = mapped_column(String(500))
 
+    ca_cert: Mapped[str | None] = mapped_column(Text)
+    ca_key: Mapped[str | None] = mapped_column(Text)
+
     status: Mapped[str] = mapped_column(String(20), default="creating")
     provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"))
     created_at: Mapped[datetime.datetime] = mapped_column(

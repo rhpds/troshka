@@ -193,10 +193,16 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             h.agent_status = "installing"
             s.commit()
             _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
+            _ca_cert, _host_cert, _host_key = "", "", ""
+            if _sm == "shared" and pool and pool.ca_cert and pool.ca_key and h.ip_address:
+                from app.services.storage_pool_service import sign_host_cert
+                _host_cert, _host_key = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address)
+                _ca_cert = pool.ca_cert
             result = deploy_agent(h.ip_address, h.private_key, h.id,
                                   storage_mode=_sm,
                                   nfs_server=nfs_kwargs.get("nfs_server", ""),
-                                  nfs_path=nfs_kwargs.get("nfs_path", ""))
+                                  nfs_path=nfs_kwargs.get("nfs_path", ""),
+                                  ca_cert=_ca_cert, host_cert=_host_cert, host_key=_host_key)
             h.agent_status = "connected" if result["success"] else "install_failed"
 
             # Store troshkad credentials

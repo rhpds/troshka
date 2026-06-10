@@ -68,6 +68,10 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
         if not body.nfs_endpoint:
             raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
 
+    ca_cert, ca_key = None, None
+    if body.mode.startswith("shared"):
+        ca_cert, ca_key = storage_pool_service.generate_pool_ca(body.name)
+
     pool = StoragePool(
         name=body.name,
         mode=body.mode,
@@ -75,6 +79,8 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
         nfs_endpoint=body.nfs_endpoint,
         fsx_throughput_mbps=body.fsx_throughput_mbps,
         fsx_storage_gb=body.fsx_storage_gb,
+        ca_cert=ca_cert,
+        ca_key=ca_key,
         status="available" if body.mode in ("local", "shared-byo") else "creating",
         provider_id=body.provider_id,
     )

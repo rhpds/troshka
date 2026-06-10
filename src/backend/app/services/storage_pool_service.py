@@ -1,3 +1,4 @@
+import datetime
 import logging
 import threading
 
@@ -7,6 +8,77 @@ from app.core.database import SessionLocal
 from app.models.storage_pool import StoragePool
 
 logger = logging.getLogger(__name__)
+
+
+def generate_pool_ca(pool_name: str) -> tuple[str, str]:
+    """Generate a self-signed CA cert+key for a storage pool. Returns (cert_pem, key_pem)."""
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, f"troshka-pool-{pool_name}"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Troshka"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
+
+
+def sign_host_cert(ca_cert_pem: str, ca_key_pem: str, host_ip: str) -> tuple[str, str]:
+    """Generate a host cert+key signed by the pool CA. Returns (cert_pem, key_pem)."""
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import ipaddress
+
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem.encode())
+    ca_key = serialization.load_pem_private_key(ca_key_pem.encode(), password=None)
+
+    host_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, host_ip),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Troshka"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(host_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(host_ip))]),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = host_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
 
 
 def _boto_client(service: str, region: str, credentials: dict):

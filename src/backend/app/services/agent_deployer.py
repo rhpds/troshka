@@ -202,24 +202,30 @@ fi
 # Configure libvirt TLS for live migration (shared storage pools)
 if [ "{storage_mode}" = "shared" ]; then
     mkdir -p /etc/pki/CA /etc/pki/libvirt/private
-    cp /opt/troshka/tls/server.crt /etc/pki/CA/cacert.pem
-    cp /opt/troshka/tls/server.crt /etc/pki/libvirt/servercert.pem
-    cp /opt/troshka/tls/server.key /etc/pki/libvirt/private/serverkey.pem
-    chmod 600 /etc/pki/libvirt/private/serverkey.pem
 
-    # Enable libvirt TLS listening
+    # Install pool CA cert and host cert (signed by CA, injected by backend)
+    if [ -n "{ca_cert_b64}" ]; then
+        echo "{ca_cert_b64}" | base64 -d > /etc/pki/CA/cacert.pem
+        echo "{host_cert_b64}" | base64 -d > /etc/pki/libvirt/servercert.pem
+        echo "{host_key_b64}" | base64 -d > /etc/pki/libvirt/private/serverkey.pem
+        # Client cert = same as server cert (for outgoing migration connections)
+        cp /etc/pki/libvirt/servercert.pem /etc/pki/libvirt/clientcert.pem
+        cp /etc/pki/libvirt/private/serverkey.pem /etc/pki/libvirt/private/clientkey.pem
+    fi
+    chmod 600 /etc/pki/libvirt/private/serverkey.pem /etc/pki/libvirt/private/clientkey.pem 2>/dev/null
+
+    # Enable libvirt TLS listening with cert verification
     mkdir -p /etc/libvirt
     cat > /etc/libvirt/libvirtd.conf << 'LVEOF'
 listen_tls = 1
 listen_tcp = 0
-tls_no_verify_certificate = 1
 LVEOF
     # For modular daemons (virtqemud)
     if systemctl list-unit-files virtproxyd.socket &>/dev/null; then
         systemctl enable --now virtproxyd-tls.socket 2>/dev/null || true
     fi
     systemctl restart virtqemud 2>/dev/null || systemctl restart libvirtd 2>/dev/null || true
-    echo "troshkad: libvirt TLS configured for migration"
+    echo "troshkad: libvirt TLS configured with pool CA"
 fi
 
 # Ensure NFS mount for shared storage (idempotent — safe to run on every install/reinstall)
@@ -392,8 +398,10 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
 
 
 def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "",
-                 storage_mode: str = "local", nfs_server: str = "", nfs_path: str = "") -> dict:
+                 storage_mode: str = "local", nfs_server: str = "", nfs_path: str = "",
+                 ca_cert: str = "", host_cert: str = "", host_key: str = "") -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
+    import base64
 
     from app.core.config import config
     actual_api_url = api_url or getattr(config.app, "external_url", "")
@@ -404,7 +412,10 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
               .replace("{api_url}", actual_api_url)
               .replace("{storage_mode}", storage_mode)
               .replace("{nfs_server}", nfs_server)
-              .replace("{nfs_path}", nfs_path))
+              .replace("{nfs_path}", nfs_path)
+              .replace("{ca_cert_b64}", base64.b64encode(ca_cert.encode()).decode() if ca_cert else "")
+              .replace("{host_cert_b64}", base64.b64encode(host_cert.encode()).decode() if host_cert else "")
+              .replace("{host_key_b64}", base64.b64encode(host_key.encode()).decode() if host_key else ""))
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)
