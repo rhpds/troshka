@@ -138,7 +138,7 @@ def _check_cert_renewal():
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.storage_pool import StoragePool
-    from app.services.storage_pool_service import sign_host_cert
+    from app.services.storage_pool_service import sign_host_cert, generate_pool_ca
     from app.services.troshkad_client import start_job, wait_for_job
     import base64
 
@@ -150,6 +150,19 @@ def _check_cert_renewal():
         ).all()
 
         for pool in pools:
+            # Check CA expiry — renew if within 90 days
+            try:
+                from cryptography import x509
+                ca = x509.load_pem_x509_certificate(pool.ca_cert.encode())
+                days_left = (ca.not_valid_after_utc - datetime.now(timezone.utc)).days
+                if days_left < 90:
+                    logger.info("Pool %s CA expires in %d days, regenerating", pool.name, days_left)
+                    new_cert, new_key = generate_pool_ca(pool.name)
+                    pool.ca_cert = new_cert
+                    pool.ca_key = new_key
+                    db.commit()
+            except Exception:
+                logger.debug("CA expiry check failed for pool %s", pool.name, exc_info=True)
             hosts = db.query(Host).filter(
                 Host.storage_pool_id == pool.id,
                 Host.state == "active",
