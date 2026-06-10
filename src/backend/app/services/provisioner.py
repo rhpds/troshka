@@ -5,6 +5,7 @@ Admins use this to add/remove EC2 hosts to the pool.
 The placement service (separate) assigns projects to available hosts.
 """
 import logging
+import math
 import uuid
 
 import boto3
@@ -170,6 +171,31 @@ runcmd:
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
   - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
   - |
+    # Detect swap volume (/dev/sdg) and enable it
+    dnf install -y nvme-cli 2>/dev/null || true
+    SWAP_DEV=""
+    for dev in /dev/nvme*n1; do
+      [ -b "$dev" ] || continue
+      DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
+      if [ "$DEVNAME" = "/dev/sdg" ] || [ "$DEVNAME" = "sdg" ]; then
+        SWAP_DEV="$dev"; break
+      fi
+    done
+    if [ -n "$SWAP_DEV" ]; then
+      mkswap "$SWAP_DEV" 2>/dev/null || true
+      swapon "$SWAP_DEV" 2>/dev/null || true
+      grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
+    fi
+    # Kernel tuning for VM memory overcommit
+    sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true
+    cat > /etc/sysctl.d/99-troshka.conf << EOF2
+    vm.overcommit_memory = 1
+    vm.swappiness = 10
+    EOF2
+    # KSM
+    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
+    echo 5000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+  - |
     mkdir -p /etc/libvirt/hooks
     cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
     #!/bin/bash
@@ -232,7 +258,13 @@ def provision_host(
 
     user_data = CLOUD_INIT.format(hostname=hostname, host_id=host_id)
 
-    logger.info("Provisioning host %s (%s, %s)", hostname, instance_type, ami_id)
+    # Look up instance specs before launch (need RAM size for swap volume)
+    types = client.describe_instance_types(InstanceTypes=[instance_type])
+    type_info = types["InstanceTypes"][0] if types["InstanceTypes"] else {}
+    total_ram_mb = type_info.get("MemoryInfo", {}).get("SizeInMiB", 0)
+    swap_size_gb = max(math.ceil(total_ram_mb / 1024), 1)
+
+    logger.info("Provisioning host %s (%s, %s, swap=%dGB)", hostname, instance_type, ami_id, swap_size_gb)
 
     # Try each subnet (AZ) until one supports the instance type
     response = None
@@ -255,6 +287,10 @@ def provision_host(
                     {
                         "DeviceName": "/dev/sdf",
                         "Ebs": {"VolumeSize": storage_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
+                    },
+                    {
+                        "DeviceName": "/dev/sdg",
+                        "Ebs": {"VolumeSize": swap_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
                     },
                 ],
                 TagSpecifications=[{
@@ -292,10 +328,6 @@ def provision_host(
     desc = client.describe_instances(InstanceIds=[instance_id])
     inst = desc["Reservations"][0]["Instances"][0]
 
-    # Get instance specs for capacity tracking
-    types = client.describe_instance_types(InstanceTypes=[instance_type])
-    type_info = types["InstanceTypes"][0] if types["InstanceTypes"] else {}
-
     return {
         "host_id": host_id,
         "instance_id": instance_id,
@@ -314,7 +346,7 @@ def provision_host(
 
 
 def resize_instance(instance_id: str, new_instance_type: str, credentials: dict | None = None) -> dict:
-    """Change instance type of a stopped EC2 instance and return new specs."""
+    """Change instance type of a stopped EC2 instance, resize swap volume, and return new specs."""
     client = _get_ec2_client(credentials=credentials)
     client.modify_instance_attribute(
         InstanceId=instance_id,
@@ -324,12 +356,64 @@ def resize_instance(instance_id: str, new_instance_type: str, credentials: dict 
 
     types = client.describe_instance_types(InstanceTypes=[new_instance_type])
     type_info = types["InstanceTypes"][0] if types["InstanceTypes"] else {}
+    new_ram_mb = type_info.get("MemoryInfo", {}).get("SizeInMiB", 0)
+    new_swap_gb = max(math.ceil(new_ram_mb / 1024), 1)
+
+    # Resize the swap volume (/dev/sdg) to match the new RAM
+    _resize_swap_volume(client, instance_id, new_swap_gb)
+
     return {
         "instance_type": new_instance_type,
         "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
-        "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
+        "total_ram_mb": new_ram_mb,
         "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1) - 1,
     }
+
+
+def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
+    """Delete and recreate the swap volume (/dev/sdg) at the new size."""
+    volumes = client.describe_volumes(Filters=[
+        {"Name": "attachment.instance-id", "Values": [instance_id]},
+        {"Name": "attachment.device", "Values": ["/dev/sdg"]},
+    ])
+    if not volumes["Volumes"]:
+        logger.info("No swap volume found on %s — skipping resize", instance_id)
+        return
+
+    old_vol = volumes["Volumes"][0]
+    old_vol_id = old_vol["VolumeId"]
+    old_size = old_vol["Size"]
+    az = old_vol["AvailabilityZone"]
+
+    if old_size == new_size_gb:
+        logger.info("Swap volume %s already %d GB — no resize needed", old_vol_id, new_size_gb)
+        return
+
+    # Detach, delete, create, attach
+    client.detach_volume(VolumeId=old_vol_id, InstanceId=instance_id, Device="/dev/sdg")
+    waiter = client.get_waiter("volume_available")
+    waiter.wait(VolumeIds=[old_vol_id])
+    client.delete_volume(VolumeId=old_vol_id)
+    logger.info("Deleted old swap volume %s (%d GB)", old_vol_id, old_size)
+
+    new_vol = client.create_volume(
+        Size=new_size_gb,
+        VolumeType="gp3",
+        AvailabilityZone=az,
+        TagSpecifications=[{
+            "ResourceType": "volume",
+            "Tags": [
+                {"Key": "Name", "Value": f"troshka-swap-{instance_id}"},
+                {"Key": "Project", "Value": "troshka"},
+                {"Key": "ManagedBy", "Value": "troshka"},
+                {"Key": "troshka-role", "Value": "swap"},
+            ],
+        }],
+    )
+    new_vol_id = new_vol["VolumeId"]
+    waiter.wait(VolumeIds=[new_vol_id])
+    client.attach_volume(VolumeId=new_vol_id, InstanceId=instance_id, Device="/dev/sdg")
+    logger.info("Created new swap volume %s (%d GB) for %s", new_vol_id, new_size_gb, instance_id)
 
 
 def terminate_host(instance_id: str, credentials: dict | None = None):

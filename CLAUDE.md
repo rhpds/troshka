@@ -173,6 +173,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Credentials stored in `~/secrets/troshka-aws.env`
 - Required IAM permissions:
   - **EC2**: RunInstances, TerminateInstances, StopInstances, StartInstances, RebootInstances, ModifyInstanceAttribute, Describe{Instances,InstanceTypes,Images,Vpcs,Subnets,AvailabilityZones}, CreateKeyPair, DeleteKeyPair, CreateTags
+  - **EBS**: CreateVolume, DeleteVolume, AttachVolume, DetachVolume, DescribeVolumes, ModifyVolume
   - **VPC**: Create/Delete/Modify{Vpc,Subnet,VpcAttribute,SubnetAttribute}, Create/Delete/Attach/Detach InternetGateway, Create/DeleteRoute, Describe{RouteTables,InternetGateways}, AssociateRouteTable
   - **Security Groups**: Create/Delete, Describe{SecurityGroups,SecurityGroupRules}, Authorize/RevokeSecurityGroupIngress
   - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses

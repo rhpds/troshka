@@ -45,9 +45,17 @@ else
 fi
 systemctl enable --now nftables
 
-# Enable KSM for RAM overcommit
+# Enable KSM for RAM deduplication (RHEL 10 disables by default)
 echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+echo 5000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
+echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+# Persist KSM settings across reboots
+mkdir -p /etc/tmpfiles.d
+cat > /etc/tmpfiles.d/ksm.conf << 'KSMEOF'
+w /sys/kernel/mm/ksm/run - - - - 1
+w /sys/kernel/mm/ksm/pages_to_scan - - - - 5000
+w /sys/kernel/mm/ksm/sleep_millisecs - - - - 20
+KSMEOF
 
 # Allow ec2-user to manage libvirt without polkit agent
 usermod -aG libvirt ec2-user
@@ -109,6 +117,56 @@ elif mountpoint -q /var/lib/troshka; then
 else
     echo "WARNING: No dedicated storage volume found — using root filesystem"
 fi
+
+# Detect and enable swap volume (/dev/sdg mapped to an NVMe device)
+SWAP_DEV=""
+if command -v nvme &>/dev/null; then
+    for dev in /dev/nvme*n1; do
+        [ -b "$dev" ] || continue
+        DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
+        if [ "$DEVNAME" = "/dev/sdg" ] || [ "$DEVNAME" = "sdg" ]; then
+            SWAP_DEV="$dev"
+            break
+        fi
+    done
+fi
+if [ -z "$SWAP_DEV" ]; then
+    # Fallback: find unmounted block device that isn't root or data
+    ROOT_DEV=$(lsblk -ndo PKNAME $(findmnt -n -o SOURCE /) 2>/dev/null | head -1)
+    DATA_DEV=$(lsblk -ndo PKNAME $(findmnt -n -o SOURCE /var/lib/troshka) 2>/dev/null | head -1)
+    for dev in /dev/nvme*n1; do
+        [ -b "$dev" ] || continue
+        BASENAME=$(basename "$dev")
+        [ "$BASENAME" = "$ROOT_DEV" ] && continue
+        [ "$BASENAME" = "$DATA_DEV" ] && continue
+        if ! findmnt -n "$dev" &>/dev/null && ! swapon --show=NAME --noheadings | grep -q "$dev"; then
+            SWAP_DEV="$dev"
+            break
+        fi
+    done
+fi
+if [ -n "$SWAP_DEV" ]; then
+    if swapon --show=NAME --noheadings | grep -q "$SWAP_DEV"; then
+        echo "Swap already active on $SWAP_DEV"
+    else
+        echo "Setting up swap on $SWAP_DEV..."
+        mkswap "$SWAP_DEV" 2>/dev/null || true
+        swapon "$SWAP_DEV"
+        grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
+        echo "Swap enabled on $SWAP_DEV ($(swapon --show=SIZE --noheadings --bytes "$SWAP_DEV" 2>/dev/null | awk '{printf "%.0f GB", $1/1024/1024/1024}'))"
+    fi
+else
+    echo "WARNING: No swap volume found — memory overcommit may fail for large VMs"
+fi
+
+# Kernel tuning for VM memory overcommit
+sysctl -w vm.overcommit_memory=1 >/dev/null
+sysctl -w vm.swappiness=10 >/dev/null
+cat > /etc/sysctl.d/99-troshka.conf << 'SYSCTLEOF'
+vm.overcommit_memory = 1
+vm.swappiness = 10
+SYSCTLEOF
+echo "Kernel tuning applied (overcommit=1, swappiness=10)"
 
 # Create directories
 mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent /opt/troshka-agent

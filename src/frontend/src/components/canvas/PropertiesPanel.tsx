@@ -269,6 +269,7 @@ export default function PropertiesPanel() {
                   min={1}
                   max={64}
                   value={(data as unknown as VMNodeData).vcpus}
+                  onFocus={(e) => e.target.select()}
                   onChange={(e) =>
                     update("vcpus", parseInt(e.target.value) || 1)
                   }
@@ -282,6 +283,7 @@ export default function PropertiesPanel() {
                   min={1}
                   max={512}
                   value={(data as unknown as VMNodeData).ram}
+                  onFocus={(e) => e.target.select()}
                   onChange={(e) =>
                     update("ram", parseInt(e.target.value) || 1)
                   }

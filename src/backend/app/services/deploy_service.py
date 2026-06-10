@@ -727,9 +727,11 @@ def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
 
 
 def _start_vms_via_troshkad(host, project_id, topology):
-    """Start VMs respecting start order via troshkad vms/start."""
+    """Start VMs respecting start order via troshkad vms/start.
+    Returns list of (vm_name, error) for any VMs that failed to start."""
     vms = _extract_vms(topology)
     start_order = topology.get("startOrder", [])
+    failed = []
 
     ordered_vm_ids = set()
     if start_order:
@@ -750,6 +752,7 @@ def _start_vms_via_troshkad(host, project_id, topology):
                     wait_for_job(host, job_id, timeout=60)
                 except TroshkadError as e:
                     logger.warning("Failed to start VM %s: %s", vm_name, e)
+                    failed.append((vm["name"], str(e)))
 
     # Start any VMs not in start order
     for vm in vms:
@@ -760,6 +763,9 @@ def _start_vms_via_troshkad(host, project_id, topology):
                 wait_for_job(host, job_id, timeout=60)
             except TroshkadError as e:
                 logger.warning("Failed to start VM %s: %s", vm_name, e)
+                failed.append((vm["name"], str(e)))
+
+    return failed
 
 
 def deploy_project_async(project_id: str):
@@ -928,7 +934,20 @@ def deploy_project_async(project_id: str):
         _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: starting VMs", project_id[:8])
-        _start_vms_via_troshkad(host, project_id, topology)
+        start_failures = _start_vms_via_troshkad(host, project_id, topology)
+
+        if start_failures:
+            failed_names = ", ".join(name for name, _ in start_failures)
+            error_msg = f"Failed to start VMs: {failed_names}"
+            logger.error("Deploy %s: %s", project_id[:8], error_msg)
+            project.state = "error"
+            project.deploy_error = error_msg
+            from app.services.placement import sync_host_capacity
+            sync_host_capacity(s, host)
+            s.commit()
+            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+            _deploy_progress.pop(project_id, None)
+            return
 
         project.state = "active"
         project.deploy_error = None
@@ -1134,7 +1153,17 @@ def start_project_async(project_id: str):
         _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
         # Start VMs via troshkad
-        _start_vms_via_troshkad(host, project_id, topology)
+        start_failures = _start_vms_via_troshkad(host, project_id, topology)
+
+        if start_failures:
+            failed_names = ", ".join(name for name, _ in start_failures)
+            error_msg = f"Failed to start VMs: {failed_names}"
+            logger.error("Start %s: %s", project_id[:8], error_msg)
+            project.state = "error"
+            project.deploy_error = error_msg
+            s.commit()
+            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+            return
 
         # Re-start BMC endpoints
         bmc_config = _extract_bmc_config(topology, project_id)
