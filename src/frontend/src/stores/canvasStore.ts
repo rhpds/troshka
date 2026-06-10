@@ -477,6 +477,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   deleteEdge: (edgeId) => {
     get().pushHistory();
+    // Clean up bmc NICs if disconnecting from BMC network
+    const edge = get().edges.find((e) => e.id === edgeId);
+    if (edge) {
+      const nodes = get().nodes;
+      const srcNode = nodes.find((n) => n.id === edge.source);
+      const tgtNode = nodes.find((n) => n.id === edge.target);
+      const bmcNet = [srcNode, tgtNode].find((n) => n?.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
+      const vmNode = [srcNode, tgtNode].find((n) => n?.type === "vmNode");
+      if (bmcNet && vmNode) {
+        const nics = ((vmNode.data as Record<string, any>).nics || []).filter(
+          (nic: Record<string, string>) => !nic.name.startsWith("bmc")
+        );
+        get().updateNodeData(vmNode.id, { nics });
+      }
+    }
     set({ edges: get().edges.filter((e) => e.id !== edgeId) });
   },
 
