@@ -32,6 +32,10 @@ def validate_migration(db: Session, project_id: str, source_host_id: str, target
     if not source or not target:
         return errors
 
+    if source_host_id == target_host_id:
+        errors.append("Cannot migrate to the same host")
+        return errors
+
     if source.storage_pool_id != target.storage_pool_id:
         errors.append("Source and target must be in the same storage pool")
         return errors
