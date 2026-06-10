@@ -2869,6 +2869,15 @@ def _handle_bmc_setup(job, params):
         bmc_ip = _validate_ip(vm["bmc_ip"])
         vm_short = domain_name.split("-")[-1] if "-" in domain_name else domain_name[:8]
 
+        # Get libvirt UUID for ALLOWED_INSTANCES (sushy uses UUIDs, not names)
+        dom_uuid = ""
+        try:
+            result = subprocess.run(["virsh", "domuuid", domain_name],
+                                    capture_output=True, text=True, timeout=5)
+            dom_uuid = result.stdout.strip()
+        except Exception:
+            pass
+
         conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}.conf")
         with open(conf_path, "w") as f:
             f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
@@ -2877,8 +2886,8 @@ def _handle_bmc_setup(job, params):
             f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
             f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
             f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
-            # Don't filter by ALLOWED_INSTANCES — each sushy has its own IP, and
-            # domain name lookup fails because sushy uses UUIDs internally
+            if dom_uuid:
+                f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
 
         pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}.pid")
 
