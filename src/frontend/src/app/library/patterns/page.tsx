@@ -11,7 +11,6 @@ import {
   EmptyStateBody,
   Label,
   PageSection,
-  SearchInput,
   Title,
   Toolbar,
   ToolbarContent,
@@ -173,11 +172,11 @@ export default function PatternsPage() {
           <ToolbarContent>
             <ToolbarItem><Title headingLevel="h1">Patterns</Title></ToolbarItem>
             <ToolbarItem>
-              <SearchInput
+              <input
+                style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13, width: 200 }}
                 placeholder="Search patterns..."
                 value={search}
-                onChange={(_e, val) => setSearch(val)}
-                onClear={() => setSearch("")}
+                onChange={(e) => setSearch(e.target.value)}
               />
             </ToolbarItem>
           </ToolbarContent>

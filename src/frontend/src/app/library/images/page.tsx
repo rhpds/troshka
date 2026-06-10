@@ -231,7 +231,7 @@ export default function ImagesPage() {
               </select>
             </ToolbarItem>
             <ToolbarItem>
-              <input style={inputStyle} placeholder="Search..." value={filter} onChange={(e) => setFilter(e.target.value)} />
+              <input style={{ ...inputStyle, width: 200 }} placeholder="Search images..." value={filter} onChange={(e) => setFilter(e.target.value)} />
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" onClick={() => setShowUpload(!showUpload)}>

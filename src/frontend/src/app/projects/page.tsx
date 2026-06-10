@@ -256,6 +256,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -328,6 +329,14 @@ export default function ProjectsPage() {
             <ToolbarItem>
               <Title headingLevel="h1">Projects</Title>
             </ToolbarItem>
+            <ToolbarItem>
+              <input
+                style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13, width: 200 }}
+                placeholder="Search projects..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" icon={<PlusCircleIcon />} onClick={() => setShowNewModal(true)}>
                 New Project
@@ -337,9 +346,13 @@ export default function ProjectsPage() {
         </Toolbar>
       </PageSection>
       <PageSection>
-        {projects.length > 0 && (() => {
-          const selected = projects.filter((p) => selectedProjects.has(p.id));
-          const allSelected = selected.length === projects.length;
+        {(() => {
+          const q = search.toLowerCase();
+          const filteredProjects = q ? projects.filter((p) => p.name.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q)) : projects;
+          return (<>
+        {filteredProjects.length > 0 && (() => {
+          const selected = filteredProjects.filter((p) => selectedProjects.has(p.id));
+          const allSelected = selected.length === filteredProjects.length;
           const someSelected = selected.length > 0;
           const allActive = someSelected && selected.every((p) => p.state === "active");
           const allStopped = someSelected && selected.every((p) => p.state === "stopped");
@@ -354,10 +367,10 @@ export default function ProjectsPage() {
                   checked={allSelected}
                   onChange={() => {
                     if (allSelected) setSelectedProjects(new Set());
-                    else setSelectedProjects(new Set(projects.map((p) => p.id)));
+                    else setSelectedProjects(new Set(filteredProjects.map((p) => p.id)));
                   }}
                 />
-                {someSelected ? `${selected.length} of ${projects.length} selected` : "Select all"}
+                {someSelected ? `${selected.length} of ${filteredProjects.length} selected` : "Select all"}
               </label>
               {someSelected && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -409,7 +422,10 @@ export default function ProjectsPage() {
           );
         })()}
         <div>
-          {projects.map((p) => (
+          {filteredProjects.length === 0 && (
+            <p style={{ opacity: 0.6 }}>No projects match &quot;{search}&quot;</p>
+          )}
+          {filteredProjects.map((p) => (
             <Card
               key={p.id}
               style={{ marginBottom: 8, cursor: "pointer" }}
@@ -496,6 +512,8 @@ export default function ProjectsPage() {
             </Card>
           ))}
         </div>
+          </>);
+        })()}
       </PageSection>
       {showNewModal && (
         <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />
