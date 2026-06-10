@@ -460,6 +460,7 @@ export default function AdminHostsPage() {
         )}
         {filteredHosts.map((h) => (
           <Card key={h.id} style={{ marginBottom: 8 }}>
+            {/* Row 1: Host info + stats */}
             <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -479,24 +480,22 @@ export default function AdminHostsPage() {
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
                   {h.state === "stopped" ? (
-                    <>
-                      <select
-                        style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 12 }}
-                        value={resizeType[h.id] || h.instance_type || ""}
-                        onChange={(e) => setResizeType((prev) => ({ ...prev, [h.id]: e.target.value }))}
-                      >
-                        {instanceTypes.map((t) => (
-                          <option key={t.value} value={t.value}>{t.label}</option>
-                        ))}
-                      </select>
-                    </>
+                    <select
+                      style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 12 }}
+                      value={resizeType[h.id] || h.instance_type || ""}
+                      onChange={(e) => setResizeType((prev) => ({ ...prev, [h.id]: e.target.value }))}
+                    >
+                      {instanceTypes.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
                   <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type}</span>
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 24, marginRight: 16, fontSize: 13 }}>
+              <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
                 <div style={{ textAlign: "center" }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>vCPU</div>
                   <div><strong>{h.used_vcpus}</strong>/{Math.round(h.total_vcpus * cpuRatio)}</div>
@@ -520,6 +519,9 @@ export default function AdminHostsPage() {
                   </div>
                 )}
               </div>
+            </CardBody>
+            {/* Row 2: Action buttons */}
+            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
               </Button>
@@ -559,7 +561,6 @@ export default function AdminHostsPage() {
                         alert(`Already up to date (v${oldVersion})`);
                         return;
                       }
-                      // Poll: wait for agent to restart (version changes or health recovers)
                       let sawDown = false;
                       for (let i = 0; i < 60; i++) {
                         await new Promise(r => setTimeout(r, 3000));
