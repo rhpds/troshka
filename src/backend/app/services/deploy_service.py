@@ -671,7 +671,7 @@ def _setup_pxe_via_troshkad(host, topology, vni_map, project_id=""):
             logger.error("PXE setup failed for VNI %s: %s", net["vni"], e)
 
 
-def _create_seed_isos_via_troshkad(host, project_id, topology):
+def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
     """Create cloud-init seed ISOs via troshkad seeds/create-batch."""
     from app.services.cloud_init import generate_userdata, generate_metadata
 
@@ -688,7 +688,7 @@ def _create_seed_isos_via_troshkad(host, project_id, topology):
         vm_label = data.get("name", "vm")
         userdata = generate_userdata(data)
         metadata = generate_metadata(vm_label)
-        path = _seed_path(project_id, node_id)
+        path = _seed_path(project_id, node_id, pool)
 
         seeds.append({
             "path": path,
@@ -708,18 +708,18 @@ def _create_seed_isos_via_troshkad(host, project_id, topology):
         logger.error("Seed ISO creation failed: %s", e)
 
 
-def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks):
+def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
     """Create disk images for a VM via troshkad disks/create."""
     for disk in vm_disks:
         if disk["format"] == "iso":
             continue
-        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"], pool)
 
         backing = None
         if disk.get("source") == "pattern" and disk.get("patternId"):
-            backing = f"/var/lib/troshka/cache/patterns/{disk['patternId']}/{disk['patternDiskId']}.{disk['format']}"
+            backing = _pattern_cache_path(disk["patternId"], disk["patternDiskId"], disk["format"], pool)
         elif disk.get("source") == "library" and disk.get("library_item_id"):
-            backing = f"/var/lib/troshka/images/{disk['library_item_id']}.{disk['format']}"
+            backing = _image_cache_path(disk["library_item_id"], disk["format"], pool)
 
         params = {
             "path": dp,
@@ -736,28 +736,28 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks):
             raise RuntimeError(f"Disk creation failed for {dp}: {e}")
 
 
-def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
+def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, disk_cache=None):
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], topology)
     vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map, project_id)
 
     # Build disk list for virt-install
-    vm_dir = _vm_dir(project_id)
+    vm_dir = _vm_dir(project_id, pool)
     disks = []
     for disk in vm_disks:
         if disk["format"] == "iso":
             if disk.get("library_item_id"):
-                cache_path = f"/var/lib/troshka/images/{disk['library_item_id']}.iso"
+                cache_path = _image_cache_path(disk["library_item_id"], "iso", pool)
                 link_path = f"{vm_dir}/{vm['node_id'][:8]}-{disk['library_item_id'][:8]}.iso"
                 disks.append({"path": link_path, "bus": "sata", "device": "cdrom", "symlink_from": cache_path})
             continue
-        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"])
+        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"], pool)
         disks.append({"path": dp, "bus": disk["bus"]})
 
     # Seed ISO as cdrom
     if vm.get("cloud_init"):
-        disks.append({"path": _seed_path(project_id, vm["node_id"]), "bus": "sata", "device": "cdrom"})
+        disks.append({"path": _seed_path(project_id, vm["node_id"], pool), "bus": "sata", "device": "cdrom"})
 
     # Build network list
     networks = []
@@ -794,6 +794,8 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map):
         "secure_boot": vm.get("secure_boot", False),
         "boot_devs": boot_devs,
     }
+    if disk_cache:
+        params["disk_cache"] = disk_cache
 
     job_id = start_job(host, "/vms/create", params)
     job = wait_for_job(host, job_id, timeout=600)
@@ -906,6 +908,9 @@ def deploy_project_async(project_id: str):
         topology = project.topology or {}
         vni_map = project.vni_map or {}
 
+        pool = _get_host_pool(host, s)
+        disk_cache = "none" if pool and pool.mode.startswith("shared") else None
+
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
         _deploy_progress[project_id] = {"step": "networking", "detail": "waiting for lock"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
@@ -983,7 +988,7 @@ def deploy_project_async(project_id: str):
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
-        _create_seed_isos_via_troshkad(host, project_id, topology)
+        _create_seed_isos_via_troshkad(host, project_id, topology, pool)
 
         # Step 2b: Deploy metadata service
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
@@ -1027,8 +1032,8 @@ def deploy_project_async(project_id: str):
         vms = _extract_vms(topology)
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
-            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks)
-            _create_vm_via_troshkad(host, project_id, vm, topology, vni_map)
+            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+            _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
         bmc_config = _extract_bmc_config(topology, project_id)
@@ -1340,9 +1345,13 @@ def destroy_project_sync(project_id: str):
                 logger.warning("Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e)
 
         # Remove project VM directory
-        vm_dir = _vm_dir(project_id)
+        pool = _get_host_pool(host, s)
+        vm_dir = _vm_dir(project_id, pool)
+        paths_to_remove = [vm_dir]
+        if pool and pool.mode.startswith("shared"):
+            paths_to_remove.append(f"/var/lib/troshka/seeds/{project_id}")
         try:
-            job_id = start_job(host, "/files/remove", {"paths": [vm_dir]})
+            job_id = start_job(host, "/files/remove", {"paths": paths_to_remove})
             wait_for_job(host, job_id, timeout=30)
         except TroshkadError as e:
             logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
