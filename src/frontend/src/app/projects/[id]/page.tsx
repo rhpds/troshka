@@ -194,9 +194,9 @@ export default function ProjectCanvasPage() {
         setProjectState("reconfiguring");
         useCanvasStore.setState({ topologyDirty: false });
       } else {
-        alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "unknown error"}`);
+        setDeployError(data.output?.slice(-300) || data.errors?.join("\n") || data.detail || "Reconfigure failed");
       }
-    } catch { alert("Failed to connect to server"); }
+    } catch { setDeployError("Failed to connect to server"); }
     setApplyingChanges(false);
   };
 
@@ -413,7 +413,7 @@ export default function ProjectCanvasPage() {
                 if (data.status === "reconfiguring") {
                   setProjectState("reconfiguring");
                 } else {
-                  alert(`Reconfigure failed:\n${data.output?.slice(-300) || data.detail || "unknown error"}`);
+                  setDeployError(data.output?.slice(-300) || data.detail || "Reconfigure failed");
                 }
               }}>
                 Apply Changes
