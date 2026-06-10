@@ -74,9 +74,15 @@ class PatternShareRequest(BaseModel):
 class PatternDeployRequest(BaseModel):
     name: str | None = None
     description: str | None = None
+    guid: str | None = None
+    domain: str | None = None
+    dns_provider_id: str | None = None
 
 
 class PatternBulkDeployRequest(BaseModel):
     count: int
     name_template: str
     auto_deploy: bool = False
+    guid_template: str | None = None
+    domain: str | None = None
+    dns_provider_id: str | None = None

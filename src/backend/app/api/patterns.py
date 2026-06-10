@@ -474,6 +474,12 @@ def deploy_pattern(
         topology=new_topology,
         state="draft",
     )
+    if body.guid:
+        project.guid = body.guid
+    if body.domain:
+        project.domain = body.domain
+    if body.dns_provider_id:
+        project.dns_provider_id = body.dns_provider_id
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -566,6 +572,12 @@ def bulk_deploy_pattern(
             topology=new_topology,
             state="draft",
         )
+        if body.guid_template:
+            project.guid = body.guid_template.replace("{n}", f"{i:03d}")
+        if body.domain:
+            project.domain = body.domain
+        if body.dns_provider_id:
+            project.dns_provider_id = body.dns_provider_id
         db.add(project)
         projects.append(project)
 

@@ -1132,6 +1132,35 @@ def deploy_project_async(project_id: str):
         project.deploy_error = None
         project.deployed_topology = project.topology
 
+        # Create DNS records if DNS provider configured
+        if project.dns_provider_id and project.guid and project.domain:
+            from app.models.dns_provider import DnsProvider
+            from app.services.dns_service import resolve_dns_records, create_dns_records
+
+            dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+            if dns_provider and lb_config:
+                _deploy_progress[project_id] = {"step": "dns", "detail": f"creating records for {project.guid}.{project.domain}"}
+                notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+
+                eip_address = None
+                for ext_ip in external_ips:
+                    pub = ext_ip.get("ip") or ext_ip.get("_public_ip")
+                    if pub:
+                        eip_address = pub
+                        break
+
+                dns_templates = lb_config.get("dns_records", [])
+                if dns_templates:
+                    records = resolve_dns_records(dns_templates, guid=project.guid, domain=project.domain, eip=eip_address)
+                    errors = create_dns_records(dns_provider.type, dns_provider.config, records, ttl=lb_config.get("dns_ttl", 30))
+
+                    deployed_topo = project.deployed_topology or {}
+                    deployed_topo["_dns_records"] = [r for r in records if r.get("value")]
+                    project.deployed_topology = deployed_topo
+
+                    if errors:
+                        logger.warning("Deploy %s: DNS record creation had errors: %s", project_id[:8], errors)
+
         # Store BMC addresses in deployed topology for UI display
         if bmc_config:
             deployed_topo = project.deployed_topology or {}
@@ -1422,6 +1451,18 @@ def destroy_project_sync(project_id: str):
         from app.services.placement import sync_host_capacity
         sync_host_capacity(s, host)
         s.commit()
+
+        # Delete DNS records if configured
+        if project.dns_provider_id:
+            from app.models.dns_provider import DnsProvider
+            from app.services.dns_service import delete_dns_records
+
+            dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+            deployed_topo = project.deployed_topology or {}
+            dns_records = deployed_topo.get("_dns_records", [])
+            if dns_provider and dns_records:
+                logger.info("Teardown %s: deleting DNS records", project_id[:8])
+                delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
 
         # Release all EIPs for this project
         from app.models.elastic_ip import ElasticIp
