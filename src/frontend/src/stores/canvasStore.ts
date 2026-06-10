@@ -360,19 +360,26 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // Auto-add a bmc0 NIC to provisioner VM for visibility (edge stays on original handle)
+    // Auto-add a bmc0 NIC and connect from its handle
+    let bmcNicHandle: string | null = null;
+    let bmcVmIsSource = false;
     if (isBmcSource || isBmcTarget) {
       const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      bmcVmIsSource = sType === "vmNode";
       const existingNics = (vmNode.data as Record<string, any>).nics || [];
-      if (!existingNics.some((n: Record<string, string>) => n.name.startsWith("bmc"))) {
+      let bmcNic = existingNics.find((n: Record<string, string>) => n.name.startsWith("bmc"));
+      if (!bmcNic) {
         const nicId = generateNicId();
         const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-        const newNic = { id: nicId, name: "bmc0", mac: `52:54:01:${hex()}:${hex()}:${hex()}`, model: "virtio" };
-        get().updateNodeData(vmNode.id, { nics: [...existingNics, newNic] });
+        bmcNic = { id: nicId, name: "bmc0", mac: `52:54:01:${hex()}:${hex()}:${hex()}`, model: "virtio" };
+        get().updateNodeData(vmNode.id, { nics: [...existingNics, bmcNic] });
       }
+      bmcNicHandle = `${bmcNic.id}-top`;
     }
 
     get().pushHistory();
+
+    // Create edge initially on the dragged handle, then swap to bmc0 after handles render
     set({
       edges: addEdge(
         {
@@ -387,6 +394,32 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       topologyDirty: true,
     });
 
+    if (bmcNicHandle) {
+      const handle = bmcNicHandle;
+      const src = connection.source!;
+      const tgt = connection.target!;
+      const isSource = bmcVmIsSource;
+      // Wait for React to render the new NIC handles, then swap the edge
+      const trySwap = (attempts: number) => {
+        if (attempts <= 0) return;
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-handleid="${handle}"]`);
+          if (el) {
+            set({
+              edges: get().edges.map((e) => {
+                if (e.source !== src || e.target !== tgt) return e;
+                return isSource
+                  ? { ...e, sourceHandle: handle, id: `xy-edge__${src}${handle}-${tgt}${e.targetHandle || ""}` }
+                  : { ...e, targetHandle: handle, id: `xy-edge__${src}${e.sourceHandle || ""}-${tgt}${handle}` };
+              }),
+            });
+          } else {
+            setTimeout(() => trySwap(attempts - 1), 100);
+          }
+        });
+      };
+      trySwap(20);
+    }
   },
 
   addNode: (node) => {
