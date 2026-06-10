@@ -60,6 +60,7 @@ export default function AdminHostsPage() {
   const [filterRegion, setFilterRegion] = useState("");
   const [cpuRatio, setCpuRatio] = useState(4.0);
   const [ramRatio, setRamRatio] = useState(1.5);
+  const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
 
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
 
@@ -455,6 +456,82 @@ export default function AdminHostsPage() {
             </CardBody>
           </Card>
         ))}
+        {filteredHosts.length > 0 && (() => {
+          const selected = filteredHosts.filter((h) => selectedHosts.has(h.id));
+          const allSelected = selected.length === filteredHosts.length && filteredHosts.length > 0;
+          const someSelected = selected.length > 0;
+          const allActive = someSelected && selected.every((h) => h.state === "active");
+          const allConnected = someSelected && selected.every((h) => h.agent_status === "connected");
+          const allStopped = someSelected && selected.every((h) => h.state === "stopped");
+          const allActiveConnected = allActive && allConnected;
+          return (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() => {
+                    if (allSelected) setSelectedHosts(new Set());
+                    else setSelectedHosts(new Set(filteredHosts.map((h) => h.id)));
+                  }}
+                />
+                {someSelected ? `${selected.length} of ${filteredHosts.length} selected` : "Select all"}
+              </label>
+              {someSelected && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {allActiveConnected && (
+                    <>
+                      <Button variant="secondary" size="sm" onClick={async () => {
+                        if (!window.confirm(`Update agent on ${selected.length} host(s)?`)) return;
+                        for (const h of selected) {
+                          fetch(`/api/v1/hosts/${h.id}/update-agent`, { method: "POST" });
+                        }
+                        setSelectedHosts(new Set());
+                        loadData();
+                      }}>Update Agent ({selected.length})</Button>
+                      <Button variant="secondary" size="sm" onClick={async () => {
+                        if (!window.confirm(`Run GC on ${selected.length} host(s)?`)) return;
+                        for (const h of selected) {
+                          fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
+                        }
+                        setSelectedHosts(new Set());
+                        loadData();
+                      }}>Clean ({selected.length})</Button>
+                    </>
+                  )}
+                  {allActive && (
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!window.confirm(`Power off ${selected.length} host(s)?`)) return;
+                      for (const h of selected) {
+                        fetch(`/api/v1/hosts/${h.id}/poweroff`, { method: "POST" });
+                      }
+                      setSelectedHosts(new Set());
+                      loadData();
+                    }}>Power Off ({selected.length})</Button>
+                  )}
+                  {allStopped && (
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!window.confirm(`Power on ${selected.length} host(s)?`)) return;
+                      for (const h of selected) {
+                        fetch(`/api/v1/hosts/${h.id}/poweron`, { method: "POST" });
+                      }
+                      setSelectedHosts(new Set());
+                      loadData();
+                    }}>Power On ({selected.length})</Button>
+                  )}
+                  <Button variant="danger" size="sm" onClick={async () => {
+                    if (!window.confirm(`Remove ${selected.length} host(s)? This will terminate all EC2 instances.`)) return;
+                    for (const h of selected) {
+                      fetch(`/api/v1/hosts/${h.id}`, { method: "DELETE" });
+                    }
+                    setSelectedHosts(new Set());
+                    loadData();
+                  }}>Remove ({selected.length})</Button>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {filteredHosts.length === 0 && pendingHosts.length === 0 && (
           <p style={{ opacity: 0.6 }}>No hosts{filterRegion ? ` in ${filterRegion}` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
         )}
@@ -462,6 +539,16 @@ export default function AdminHostsPage() {
           <Card key={h.id} style={{ marginBottom: 8 }}>
             {/* Row 1: Host info + stats */}
             <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={selectedHosts.has(h.id)}
+                onChange={() => setSelectedHosts((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(h.id)) next.delete(h.id); else next.add(h.id);
+                  return next;
+                })}
+                style={{ marginRight: 8, cursor: "pointer" }}
+              />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <strong>{h.instance_id || h.id.slice(0, 8)}</strong>
