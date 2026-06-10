@@ -214,7 +214,7 @@ runcmd:
     DOMAIN=$1
     ACTION=$2
     if [ "$ACTION" = "started" ]; then
-        PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\([a-f0-9]*\)-.*/\1/p')
+        PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\\([a-f0-9]*\\)-.*/\\1/p')
         [ -z "$PID" ] && exit 0
         NS="troshka-$PID"
         ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
