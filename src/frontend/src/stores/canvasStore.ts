@@ -312,25 +312,28 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const newNic = { id: nicId, name: "bmc0", mac: bmcMac, model: "virtio" };
 
       const nics = [...((vmNode.data as Record<string, any>).nics || []), newNic];
+      get().pushHistory();
       get().updateNodeData(vmNode.id, { nics });
 
+      // Defer edge creation until after React Flow re-renders the new NIC handles
       const nicHandle = `${nicId}-top`;
-      get().pushHistory();
-      set({
-        edges: addEdge(
-          {
-            source: vmIsSource ? vmNode.id : bmcNode.id,
-            target: vmIsSource ? bmcNode.id : vmNode.id,
-            sourceHandle: vmIsSource ? nicHandle : "top",
-            targetHandle: vmIsSource ? "top" : nicHandle,
-            type: "smoothstep",
-            style: { stroke: "rgba(168,85,247,0.5)", strokeWidth: 2, strokeDasharray: "6 4" },
-            animated: true,
-          },
-          get().edges,
-        ),
-        topologyDirty: true,
-      });
+      setTimeout(() => {
+        set({
+          edges: addEdge(
+            {
+              source: vmIsSource ? vmNode.id : bmcNode.id,
+              target: vmIsSource ? bmcNode.id : vmNode.id,
+              sourceHandle: vmIsSource ? nicHandle : "top",
+              targetHandle: vmIsSource ? "top" : nicHandle,
+              type: "smoothstep",
+              style: { stroke: "rgba(168,85,247,0.5)", strokeWidth: 2, strokeDasharray: "6 4" },
+              animated: true,
+            },
+            get().edges,
+          ),
+          topologyDirty: true,
+        });
+      }, 300);
       return;
     }
 
