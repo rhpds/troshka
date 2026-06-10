@@ -563,11 +563,29 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    from app.services.placement import sync_host_capacity
-    sync_host_capacity(db, host)
-    db.flush()
-    if host.used_vcpus > 0:
-        raise HTTPException(status_code=409, detail="Host has active projects — drain first")
+
+    from app.models.project import Project
+    running = db.query(Project).filter(
+        Project.host_id == host.id,
+        Project.state.in_(("active", "deploying", "reconfiguring", "starting")),
+    ).count()
+    if running > 0:
+        raise HTTPException(status_code=409, detail=f"Host has {running} running project(s) — stop them first")
+
+    # Reset stopped projects to draft (host is going away)
+    stopped = db.query(Project).filter(
+        Project.host_id == host.id,
+        Project.state.in_(("stopped", "error", "stopping")),
+    ).all()
+    for p in stopped:
+        p.state = "draft"
+        p.host_id = None
+        p.deployed_topology = None
+        p.deploy_error = None
+        p.vni_map = None
+    if stopped:
+        db.flush()
+        logger.info("Reset %d stopped projects to draft for host %s removal", len(stopped), host_id[:8])
 
     # Get provider credentials for termination
     creds = None
