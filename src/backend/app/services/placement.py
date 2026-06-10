@@ -71,13 +71,25 @@ def sync_host_capacity(db: Session, host: Host):
     host.used_ram_mb = total_ram_mb
 
 
-def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int, required_eips: int = 0) -> Host | None:
-    """Find an active host with enough free capacity (with overcommit)."""
-    hosts = db.query(Host).filter(
+def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int,
+                        required_eips: int = 0, storage_pool_id: str | None = None) -> Host | None:
+    """Find the least-loaded active host with enough free capacity (with overcommit).
+    Syncs capacity from DB first to handle concurrent deployments."""
+    query = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
-    ).all()
+    )
+    if storage_pool_id:
+        query = query.filter(Host.storage_pool_id == storage_pool_id)
 
+    hosts = query.all()
+
+    # Sync capacity for accurate placement under concurrent load
+    for host in hosts:
+        sync_host_capacity(db, host)
+
+    # Sort by most free capacity (least loaded first)
+    candidates = []
     for host in hosts:
         alloc_vcpus, alloc_ram = get_allocatable(host)
         free_vcpus = alloc_vcpus - host.used_vcpus
@@ -88,9 +100,14 @@ def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int, 
                 eip_used = get_host_eip_usage(db, host.id)
                 if host.max_eips - eip_used < required_eips:
                     continue
-            return host
+            candidates.append((host, free_vcpus, free_ram))
 
-    return None
+    if not candidates:
+        return None
+
+    # Pick the host with the most free RAM (spreads load across hosts)
+    candidates.sort(key=lambda x: x[2], reverse=True)
+    return candidates[0][0]
 
 
 def place_project(db: Session, project: Project) -> dict:
