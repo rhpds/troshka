@@ -736,6 +736,23 @@ def reconfigure_project(
 
             _setup_pxe_via_troshkad(h, current, vni_map, p_id)
 
+            # Create BMC bridge if needed (must exist before VM restart)
+            from app.services.deploy_service import _extract_bmc_config
+            bmc_config = _extract_bmc_config(current, p_id)
+            if bmc_config:
+                net_data = bmc_config["bmc_network"]
+                cidr = net_data.get("cidr", "192.168.100.0/24")
+                try:
+                    bj = start_job(h, "/bmc/create-bridge", {
+                        "project_id": p_id,
+                        "bmc_cidr": cidr,
+                        "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+                        "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+                    })
+                    wait_for_job(h, bj, timeout=30)
+                except TroshkadError:
+                    logger.warning("Reconfigure %s: BMC bridge creation failed (non-fatal)", p_id[:8])
+
             vm_dir_path = _vm_dir(p_id)
 
             for node in diff["removed_vms"]:
