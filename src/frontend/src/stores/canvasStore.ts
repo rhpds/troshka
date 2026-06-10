@@ -342,8 +342,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // For BMC connections: auto-add a bmc0 NIC and rewrite the edge to use it
-    let finalConnection = { ...connection };
+    // For BMC connections: auto-add a bmc0 NIC, connect with original handle, then swap after render
+    let bmcEdgeSwap: { vmId: string; vmIsSource: boolean; newHandle: string } | null = null;
     if (isBmcSource || isBmcTarget) {
       const vmNode = sType === "vmNode" ? sourceNode : targetNode;
       const vmIsSource = sType === "vmNode";
@@ -354,19 +354,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const bmcNicCount = existingNics.filter((n: Record<string, string>) => n.name.startsWith("bmc")).length;
       const newNic = { id: nicId, name: `bmc${bmcNicCount}`, mac: bmcMac, model: "virtio" };
       get().updateNodeData(vmNode.id, { nics: [...existingNics, newNic] });
-      const nicHandle = `${nicId}-top`;
-      if (vmIsSource) {
-        finalConnection.sourceHandle = nicHandle;
-      } else {
-        finalConnection.targetHandle = nicHandle;
-      }
+      bmcEdgeSwap = { vmId: vmNode.id, vmIsSource, newHandle: `${nicId}-top` };
     }
 
     get().pushHistory();
     set({
       edges: addEdge(
         {
-          ...finalConnection,
+          ...connection,
           type: "smoothstep",
           style: edgeStyle,
           animated,
@@ -376,6 +371,24 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
       topologyDirty: true,
     });
+
+    // Swap the BMC edge handle after React Flow renders the new NIC handles
+    if (bmcEdgeSwap) {
+      const swap = bmcEdgeSwap;
+      setTimeout(() => {
+        set({
+          edges: get().edges.map((e) => {
+            const isMatch = swap.vmIsSource
+              ? e.source === swap.vmId && e.target === connection.target
+              : e.target === swap.vmId && e.source === connection.source;
+            if (!isMatch) return e;
+            return swap.vmIsSource
+              ? { ...e, sourceHandle: swap.newHandle }
+              : { ...e, targetHandle: swap.newHandle };
+          }),
+        });
+      }, 500);
+    }
   },
 
   addNode: (node) => {
