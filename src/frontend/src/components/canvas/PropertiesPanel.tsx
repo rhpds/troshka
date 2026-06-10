@@ -370,6 +370,15 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
+            {(node.data as Record<string, any>).liveBootDevs && (
+              <div style={{ background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontSize: 11 }}>
+                <label className="props-label" style={{ color: "rgba(168,85,247,0.9)", fontSize: 10 }}>Live Boot Order (libvirt)</label>
+                {((node.data as Record<string, any>).liveBootDevs as string[]).map((dev, i) => {
+                  const labels: Record<string, string> = { hd: "Hard Disk", network: "Network (PXE)", cdrom: "CD-ROM" };
+                  return <div key={i} style={{ fontFamily: "monospace" }}>{i + 1}. {labels[dev] || dev}</div>;
+                })}
+              </div>
+            )}
             <div className="props-field">
               <label className="props-label">Boot Order</label>
               {(() => {
