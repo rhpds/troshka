@@ -224,24 +224,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         return;
       }
       get().pushHistory();
-
-      // Remove bmc NICs when disconnecting from BMC network
-      const nodes = get().nodes;
-      const edges = get().edges;
-      for (const removal of removals) {
-        const edge = edges.find((e) => e.id === (removal as { id: string }).id);
-        if (!edge) continue;
-        const srcNode = nodes.find((n) => n.id === edge.source);
-        const tgtNode = nodes.find((n) => n.id === edge.target);
-        const bmcNet = [srcNode, tgtNode].find((n) => n?.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
-        const vmNode = [srcNode, tgtNode].find((n) => n?.type === "vmNode");
-        if (bmcNet && vmNode) {
-          const nics = ((vmNode.data as Record<string, any>).nics || []).filter(
-            (nic: Record<string, string>) => !nic.name.startsWith("bmc")
-          );
-          get().updateNodeData(vmNode.id, { nics });
-        }
-      }
     }
     set({ edges: applyEdgeChanges(changes, get().edges) });
   },
@@ -360,26 +342,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // Auto-add a bmc0 NIC and connect from its handle
-    let bmcNicHandle: string | null = null;
-    let bmcVmIsSource = false;
+    // BMC network: reject if the NIC handle already has a connection to another network
     if (isBmcSource || isBmcTarget) {
-      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
-      bmcVmIsSource = sType === "vmNode";
-      const existingNics = (vmNode.data as Record<string, any>).nics || [];
-      let bmcNic = existingNics.find((n: Record<string, string>) => n.name.startsWith("bmc"));
-      if (!bmcNic) {
-        const nicId = generateNicId();
-        const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-        bmcNic = { id: nicId, name: "bmc0", mac: `52:54:01:${hex()}:${hex()}:${hex()}`, model: "virtio" };
-        get().updateNodeData(vmNode.id, { nics: [...existingNics, bmcNic] });
+      const vmHandle = sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
+      const vmId = sType === "vmNode" ? connection.source : connection.target;
+      if (vmHandle) {
+        const handleInUse = get().edges.some((e) =>
+          (e.source === vmId && e.sourceHandle === vmHandle) ||
+          (e.target === vmId && e.targetHandle === vmHandle)
+        );
+        if (handleInUse) return;
       }
-      bmcNicHandle = `${bmcNic.id}-top`;
     }
 
     get().pushHistory();
-
-    // Create edge initially on the dragged handle, then swap to bmc0 after handles render
     set({
       edges: addEdge(
         {
@@ -393,33 +369,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
       topologyDirty: true,
     });
-
-    if (bmcNicHandle) {
-      const handle = bmcNicHandle;
-      const src = connection.source!;
-      const tgt = connection.target!;
-      const isSource = bmcVmIsSource;
-      // Wait for React to render the new NIC handles, then swap the edge
-      const trySwap = (attempts: number) => {
-        if (attempts <= 0) return;
-        requestAnimationFrame(() => {
-          const el = document.querySelector(`[data-handleid="${handle}"]`);
-          if (el) {
-            set({
-              edges: get().edges.map((e) => {
-                if (e.source !== src || e.target !== tgt) return e;
-                return isSource
-                  ? { ...e, sourceHandle: handle, id: `xy-edge__${src}${handle}-${tgt}${e.targetHandle || ""}` }
-                  : { ...e, targetHandle: handle, id: `xy-edge__${src}${e.sourceHandle || ""}-${tgt}${handle}` };
-              }),
-            });
-          } else {
-            setTimeout(() => trySwap(attempts - 1), 100);
-          }
-        });
-      };
-      trySwap(20);
-    }
   },
 
   addNode: (node) => {
@@ -510,21 +459,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   deleteEdge: (edgeId) => {
     get().pushHistory();
-    // Clean up bmc NICs if disconnecting from BMC network
-    const edge = get().edges.find((e) => e.id === edgeId);
-    if (edge) {
-      const nodes = get().nodes;
-      const srcNode = nodes.find((n) => n.id === edge.source);
-      const tgtNode = nodes.find((n) => n.id === edge.target);
-      const bmcNet = [srcNode, tgtNode].find((n) => n?.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
-      const vmNode = [srcNode, tgtNode].find((n) => n?.type === "vmNode");
-      if (bmcNet && vmNode) {
-        const nics = ((vmNode.data as Record<string, any>).nics || []).filter(
-          (nic: Record<string, string>) => !nic.name.startsWith("bmc")
-        );
-        get().updateNodeData(vmNode.id, { nics });
-      }
-    }
     set({ edges: get().edges.filter((e) => e.id !== edgeId) });
   },
 
