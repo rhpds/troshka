@@ -279,7 +279,26 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
                 return
             h.agent_status = "installing"
             s.commit()
-            result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id)
+            _install_kwargs = {}
+            if h.storage_pool_id:
+                from app.models.storage_pool import StoragePool as _SP2
+                _pool = s.query(_SP2).get(h.storage_pool_id)
+                if _pool and _pool.mode.startswith("shared"):
+                    _install_kwargs["storage_mode"] = "shared"
+                    if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
+                        _install_kwargs["nfs_server"] = _pool.fsx_dns_name
+                        _install_kwargs["nfs_path"] = "/fsx"
+                    elif _pool.mode == "shared-byo" and _pool.nfs_endpoint:
+                        _parts = _pool.nfs_endpoint.split(":", 1)
+                        _install_kwargs["nfs_server"] = _parts[0]
+                        _install_kwargs["nfs_path"] = _parts[1] if len(_parts) > 1 else "/"
+                    if _pool.ca_cert and _pool.ca_key and h.ip_address:
+                        from app.services.storage_pool_service import sign_host_cert as _shc2
+                        _hc, _hk = _shc2(_pool.ca_cert, _pool.ca_key, h.ip_address)
+                        _install_kwargs["ca_cert"] = _pool.ca_cert
+                        _install_kwargs["host_cert"] = _hc
+                        _install_kwargs["host_key"] = _hk
+            result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs)
             h.agent_status = "connected" if result["success"] else "install_failed"
 
             # Store troshkad credentials
