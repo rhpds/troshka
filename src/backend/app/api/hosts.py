@@ -22,6 +22,7 @@ class ProvisionRequest(BaseModel):
     instance_type: str | None = None
     region: str | None = None
     ami_id: str | None = None
+    storage_pool_id: str | None = None
 
 
 @router.get("/overcommit")
@@ -109,6 +110,19 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
     if not provider.vpc_id or not provider.subnet_id:
         raise HTTPException(status_code=400, detail="No VPC configured — run Setup VPC on the provider first")
 
+    pool = None
+    subnet_override = None
+    if body.storage_pool_id:
+        from app.models.storage_pool import StoragePool
+        pool = db.query(StoragePool).get(body.storage_pool_id)
+        if not pool:
+            raise HTTPException(status_code=404, detail="Storage pool not found")
+        if pool.provider_id != provider.id:
+            raise HTTPException(status_code=400, detail="Pool belongs to a different provider")
+        if pool.mode.startswith("shared") and pool.status != "available":
+            raise HTTPException(status_code=400, detail=f"Pool is not available (status: {pool.status})")
+        subnet_override = pool.subnet_id
+
     region = body.region or provider.default_region
     creds = provider.get_credentials()
 
@@ -119,8 +133,9 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             region=region,
             credentials=creds,
             vpc_id=provider.vpc_id,
-            subnet_id=provider.subnet_id,
+            subnet_id=subnet_override or provider.subnet_id,
             security_group_id=provider.security_group_id,
+            subnet_override=subnet_override,
         )
     except Exception as e:
         logger.exception("Failed to provision host: %s", e)
@@ -146,6 +161,10 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
     db.add(host)
     db.commit()
     db.refresh(host)
+
+    if body.storage_pool_id:
+        host.storage_pool_id = body.storage_pool_id
+        db.commit()
 
     # Auto-install agent in background
     import threading

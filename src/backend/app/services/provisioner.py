@@ -260,8 +260,12 @@ def provision_host(
         sg_id = ensure_security_group(vpc_id, credentials=credentials)
 
     # Get all subnets in the VPC for AZ fallback
-    all_subnets = client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
-    subnet_ids = [subnet_id] + [s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id]
+    subnet_override = kwargs.get("subnet_override")
+    if subnet_override:
+        subnet_ids = [subnet_override]
+    else:
+        all_subnets = client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        subnet_ids = [subnet_id] + [s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id]
 
     key_name = f"troshka-{host_id[:8]}"
     key_result = client.create_key_pair(KeyName=key_name)
