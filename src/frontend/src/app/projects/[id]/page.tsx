@@ -294,6 +294,7 @@ export default function ProjectCanvasPage() {
     if (resp.ok) {
       setShowMigrate(false);
       setMigrateTarget("");
+      setProjectState("migrating");
     } else {
       const data = await resp.json();
       alert(data.detail || "Migration failed");
