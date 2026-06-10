@@ -196,7 +196,7 @@ runcmd:
       grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
     fi
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
-  - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+{storage_setup}  - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
   - |
     # Kernel tuning for VM memory overcommit
     sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true
@@ -272,7 +272,20 @@ def provision_host(
     private_key = key_result.get("KeyMaterial", "")
     logger.info("Created key pair %s", key_name)
 
-    user_data = CLOUD_INIT.format(hostname=hostname, host_id=host_id)
+    # Build NFS mount commands for shared storage pools
+    nfs_server = kwargs.get("nfs_server")
+    nfs_path = kwargs.get("nfs_path")
+    if nfs_server:
+        storage_setup = (
+            f"  - |\n"
+            f"    mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds\n"
+            f"    mount -t nfs -o nfsvers=4.1,nconnect=16,hard,_netdev {nfs_server}:{nfs_path} /var/lib/troshka/shared\n"
+            f"    echo \"{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs4 nfsvers=4.1,nconnect=16,hard,_netdev 0 0\" >> /etc/fstab\n"
+            f"    setsebool -P virt_use_nfs 1\n"
+        )
+    else:
+        storage_setup = ""
+    user_data = CLOUD_INIT.format(hostname=hostname, host_id=host_id, storage_setup=storage_setup)
 
     # Look up instance specs before launch (need RAM size for swap volume)
     types = client.describe_instance_types(InstanceTypes=[instance_type])

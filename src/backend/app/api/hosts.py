@@ -126,6 +126,13 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
     region = body.region or provider.default_region
     creds = provider.get_credentials()
 
+    nfs_kwargs = {}
+    if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
+        nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx/troshka"}
+    elif pool and pool.mode == "shared-byo" and pool.nfs_endpoint:
+        parts = pool.nfs_endpoint.split(":", 1)
+        nfs_kwargs = {"nfs_server": parts[0], "nfs_path": parts[1] if len(parts) > 1 else "/"}
+
     try:
         result = provision_host(
             instance_type=body.instance_type,
@@ -136,6 +143,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             subnet_id=subnet_override or provider.subnet_id,
             security_group_id=provider.security_group_id,
             subnet_override=subnet_override,
+            **nfs_kwargs,
         )
     except Exception as e:
         logger.exception("Failed to provision host: %s", e)
@@ -184,7 +192,11 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
                 return
             h.agent_status = "installing"
             s.commit()
-            result = deploy_agent(h.ip_address, h.private_key, h.id)
+            _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
+            result = deploy_agent(h.ip_address, h.private_key, h.id,
+                                  storage_mode=_sm,
+                                  nfs_server=nfs_kwargs.get("nfs_server", ""),
+                                  nfs_path=nfs_kwargs.get("nfs_path", ""))
             h.agent_status = "connected" if result["success"] else "install_failed"
 
             # Store troshkad credentials

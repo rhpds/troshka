@@ -199,6 +199,21 @@ else
     echo "troshkad: TLS certificate already exists"
 fi
 
+# Ensure NFS mount for shared storage (idempotent — safe to run on every install/reinstall)
+if [ "{storage_mode}" = "shared" ] && [ -n "{nfs_server}" ]; then
+    mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds
+    NFS_SRC="{nfs_server}:{nfs_path}"
+    NFS_DST="/var/lib/troshka/shared"
+    if ! mountpoint -q "$NFS_DST" 2>/dev/null; then
+        echo "troshkad: mounting NFS $NFS_SRC -> $NFS_DST"
+        mount -t nfs -o nfsvers=4.1,nconnect=16,hard,_netdev "$NFS_SRC" "$NFS_DST"
+    else
+        echo "troshkad: NFS already mounted at $NFS_DST"
+    fi
+    grep -q "$NFS_DST" /etc/fstab || echo "$NFS_SRC $NFS_DST nfs4 nfsvers=4.1,nconnect=16,hard,_netdev 0 0" >> /etc/fstab
+    setsebool -P virt_use_nfs 1 2>/dev/null || true
+fi
+
 # Generate config with token if not present
 if [ ! -f /opt/troshka/troshkad.conf ]; then
     TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
@@ -212,6 +227,9 @@ conf = {
     'host_id': '{host_id}',
     'max_concurrent_jobs': 16,
     'drain_timeout_seconds': 300,
+    'storage_mode': '{storage_mode}',
+    'shared_mount': '/var/lib/troshka/shared',
+    'local_mount': '/var/lib/troshka/local',
 }
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 " "$TROSHKAD_TOKEN"
@@ -232,12 +250,24 @@ conf = {
     'host_id': '{host_id}',
     'max_concurrent_jobs': 16,
     'drain_timeout_seconds': 300,
+    'storage_mode': '{storage_mode}',
+    'shared_mount': '/var/lib/troshka/shared',
+    'local_mount': '/var/lib/troshka/local',
 }
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 " "$TROSHKAD_TOKEN"
         chmod 600 /opt/troshka/troshkad.conf
     }
-    echo "troshkad: config already exists"
+    # Update storage_mode in existing config
+    python3 -c "
+import json
+conf = json.load(open('/opt/troshka/troshkad.conf'))
+conf['storage_mode'] = '{storage_mode}'
+conf['shared_mount'] = '/var/lib/troshka/shared'
+conf['local_mount'] = '/var/lib/troshka/local'
+json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+"
+    echo "troshkad: config already exists, storage_mode updated"
 fi
 
 # Write systemd unit
@@ -338,14 +368,20 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
         os.unlink(key_path)
 
 
-def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "") -> dict:
+def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "",
+                 storage_mode: str = "local", nfs_server: str = "", nfs_path: str = "") -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
 
     from app.core.config import config
     actual_api_url = api_url or getattr(config.app, "external_url", "")
     if not actual_api_url:
         logger.warning("No external_url configured — agent will not be able to call back to the API")
-    script = AGENT_INSTALL_SCRIPT.replace("{host_id}", host_id).replace("{api_url}", actual_api_url)
+    script = (AGENT_INSTALL_SCRIPT
+              .replace("{host_id}", host_id)
+              .replace("{api_url}", actual_api_url)
+              .replace("{storage_mode}", storage_mode)
+              .replace("{nfs_server}", nfs_server)
+              .replace("{nfs_path}", nfs_path))
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)
