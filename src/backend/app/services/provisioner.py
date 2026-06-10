@@ -174,7 +174,7 @@ runcmd:
       local target="$1"
       for dev in /dev/nvme*n1; do
         [ -b "$dev" ] || continue
-        DEVNAME=$(nvme id-ctrl "$dev" 2>/dev/null | grep -oE '/dev/sd[a-z]+|sd[a-z]+' | head -1)
+        DEVNAME=$(nvme id-ctrl "$dev" -b 2>/dev/null | dd bs=1 skip=3072 count=32 2>/dev/null | tr -d '\\0 ')
         if [ "$DEVNAME" = "$target" ] || [ "$DEVNAME" = "/dev/$target" ]; then
           echo "$dev"; return
         fi
