@@ -3300,22 +3300,26 @@ COMMAND_HANDLERS["bmc/status"] = _handle_bmc_status
 
 
 def _handle_vm_migrate(job, params):
-    """Live-migrate a VM to another host."""
+    """Migrate a VM to another host. Uses --live if running, offline if stopped."""
     domain = _validate_domain_name(params["domain"])
     target_host = _validate_ip(params["target_host"])
 
-    # Verify domain exists and is running
-    _run_cmd(job, ["virsh", "domstate", domain], timeout=10)
+    # Check domain state
+    state_proc = subprocess.run(["virsh", "domstate", domain], capture_output=True, text=True, timeout=10)
+    state = state_proc.stdout.strip()
+    job["output"].append(f"VM state: {state}")
 
     cmd = [
         "virsh", "migrate",
-        "--live",
         "--verbose",
         "--persistent",
         "--undefinesource",
         domain,
         f"qemu+tls://{target_host}/system",
     ]
+    if state == "running":
+        cmd.insert(2, "--live")
+
     _run_cmd(job, cmd, timeout=600)
 
     return {
