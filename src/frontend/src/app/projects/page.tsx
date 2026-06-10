@@ -412,13 +412,10 @@ export default function ProjectsPage() {
           {projects.map((p) => (
             <Card
               key={p.id}
-              isClickable
-              isSelectable
-              onClick={() => router.push(`/projects/${p.id}`)}
-              style={{ marginBottom: 8 }}
+              style={{ marginBottom: 8, cursor: "pointer" }}
             >
               {/* Row 1: Info */}
-              <CardBody style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <CardBody style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={() => router.push(`/projects/${p.id}`)}>
                 <input
                   type="checkbox"
                   checked={selectedProjects.has(p.id)}
