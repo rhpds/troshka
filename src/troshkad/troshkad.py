@@ -3314,7 +3314,7 @@ def _handle_vm_migrate(job, params):
         "--persistent",
         "--undefinesource",
         domain,
-        f"qemu+tcp://{target_host}/system",
+        f"qemu+tls://{target_host}/system",
     ]
     _run_cmd(job, cmd, timeout=600)
 

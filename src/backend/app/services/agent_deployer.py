@@ -199,6 +199,29 @@ else
     echo "troshkad: TLS certificate already exists"
 fi
 
+# Configure libvirt TLS for live migration (shared storage pools)
+if [ "{storage_mode}" = "shared" ]; then
+    mkdir -p /etc/pki/CA /etc/pki/libvirt/private
+    cp /opt/troshka/tls/server.crt /etc/pki/CA/cacert.pem
+    cp /opt/troshka/tls/server.crt /etc/pki/libvirt/servercert.pem
+    cp /opt/troshka/tls/server.key /etc/pki/libvirt/private/serverkey.pem
+    chmod 600 /etc/pki/libvirt/private/serverkey.pem
+
+    # Enable libvirt TLS listening
+    mkdir -p /etc/libvirt
+    cat > /etc/libvirt/libvirtd.conf << 'LVEOF'
+listen_tls = 1
+listen_tcp = 0
+tls_no_verify_certificate = 1
+LVEOF
+    # For modular daemons (virtqemud)
+    if systemctl list-unit-files virtproxyd.socket &>/dev/null; then
+        systemctl enable --now virtproxyd-tls.socket 2>/dev/null || true
+    fi
+    systemctl restart virtqemud 2>/dev/null || systemctl restart libvirtd 2>/dev/null || true
+    echo "troshkad: libvirt TLS configured for migration"
+fi
+
 # Ensure NFS mount for shared storage (idempotent — safe to run on every install/reinstall)
 if [ "{storage_mode}" = "shared" ] && [ -n "{nfs_server}" ]; then
     mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds

@@ -62,6 +62,20 @@ async def lifespan(app):
             else:
                 logger.warning("Startup: pool %s stuck in creating with no FSx ID, marking error", pool.name)
                 pool.status = "error"
+
+        # Ensure SG rules are up-to-date for all available shared pools
+        from app.services.storage_pool_service import add_sg_rules_for_shared_storage
+        available_pools = s.query(StoragePool).filter(StoragePool.status == "available", StoragePool.mode == "shared-fsx").all()
+        for pool in available_pools:
+            provider = s.query(Provider).get(pool.provider_id)
+            if provider and provider.security_group_id:
+                try:
+                    creds = provider.get_credentials()
+                    add_sg_rules_for_shared_storage(creds, provider.default_region, provider.security_group_id)
+                    logger.info("Startup: synced SG rules for pool %s", pool.name)
+                except Exception as e:
+                    logger.warning("Startup: failed to sync SG rules for pool %s: %s", pool.name, e)
+
         s.commit()
     finally:
         s.close()
