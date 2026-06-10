@@ -1898,6 +1898,98 @@ def _handle_network_full_setup(job, params):
 COMMAND_HANDLERS["networks/full-setup"] = _handle_network_full_setup
 
 
+def _handle_lb_setup(job, params):
+    """Set up HAProxy load balancer inside project namespace."""
+    ns = params["ns"]
+    project_id = _validate_project_id(params["project_id"])
+    pid = project_id[:8]
+    frontends = params.get("frontends", [])
+    backends = params.get("backends", [])
+
+    haproxy_conf = f"/etc/haproxy/troshka-{pid}.cfg"
+    haproxy_pid = f"/run/troshka-haproxy-{pid}.pid"
+
+    lines = [
+        "global",
+        "    daemon",
+        "    maxconn 4096",
+        f"    pidfile {haproxy_pid}",
+        "",
+        "defaults",
+        "    mode tcp",
+        "    timeout connect 5s",
+        "    timeout client 30s",
+        "    timeout server 30s",
+        "    option tcplog",
+        "",
+    ]
+    for fe in frontends:
+        fe_name = fe["name"].replace(" ", "-").lower()
+        be_name = f"{fe_name}-servers"
+        lines.append(f"frontend {fe_name}")
+        lines.append(f"    bind *:{fe['bindPort']}")
+        lines.append(f"    default_backend {be_name}")
+        lines.append("")
+        lines.append(f"backend {be_name}")
+        lines.append("    balance roundrobin")
+        for be in backends:
+            lines.append(f"    server {be['name']} {be['ip']}:{fe['backendPort']} check")
+        lines.append("")
+
+    config_content = "\n".join(lines)
+    _log(job, f"Writing HAProxy config to {haproxy_conf}")
+
+    os.makedirs("/etc/haproxy", exist_ok=True)
+    with open(haproxy_conf, "w") as f:
+        f.write(config_content)
+
+    # Kill old HAProxy for this project
+    if os.path.exists(haproxy_pid):
+        try:
+            with open(haproxy_pid) as f:
+                old_pid = f.read().strip()
+            if old_pid:
+                _run_cmd(job, ["kill", "-9", old_pid], timeout=5, check=False)
+        except Exception:
+            pass
+
+    # Start HAProxy in namespace
+    _run_cmd(job, ["ip", "netns", "exec", ns, "haproxy", "-f", haproxy_conf, "-D", "-p", haproxy_pid], timeout=10)
+    _log(job, f"HAProxy started in namespace {ns}")
+    return {"status": "started", "config": haproxy_conf}
+
+COMMAND_HANDLERS["lb/setup"] = _handle_lb_setup
+
+
+def _handle_lb_teardown(job, params):
+    """Tear down HAProxy for a project."""
+    project_id = _validate_project_id(params["project_id"])
+    pid = project_id[:8]
+
+    haproxy_conf = f"/etc/haproxy/troshka-{pid}.cfg"
+    haproxy_pid = f"/run/troshka-haproxy-{pid}.pid"
+
+    if os.path.exists(haproxy_pid):
+        try:
+            with open(haproxy_pid) as f:
+                old_pid = f.read().strip()
+            if old_pid:
+                _run_cmd(job, ["kill", "-9", old_pid], timeout=5, check=False)
+        except Exception:
+            pass
+
+    for f_path in [haproxy_conf, haproxy_pid]:
+        try:
+            os.remove(f_path)
+        except FileNotFoundError:
+            pass
+
+    _log(job, f"HAProxy teardown complete for project {pid}")
+    return {"status": "torn_down"}
+
+COMMAND_HANDLERS["lb/teardown"] = _handle_lb_teardown
+
+
 def _handle_network_full_teardown(job, params):
     """Tear down project networking: destroy VMs, delete namespace, clean up files.
 
@@ -1926,6 +2018,22 @@ def _handle_network_full_teardown(job, params):
         try:
             _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
         except RuntimeError:
+            pass
+
+    # Kill HAProxy if running
+    haproxy_pid_file = f"/run/troshka-haproxy-{pid}.pid"
+    if os.path.exists(haproxy_pid_file):
+        try:
+            with open(haproxy_pid_file) as f:
+                hp_pid = f.read().strip()
+            if hp_pid:
+                _run_cmd(job, ["kill", "-9", hp_pid], timeout=5, check=False)
+        except Exception:
+            pass
+    for hp_path in [f"/etc/haproxy/troshka-{pid}.cfg", haproxy_pid_file]:
+        try:
+            os.remove(hp_path)
+        except FileNotFoundError:
             pass
 
     # Kill dnsmasq and PXE HTTP server processes inside namespace
