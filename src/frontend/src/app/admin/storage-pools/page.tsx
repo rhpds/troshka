@@ -180,7 +180,7 @@ export default function StoragePoolsPage() {
     setError("");
     if (pool.mode === "shared-fsx") {
       if (editThroughput < 160) { setError("Throughput must be at least 160 MBps"); return; }
-      if (editStorageGb < (pool.fsx_storage_gb || 64)) { setError("Storage can only grow, not shrink"); return; }
+      if (editStorageGb < 64) { setError("Storage must be at least 64 GB"); return; }
     }
     if (pool.mode === "shared-byo") {
       if (!editNfsEndpoint.trim()) { setError("NFS endpoint is required"); return; }
@@ -328,10 +328,10 @@ export default function StoragePoolsPage() {
                                    onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={160} />
                           </div>
                           <div>
-                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB) — can only grow</label>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
                             <input style={inputStyle} type="number" value={editStorageGb}
                                    onChange={(e) => setEditStorageGb(parseInt(e.target.value) || 64)}
-                                   min={pool.fsx_storage_gb || 64} />
+                                   min={64} />
                           </div>
                         </>
                       )}
