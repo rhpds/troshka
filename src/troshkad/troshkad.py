@@ -2792,6 +2792,9 @@ def main():
     cleanup_thread = threading.Thread(target=_job_cleanup_loop, daemon=True)
     cleanup_thread.start()
 
+    # Restore BMC services from previous deploy if configs exist
+    _restore_bmc_services()
+
     server = create_server(_config)
     logger.info("troshkad %s listening on port %d", VERSION, _config["port"])
 
@@ -2818,6 +2821,105 @@ def main():
     finally:
         server.server_close()
         logger.info("troshkad stopped")
+
+
+def _restore_bmc_services():
+    """Restart BMC services (sushy-emulator, vbmcd) from existing configs on troshkad startup."""
+    bmc_base = "/var/lib/troshka/bmc"
+    venv_bin = "/opt/troshka/venv/bin"
+    if not os.path.isdir(bmc_base):
+        return
+
+    for project_dir in os.listdir(bmc_base):
+        bmc_dir = os.path.join(bmc_base, project_dir)
+        if not os.path.isdir(bmc_dir):
+            continue
+
+        pid = project_dir[:8]
+        ns = f"troshka-{pid}"
+
+        # Check namespace exists
+        try:
+            subprocess.run(["ip", "netns", "exec", ns, "true"], capture_output=True, timeout=5, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            logger.info("BMC restore: namespace %s not found, skipping %s", ns, project_dir[:8])
+            continue
+
+        # Restart sushy-emulator processes
+        for fname in os.listdir(bmc_dir):
+            if fname.startswith("sushy-") and fname.endswith(".conf"):
+                conf_path = os.path.join(bmc_dir, fname)
+                pid_path = conf_path.replace(".conf", ".pid")
+                # Kill stale process if any
+                if os.path.exists(pid_path):
+                    try:
+                        with open(pid_path) as f:
+                            old_pid = int(f.read().strip())
+                        os.kill(old_pid, signal.SIGTERM)
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+                proc = subprocess.Popen(
+                    ["ip", "netns", "exec", ns, f"{venv_bin}/sushy-emulator", "--config", conf_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                with open(pid_path, "w") as f:
+                    f.write(str(proc.pid))
+                logger.info("BMC restore: sushy-emulator started for %s (PID %d)", fname, proc.pid)
+
+        # Restart vbmcd
+        vbmcd_conf = os.path.join(bmc_dir, "virtualbmc.conf")
+        vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
+        if os.path.exists(vbmcd_conf):
+            # Kill stale vbmcd
+            if os.path.exists(vbmcd_pid_path):
+                try:
+                    with open(vbmcd_pid_path) as f:
+                        old_pid = int(f.read().strip())
+                    os.kill(old_pid, signal.SIGTERM)
+                    for _ in range(10):
+                        time.sleep(0.5)
+                        try:
+                            os.kill(old_pid, 0)
+                        except ProcessLookupError:
+                            break
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    os.remove(vbmcd_pid_path)
+                except FileNotFoundError:
+                    pass
+
+            env = os.environ.copy()
+            env["VIRTUALBMC_CONFIG"] = vbmcd_conf
+            subprocess.Popen(
+                ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env, start_new_session=True,
+            )
+            # Wait for vbmcd to write its PID file
+            for _ in range(20):
+                time.sleep(0.5)
+                if os.path.exists(vbmcd_pid_path):
+                    break
+            logger.info("BMC restore: vbmcd started for %s", project_dir[:8])
+
+            # Re-register vbmc entries from the config dir
+            vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
+            if os.path.isdir(vbmcd_conf_dir):
+                for entry in os.listdir(vbmcd_conf_dir):
+                    entry_path = os.path.join(vbmcd_conf_dir, entry)
+                    if os.path.isdir(entry_path) and entry.startswith("troshka-"):
+                        try:
+                            subprocess.run(
+                                ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "start", entry],
+                                capture_output=True, text=True, env=env, timeout=10,
+                            )
+                            logger.info("BMC restore: vbmc started %s", entry)
+                        except (subprocess.TimeoutExpired, Exception):
+                            logger.warning("BMC restore: failed to start vbmc %s", entry)
+
+    logger.info("BMC restore complete")
 
 
 def _handle_bmc_setup(job, params):
