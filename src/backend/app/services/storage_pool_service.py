@@ -319,6 +319,13 @@ def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_gro
             "ToPort": 16514,
             "UserIdGroupPairs": [{"GroupId": security_group_id}],
         })
+    if 49152 not in existing_ports:
+        rules_to_add.append({
+            "IpProtocol": "tcp",
+            "FromPort": 49152,
+            "ToPort": 49215,
+            "UserIdGroupPairs": [{"GroupId": security_group_id}],
+        })
 
     if rules_to_add:
         ec2.authorize_security_group_ingress(
