@@ -385,6 +385,8 @@ export default function ImagesPage() {
                   {" · "}{new Date(item.created_at).toLocaleDateString()}
                 </div>
               </div>
+            </CardBody>
+            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
               <Button variant="secondary" onClick={() => {
                 const newName = window.prompt("Rename:", item.name);
                 if (newName && newName !== item.name) {

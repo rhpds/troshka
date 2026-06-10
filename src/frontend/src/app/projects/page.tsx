@@ -9,7 +9,6 @@ import {
   EmptyState,
   EmptyStateBody,
   EmptyStateVariant,
-  Gallery,
   PageSection,
   Title,
   Toolbar,
@@ -409,164 +408,97 @@ export default function ProjectsPage() {
             </div>
           );
         })()}
-        <Gallery hasGutter minWidths={{ default: "300px" }}>
+        <div>
           {projects.map((p) => (
             <Card
               key={p.id}
               isClickable
               isSelectable
               onClick={() => router.push(`/projects/${p.id}`)}
-              style={{ border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 8 }}
+              style={{ marginBottom: 8 }}
             >
-              <CardTitle style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedProjects.has(p.id)}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      setSelectedProjects((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
-                        return next;
-                      });
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ cursor: "pointer" }}
-                  />
-                  <strong>{p.name}</strong>
-                  <span style={{
-                    fontSize: 11, padding: "1px 6px", borderRadius: 4,
-                    background: `${stateColors[p.state] || "#94a3b8"}22`,
-                    color: stateColors[p.state] || "#94a3b8",
-                  }}>
-                    {p.state}
-                  </span>
+              {/* Row 1: Info */}
+              <CardBody style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedProjects.has(p.id)}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    setSelectedProjects((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                      return next;
+                    });
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ cursor: "pointer" }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <strong>{p.name}</strong>
+                    <span style={{
+                      fontSize: 11, padding: "1px 6px", borderRadius: 4,
+                      background: `${stateColors[p.state] || "#94a3b8"}22`,
+                      color: stateColors[p.state] || "#94a3b8",
+                    }}>
+                      {p.state}
+                    </span>
+                    {(p.state === "stopping" || p.state === "starting" || p.state === "deploying") && (
+                      <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
+                    )}
+                  </div>
+                  <p style={{ fontSize: 13, opacity: 0.7, margin: "4px 0 0" }}>{p.description || "No description"}</p>
+                  <p style={{ fontSize: 11, opacity: 0.5, margin: "4px 0 0" }}>
+                    {p.host_type} &middot; {new Date(p.created_at).toLocaleDateString()}
+                  </p>
                 </div>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  {p.state === "draft" && (
-                    <Button
-                      variant="secondary"
-                      style={{ fontSize: 11, padding: "2px 8px" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
-                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }).then(r => r.json()).then(d => {
-                          if (d.status === "deploying") {
-                            const poll = setInterval(() => {
-                              fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
-                                if (d.state === "active" || d.state === "error") {
-                                  clearInterval(poll);
-                                  setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
-                                }
-                              }).catch(() => {});
-                            }, 3000);
-                          } else {
-                            alert(d.detail || "Deploy failed");
-                            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr));
-                          }
-                        });
-                      }}
-                    >Deploy</Button>
-                  )}
-                  {p.state === "active" && (
-                    <Button
-                      variant="secondary"
-                      isDanger
-                      style={{ fontSize: 11, padding: "2px 8px" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down.`)) return;
-                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }).then(() => {
-                          const poll = setInterval(() => {
-                            fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
-                              if (d.state === "stopped" || d.state === "error") {
-                                clearInterval(poll);
-                                setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
-                              }
-                            }).catch(() => {});
-                          }, 2000);
-                        });
-                      }}
-                    >Stop</Button>
-                  )}
-                  {(p.state === "stopped" || p.state === "error") && (
-                    <Button
-                      variant="secondary"
-                      style={{ fontSize: 11, padding: "2px 8px" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Start project "${p.name}"? All VMs will be started in the configured start order.`)) return;
-                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" });
-                        const poll = setInterval(() => {
-                          fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
-                            if (d.state === "active" || d.state === "error") {
-                              clearInterval(poll);
-                              setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
-                            }
-                          }).catch(() => {});
-                        }, 2000);
-                      }}
-                    >Start</Button>
-                  )}
-                  {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
-                    <Button
-                      variant="secondary"
-                      style={{ fontSize: 11, padding: "2px 8px" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!window.confirm(`Republish project "${p.name}"? This will destroy and recreate all VMs.`)) return;
-                        setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-                        fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
-                          if (d.status === "deploying") {
-                            const poll = setInterval(() => {
-                              fetch(`${API_BASE}/api/v1/projects/${p.id}`).then(r => r.json()).then(d => {
-                                if (d.state === "active" || d.state === "error") {
-                                  clearInterval(poll);
-                                  setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: d.state } : pr));
-                                }
-                              }).catch(() => {});
-                            }, 3000);
-                          } else {
-                            alert(d.detail || "Republish failed");
-                            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr));
-                          }
-                        });
-                      }}
-                    >Republish</Button>
-                  )}
-                  {(p.state === "stopping" || p.state === "starting") && (
-                    <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
-                  )}
-                  <Button
-                    variant="danger"
-                    style={{ fontSize: 11, padding: "2px 8px" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
-                      fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" })
-                        .then((r) => {
-                          if (r.ok) {
-                            setProjects(projects.filter((pr) => pr.id !== p.id));
-                            localStorage.removeItem(`troshka-canvas-${p.id}`);
-                          }
-                        });
-                    }}
-                  >Delete</Button>
-                </div>
-              </CardTitle>
-              <CardBody>
-                <p style={{ fontSize: 13, opacity: 0.7 }}>{p.description || "No description"}</p>
-                <p style={{ marginTop: 8, fontSize: 11, opacity: 0.5 }}>
-                  {p.host_type} &middot; {new Date(p.created_at).toLocaleDateString()}
-                </p>
+              </CardBody>
+              {/* Row 2: Buttons */}
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+                {p.state === "draft" && (
+                  <Button variant="primary" onClick={() => {
+                    if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
+                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                    fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }).then(r => r.json()).then(d => {
+                      if (d.status === "deploying") { pollUntilSettled(); }
+                      else { alert(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
+                    });
+                  }}>Deploy</Button>
+                )}
+                {p.state === "active" && (
+                  <Button variant="secondary" onClick={() => {
+                    if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down.`)) return;
+                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
+                    fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }).then(() => pollUntilSettled());
+                  }}>Stop</Button>
+                )}
+                {(p.state === "stopped" || p.state === "error") && (
+                  <Button variant="secondary" onClick={() => {
+                    if (!window.confirm(`Start project "${p.name}"? All VMs will be started.`)) return;
+                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
+                    fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }).then(() => pollUntilSettled());
+                  }}>Start</Button>
+                )}
+                {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
+                  <Button variant="secondary" onClick={() => {
+                    if (!window.confirm(`Republish project "${p.name}"? This will destroy and recreate all VMs.`)) return;
+                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+                    fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
+                      if (d.status === "deploying") { pollUntilSettled(); }
+                      else { alert(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
+                    });
+                  }}>Republish</Button>
+                )}
+                <Button variant="danger" onClick={() => {
+                  if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
+                  fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
+                    if (r.ok) { setProjects(projects.filter((pr) => pr.id !== p.id)); localStorage.removeItem(`troshka-canvas-${p.id}`); }
+                  });
+                }}>Delete</Button>
               </CardBody>
             </Card>
           ))}
-        </Gallery>
+        </div>
       </PageSection>
       {showNewModal && (
         <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />

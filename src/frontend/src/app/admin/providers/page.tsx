@@ -333,8 +333,8 @@ export default function AdminProvidersPage() {
                   </div>
                 </div>
               ) : (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ flex: 1 }}>
+                <div>
+                  <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : "#a78bfa" }}>
@@ -414,7 +414,11 @@ export default function AdminProvidersPage() {
                       </div>
                     )}
                   </div>
-                  <div style={{ display: "flex", gap: 8 }}>
+                </div>
+              )}
+            </CardBody>
+            {editId !== p.id && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
                     <Button variant="secondary" onClick={() => startEdit(p)}>Edit</Button>
                     {p.type === "s3" && (
                       <Button variant="secondary" onClick={async () => {
@@ -467,10 +471,8 @@ export default function AdminProvidersPage() {
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}
                     </Button>
-                  </div>
-                </div>
-              )}
-            </CardBody>
+              </CardBody>
+            )}
           </Card>
         ))}
       </PageSection>
