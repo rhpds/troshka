@@ -112,6 +112,7 @@ from app.api import patterns as pattern_routes  # noqa: E402
 from app.api import eips as eip_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
+from app.api import dns_providers as dns_provider_routes  # noqa: E402
 
 app.include_router(auth_routes.router, prefix="/api/v1")
 app.include_router(project_routes.router, prefix="/api/v1")
@@ -126,6 +127,7 @@ app.include_router(pattern_routes.router, prefix="/api/v1")
 app.include_router(eip_routes.router, prefix="/api/v1")
 app.include_router(ws_routes.router)
 app.include_router(storage_pool_routes.router, prefix="/api/v1")
+app.include_router(dns_provider_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")
