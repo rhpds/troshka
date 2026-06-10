@@ -313,6 +313,25 @@ def provision_host(
     }
 
 
+def resize_instance(instance_id: str, new_instance_type: str, credentials: dict | None = None) -> dict:
+    """Change instance type of a stopped EC2 instance and return new specs."""
+    client = _get_ec2_client(credentials=credentials)
+    client.modify_instance_attribute(
+        InstanceId=instance_id,
+        InstanceType={"Value": new_instance_type},
+    )
+    logger.info("Changed %s to %s", instance_id, new_instance_type)
+
+    types = client.describe_instance_types(InstanceTypes=[new_instance_type])
+    type_info = types["InstanceTypes"][0] if types["InstanceTypes"] else {}
+    return {
+        "instance_type": new_instance_type,
+        "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
+        "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
+        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1) - 1,
+    }
+
+
 def terminate_host(instance_id: str, credentials: dict | None = None):
     """Remove a host from the pool and terminate the EC2 instance."""
     client = _get_ec2_client(credentials=credentials)

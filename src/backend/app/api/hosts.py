@@ -11,7 +11,7 @@ from app.models.host import Host
 from app.models.provider import Provider
 from app.models.user import User
 from app.schemas.host import HostResponse
-from app.services.provisioner import provision_host, terminate_host
+from app.services.provisioner import provision_host, resize_instance, terminate_host
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosts", tags=["hosts"])
@@ -333,9 +333,13 @@ def poweroff_host(host_id: str, user: User = Depends(require_role("admin")), db:
     return {"status": "stopped"}
 
 
+class PowerOnRequest(BaseModel):
+    instance_type: str | None = None
+
+
 @router.post("/{host_id}/poweron")
-def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
-    """Start a stopped EC2 instance."""
+def poweron_host(host_id: str, body: PowerOnRequest | None = None, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Start a stopped EC2 instance, optionally changing instance type first."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -347,6 +351,24 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if provider:
             creds = provider.get_credentials()
+
+    # Resize if a different instance type was requested
+    new_type = body.instance_type if body else None
+    if new_type and new_type != host.instance_type:
+        if host.state != "stopped":
+            raise HTTPException(status_code=409, detail="Host must be stopped to resize")
+        try:
+            result = resize_instance(host.instance_id, new_type, credentials=creds)
+        except Exception:
+            logger.exception("Failed to resize host %s before power on", host_id[:8])
+            raise HTTPException(status_code=500, detail="Failed to resize instance")
+        old_type = host.instance_type
+        host.instance_type = result["instance_type"]
+        host.total_vcpus = result["total_vcpus"]
+        host.total_ram_mb = result["total_ram_mb"]
+        host.max_eips = result["max_eips"]
+        db.commit()
+        logger.info("Host %s resized %s → %s before power on", host_id[:8], old_type, new_type)
 
     from app.services.provisioner import _get_ec2_client, get_host_status
     client = _get_ec2_client(credentials=creds)
@@ -435,6 +457,52 @@ def poweron_host(host_id: str, user: User = Depends(require_role("admin")), db: 
     threading.Thread(target=_wait_and_reinstall, daemon=True).start()
 
     return {"status": "starting"}
+
+
+@router.post("/{host_id}/resize")
+def resize_host(host_id: str, body: dict, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Change the instance type of a stopped host."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if host.state != "stopped":
+        raise HTTPException(status_code=409, detail="Host must be stopped to resize")
+    new_type = body.get("instance_type")
+    if not new_type or not isinstance(new_type, str):
+        raise HTTPException(status_code=400, detail="instance_type is required")
+    if new_type == host.instance_type:
+        raise HTTPException(status_code=400, detail="Already that instance type")
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No EC2 instance associated")
+
+    creds = None
+    if host.provider_id:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            creds = provider.get_credentials()
+
+    try:
+        result = resize_instance(host.instance_id, new_type, credentials=creds)
+    except Exception:
+        logger.exception("Failed to resize host %s", host_id[:8])
+        raise HTTPException(status_code=500, detail="Failed to resize instance")
+
+    old_type = host.instance_type
+    host.instance_type = result["instance_type"]
+    host.total_vcpus = result["total_vcpus"]
+    host.total_ram_mb = result["total_ram_mb"]
+    host.max_eips = result["max_eips"]
+    db.commit()
+
+    logger.info("Host %s resized %s → %s", host_id[:8], old_type, new_type)
+    return {
+        "status": "resized",
+        "old_instance_type": old_type,
+        "new_instance_type": result["instance_type"],
+        "total_vcpus": result["total_vcpus"],
+        "total_ram_mb": result["total_ram_mb"],
+        "max_eips": result["max_eips"],
+    }
 
 
 @router.post("/{host_id}/resize-storage")

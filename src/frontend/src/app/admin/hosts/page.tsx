@@ -215,15 +215,24 @@ export default function AdminHostsPage() {
     alert(`${label} copied to clipboard`);
   };
 
+  const [resizeType, setResizeType] = useState<Record<string, string>>({});
+
   const [poweringHost, setPoweringHost] = useState<string | null>(null);
 
-  const powerHost = async (hostId: string, action: "poweroff" | "poweron") => {
+  const powerHost = async (hostId: string, action: "poweroff" | "poweron", instanceType?: string) => {
     setPoweringHost(hostId);
     try {
-      const resp = await fetch(`/api/v1/hosts/${hostId}/${action}`, { method: "POST" });
+      const opts: RequestInit = { method: "POST" };
+      if (action === "poweron" && instanceType) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify({ instance_type: instanceType });
+      }
+      const resp = await fetch(`/api/v1/hosts/${hostId}/${action}`, opts);
       if (!resp.ok) {
         const data = await resp.json();
         alert(data.detail || `Failed to ${action}`);
+      } else {
+        setResizeType((prev) => { const next = { ...prev }; delete next[hostId]; return next; });
       }
       loadData();
     } catch {
@@ -436,8 +445,23 @@ export default function AdminHostsPage() {
                     </span>
                   )}
                 </div>
-                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {h.instance_type} · {h.region} · {h.ip_address || "no IP"} · {h.host_type}
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  {h.state === "stopped" ? (
+                    <>
+                      <select
+                        style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 12 }}
+                        value={resizeType[h.id] || h.instance_type || ""}
+                        onChange={(e) => setResizeType((prev) => ({ ...prev, [h.id]: e.target.value }))}
+                      >
+                        {instanceTypes.map((t) => (
+                          <option key={t.value} value={t.value}>{t.label}</option>
+                        ))}
+                      </select>
+                    </>
+                  ) : (
+                    <span>{h.instance_type}</span>
+                  )}
+                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, marginRight: 16, fontSize: 13 }}>
@@ -468,7 +492,10 @@ export default function AdminHostsPage() {
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
               </Button>
               {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
-                <Button variant="secondary" onClick={() => installAgent(h.id)} isLoading={installing === h.id} isDisabled={installing === h.id}>
+                <Button variant="secondary" onClick={() => {
+                  if (!window.confirm(`Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`)) return;
+                  installAgent(h.id);
+                }} isLoading={installing === h.id} isDisabled={installing === h.id}>
                   {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
                 </Button>
               )}
@@ -535,6 +562,7 @@ export default function AdminHostsPage() {
                     {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
                   <Button variant="secondary" onClick={async () => {
+                    if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
                     const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
                     if (resp.ok) {
                       const report = await resp.json();
@@ -583,17 +611,29 @@ export default function AdminHostsPage() {
               )}
               {h.state === "active" && (
                 <Button variant="secondary" onClick={() => {
-                  if (h.used_vcpus > 0 && !window.confirm("This host has projects allocated. Powering off will make them unavailable until the host is powered back on. Continue?")) return;
+                  const msg = h.used_vcpus > 0
+                    ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
+                    : `Power off ${h.instance_id}?`;
+                  if (!window.confirm(msg)) return;
                   powerHost(h.id, "poweroff");
                 }} isDisabled={poweringHost === h.id} isLoading={poweringHost === h.id}>
                   Power Off
                 </Button>
               )}
-              {h.state === "stopped" && (
-                <Button variant="secondary" onClick={() => powerHost(h.id, "poweron")} isLoading={poweringHost === h.id} isDisabled={poweringHost === h.id}>
-                  Power On
-                </Button>
-              )}
+              {h.state === "stopped" && (() => {
+                const willResize = resizeType[h.id] && resizeType[h.id] !== h.instance_type;
+                return (
+                  <Button variant="secondary" onClick={() => {
+                    const msg = willResize
+                      ? `Resize ${h.instance_id} from ${h.instance_type} → ${resizeType[h.id]} and power on?`
+                      : `Power on ${h.instance_id}?`;
+                    if (!window.confirm(msg)) return;
+                    powerHost(h.id, "poweron", resizeType[h.id] || undefined);
+                  }} isLoading={poweringHost === h.id} isDisabled={poweringHost === h.id}>
+                    {willResize ? "Resize & Power On" : "Power On"}
+                  </Button>
+                );
+              })()}
               {h.state === "starting" && (
                 <Button variant="secondary" isDisabled isLoading>
                   Starting...
