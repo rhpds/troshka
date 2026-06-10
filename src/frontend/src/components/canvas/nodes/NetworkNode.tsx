@@ -25,7 +25,7 @@ function BmcWarning({ nodeId }: { nodeId: string }) {
   if (hasConnection) return null;
   return (
     <div style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", fontSize: 9, padding: "3px 6px", borderRadius: 4, marginTop: 4, textAlign: "center" }}>
-      Connect a provisioner VM
+      Add NIC on provisioner VM and connect
     </div>
   );
 }
