@@ -107,7 +107,6 @@ export default function AdminHostsPage() {
         const data = await resp.json();
         setError(data.detail || "Failed to provision host");
       } else {
-        setShowAddForm(false);
         loadData();
       }
     } catch {
@@ -303,8 +302,8 @@ export default function AdminHostsPage() {
               <Title headingLevel="h1">Host Pool</Title>
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="primary" onClick={() => setShowAddForm(!showAddForm)}>
-                {showAddForm ? "Cancel" : "+ Add Host"}
+              <Button variant="primary" onClick={() => setShowAddForm(true)}>
+                + Add Host
               </Button>
             </ToolbarItem>
           </ToolbarContent>
@@ -322,7 +321,10 @@ export default function AdminHostsPage() {
         <PageSection>
           <Card>
             <CardBody>
-              <Title headingLevel="h3" size="md" style={{ marginBottom: 12 }}>Provision New Host</Title>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <Title headingLevel="h3" size="md">Provision New Host</Title>
+                <Button variant="plain" onClick={() => setShowAddForm(false)} style={{ fontSize: 18, padding: "0 4px" }}>✕</Button>
+              </div>
               {providers.length === 0 && (
                 <Alert variant="warning" title="No providers configured. Go to Admin > Providers to add one." style={{ marginBottom: 12 }} />
               )}
