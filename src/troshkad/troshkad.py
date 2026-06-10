@@ -3299,5 +3299,33 @@ def _handle_bmc_status(job, params):
 COMMAND_HANDLERS["bmc/status"] = _handle_bmc_status
 
 
+def _handle_vm_migrate(job, params):
+    """Live-migrate a VM to another host."""
+    domain = _validate_domain_name(params["domain"])
+    target_host = _validate_ip(params["target_host"])
+
+    # Verify domain exists and is running
+    _run_cmd(job, ["virsh", "domstate", domain], timeout=10)
+
+    cmd = [
+        "virsh", "migrate",
+        "--live",
+        "--verbose",
+        "--persistent",
+        "--undefinesource",
+        domain,
+        f"qemu+tcp://{target_host}/system",
+    ]
+    _run_cmd(job, cmd, timeout=600)
+
+    return {
+        "domain": domain,
+        "target_host": target_host,
+        "status": "migrated",
+    }
+
+COMMAND_HANDLERS["vm/migrate"] = _handle_vm_migrate
+
+
 if __name__ == "__main__":
     main()
