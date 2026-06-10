@@ -147,16 +147,17 @@ def start_job(host, path, params, request_timeout=30):
             result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=request_timeout)
             return result["job_id"]
         except TroshkadError as e:
-            if e.status_code == 503 and e.response and e.response.get("status") == "draining":
+            if e.status_code == 503:
                 if time.time() >= deadline:
                     raise TroshkadError(
-                        f"troshkad on {host.ip_address} still draining after {_DRAIN_RETRY_TIMEOUT}s",
+                        f"troshkad on {host.ip_address} still busy after {_DRAIN_RETRY_TIMEOUT}s",
                         status_code=503,
                     )
-                logger.info("troshkad %s is draining, retrying in %ds...", host.ip_address, _DRAIN_RETRY_INTERVAL)
+                reason = "draining" if e.response and e.response.get("status") == "draining" else "busy (job queue full)"
+                logger.info("troshkad %s is %s, retrying in %ds...", host.ip_address, reason, _DRAIN_RETRY_INTERVAL)
                 time.sleep(_DRAIN_RETRY_INTERVAL)
                 continue
-            raise  # Non-draining errors propagate immediately
+            raise
 
 
 def poll_job(host, job_id):

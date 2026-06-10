@@ -210,7 +210,7 @@ conf = {
     'tls_cert': '/opt/troshka/tls/server.crt',
     'tls_key': '/opt/troshka/tls/server.key',
     'host_id': '{host_id}',
-    'max_concurrent_jobs': 4,
+    'max_concurrent_jobs': 16,
     'drain_timeout_seconds': 300,
 }
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
@@ -230,7 +230,7 @@ conf = {
     'tls_cert': '/opt/troshka/tls/server.crt',
     'tls_key': '/opt/troshka/tls/server.key',
     'host_id': '{host_id}',
-    'max_concurrent_jobs': 4,
+    'max_concurrent_jobs': 16,
     'drain_timeout_seconds': 300,
 }
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
