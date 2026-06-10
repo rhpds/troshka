@@ -63,6 +63,10 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
 
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     from app.services.troshkad_client import send_command
+    from app.services.deploy_service import (
+        _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
+        _setup_bmc_via_troshkad, _teardown_bmc_via_troshkad, _extract_bmc_config,
+    )
 
     db = SessionLocal()
     try:
@@ -73,35 +77,24 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         project.state = "migrating"
         db.commit()
 
-        topology = project.topology or {}
+        topology = project.deployed_topology or project.topology or {}
+        vni_map = project.vni_map or {}
         nodes = topology.get("nodes", [])
 
         # Step 1: Set up networks on target
         network_nodes = [n for n in nodes if n.get("type") == "networkNode"]
         if network_nodes:
             logger.info("Migration %s: setting up networks on target %s", project_id[:8], target_host_id[:8])
-            # Network setup uses the same params as deploy — reuse topology data
-            # For now, call the full network setup which reads from topology
-            try:
-                from app.services.deploy_service import _build_network_setup_params
-                net_params = _build_network_setup_params(project, topology)
-                send_command(target, "networks/full-setup", net_params)
-            except (ImportError, AttributeError):
-                logger.warning("Migration %s: _build_network_setup_params not available, skipping network setup", project_id[:8])
+            _setup_networks_via_troshkad(target, topology, vni_map, db, project_id)
 
         # Step 2: Set up BMC on target (if applicable)
-        vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
-        bmc_vms = [n for n in vm_nodes if n.get("data", {}).get("bmcEnabled")]
-        if bmc_vms:
+        bmc_config = _extract_bmc_config(topology, project_id)
+        if bmc_config:
             logger.info("Migration %s: setting up BMC on target", project_id[:8])
-            try:
-                from app.services.deploy_service import _build_bmc_setup_params
-                bmc_params = _build_bmc_setup_params(project, topology, bmc_vms)
-                send_command(target, "bmc/setup", bmc_params)
-            except (ImportError, AttributeError):
-                logger.warning("Migration %s: _build_bmc_setup_params not available, skipping BMC setup", project_id[:8])
+            _setup_bmc_via_troshkad(target, project_id, bmc_config)
 
         # Step 3: Live-migrate each VM in start order
+        vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
         start_order = topology.get("startOrder", [])
         vm_ids_ordered = [s["vmId"] for s in start_order] if start_order else [n["id"] for n in vm_nodes]
 
@@ -122,14 +115,9 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         # Step 4: Tear down source infrastructure
         logger.info("Migration %s: tearing down source %s", project_id[:8], source_host_id[:8])
         if network_nodes:
-            try:
-                from app.services.deploy_service import _build_network_teardown_params
-                teardown_params = _build_network_teardown_params(project, topology)
-                send_command(source, "networks/full-teardown", teardown_params)
-            except (ImportError, AttributeError):
-                logger.warning("Migration %s: _build_network_teardown_params not available, skipping teardown", project_id[:8])
-        if bmc_vms:
-            send_command(source, "bmc/teardown", {"project_id": project.id})
+            _teardown_networks_via_troshkad(source, project_id, vni_map)
+        if bmc_config:
+            _teardown_bmc_via_troshkad(source, project_id)
 
         # Step 5: Update DB
         project.host_id = target_host_id
