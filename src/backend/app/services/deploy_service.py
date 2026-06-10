@@ -1009,7 +1009,10 @@ def stop_project_async(project_id: str):
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
             logger.info("Stop %s: tearing down BMC endpoints", project_id[:8])
-            _teardown_bmc_via_troshkad(host, project_id)
+            try:
+                _teardown_bmc_via_troshkad(host, project_id)
+            except Exception:
+                logger.warning("Stop %s: BMC teardown failed (non-fatal)", project_id[:8])
 
         # Tear down networks via troshkad (serialized to avoid nftables contention)
         vni_map = project.vni_map or {}
@@ -1137,7 +1140,10 @@ def start_project_async(project_id: str):
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
             logger.info("Start %s: re-starting BMC endpoints", project_id[:8])
-            _setup_bmc_via_troshkad(host, project_id, bmc_config)
+            try:
+                _setup_bmc_via_troshkad(host, project_id, bmc_config)
+            except Exception:
+                logger.warning("Start %s: BMC setup failed (non-fatal)", project_id[:8])
 
         project.state = "active"
         project.deploy_error = None
