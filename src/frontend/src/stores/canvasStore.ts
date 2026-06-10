@@ -342,11 +342,31 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
+    // For BMC connections: auto-add a bmc0 NIC and rewrite the edge to use it
+    let finalConnection = { ...connection };
+    if (isBmcSource || isBmcTarget) {
+      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      const vmIsSource = sType === "vmNode";
+      const nicId = generateNicId();
+      const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
+      const bmcMac = `52:54:01:${hex()}:${hex()}:${hex()}`;
+      const existingNics = (vmNode.data as Record<string, any>).nics || [];
+      const bmcNicCount = existingNics.filter((n: Record<string, string>) => n.name.startsWith("bmc")).length;
+      const newNic = { id: nicId, name: `bmc${bmcNicCount}`, mac: bmcMac, model: "virtio" };
+      get().updateNodeData(vmNode.id, { nics: [...existingNics, newNic] });
+      const nicHandle = `${nicId}-top`;
+      if (vmIsSource) {
+        finalConnection.sourceHandle = nicHandle;
+      } else {
+        finalConnection.targetHandle = nicHandle;
+      }
+    }
+
     get().pushHistory();
     set({
       edges: addEdge(
         {
-          ...connection,
+          ...finalConnection,
           type: "smoothstep",
           style: edgeStyle,
           animated,
