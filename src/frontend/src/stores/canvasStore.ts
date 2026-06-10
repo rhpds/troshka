@@ -224,6 +224,24 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         return;
       }
       get().pushHistory();
+
+      // Remove bmc NICs when disconnecting from BMC network
+      const nodes = get().nodes;
+      const edges = get().edges;
+      for (const removal of removals) {
+        const edge = edges.find((e) => e.id === (removal as { id: string }).id);
+        if (!edge) continue;
+        const srcNode = nodes.find((n) => n.id === edge.source);
+        const tgtNode = nodes.find((n) => n.id === edge.target);
+        const bmcNet = [srcNode, tgtNode].find((n) => n?.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc");
+        const vmNode = [srcNode, tgtNode].find((n) => n?.type === "vmNode");
+        if (bmcNet && vmNode) {
+          const nics = ((vmNode.data as Record<string, any>).nics || []).filter(
+            (nic: Record<string, string>) => !nic.name.startsWith("bmc")
+          );
+          get().updateNodeData(vmNode.id, { nics });
+        }
+      }
     }
     set({ edges: applyEdgeChanges(changes, get().edges) });
   },
