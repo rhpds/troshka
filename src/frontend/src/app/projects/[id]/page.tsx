@@ -154,7 +154,30 @@ export default function ProjectCanvasPage() {
         if (node.id in ws.vmStates) {
           const redeployInfo = ws.vmProgress[node.id];
           const liveBootDevs = ws.vmBootDevs[node.id] || null;
-          return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null, liveBootDevs } };
+          // Sync live boot order into topology bootDevices
+          let updatedData: Record<string, unknown> = { status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null, liveBootDevs };
+          if (liveBootDevs && liveBootDevs.length > 0) {
+            const edges = store.edges;
+            const connectedStorage = edges
+              .filter((e) => e.source === node.id || e.target === node.id)
+              .map((e) => e.source === node.id ? e.target : e.source)
+              .map((nid) => store.nodes.find((n) => n.id === nid))
+              .filter((n) => n?.type === "storageNode");
+            const mapped = liveBootDevs.map((dev: string) => {
+              if (dev === "network") return "network";
+              if (dev === "hd") {
+                const disk = connectedStorage.find((n) => (n!.data as Record<string, any>).format !== "iso");
+                return disk ? disk.id : "hd";
+              }
+              if (dev === "cdrom") {
+                const iso = connectedStorage.find((n) => (n!.data as Record<string, any>).format === "iso");
+                return iso ? iso.id : "cdrom";
+              }
+              return dev;
+            });
+            updatedData.bootDevices = mapped;
+          }
+          return { ...node, data: { ...node.data, ...updatedData } };
         }
         return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
       }),
