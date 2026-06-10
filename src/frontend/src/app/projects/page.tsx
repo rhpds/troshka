@@ -258,6 +258,17 @@ export default function ProjectsPage() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
 
+  const pollUntilSettled = () => {
+    const settled = ["draft", "active", "stopped", "error"];
+    const poll = setInterval(() => {
+      fetch(`${API_BASE}/api/v1/projects/`).then((r) => r.ok ? r.json() : []).then((data) => {
+        const list = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
+        setProjects(list);
+        if (list.every((p: Project) => settled.includes(p.state))) clearInterval(poll);
+      }).catch(() => {});
+    }, 2000);
+  };
+
   const fetchProjects = () => {
     fetch(`${API_BASE}/api/v1/projects/`)
       .then((r) => {
@@ -277,9 +288,8 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
-    const onVisible = () => { if (document.visibilityState === "visible") fetchProjects(); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    const interval = setInterval(fetchProjects, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   if (loading) {
@@ -357,7 +367,8 @@ export default function ProjectsPage() {
                       if (!window.confirm(`Stop ${selected.length} project(s)?`)) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }); }
                       setSelectedProjects(new Set());
-                      setTimeout(fetchProjects, 1000);
+                      fetchProjects();
+                      pollUntilSettled();
                     }}>Stop ({selected.length})</Button>
                   )}
                   {allStoppedOrError && (
@@ -365,7 +376,8 @@ export default function ProjectsPage() {
                       if (!window.confirm(`Start ${selected.length} project(s)?`)) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }); }
                       setSelectedProjects(new Set());
-                      setTimeout(fetchProjects, 1000);
+                      fetchProjects();
+                      pollUntilSettled();
                     }}>Start ({selected.length})</Button>
                   )}
                   {allDraft && (
@@ -373,7 +385,8 @@ export default function ProjectsPage() {
                       if (!window.confirm(`Deploy ${selected.length} project(s)?`)) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }); }
                       setSelectedProjects(new Set());
-                      setTimeout(fetchProjects, 1000);
+                      fetchProjects();
+                      pollUntilSettled();
                     }}>Deploy ({selected.length})</Button>
                   )}
                   {allDeployed && (
@@ -381,7 +394,8 @@ export default function ProjectsPage() {
                       if (!window.confirm(`Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`)) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }); }
                       setSelectedProjects(new Set());
-                      setTimeout(fetchProjects, 1000);
+                      fetchProjects();
+                      pollUntilSettled();
                     }}>Republish ({selected.length})</Button>
                   )}
                   <Button variant="danger" size="sm" onClick={() => {
