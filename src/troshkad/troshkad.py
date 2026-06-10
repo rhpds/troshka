@@ -2809,7 +2809,15 @@ def main():
                         logger.info("Killed job %s subprocess", job["job_id"])
                     except Exception:
                         pass
-        server.shutdown()
+        # Shutdown server in a thread with a hard timeout
+        def _do_shutdown():
+            server.shutdown()
+        t = threading.Thread(target=_do_shutdown, daemon=True)
+        t.start()
+        t.join(timeout=5)
+        if t.is_alive():
+            logger.warning("Server shutdown timed out after 5s, forcing exit")
+            os._exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
