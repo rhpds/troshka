@@ -80,6 +80,7 @@ export default function AdminHostsPage() {
       setPools(Array.isArray(pools) ? pools : []);
       setLoading(false);
     }).catch(() => setLoading(false));
+    fetch("/api/v1/hosts/expected-agent-version").then((r) => r.ok ? r.json() : {}).then((d) => setExpectedVersion(d.version || ""));
     // Storage fetched separately — SSH calls can be slow and shouldn't block the page
     fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
       if (d && typeof d === "object") setStorageInfo(d as Record<string, { used_pct: number; free_gb: number; total_gb: number }>);
@@ -261,6 +262,7 @@ export default function AdminHostsPage() {
 
   const [installing, setInstalling] = useState<string | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [expectedVersion, setExpectedVersion] = useState("");
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
 
   const installAgent = async (hostId: string) => {
@@ -663,7 +665,8 @@ export default function AdminHostsPage() {
               )}
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
-                  <Button variant="secondary" isLoading={updating === h.id} isDisabled={updating === h.id} onClick={async (e) => {
+                  <Button variant={expectedVersion && h.agent_version && h.agent_version !== expectedVersion ? "primary" : "secondary"}
+                          isLoading={updating === h.id} isDisabled={updating === h.id} onClick={async (e) => {
                     const force = e.shiftKey;
                     const msg = force
                       ? "FORCE update troshkad? This will kill any running jobs."
@@ -709,7 +712,7 @@ export default function AdminHostsPage() {
                       setUpdating(null);
                     }
                   }}>
-                    {updating === h.id ? "Updating..." : "Update Agent"}
+                    {updating === h.id ? "Updating..." : expectedVersion && h.agent_version && h.agent_version !== expectedVersion ? "Update Agent ●" : "Update Agent"}
                   </Button>
                   <Button variant="secondary" isLoading={installing === h.id} isDisabled={installing === h.id} onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;

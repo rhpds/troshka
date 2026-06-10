@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -23,6 +24,17 @@ class ProvisionRequest(BaseModel):
     region: str | None = None
     ami_id: str | None = None
     storage_pool_id: str | None = None
+
+
+@router.get("/expected-agent-version")
+def get_expected_agent_version():
+    import hashlib
+    troshkad_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "troshkad", "troshkad.py",
+    )
+    with open(troshkad_path, "rb") as f:
+        return {"version": hashlib.sha256(f.read()).hexdigest()[:12]}
 
 
 @router.get("/overcommit")
@@ -827,7 +839,7 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
         script_bytes = f.read()
 
     import hashlib
-    version = hashlib.sha256(script_bytes).hexdigest()[:8]
+    version = hashlib.sha256(script_bytes).hexdigest()[:12]
 
     # Stamp the version into the script before pushing
     script_text = script_bytes.decode()
