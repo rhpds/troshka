@@ -70,6 +70,7 @@ export default function StoragePoolsPage() {
   const [newStorageGb, setNewStorageGb] = useState(128);
   const [newNfsEndpoint, setNewNfsEndpoint] = useState("");
   const [creating, setCreating] = useState(false);
+  const [availableAzs, setAvailableAzs] = useState<string[]>([]);
 
   const [editId, setEditId] = useState<string | null>(null);
   const [editThroughput, setEditThroughput] = useState(160);
@@ -91,6 +92,32 @@ export default function StoragePoolsPage() {
     const interval = setInterval(loadData, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  const fetchAzs = async (providerId: string) => {
+    if (!providerId) { setAvailableAzs([]); return; }
+    const resp = await fetch(`/api/v1/providers/${providerId}/availability-zones`);
+    if (resp.ok) {
+      setAvailableAzs(await resp.json());
+    }
+  };
+
+  const handleProviderChange = (providerId: string) => {
+    setNewProviderId(providerId);
+    setNewAz("");
+    fetchAzs(providerId);
+  };
+
+  const handleModeChange = (mode: string) => {
+    setNewMode(mode);
+    setNewAz("");
+    if (mode === "shared-byo") {
+      const ec2Provider = providers.find((p) => p.type === "ec2");
+      if (ec2Provider) fetchAzs(ec2Provider.id);
+    } else {
+      if (newProviderId) fetchAzs(newProviderId);
+      else setAvailableAzs([]);
+    }
+  };
 
   const handleCreate = async () => {
     setError("");
@@ -195,7 +222,7 @@ export default function StoragePoolsPage() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 500 }}>
               <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
-                <select style={inputStyle} value={newMode} onChange={(e) => setNewMode(e.target.value)}>
+                <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
                   <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
                   <option value="shared-byo">BYO NFS</option>
                 </select>
@@ -208,7 +235,7 @@ export default function StoragePoolsPage() {
               {newMode === "shared-fsx" && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
-                  <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
+                  <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
                     <option value="">Select provider...</option>
                     {providers.filter((p) => p.type === "ec2").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
@@ -217,8 +244,10 @@ export default function StoragePoolsPage() {
               {(newMode === "shared-fsx" || newMode === "shared-byo") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Availability Zone</label>
-                  <input style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}
-                         placeholder="e.g. us-east-1b" />
+                  <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
+                    <option value="">{availableAzs.length ? "Select AZ..." : "Select a provider first"}</option>
+                    {availableAzs.map((az) => <option key={az} value={az}>{az}</option>)}
+                  </select>
                 </div>
               )}
               {newMode === "shared-fsx" && (

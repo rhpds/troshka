@@ -504,3 +504,29 @@ def create_s3_bucket(provider_id: str, user: User = Depends(require_role("admin"
     except Exception as e:
         logger.exception("Failed to create bucket %s: %s", bucket, e)
         raise HTTPException(status_code=500, detail=f"Failed to create bucket: {e}")
+
+
+@router.get("/{provider_id}/availability-zones")
+def list_availability_zones(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """List available AZs in the provider's region."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type != "ec2":
+        raise HTTPException(status_code=400, detail="Not an EC2 provider")
+
+    creds = provider.get_credentials()
+    ec2 = boto3.client(
+        "ec2",
+        region_name=provider.default_region,
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
+    )
+
+    resp = ec2.describe_availability_zones(
+        Filters=[{"Name": "state", "Values": ["available"]}]
+    )
+    azs = sorted(az["ZoneName"] for az in resp["AvailabilityZones"])
+    return azs
