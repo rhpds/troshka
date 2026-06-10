@@ -219,11 +219,11 @@ export default function PatternsPage() {
               </div>
             );
           })()}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
+          <div>
             {filtered.map((pattern) => {
               const saving = pattern.state === "creating" || pattern.state === "capturing";
               return (
-              <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
+              <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, marginBottom: 8 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
                 <CardTitle>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
