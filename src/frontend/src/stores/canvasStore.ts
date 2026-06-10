@@ -342,21 +342,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // For BMC connections: auto-add a bmc0 NIC, connect with original handle, then swap after render
-    let bmcEdgeSwap: { vmId: string; vmIsSource: boolean; newHandle: string } | null = null;
-    if (isBmcSource || isBmcTarget) {
-      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
-      const vmIsSource = sType === "vmNode";
-      const nicId = generateNicId();
-      const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-      const bmcMac = `52:54:01:${hex()}:${hex()}:${hex()}`;
-      const existingNics = (vmNode.data as Record<string, any>).nics || [];
-      const bmcNicCount = existingNics.filter((n: Record<string, string>) => n.name.startsWith("bmc")).length;
-      const newNic = { id: nicId, name: `bmc${bmcNicCount}`, mac: bmcMac, model: "virtio" };
-      get().updateNodeData(vmNode.id, { nics: [...existingNics, newNic] });
-      bmcEdgeSwap = { vmId: vmNode.id, vmIsSource, newHandle: `${nicId}-top` };
-    }
-
     get().pushHistory();
     set({
       edges: addEdge(
@@ -372,23 +357,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       topologyDirty: true,
     });
 
-    // Swap the BMC edge handle after React Flow renders the new NIC handles
-    if (bmcEdgeSwap) {
-      const swap = bmcEdgeSwap;
-      setTimeout(() => {
-        set({
-          edges: get().edges.map((e) => {
-            const isMatch = swap.vmIsSource
-              ? e.source === swap.vmId && e.target === connection.target
-              : e.target === swap.vmId && e.source === connection.source;
-            if (!isMatch) return e;
-            return swap.vmIsSource
-              ? { ...e, sourceHandle: swap.newHandle }
-              : { ...e, targetHandle: swap.newHandle };
-          }),
-        });
-      }, 500);
-    }
   },
 
   addNode: (node) => {
