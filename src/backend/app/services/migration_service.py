@@ -124,7 +124,10 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
                 "target_host": target.ip_address,
             })
             result = wait_for_job(source, job_id, timeout=600)
-            logger.info("Migration %s: VM %s migrated: %s", project_id[:8], domain, result)
+            if result.get("status") == "failed":
+                error_msg = result.get("result", {}).get("error", "Unknown error")
+                raise RuntimeError(f"VM migration failed for {domain}: {error_msg}")
+            logger.info("Migration %s: VM %s migrated successfully", project_id[:8], domain)
 
         # Step 4: Tear down source infrastructure
         logger.info("Migration %s: tearing down source %s", project_id[:8], source_host_id[:8])
