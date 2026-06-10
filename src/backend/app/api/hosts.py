@@ -128,7 +128,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
 
     nfs_kwargs = {}
     if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
-        nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx/troshka"}
+        nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
     elif pool and pool.mode == "shared-byo" and pool.nfs_endpoint:
         parts = pool.nfs_endpoint.split(":", 1)
         nfs_kwargs = {"nfs_server": parts[0], "nfs_path": parts[1] if len(parts) > 1 else "/"}
