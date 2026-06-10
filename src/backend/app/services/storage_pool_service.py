@@ -196,7 +196,9 @@ def update_fsx_throughput(credentials: dict, region: str, filesystem_id: str, th
     )
 
 
-def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_group_id: str):
+def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_group_id: str,
+                                     include_nfs: bool = True):
+    """Add SG rules for shared storage. NFS rule only needed for FSx (managed by us), not BYO."""
     ec2 = boto3.client("ec2", region_name=region, **credentials)
 
     existing = ec2.describe_security_group_rules(
@@ -205,7 +207,7 @@ def add_sg_rules_for_shared_storage(credentials: dict, region: str, security_gro
     existing_ports = {r.get("FromPort") for r in existing["SecurityGroupRules"] if r["IsEgress"] is False}
 
     rules_to_add = []
-    if 2049 not in existing_ports:
+    if include_nfs and 2049 not in existing_ports:
         rules_to_add.append({
             "IpProtocol": "tcp",
             "FromPort": 2049,

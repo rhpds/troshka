@@ -114,7 +114,7 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
         )
         pool.subnet_id = subnet_id
         storage_pool_service.add_sg_rules_for_shared_storage(
-            credentials, region, provider.security_group_id
+            credentials, region, provider.security_group_id, include_nfs=False
         )
         db.commit()
 

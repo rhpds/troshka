@@ -95,10 +95,14 @@ export default function StoragePoolsPage() {
   const handleCreate = async () => {
     setError("");
     if (!newName.trim()) { setError("Name is required"); return; }
-    if (!newProviderId) { setError("Provider is required"); return; }
+    if (newMode === "shared-fsx" && !newProviderId) { setError("Provider is required for FSx pools"); return; }
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
     if (newMode === "shared-byo" && !newAz) { setError("AZ is required for BYO NFS pools"); return; }
+
+    // BYO NFS: auto-select first EC2 provider (needed for SG rules)
+    const providerId = newProviderId || providers.find((p) => p.type === "ec2")?.id;
+    if (!providerId) { setError("No EC2 provider configured"); return; }
 
     setCreating(true);
     const resp = await fetch("/api/v1/storage-pools", {
@@ -107,7 +111,7 @@ export default function StoragePoolsPage() {
       body: JSON.stringify({
         name: newName.trim(),
         mode: newMode,
-        provider_id: newProviderId,
+        provider_id: providerId,
         az: newAz || null,
         fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
         fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : null,
@@ -190,24 +194,26 @@ export default function StoragePoolsPage() {
           <CardBody>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 500 }}>
               <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
-                <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
-                       placeholder="e.g. prod-east-1b" />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
-                <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
-                  <option value="">Select provider...</option>
-                  {providers.filter((p) => p.type === "ec2").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
-              <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
                 <select style={inputStyle} value={newMode} onChange={(e) => setNewMode(e.target.value)}>
                   <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
                   <option value="shared-byo">BYO NFS</option>
                 </select>
               </div>
+              <div>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
+                <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
+                       placeholder="e.g. prod-east-1b" />
+              </div>
+              {newMode === "shared-fsx" && (
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
+                  <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
+                    <option value="">Select provider...</option>
+                    {providers.filter((p) => p.type === "ec2").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
               {(newMode === "shared-fsx" || newMode === "shared-byo") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Availability Zone</label>
