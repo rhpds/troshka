@@ -177,11 +177,30 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
   - **VPC**: Create/Delete/Modify{Vpc,Subnet,VpcAttribute,SubnetAttribute}, Create/Delete/Attach/Detach InternetGateway, Create/DeleteRoute, Describe{RouteTables,InternetGateways}, AssociateRouteTable
   - **Security Groups**: Create/Delete, Describe{SecurityGroups,SecurityGroupRules}, Authorize/RevokeSecurityGroupIngress
   - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses
+  - **FSx**: CreateFileSystem, DeleteFileSystem, DescribeFileSystems, UpdateFileSystem, CreateVolume, DeleteVolume, DescribeVolumes, UpdateVolume, TagResource, UntagResource, ListTagsForResource
+  - **IAM** (one-time): CreateServiceLinkedRole for fsx.amazonaws.com
   - **S3**: PutObject, GetObject, DeleteObject, HeadObject, ListBucket on `troshka-images`
+- IAM policy is a managed policy `troshka-policy` (not inline — inline has 2KB limit)
 - VPC setup creates subnets in all AZs — provisioner retries across AZs if instance type not supported
 - Provisioner never falls back to default VPC — requires explicit VPC setup
 - `Setup VPC` auto-creates a troshka-managed VPC if none exists (tagged `ManagedBy: troshka`)
 - VPC discovery only lists troshka-managed VPCs, not all VPCs in the account
+
+### Shared Storage & Live Migration
+- **Storage pools** group hosts sharing NFS storage — all hosts in a pool can live-migrate VMs between each other
+- Three modes: `shared-fsx` (managed FSx OpenZFS), `shared-byo` (user-provided NFS), `local` (default, no pool needed)
+- FSx OpenZFS: Single-AZ, LZ4 compression, `nconnect=16`, `cache=none,io=native` for VM disks
+- Per-second billing, no minimum commitment (~$53/month for 128 GB/160 MBps)
+- Hosts without a `storage_pool_id` operate in local mode (backward compatible)
+- **Download coordination**: `SharedCacheEntry` tracks what's cached on shared storage — one download serves all hosts in the pool
+- **Live migration**: `virsh migrate --live --persistent --undefinesource` via troshkad `vm/migrate` endpoint
+- Migration orchestration: set up networks/BMC on target → migrate VMs in start order → tear down source
+- **Host evacuation**: moves all projects off a host to other hosts in the same pool
+- **Path resolution**: troshkad `_storage_path()` routes to `/var/lib/troshka/shared/` or `/var/lib/troshka/local/` based on `storage_mode` config
+- **Pool-level GC**: cache eviction uses `SharedCacheEntry` table, checks all projects in pool before evicting
+- BYO NFS pools don't require an AZ or provider — user manages their own NFS infrastructure
+- Security group rules: NFS (TCP 2049) added only for FSx pools, migration ports (TCP 49152-49215) for all shared pools
+- Provider credentials mapping: use `_boto_client()` helper — `get_credentials()` returns `access_key_id` which must be mapped to `aws_access_key_id` for boto3
 
 ### Dev Database
 - PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
