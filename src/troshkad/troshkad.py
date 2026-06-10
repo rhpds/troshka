@@ -2779,6 +2779,15 @@ def main():
 
     def shutdown(signum, frame):
         logger.info("Received signal %d, shutting down", signum)
+        # Kill all running job subprocesses immediately
+        with _jobs_lock:
+            for job in _jobs.values():
+                if job["status"] == "running" and job.get("_process"):
+                    try:
+                        job["_process"].kill()
+                        logger.info("Killed job %s subprocess", job["job_id"])
+                    except Exception:
+                        pass
         server.shutdown()
 
     signal.signal(signal.SIGTERM, shutdown)
