@@ -162,12 +162,12 @@ packages:
   - dnsmasq
   - nftables
   - nmap-ncat
+  - nvme-cli
 
 runcmd:
   - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
   - systemctl enable --now nftables
   - systemctl disable --now dnsmasq 2>/dev/null || true
-  - dnf install -y nvme-cli 2>/dev/null || true
   - |
     # Detect data volume (/dev/sdf) via nvme id-ctrl — NVMe ordering is not guaranteed
     find_nvme_dev() {{

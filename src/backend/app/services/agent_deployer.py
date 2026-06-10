@@ -103,6 +103,9 @@ elif systemctl is-active libvirtd &>/dev/null; then
     echo "libvirtd restarted"
 fi
 
+# Ensure nvme-cli is installed for device detection
+dnf install -y nvme-cli 2>/dev/null || true
+
 # Detect NVMe device for a given /dev/sdX name via nvme id-ctrl
 find_nvme_dev() {
     local target="$1"
