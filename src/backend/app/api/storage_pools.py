@@ -130,6 +130,10 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
             pool.fsx_throughput_mbps = body.fsx_throughput_mbps
 
         if body.fsx_storage_gb and body.fsx_storage_gb > (pool.fsx_storage_gb or 0):
+            import math
+            min_grow = math.ceil((pool.fsx_storage_gb or 64) * 1.1)
+            if body.fsx_storage_gb < min_grow:
+                raise HTTPException(400, f"Storage increase must be at least 10% (minimum {min_grow} GB)")
             storage_pool_service.update_fsx_storage(
                 credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_storage_gb
             )
