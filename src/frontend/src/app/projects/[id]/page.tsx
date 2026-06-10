@@ -89,6 +89,10 @@ export default function ProjectCanvasPage() {
       .catch(() => {});
   }, [projectId]);
 
+  useEffect(() => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => setIsAdmin(d.role === "admin"));
+  }, []);
+
   const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string } | null>(null);
 
   // WebSocket → project state
@@ -246,9 +250,11 @@ export default function ProjectCanvasPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
-  const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null}[]>([]);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null}[]>([]);
   const [migrateTarget, setMigrateTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
+  const [migrateSourceHost, setMigrateSourceHost] = useState<{instance_id: string | null; ip_address: string} | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const showToast = (msg: string, duration = 4000) => {
     setToast(msg);
@@ -265,6 +271,7 @@ export default function ProjectCanvasPage() {
     const proj = await projectResp.json();
     const currentHost = hosts.find((h: any) => h.id === proj.host_id);
     if (!currentHost?.storage_pool_id) return;
+    setMigrateSourceHost({ instance_id: currentHost.instance_id, ip_address: currentHost.ip_address });
     const samePool = hosts.filter((h: any) =>
       h.storage_pool_id === currentHost.storage_pool_id &&
       h.id !== proj.host_id &&
@@ -416,9 +423,9 @@ export default function ProjectCanvasPage() {
               }}>
                 ■ Stop
               </button>
-              <button className="project-publish-btn" onClick={openMigrate} style={{ opacity: 0.85 }}>
+              {isAdmin && <button className="project-publish-btn" onClick={openMigrate} style={{ opacity: 0.85 }}>
                 Migrate
-              </button>
+              </button>}
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
@@ -591,11 +598,18 @@ export default function ProjectCanvasPage() {
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
             border: "1px solid var(--pf-t--global--border--color--default)" }}>
             <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 16 }}>Migrate Project</div>
+            {migrateSourceHost && (
+              <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12,
+                padding: "8px 12px", borderRadius: 6, background: "rgba(255,255,255,0.05)",
+                border: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <strong>Source:</strong> {migrateSourceHost.ip_address} ({migrateSourceHost.instance_id})
+              </div>
+            )}
             {availableHosts.length === 0 ? (
               <p style={{ color: "var(--pf-t--global--text--color--subtle)" }}>No available hosts in the same storage pool.</p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <label style={{ fontSize: 12 }}>Select target host:</label>
+                <label style={{ fontSize: 12 }}>Destination:</label>
                 <select style={{
                   width: "100%", padding: "6px 10px", borderRadius: 6,
                   border: "1px solid var(--pf-t--global--border--color--default)",
@@ -605,7 +619,7 @@ export default function ProjectCanvasPage() {
                   <option value="">Select host...</option>
                   {availableHosts.map((h) => (
                     <option key={h.id} value={h.id}>
-                      {h.ip_address} (CPU: {h.used_vcpus}/{h.total_vcpus}, RAM: {Math.round(h.used_ram_mb/1024)}/{Math.round(h.total_ram_mb/1024)} GB)
+                      {h.instance_id} — {h.ip_address} (CPU: {h.used_vcpus}/{h.total_vcpus}, RAM: {Math.round(h.used_ram_mb/1024)}/{Math.round(h.total_ram_mb/1024)} GB)
                     </option>
                   ))}
                 </select>

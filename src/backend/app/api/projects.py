@@ -1422,7 +1422,7 @@ class MigrateRequest(PydanticBaseModel):
 
 @router.post("/{project_id}/migrate")
 def migrate_project_endpoint(project_id: str, body: MigrateRequest,
-                    user: User = Depends(require_role("operator")),
+                    user: User = Depends(require_role("admin")),
                     db: Session = Depends(get_db)):
     from app.services.migration_service import validate_migration, migrate_project
 

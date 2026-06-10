@@ -49,6 +49,19 @@ def validate_migration(db: Session, project_id: str, source_host_id: str, target
     if target.agent_status != "connected":
         errors.append(f"Target host agent must be connected (status: {target.agent_status})")
 
+    # Check target has enough capacity
+    from app.services.placement import calculate_project_requirements, get_allocatable, sync_host_capacity
+    topology = project.deployed_topology or project.topology or {}
+    reqs = calculate_project_requirements(topology)
+    sync_host_capacity(db, target)
+    alloc_vcpus, alloc_ram = get_allocatable(target)
+    free_vcpus = alloc_vcpus - target.used_vcpus
+    free_ram = alloc_ram - target.used_ram_mb
+    if free_vcpus < reqs["total_vcpus"]:
+        errors.append(f"Target host has insufficient CPU ({free_vcpus} free, need {reqs['total_vcpus']})")
+    if free_ram < reqs["total_ram_mb"]:
+        errors.append(f"Target host has insufficient RAM ({free_ram} MB free, need {reqs['total_ram_mb']} MB)")
+
     return errors
 
 
