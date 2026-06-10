@@ -209,7 +209,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             _ca_cert, _host_cert, _host_key = "", "", ""
             if _sm == "shared" and pool and pool.ca_cert and pool.ca_key and h.ip_address:
                 from app.services.storage_pool_service import sign_host_cert
-                _host_cert, _host_key = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address)
+                _host_cert, _host_key = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or "")
                 _ca_cert = pool.ca_cert
             result = deploy_agent(h.ip_address, h.private_key, h.id,
                                   storage_mode=_sm,
@@ -295,7 +295,7 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
                         _install_kwargs["nfs_path"] = _parts[1] if len(_parts) > 1 else "/"
                     if _pool.ca_cert and _pool.ca_key and h.ip_address:
                         from app.services.storage_pool_service import sign_host_cert as _shc2
-                        _hc, _hk = _shc2(_pool.ca_cert, _pool.ca_key, h.ip_address)
+                        _hc, _hk = _shc2(_pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or "")
                         _install_kwargs["ca_cert"] = _pool.ca_cert
                         _install_kwargs["host_cert"] = _hc
                         _install_kwargs["host_key"] = _hk
@@ -515,7 +515,7 @@ def poweron_host(host_id: str, body: PowerOnRequest | None = None, user: User = 
                         _kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
                     if _pool.ca_cert and _pool.ca_key and h.ip_address:
                         from app.services.storage_pool_service import sign_host_cert as _shc
-                        _hc, _hk = _shc(_pool.ca_cert, _pool.ca_key, h.ip_address)
+                        _hc, _hk = _shc(_pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or "")
                         _kwargs["ca_cert"] = _pool.ca_cert
                         _kwargs["host_cert"] = _hc
                         _kwargs["host_key"] = _hk

@@ -173,7 +173,7 @@ def _check_cert_renewal():
                 if not host.ip_address:
                     continue
                 try:
-                    host_cert, host_key = sign_host_cert(pool.ca_cert, pool.ca_key, host.ip_address)
+                    host_cert, host_key = sign_host_cert(pool.ca_cert, pool.ca_key, host.ip_address, host.private_ip or "")
                     job_id = start_job(host, "/tls/update-certs", {
                         "ca_cert_b64": base64.b64encode(pool.ca_cert.encode()).decode(),
                         "host_cert_b64": base64.b64encode(host_cert.encode()).decode(),

@@ -42,7 +42,7 @@ def generate_pool_ca(pool_name: str) -> tuple[str, str]:
     return cert_pem, key_pem
 
 
-def sign_host_cert(ca_cert_pem: str, ca_key_pem: str, host_ip: str) -> tuple[str, str]:
+def sign_host_cert(ca_cert_pem: str, ca_key_pem: str, host_ip: str, private_ip: str = "") -> tuple[str, str]:
     """Generate a host cert+key signed by the pool CA. Returns (cert_pem, key_pem)."""
     from cryptography import x509
     from cryptography.x509.oid import NameOID
@@ -54,6 +54,9 @@ def sign_host_cert(ca_cert_pem: str, ca_key_pem: str, host_ip: str) -> tuple[str
     ca_key = serialization.load_pem_private_key(ca_key_pem.encode(), password=None)
 
     host_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    san_ips = [x509.IPAddress(ipaddress.ip_address(host_ip))]
+    if private_ip and private_ip != host_ip:
+        san_ips.append(x509.IPAddress(ipaddress.ip_address(private_ip)))
     subject = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, host_ip),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Troshka"),
@@ -67,7 +70,7 @@ def sign_host_cert(ca_cert_pem: str, ca_key_pem: str, host_ip: str) -> tuple[str
         .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
         .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
         .add_extension(
-            x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(host_ip))]),
+            x509.SubjectAlternativeName(san_ips),
             critical=False,
         )
         .sign(ca_key, hashes.SHA256())
