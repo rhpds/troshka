@@ -256,10 +256,48 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                 "static_routes": data.get("staticRoutes", []),
             })
 
+    # Build load balancer config if present
+    lb_config = None
+    for node in nodes:
+        if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "loadbalancer":
+            data = node.get("data", {})
+            node_id = node["id"]
+
+            connected_vm_ids = set()
+            for edge in edges:
+                other_id = edge["target"] if edge["source"] == node_id else edge["source"] if edge["target"] == node_id else None
+                if other_id:
+                    other_node = next((n for n in nodes if n["id"] == other_id), None)
+                    if other_node and other_node.get("type") == "vmNode":
+                        connected_vm_ids.add(other_id)
+
+            backends = []
+            for vm_id in connected_vm_ids:
+                vm_node = next((n for n in nodes if n["id"] == vm_id), None)
+                if not vm_node:
+                    continue
+                vm_data = vm_node.get("data", {})
+                vm_name = vm_data.get("name", vm_id[:8])
+                for nic in vm_data.get("nics", []):
+                    ip = nic.get("ip")
+                    if ip:
+                        backends.append({"name": vm_name, "ip": ip})
+                        break
+
+            lb_config = {
+                "name": data.get("name"),
+                "frontends": data.get("frontends", []),
+                "backends": backends,
+                "dns_records": data.get("dnsRecords", []),
+                "dns_ttl": data.get("dnsTtl", 30),
+            }
+            break
+
     return {
         "networks": networks,
         "gateway": gateway_config,
         "routers": router_configs,
+        "loadbalancer": lb_config,
         "vni_map": vni_map,
     }
 
