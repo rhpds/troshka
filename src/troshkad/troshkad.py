@@ -380,14 +380,45 @@ def _validate_domain_name(name):
 
 def _validate_path(path):
     normalized = os.path.normpath(path)
-    if not normalized.startswith("/var/lib/troshka/"):
+    allowed_prefixes = ["/var/lib/troshka/"]
+    mode = _config.get("storage_mode", "local")
+    if mode == "shared":
+        shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+        local = _config.get("local_mount", "/var/lib/troshka/local")
+        allowed_prefixes.extend([shared + "/", local + "/", "/var/lib/troshka/seeds/"])
+    if not any(normalized.startswith(p) for p in allowed_prefixes):
         raise ValueError(f"Path must be under /var/lib/troshka/: {path}")
     if os.path.exists(normalized):
         real = os.path.realpath(normalized)
-        if not real.startswith("/var/lib/troshka/"):
-            raise ValueError(f"Path resolves outside /var/lib/troshka/: {path}")
+        if not any(real.startswith(p) for p in allowed_prefixes):
+            raise ValueError(f"Path resolves outside allowed directories: {path}")
         return real
     return normalized
+
+
+def _storage_path(category):
+    """Resolve storage path by category based on storage mode.
+    Categories: 'vms', 'images', 'cache/patterns', 'cache/snapshots', 'pxe', 'bmc', 'tmp', 'seeds'
+    """
+    mode = _config.get("storage_mode", "local")
+    if mode == "shared":
+        shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+        local = _config.get("local_mount", "/var/lib/troshka/local")
+        shared_categories = {"vms", "images", "cache/patterns", "cache/snapshots"}
+        local_categories = {"pxe", "bmc", "tmp"}
+        if category in shared_categories:
+            return os.path.join(shared, category)
+        elif category in local_categories:
+            return os.path.join(local, category)
+        elif category == "seeds":
+            return "/var/lib/troshka/seeds"
+        else:
+            return os.path.join(shared, category)
+    else:
+        base = "/var/lib/troshka"
+        if category == "seeds":
+            return os.path.join(base, "vms")
+        return os.path.join(base, category)
 
 
 def _validate_url(url):
@@ -533,7 +564,12 @@ def _handle_vm_create(job, params):
                 job["output"].append(f"Linked {os.path.basename(path)} -> {link_from}")
             except FileExistsError:
                 pass
+        disk_cache = params.get("disk_cache")
         disk_arg = f"path={path},bus={bus}"
+        if disk_cache:
+            disk_arg += f",cache={disk_cache}"
+            if disk_cache == "none":
+                disk_arg += ",io=native"
         if device == "cdrom":
             disk_arg += ",device=cdrom"
         cmd.extend(["--disk", disk_arg])
