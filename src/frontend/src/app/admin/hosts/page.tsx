@@ -657,7 +657,7 @@ export default function AdminHostsPage() {
                 </Button>
               )}
               {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && (
-                <Button variant="secondary" size="sm" onClick={() => handleEvacuate(h.id)}>
+                <Button variant="secondary" onClick={() => handleEvacuate(h.id)}>
                   Evacuate
                 </Button>
               )}
