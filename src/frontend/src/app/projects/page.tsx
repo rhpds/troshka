@@ -542,8 +542,8 @@ export default function ProjectsPage() {
                     <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
                   )}
                   <Button
-                    variant="plain"
-                    style={{ color: "var(--pf-t--global--color--status--danger--default)", padding: 4 }}
+                    variant="danger"
+                    style={{ fontSize: 11, padding: "2px 8px" }}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
@@ -555,7 +555,7 @@ export default function ProjectsPage() {
                           }
                         });
                     }}
-                  >✕</Button>
+                  >Delete</Button>
                 </div>
               </CardTitle>
               <CardBody>

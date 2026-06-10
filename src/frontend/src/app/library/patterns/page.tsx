@@ -246,8 +246,7 @@ export default function PatternsPage() {
                         <Label color={visibilityColor(pattern.visibility)}>{pattern.visibility}</Label>
                       )}
                       {!saving && (
-                      <span
-                        style={{ color: "var(--pf-t--global--color--status--danger--default)", cursor: "pointer", padding: "0 4px", fontSize: 14 }}
+                      <Button variant="danger" size="sm"
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!window.confirm(`Delete pattern "${pattern.name}"? This cannot be undone.`)) return;
@@ -256,7 +255,7 @@ export default function PatternsPage() {
                               if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
                             });
                         }}
-                      >✕</span>
+                      >Delete</Button>
                       )}
                     </div>
                   </div>
