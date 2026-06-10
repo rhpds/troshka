@@ -214,3 +214,144 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
         return {"error": str(e)}
     finally:
         db.close()
+
+
+def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
+    """Pool-level GC for shared storage. Uses any connected host in the pool to scan the filesystem."""
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+    from app.models.storage_pool import SharedCacheEntry, StoragePool
+
+    db = SessionLocal()
+    try:
+        pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return {"error": "Pool not found"}
+        if pool.mode == "local":
+            return {"error": "Pool-level GC only applies to shared storage pools"}
+
+        report = {"pool_id": pool_id, "pool_name": pool.name, "mode": pool.mode}
+
+        # Find a connected host to run filesystem scans
+        scan_host = db.query(Host).filter(
+            Host.storage_pool_id == pool_id,
+            Host.state == "active",
+            Host.agent_status == "connected",
+        ).first()
+        if not scan_host:
+            report["error"] = "No connected host available in pool"
+            return report
+
+        # 1. Capacity sync — report shared storage usage
+        from app.services.troshkad_client import check_disk_usage
+        usage = check_disk_usage(scan_host)
+        report["shared_storage"] = usage
+        log.info("Pool GC %s: shared storage usage: %s", pool_id[:8], usage)
+
+        # 2. Sync capacity for all hosts in pool
+        hosts_in_pool = db.query(Host).filter(
+            Host.storage_pool_id == pool_id,
+            Host.state == "active",
+        ).all()
+        for h in hosts_in_pool:
+            sync_host_capacity(db, h)
+        report["hosts_synced"] = len(hosts_in_pool)
+
+        # 3. Cache eviction — find stale SharedCacheEntries
+        from datetime import datetime, timedelta, timezone
+        stale_hours = 168  # 7 days
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=stale_hours)
+
+        # Get all project IDs in the pool
+        pool_host_ids = [h.id for h in hosts_in_pool]
+        pool_projects = db.query(Project).filter(
+            Project.host_id.in_(pool_host_ids),
+            Project.state.in_(["active", "stopped"]),
+        ).all()
+
+        # Collect all item IDs referenced by active projects
+        referenced_items = set()
+        for p in pool_projects:
+            topo = p.deployed_topology or p.topology or {}
+            for node in topo.get("nodes", []):
+                if node.get("type") == "storageNode":
+                    data = node.get("data", {})
+                    lib_id = data.get("libraryItemId")
+                    if lib_id:
+                        referenced_items.add(lib_id)
+                    pattern_disk_id = data.get("patternDiskId")
+                    if pattern_disk_id:
+                        referenced_items.add(pattern_disk_id)
+                if node.get("type") == "vmNode":
+                    pxe_id = node.get("data", {}).get("pxeBootIsoId")
+                    if pxe_id:
+                        referenced_items.add(pxe_id)
+
+        # Find stale entries not referenced by any project
+        stale_entries = db.query(SharedCacheEntry).filter(
+            SharedCacheEntry.storage_pool_id == pool_id,
+            SharedCacheEntry.status == "ready",
+            SharedCacheEntry.created_at < cutoff,
+        ).all()
+
+        evictable = [e for e in stale_entries if e.item_id not in referenced_items]
+        report["cache_entries_total"] = db.query(SharedCacheEntry).filter(
+            SharedCacheEntry.storage_pool_id == pool_id,
+        ).count()
+        report["cache_entries_stale"] = len(stale_entries)
+        report["cache_entries_evictable"] = len(evictable)
+
+        if evictable and not dry_run:
+            from app.services.troshkad_client import start_job, wait_for_job
+            for entry in evictable:
+                full_path = f"/var/lib/troshka/shared/{entry.file_path}"
+                try:
+                    job_id = start_job(scan_host, "/gc/clean", {"files": [full_path]})
+                    wait_for_job(scan_host, job_id, timeout=30)
+                except Exception as e:
+                    log.warning("Pool GC %s: failed to evict %s: %s", pool_id[:8], entry.file_path, e)
+                    continue
+                db.delete(entry)
+                log.info("Pool GC %s: evicted stale cache entry %s", pool_id[:8], entry.file_path)
+            db.commit()
+            report["cache_entries_evicted"] = len(evictable)
+        elif evictable:
+            report["cache_entries_evicted"] = 0
+            report["dry_run"] = True
+
+        # 4. Network repair — per host (networks are host-local)
+        if not dry_run:
+            for h in hosts_in_pool:
+                if h.agent_status == "connected":
+                    repair_networks(db, h)
+
+        # 5. Orphan cleanup — discover orphans on shared storage
+        if scan_host.agent_status == "connected":
+            orphans = discover_orphans(db, scan_host)
+            report["orphans"] = orphans
+
+            total_orphans = (
+                len(orphans.get("orphaned_projects", []))
+                + len(orphans.get("orphaned_domains", []))
+                + len(orphans.get("orphaned_bridges", []))
+                + len(orphans.get("orphaned_namespaces", []))
+                + len(orphans.get("orphaned_cache", []))
+                + len(orphans.get("stale_cache", []))
+            )
+            report["orphans_found"] = total_orphans
+
+            if total_orphans > 0 and not dry_run:
+                cleanup = clean_orphans(scan_host, orphans)
+                report["cleanup"] = cleanup
+            elif total_orphans > 0:
+                report["cleanup"] = {"dry_run": True, "would_clean": total_orphans}
+
+        log.info("Pool GC %s: complete — %s", pool_id[:8], report)
+        return report
+
+    except Exception as e:
+        log.exception("Pool GC failed for %s: %s", pool_id[:8], e)
+        return {"error": str(e)}
+    finally:
+        db.close()

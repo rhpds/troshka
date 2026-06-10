@@ -217,3 +217,17 @@ def probe_azs(pool_id: str, instance_types: list[str],
 
     recommended = storage_pool_service.find_best_az(az_results, instance_types)
     return AzProbeResponse(results=results, recommended_az=recommended)
+
+
+@router.post("/{pool_id}/gc")
+def run_pool_gc(pool_id: str, dry_run: bool = False,
+                user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    pool = db.query(StoragePool).get(pool_id)
+    if not pool:
+        raise HTTPException(404, "Storage pool not found")
+    if pool.mode == "local":
+        raise HTTPException(400, "GC only applies to shared storage pools")
+
+    from app.services.gc_service import reconcile_pool
+    result = reconcile_pool(pool_id, dry_run=dry_run)
+    return result
