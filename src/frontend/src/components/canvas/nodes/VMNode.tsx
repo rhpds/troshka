@@ -218,8 +218,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
               win2022: "WinSrv 2022", win2019: "WinSrv 2019",
             }[d.os] || d.os
           }</span>
-          <span className="vm-node-spec-label">Boot</span>
+          <span className="vm-node-spec-label">Boot{(d as unknown as Record<string, any>).liveBootDevs ? " (live)" : ""}</span>
           <span className="vm-node-spec-val" style={{ fontSize: 10 }}>{(() => {
+            const liveDevs = (d as unknown as Record<string, any>).liveBootDevs as string[] | null;
+            if (liveDevs && liveDevs.length > 0) {
+              const labels: Record<string, string> = { hd: "disk", network: "PXE", cdrom: "CD", fd: "floppy" };
+              return liveDevs.map((dev) => labels[dev] || dev).join(" → ");
+            }
             const bootDevs = (d as unknown as Record<string, any>).bootDevices as string[] | undefined;
             if (!bootDevs || bootDevs.length === 0) return "None";
             for (const bd of bootDevs) {

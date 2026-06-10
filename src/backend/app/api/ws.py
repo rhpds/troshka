@@ -80,7 +80,8 @@ def _build_snapshot(project: Project, db) -> dict:
             snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
         else:
             try:
-                state = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
+                vm_info = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
+                state = vm_info["state"]
                 if state == "shut_off":
                     state = "stopped"
                 snapshot["vm_states"][node["id"]] = state

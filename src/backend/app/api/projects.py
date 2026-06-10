@@ -367,7 +367,7 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
             states[node["id"]] = "redeploying"
             progress[node["id"]] = _redeploy_progress[dom_name]
         else:
-            state = troshkad_get_vm_state(host, dom_name)
+            state = troshkad_get_vm_state(host, dom_name)["state"]
             if state == "not_found":
                 states[node["id"]] = "not_found"
             elif state == "running":
@@ -517,8 +517,8 @@ def stop_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user),
 def get_vm_status(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
-    state = troshkad_get_vm_state(host, dom)
-    return {"state": state}
+    vm_info = troshkad_get_vm_state(host, dom)
+    return {"state": vm_info["state"], "boot_devs": vm_info.get("boot_devs", [])}
 
 
 @router.post("/{project_id}/vms/{vm_id}/forcestop")
@@ -982,7 +982,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             topology = proj.topology
             vni_map = proj.vni_map or {}
 
-            was_running = troshkad_get_vm_state(h, dom) == "running"
+            was_running = troshkad_get_vm_state(h, dom)["state"] == "running"
             troshkad_undefine_vm(h, dom, remove_storage=False)
 
             _redeploy_progress[dom] = {"step": "preparing", "detail": ""}

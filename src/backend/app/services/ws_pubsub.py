@@ -130,6 +130,7 @@ def _poll_active_projects():
             # Poll VM states only if project has a host
             vm_states = {}
             vm_progress = {}
+            vm_boot_devs = {}
             if project.host_id:
                 host = db.query(Host).filter_by(id=project.host_id).first()
                 if host and host.ip_address:
@@ -141,16 +142,20 @@ def _poll_active_projects():
                             vm_states[node["id"]] = "redeploying"
                             vm_progress[node["id"]] = _redeploy_progress[dom_name]
                         else:
-                            state = troshkad_get_vm_state(host, dom_name)
+                            vm_info = troshkad_get_vm_state(host, dom_name)
+                            state = vm_info["state"]
                             if state in ("shut_off", "shutting_down", "crashed", "suspended", "paused"):
                                 state = "stopped"
                             vm_states[node["id"]] = state
+                            if vm_info.get("boot_devs"):
+                                vm_boot_devs[node["id"]] = vm_info["boot_devs"]
 
-            if vm_states != last.get("vm_states") or vm_progress != last.get("vm_progress"):
+            if vm_states != last.get("vm_states") or vm_progress != last.get("vm_progress") or vm_boot_devs != last.get("vm_boot_devs"):
                 notify_project(project_id, {
                     "type": "vm-state",
                     "states": vm_states,
                     "progress": vm_progress,
+                    "boot_devs": vm_boot_devs,
                 })
 
             _last_states[project_id] = {
@@ -159,6 +164,7 @@ def _poll_active_projects():
                 "deploy_progress": dp,
                 "vm_states": vm_states,
                 "vm_progress": vm_progress,
+                "vm_boot_devs": vm_boot_devs,
             }
     finally:
         db.close()

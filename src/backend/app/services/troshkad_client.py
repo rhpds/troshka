@@ -221,16 +221,20 @@ def push_update(host, script_bytes, version, force=False):
 
 
 def get_vm_state(host, domain_name, timeout=15):
-    """Get VM state. Returns state string or 'not_found'."""
+    """Get VM state and boot config. Returns dict with 'state' and 'boot_devs'."""
     try:
         conn_timeout = min(timeout, 5)
         job_id = start_job(host, "/vms/state", {"domain_name": domain_name}, request_timeout=conn_timeout)
         job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         if job["status"] == "completed":
-            return job["result"].get("state", "unknown")
-        return "unknown"
+            result = job["result"]
+            return {
+                "state": result.get("state", "unknown"),
+                "boot_devs": result.get("boot_devs", []),
+            }
+        return {"state": "unknown", "boot_devs": []}
     except TroshkadError:
-        return "not_found"
+        return {"state": "not_found", "boot_devs": []}
 
 
 def get_vnc_port(host, domain_name, timeout=15):

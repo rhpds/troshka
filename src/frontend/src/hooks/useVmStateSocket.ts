@@ -16,6 +16,7 @@ interface VmStateSocket {
   connected: boolean;
   vmStates: Record<string, string>;
   vmProgress: Record<string, VmProgress>;
+  vmBootDevs: Record<string, string[]>;
   projectState: string | null;
   deployError: string | null;
   deployProgress: DeployProgress | null;
@@ -29,6 +30,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [connected, setConnected] = useState(false);
   const [vmStates, setVmStates] = useState<Record<string, string>>({});
   const [vmProgress, setVmProgress] = useState<Record<string, VmProgress>>({});
+  const [vmBootDevs, setVmBootDevs] = useState<Record<string, string[]>>({});
   const [projectState, setProjectState] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
@@ -70,6 +72,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "vm-state":
             setVmStates((prev) => ({ ...prev, ...msg.states }));
             setVmProgress((prev) => ({ ...prev, ...msg.progress }));
+            if (msg.boot_devs) setVmBootDevs((prev) => ({ ...prev, ...msg.boot_devs }));
             break;
           case "project-state":
             setProjectState(msg.state || null);
@@ -116,5 +119,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, projectState, deployError, deployProgress, deleted };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, deleted };
 }

@@ -620,7 +620,25 @@ def _handle_vm_state(job, params):
         "idle": "unknown",
     }
     state = state_map.get(raw_state, raw_state)
-    return {"domain": domain, "state": state}
+
+    # Also get boot order from domain XML
+    boot_devs = []
+    try:
+        xml_result = subprocess.run(
+            ["virsh", "dumpxml", "--inactive", domain],
+            capture_output=True, text=True, timeout=5,
+        )
+        if xml_result.returncode == 0:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(xml_result.stdout)
+            for boot_el in root.findall(".//os/boot"):
+                dev = boot_el.get("dev")
+                if dev:
+                    boot_devs.append(dev)
+    except Exception:
+        pass
+
+    return {"domain": domain, "state": state, "boot_devs": boot_devs}
 
 COMMAND_HANDLERS["vms/state"] = _handle_vm_state
 

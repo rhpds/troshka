@@ -153,12 +153,13 @@ export default function ProjectCanvasPage() {
         if (node.type !== "vmNode") return node;
         if (node.id in ws.vmStates) {
           const redeployInfo = ws.vmProgress[node.id];
-          return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null } };
+          const liveBootDevs = ws.vmBootDevs[node.id] || null;
+          return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null, liveBootDevs } };
         }
         return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
       }),
     });
-  }, [ws.vmStates, ws.vmProgress]);
+  }, [ws.vmStates, ws.vmProgress, ws.vmBootDevs]);
 
   useEffect(() => {
     if (projectState === "draft") {
