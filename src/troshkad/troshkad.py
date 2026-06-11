@@ -3518,12 +3518,11 @@ def _handle_vm_serial_exec(job, params):
     username = params.get("username", "root")
     password = params.get("password", "")
     command = params.get("command", "")
-    timeout_secs = params.get("timeout", 10)
+    timeout_secs = min(params.get("timeout", 10), 60)
 
     if not command:
         raise RuntimeError("No command specified")
 
-    # Get PTY path from VM XML
     result = subprocess.run(
         ["virsh", "dumpxml", domain],
         capture_output=True, text=True, timeout=10,
@@ -3531,23 +3530,28 @@ def _handle_vm_serial_exec(job, params):
     if result.returncode != 0:
         raise RuntimeError(f"Cannot get XML for {domain}: {result.stderr}")
 
-    import re
+    import re, select
     pty_match = re.search(r"source path='(/dev/pts/\d+)'", result.stdout)
     if not pty_match:
         raise RuntimeError(f"No serial console PTY found for {domain}")
     pty_path = pty_match.group(1)
 
-    import select
+    def strip_ansi(s):
+        s = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[HJK]', '', s)
+        return s.replace('\r\n', '\n').replace('\r', '')
+
     fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
 
     def read_all(t=2):
         buf = b""
         end = time.time() + t
         while time.time() < end:
-            r, _, _ = select.select([fd], [], [], 0.5)
+            r, _, _ = select.select([fd], [], [], 0.3)
             if r:
                 try:
-                    buf += os.read(fd, 4096)
+                    chunk = os.read(fd, 4096)
+                    if chunk:
+                        buf += chunk
                 except Exception:
                     break
         return buf.decode(errors="replace")
@@ -3557,52 +3561,78 @@ def _handle_vm_serial_exec(job, params):
         time.sleep(0.1)
 
     try:
-        # Clear pending output
+        # Clear any pending output
         read_all(0.5)
 
-        if password:
-            # Login flow
+        # Detect current state — send a newline and see what comes back
+        write("")
+        time.sleep(1)
+        probe = strip_ansi(read_all(1))
+
+        needs_login = "login:" in probe.lower()
+
+        if needs_login and password:
             write(username)
-            time.sleep(1)
-            read_all(1)
+            time.sleep(0.5)
+            read_all(0.5)
             write(password)
-            time.sleep(2)
-            read_all(2)
+            time.sleep(1)
+            login_result = strip_ansi(read_all(1))
+            if "login incorrect" in login_result.lower():
+                return {"domain": domain, "output": "", "error": "Login failed"}
+        elif needs_login and not password:
+            return {"domain": domain, "output": "", "error": "VM is at login prompt but no password provided"}
 
-        # Send command with unique markers
-        marker = f"__TROSHKA_{os.getpid()}__"
-        write(f"echo {marker}_START")
-        time.sleep(0.5)
+        # Run command between unique markers for clean extraction
+        marker = f"TROSHKA{os.getpid()}{int(time.time()) % 10000}"
+        end_tag = f"{marker}E"
+
+        # Disable echo and bracketed paste for cleaner output
+        write("stty -echo 2>/dev/null; printf '\\e[?2004l' 2>/dev/null")
+        time.sleep(0.3)
+        read_all(0.3)
+
         write(command)
-        time.sleep(0.5)
-        write(f"echo {marker}_END")
-        time.sleep(min(timeout_secs, 30))
-        raw = read_all(3)
+        write(f"echo {end_tag}")
 
-        # Extract output between markers
-        start_idx = raw.find(f"{marker}_START")
-        end_idx = raw.find(f"{marker}_END")
-        if start_idx >= 0 and end_idx >= 0:
-            output = raw[start_idx:end_idx]
-            lines = output.split("\n")
-            # Skip the marker echo line and the command echo
-            result_lines = []
-            skip_next = True
-            for line in lines:
-                if marker in line:
-                    skip_next = True
-                    continue
-                if skip_next and command in line:
-                    skip_next = False
-                    continue
-                skip_next = False
-                result_lines.append(line)
-            output = "\n".join(result_lines).strip()
+        # Poll for end marker instead of sleeping
+        raw = ""
+        deadline = time.time() + timeout_secs
+        while time.time() < deadline:
+            chunk = read_all(0.5)
+            if chunk:
+                raw += strip_ansi(chunk)
+            if end_tag in raw:
+                break
+
+        # Re-enable echo
+        write("stty echo 2>/dev/null")
+        time.sleep(0.2)
+        read_all(0.2)
+
+        # Extract output before end marker
+        end_idx = raw.find(end_tag)
+        if end_idx >= 0:
+            content = raw[:end_idx]
         else:
-            output = raw.strip()
+            content = raw
 
-        if password:
+        # Clean up: remove prompts and empty lines
+        out_lines = []
+        for line in content.split("\n"):
+            clean = line.strip()
+            if not clean:
+                continue
+            if marker in clean:
+                continue
+            if re.match(r'^\[.*@.*\]\s*[$#]', clean):
+                continue
+            out_lines.append(clean)
+        output = "\n".join(out_lines)
+
+        if needs_login and password:
             write("exit")
+            time.sleep(0.3)
 
         return {"domain": domain, "output": output}
     finally:

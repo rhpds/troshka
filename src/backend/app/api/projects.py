@@ -904,6 +904,51 @@ def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current
     }
 
 
+@router.post("/{project_id}/vms/{vm_id}/exec")
+def vm_serial_exec(
+    project_id: str,
+    vm_id: str,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Execute a command on a VM via serial console."""
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail="Project must be active")
+
+    dom = _domain_name(project_id, vm_id)
+    command = body.get("command", "")
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+
+    # Get credentials from VM's cloud-init config
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    username = body.get("username", "cloud-user")
+    password = body.get("password", "")
+    if not password and vm_node:
+        password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
+
+    try:
+        job_id = start_job(host, "/vm/serial-exec", {
+            "domain_name": dom,
+            "username": username,
+            "password": password,
+            "command": command,
+            "timeout": min(body.get("timeout", 10), 60),
+        })
+        job = wait_for_job(host, job_id, timeout=90)
+        if job["status"] == "failed":
+            return {"error": job.get("result", {}).get("error", "Exec failed")}
+        result = job.get("result", {})
+        return {"output": result.get("output", ""), "error": result.get("error", "")}
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.post("/{project_id}/reconfigure")
 def reconfigure_project(
     project_id: str,
