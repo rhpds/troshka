@@ -73,6 +73,9 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [bastionPassword, setBastionPassword] = useState("");
   const [bastionBmcIp, setBastionBmcIp] = useState("192.168.100.50");
   const [bmcIpError, setBmcIpError] = useState("");
+  const [autoDeploy, setAutoDeploy] = useState(true);
+  const [clusterName, setClusterName] = useState("ocp");
+  const [baseDomain, setBaseDomain] = useState("ocp.local");
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
@@ -131,6 +134,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
         if (bastionPassword) templateBody.bastion_password = bastionPassword;
         if (bastionBmcIp) templateBody.bastion_bmc_ip = bastionBmcIp;
+        if (clusterName) templateBody.cluster_name = clusterName;
+        if (baseDomain) templateBody.base_domain = baseDomain;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -138,6 +143,9 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         });
         if (resp.ok) {
           const data = await resp.json();
+          if (autoDeploy) {
+            await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy`, { method: "POST" });
+          }
           onCreated(data.id);
         }
       } else {
@@ -245,6 +253,22 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   <div style={{ opacity: 0.6, marginTop: 2 }}>{templates.find((t) => t.id === selectedTemplate)?.description}</div>
                 </div>
                 <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Cluster DNS</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cluster Name</label>
+                      <input style={inputStyle} value={clusterName} onChange={(e) => setClusterName(e.target.value)} placeholder="ocp" />
+                    </div>
+                    <div style={{ flex: 2 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Base Domain</label>
+                      <input style={inputStyle} value={baseDomain} onChange={(e) => setBaseDomain(e.target.value)} placeholder="ocp.local" />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
+                    api.{clusterName}.{baseDomain} → 10.0.0.2 (LB)
+                  </div>
+                </div>
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
                   <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Bastion Configuration</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div>
@@ -334,6 +358,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       {bmcIpError && <div style={{ fontSize: 11, color: "#f87171", marginTop: 2 }}>{bmcIpError}</div>}
                     </div>
                   </div>
+                  <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
+                      Deploy immediately after creation
+                    </label>
+                  </div>
                 </div>
               </>
             )}
@@ -408,7 +438,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !!bmcIpError)) ? 0.4 : 1,
                 }}
               >
-                {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create from Template" : "Create Project"}
+                {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
               </button>
             </div>
           </div>
@@ -424,6 +454,12 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
+  const [deletingProjects, setDeletingProjects] = useState<Set<string>>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
+      return new Set(stored);
+    } catch { return new Set(); }
+  });
   const [search, setSearch] = useState("");
   const [userRole, setUserRole] = useState("");
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
@@ -450,6 +486,14 @@ export default function ProjectsPage() {
         const sorted = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
         setProjects(sorted);
         setLoading(false);
+        // Clean up deleting IDs for projects that no longer exist
+        const projectIds = new Set(sorted.map((p: Project) => p.id));
+        setDeletingProjects(prev => {
+          const updated = new Set(prev);
+          for (const id of prev) { if (!projectIds.has(id)) updated.delete(id); }
+          if (updated.size !== prev.size) localStorage.setItem("troshka-deleting-projects", JSON.stringify([...updated]));
+          return updated;
+        });
       })
       .catch(() => {
         setProjects([]);
@@ -604,7 +648,7 @@ export default function ProjectsPage() {
               style={{ marginBottom: 8, cursor: "pointer" }}
             >
               {/* Row 1: Info */}
-              <CardBody style={{ display: "flex", alignItems: "flex-start", gap: 8 }} onClick={() => router.push(`/projects/${p.id}`)}>
+              <CardBody style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: deletingProjects.has(p.id) ? 0.4 : 1, pointerEvents: deletingProjects.has(p.id) ? "none" : "auto" }} onClick={() => { if (!deletingProjects.has(p.id)) router.push(`/projects/${p.id}`); }}>
                 <input
                   type="checkbox"
                   checked={selectedProjects.has(p.id)}
@@ -641,6 +685,9 @@ export default function ProjectsPage() {
               </CardBody>
               {/* Row 2: Buttons */}
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+                {deletingProjects.has(p.id) ? (
+                  <Button variant="plain" isDisabled><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</Button>
+                ) : (<>
                 {p.state === "draft" && (
                   <>
                     {userRole === "admin" && pools.length > 1 && (
@@ -689,12 +736,15 @@ export default function ProjectsPage() {
                     });
                   }}>Republish</Button>
                 )}
-                <Button variant="danger" onClick={() => {
+                <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={() => {
                   if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
+                  setDeletingProjects(prev => new Set(prev).add(p.id));
                   fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
-                    if (r.ok) { setProjects(projects.filter((pr) => pr.id !== p.id)); localStorage.removeItem(`troshka-canvas-${p.id}`); }
+                    if (r.ok) { setProjects(prev => prev.filter((pr) => pr.id !== p.id)); localStorage.removeItem(`troshka-canvas-${p.id}`); }
+                    setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
                   });
-                }}>Delete</Button>
+                }}>{deletingProjects.has(p.id) ? <><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</> : "Delete"}</Button>
+                </>)}
               </CardBody>
             </Card>
           ))}

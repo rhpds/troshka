@@ -350,6 +350,7 @@ export default function ProjectCanvasPage() {
     active: "#4ade80",
     stopped: "#f87171",
     error: "#ef4444",
+    deleting: "#f87171",
   };
 
   return (
@@ -395,9 +396,16 @@ export default function ProjectCanvasPage() {
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
               onClick={() => {
                 if (!window.confirm(`Delete project "${projectName}"? This cannot be undone.`)) return;
+                setProjectState("deleting");
                 localStorage.removeItem(`troshka-canvas-${projectId}`);
+                const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
+                deleting.push(projectId);
+                localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
                 router.push("/projects");
-                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" });
+                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
+                  const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
+                  localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
+                });
               }}
             >
               Delete

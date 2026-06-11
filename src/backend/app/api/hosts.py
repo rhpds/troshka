@@ -305,6 +305,19 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
             result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs)
             h.agent_status = "connected" if result["success"] else "install_failed"
 
+            # Verify agent version matches expected
+            if result["success"]:
+                try:
+                    from app.services.troshkad_client import troshkad_request
+                    import time
+                    time.sleep(3)  # wait for troshkad to start
+                    health = troshkad_request(h, "GET", "/health", timeout=10)
+                    if health and health.get("version"):
+                        h.agent_version = health["version"]
+                        logger.info("Agent install verified: host %s running version %s", h.id[:8], h.agent_version)
+                except Exception as _ve:
+                    logger.warning("Could not verify agent version after install: %s", _ve)
+
             # Store troshkad credentials
             creds = result.get("troshkad_credentials", {})
             if creds.get("token") and creds.get("fingerprint"):

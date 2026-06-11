@@ -287,6 +287,8 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
               { name: "https", bindPort: 443, mode: "tcp", backendPort: 443 },
               { name: "http", bindPort: 80, mode: "tcp", backendPort: 80 },
             ],
+            lbIp: "",
+            external: false,
             dnsRecords: [],
             dnsTtl: 30,
           },

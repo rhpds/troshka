@@ -1278,6 +1278,21 @@ export default function PropertiesPanel() {
               <>
                 <div className="props-divider" />
                 <div className="props-section">
+                  <div style={{ marginBottom: 8 }}>
+                    <label className="props-label">Internal Load Balancer IP Address</label>
+                    <input className="props-input" value={(data as Record<string, any>).lbIp as string || ""} onChange={(e) => update("lbIp", e.target.value)} placeholder="e.g. 10.0.0.2" />
+                  </div>
+                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={(data as Record<string, any>).external ?? true}
+                      onChange={(e) => update("external", e.target.checked)}
+                    />
+                    External access via EIP
+                  </label>
+                </div>
+                <div className="props-divider" />
+                <div className="props-section">
                   <div className="props-section-title">Frontends</div>
                   {((data as Record<string, any>).frontends || []).length === 0 && (
                     <p style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>No frontends configured</p>

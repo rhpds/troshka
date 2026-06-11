@@ -152,6 +152,7 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
             "dhcp_enabled": data.get("dhcp", False),
             "dns_enabled": data.get("dns", False),
             "dns_domain": data.get("dnsDomain", ""),
+            "dns_records": data.get("dnsRecords", []),
             "connected_vms": connected_vms,
             "dhcp_hosts": dhcp_hosts,
             "peers": peer_ips,
@@ -287,6 +288,8 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
             lb_config = {
                 "name": data.get("name"),
                 "frontends": data.get("frontends", []),
+                "lb_ip": data.get("lbIp", ""),
+                "external": data.get("external", True),
                 "backends": backends,
                 "dns_records": data.get("dnsRecords", []),
                 "dns_ttl": data.get("dnsTtl", 30),

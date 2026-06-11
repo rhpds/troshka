@@ -171,7 +171,19 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           const frontends = ((d as any).frontends as Array<{name: string; bindPort: number}>) || [];
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
+                {((d as any).external ?? true) && (
+                  <span style={{ background: "rgba(59,130,246,0.2)", color: "#3b82f6", padding: "0px 5px", borderRadius: 3, fontSize: 8, fontWeight: 600 }}>
+                    EXT
+                  </span>
+                )}
+              </div>
+              {(d as any).lbIp && (
+                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
+                  {(d as any).lbIp}
+                </div>
+              )}
               {frontends.length > 0 && (
                 <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
                   {frontends.map((fe, i) => (

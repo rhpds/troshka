@@ -93,6 +93,27 @@ def create_project_from_template(
     bastion_password = body.get("bastion_password", "")
     topology = generate_topology(template_id, bmc_password=bastion_password or "password")
 
+    # Configure internal DNS for OCP on the cluster network
+    cluster_name = body.get("cluster_name", "ocp")
+    base_domain = body.get("base_domain", "ocp.local")
+    lb_ip = body.get("bastion_bmc_ip", "10.0.0.2")  # Will be overridden below
+    # Find the LB IP from the topology
+    for node in topology.get("nodes", []):
+        if node.get("data", {}).get("networkType") == "loadbalancer":
+            lb_ip = node["data"].get("lbIp", "10.0.0.2")
+            break
+    # Enable DNS on the cluster network with OCP records
+    for node in topology.get("nodes", []):
+        if node.get("type") == "networkNode" and node.get("data", {}).get("subtype") == "network" and node.get("data", {}).get("networkType") != "bmc":
+            node["data"]["dns"] = True
+            node["data"]["dnsDomain"] = base_domain
+            node["data"]["dnsRecords"] = [
+                {"name": f"api.{cluster_name}.{base_domain}", "ip": lb_ip},
+                {"name": f"api-int.{cluster_name}.{base_domain}", "ip": lb_ip},
+                {"name": f".apps.{cluster_name}.{base_domain}", "ip": lb_ip},
+            ]
+            break
+
     bastion_image_id = body.get("bastion_image_id")
     if bastion_image_id:
         item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()

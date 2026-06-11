@@ -645,11 +645,14 @@ export default function AdminHostsPage() {
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
                 {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
               </Button>
+              {(() => {
+                const hostBusy = installing === h.id || updating === h.id || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
+                return (<>
               {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
                 <Button variant="secondary" onClick={() => {
                   if (!window.confirm(`Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`)) return;
                   installAgent(h.id);
-                }} isLoading={installing === h.id} isDisabled={installing === h.id}>
+                }} isLoading={installing === h.id} isDisabled={hostBusy}>
                   {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
                 </Button>
               )}
@@ -659,14 +662,14 @@ export default function AdminHostsPage() {
                 </Button>
               )}
               {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && (
-                <Button variant="secondary" onClick={() => handleEvacuate(h.id)}>
+                <Button variant="secondary" isDisabled={hostBusy} onClick={() => handleEvacuate(h.id)}>
                   Evacuate
                 </Button>
               )}
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
                   {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
-                          isLoading={updating === h.id} isDisabled={updating === h.id} onClick={async (e) => {
+                          isLoading={updating === h.id} isDisabled={hostBusy} onClick={async (e) => {
                     const force = e.shiftKey;
                     const msg = force
                       ? "FORCE update troshkad? This will kill any running jobs."
@@ -714,13 +717,13 @@ export default function AdminHostsPage() {
                   }}>
                     {updating === h.id ? "Updating..." : "Update Agent"}
                   </Button>}
-                  <Button variant="secondary" isLoading={installing === h.id} isDisabled={installing === h.id} onClick={() => {
+                  <Button variant="secondary" isLoading={installing === h.id} isDisabled={hostBusy} onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
                     installAgent(h.id);
                   }}>
                     {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
-                  <Button variant="secondary" onClick={async () => {
+                  <Button variant="secondary" isDisabled={hostBusy} onClick={async () => {
                     if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
                     const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
                     if (resp.ok) {
@@ -747,7 +750,7 @@ export default function AdminHostsPage() {
                   }}>
                     Clean
                   </Button>
-                  <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={updating === `wipe-${h.id}`} onClick={async () => {
+                  <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={hostBusy || updating === `wipe-${h.id}`} onClick={async () => {
                     if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
                     if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
                     setUpdating(`wipe-${h.id}`);
@@ -768,8 +771,9 @@ export default function AdminHostsPage() {
                   </Button>
                 </>
               )}
+              </>); })()}
               {h.state === "active" && (
-                <Button variant="secondary" onClick={() => {
+                <Button variant="secondary" isDisabled={installing === h.id || updating === h.id} onClick={() => {
                   const msg = h.used_vcpus > 0
                     ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
                     : `Power off ${h.instance_id}?`;

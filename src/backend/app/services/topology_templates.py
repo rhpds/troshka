@@ -66,9 +66,9 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
     return vm_node, disk_node, disk_edge
 
 
-def _bastion_node(x, y, disk_gb=50):
+def _bastion_node(x, y, disk_gb=50, cluster_ip="10.0.0.50"):
     """Bastion/provisioner VM with two NICs (cluster + BMC)."""
-    nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
+    nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     nic_bmc = {"id": f"nic-{_id()}", "name": "eth1", "mac": _mac(), "model": "virtio"}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
     disk_id = _id()
@@ -144,6 +144,8 @@ def _lb_node(x, y):
             "subtype": "loadbalancer",
             "networkType": "loadbalancer",
             "frontends": OCP_FRONTENDS,
+            "lbIp": "10.0.0.2",
+            "external": True,
             "dnsRecords": OCP_DNS_RECORDS,
             "dnsTtl": 30,
         },
@@ -182,7 +184,7 @@ def _bmc_node(x, y, bmc_password="password"):
     }
 
 
-def _gateway_node(x, y):
+def _gateway_node(x, y, port_forwards=None):
     return {
         "id": _id(),
         "type": "networkNode",
@@ -193,7 +195,7 @@ def _gateway_node(x, y):
             "subtype": "gateway",
             "gatewayMode": "nat-portforward",
             "outboundPolicy": "allow-all",
-            "portForwards": [],
+            "portForwards": port_forwards or [],
         },
     }
 
@@ -276,6 +278,8 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
     eip_id = _id()
     external_ips = [{"id": eip_id, "label": "OCP"}]
 
+    ssh_port_forward = {"extIpId": eip_id, "extPort": "22", "intIp": "10.0.0.50", "intPort": "22", "proto": "tcp"}
+
     # Layout constants
     VM_SPACING = 400        # horizontal gap between VM columns (room for disk to the left)
     GW_Y = 0                # gateway row (top)
@@ -292,7 +296,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         net_x = vm_x_start + VM_SPACING - 20
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y, bmc_password)  # above bastion
-        gw = _gateway_node(net_x, GW_Y)
+        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11", cluster_ip="10.0.0.11")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
@@ -312,7 +316,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
-        gw = _gateway_node(net_x, GW_Y)
+        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
         vm_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
@@ -340,7 +344,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
-        gw = _gateway_node(net_x, GW_Y)
+        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
         cp_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")

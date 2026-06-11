@@ -1710,6 +1710,11 @@ def _handle_network_full_setup(job, params):
             conf_lines.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
         if net.get("dns_enabled") and net.get("dns_domain"):
             conf_lines.append(f"domain={net['dns_domain']}")
+        for dns_rec in net.get("dns_records", []):
+            rec_name = dns_rec.get("name", "")
+            rec_ip = dns_rec.get("ip", "")
+            if rec_name and rec_ip:
+                conf_lines.append(f"address=/{rec_name}/{rec_ip}")
 
         # PXE config
         pxe = net.get("pxe_config")
@@ -1884,9 +1889,7 @@ def _handle_network_full_setup(job, params):
                                         "ip", "daddr", priv_ip, "tcp", "dport", str(ext_port),
                                         "dnat", "ip", "to", f"{pf_transit_ip}:{ext_port}"], timeout=10)
                     else:
-                        _run_cmd(job, ["nft", "add", "rule", "inet", "nat", pre_chain,
-                                        "tcp", "dport", str(ext_port),
-                                        "dnat", "ip", "to", f"{pf_transit_ip}:{ext_port}"], timeout=10)
+                        job["output"].append(f"Skipping port forward :{ext_port} — no EIP private IP yet")
 
         job["output"].append("Host nftables configured")
 
@@ -1907,6 +1910,26 @@ def _handle_lb_setup(job, params):
     pid = project_id[:8]
     frontends = params.get("frontends", [])
     backends = params.get("backends", [])
+    lb_ip = params.get("lb_ip", "")
+    bind_addr = lb_ip if lb_ip else "*"
+
+    # Assign LB IP to the first bridge in the namespace
+    if lb_ip:
+        bridges = subprocess.run(
+            ["ip", "netns", "exec", ns, "ip", "-o", "link", "show", "type", "bridge"],
+            capture_output=True, text=True, timeout=10,
+        )
+        bridge_name = ""
+        for line in bridges.stdout.strip().split("\n"):
+            if line and "br-bmc" not in line:
+                bridge_name = line.split(":")[1].strip().split("@")[0]
+                break
+        if bridge_name:
+            try:
+                _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
+                                f"{lb_ip}/24", "dev", bridge_name], timeout=10)
+            except RuntimeError:
+                pass
 
     haproxy_conf = f"/etc/haproxy/troshka-{pid}.cfg"
     haproxy_pid = f"/run/troshka-haproxy-{pid}.pid"
@@ -1929,7 +1952,7 @@ def _handle_lb_setup(job, params):
         fe_name = fe["name"].replace(" ", "-").lower()
         be_name = f"{fe_name}-servers"
         lines.append(f"frontend {fe_name}")
-        lines.append(f"    bind *:{fe['bindPort']}")
+        lines.append(f"    bind {bind_addr}:{fe['bindPort']}")
         lines.append(f"    default_backend {be_name}")
         lines.append("")
         lines.append(f"backend {be_name}")
@@ -2060,10 +2083,29 @@ def _handle_network_full_teardown(job, params):
     fwd_chain = f"troshka-fwd-{pid}"
     post_chain = f"troshka-post-{pid}"
     pre_chain = f"troshka-pre-{pid}"
-    for table, chain in [("filter", fwd_chain), ("nat", post_chain), ("nat", pre_chain)]:
+    # Remove jump rules from main chains first, then delete the project chains
+    for table, main_chain, proj_chain in [
+        ("filter", "forward", fwd_chain),
+        ("nat", "postrouting", post_chain),
+        ("nat", "prerouting", pre_chain),
+    ]:
         try:
-            _run_cmd(job, ["nft", "flush", "chain", "inet", table, chain], timeout=10)
-            _run_cmd(job, ["nft", "delete", "chain", "inet", table, chain], timeout=10)
+            result = subprocess.run(
+                ["nft", "-a", "list", "chain", "inet", table, main_chain],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.split("\n"):
+                if f"jump {proj_chain}" in line:
+                    handle = line.strip().split("# handle ")[-1]
+                    subprocess.run(
+                        ["nft", "delete", "rule", "inet", table, main_chain, "handle", handle],
+                        capture_output=True, timeout=5,
+                    )
+        except Exception:
+            pass
+        try:
+            _run_cmd(job, ["nft", "flush", "chain", "inet", table, proj_chain], timeout=10)
+            _run_cmd(job, ["nft", "delete", "chain", "inet", table, proj_chain], timeout=10)
         except RuntimeError:
             pass
 

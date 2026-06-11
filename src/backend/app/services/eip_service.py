@@ -292,15 +292,19 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
     to_remove = {k: v for k, v in current_pf_rules.items() if k not in desired_set}
 
     if to_add:
-        ec2.authorize_security_group_ingress(
-            GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": r["protocol"],
-                "FromPort": r["port"],
-                "ToPort": r["port"],
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
-            } for r in to_add.values()],
-        )
+        try:
+            ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{
+                    "IpProtocol": r["protocol"],
+                    "FromPort": r["port"],
+                    "ToPort": r["port"],
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
+                } for r in to_add.values()],
+            )
+        except Exception as e:
+            if "InvalidPermission.Duplicate" not in str(e):
+                raise
 
     if to_remove:
         ec2.revoke_security_group_ingress(

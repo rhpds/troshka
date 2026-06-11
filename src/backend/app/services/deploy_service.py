@@ -596,9 +596,9 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
     peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
     network_config = build_host_network_config(topology, vni_map, peer_ips)
 
-    # If LB is present, add its frontend ports as port forwards to gateway
+    # If LB is present and external, add its frontend ports as port forwards to gateway
     lb = network_config.get("loadbalancer")
-    if lb and lb.get("frontends"):
+    if lb and lb.get("frontends") and lb.get("external", True):
         gw = network_config.get("gateway")
         if not gw:
             # Create minimal gateway config for LB port forwarding
@@ -945,45 +945,7 @@ def deploy_project_async(project_id: str):
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
 
-        # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
-        _deploy_progress[project_id] = {"step": "networking", "detail": "waiting for lock"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-        with _network_lock:
-            _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-            logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
-
-            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
-        if net_result is not True:
-            logger.error("Deploy %s: %s", project_id[:8], net_result)
-            project.state = "error"
-            project.deploy_error = net_result
-            s.commit()
-            _deploy_progress.pop(project_id, None)
-            return
-
-        # Step 1a: Set up load balancer (HAProxy) if present
-        from app.services.vxlan import build_host_network_config as _build_net_config
-        _net_config = _build_net_config(topology, vni_map, [])
-        lb_config = _net_config.get("loadbalancer")
-        if lb_config and lb_config.get("frontends"):
-            _deploy_progress[project_id] = {"step": "load balancer", "detail": "starting HAProxy"}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-            logger.info("Deploy %s: setting up load balancer", project_id[:8])
-            ns = f"troshka-{project_id[:8]}"
-            lb_params = {
-                "ns": ns,
-                "project_id": project_id,
-                "frontends": lb_config["frontends"],
-                "backends": lb_config["backends"],
-            }
-            try:
-                lb_job = start_job(host, "/lb/setup", lb_params)
-                wait_for_job(host, lb_job, timeout=30)
-            except TroshkadError as e:
-                logger.warning("Deploy %s: LB setup failed: %s", project_id[:8], e)
-
-        # Step 1b: Allocate and associate EIPs
+        # Step 0: Allocate and associate EIPs (before networking so DNAT rules have private IPs)
         external_ips = topology.get("externalIps", [])
         if external_ips:
             _deploy_progress[project_id] = {"step": "eips", "detail": "allocating elastic IPs"}
@@ -1022,30 +984,88 @@ def deploy_project_async(project_id: str):
             project.topology = topology
             s.commit()
 
-            # Sync SG rules for all port forwards (gateway + LB)
-            desired_sg = []
-            gateway_node = next(
-                (n for n in topology.get("nodes", [])
-                 if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"),
-                None,
-            )
-            if gateway_node and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward":
-                for pf in gateway_node.get("data", {}).get("portForwards", []):
-                    if pf.get("extPort"):
+        # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
+        _deploy_progress[project_id] = {"step": "networking", "detail": "waiting for lock"}
+        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        with _network_lock:
+            _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
+
+            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+        if net_result is not True:
+            logger.error("Deploy %s: %s", project_id[:8], net_result)
+            project.state = "error"
+            project.deploy_error = net_result
+            s.commit()
+            _deploy_progress.pop(project_id, None)
+            return
+
+        # Step 1a: Set up load balancer (HAProxy) if present
+        from app.services.vxlan import build_host_network_config as _build_net_config
+        _net_config = _build_net_config(topology, vni_map, [])
+        lb_config = _net_config.get("loadbalancer")
+        if lb_config and lb_config.get("frontends"):
+            _deploy_progress[project_id] = {"step": "load balancer", "detail": "starting HAProxy"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: setting up load balancer", project_id[:8])
+            ns = f"troshka-{project_id[:8]}"
+            # Default LB IP to gateway+1 if not set
+            lb_ip = lb_config.get("lb_ip", "")
+            if not lb_ip:
+                net_list = _net_config.get("networks", [])
+                if net_list:
+                    import ipaddress as _ipa
+                    first_cidr = net_list[0].get("dhcp_config", {}).get("gateway", "")
+                    if first_cidr:
+                        try:
+                            lb_ip = str(_ipa.IPv4Address(first_cidr) + 1)
+                        except (ValueError, _ipa.AddressValueError):
+                            pass
+            lb_params = {
+                "ns": ns,
+                "project_id": project_id,
+                "frontends": lb_config["frontends"],
+                "backends": lb_config["backends"],
+                "lb_ip": lb_ip,
+            }
+            try:
+                lb_job = start_job(host, "/lb/setup", lb_params)
+                wait_for_job(host, lb_job, timeout=30)
+            except TroshkadError as e:
+                logger.warning("Deploy %s: LB setup failed: %s", project_id[:8], e)
+
+        # Step 1b: Sync SG rules for port forwards (gateway + LB)
+        if external_ips:
+            from app.services.eip_service import sync_security_group_rules
+            from app.models.provider import Provider as _Prov
+            _provider = s.query(_Prov).filter_by(id=project.provider_id).first() if project.provider_id else None
+            if not _provider and host.provider_id:
+                _provider = s.query(_Prov).filter_by(id=host.provider_id).first()
+            if _provider:
+                desired_sg = []
+                gateway_node = next(
+                    (n for n in topology.get("nodes", [])
+                     if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"),
+                    None,
+                )
+                if gateway_node and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward":
+                    for pf in gateway_node.get("data", {}).get("portForwards", []):
+                        if pf.get("extPort"):
+                            desired_sg.append({
+                                "project_id": project_id,
+                                "ext_port": int(pf["extPort"]),
+                                "protocol": "tcp",
+                            })
+                if lb_config and lb_config.get("frontends") and lb_config.get("external", True):
+                    for fe in lb_config["frontends"]:
                         desired_sg.append({
                             "project_id": project_id,
-                            "ext_port": int(pf["extPort"]),
+                            "ext_port": int(fe["bindPort"]),
                             "protocol": "tcp",
                         })
-            if lb_config and lb_config.get("frontends"):
-                for fe in lb_config["frontends"]:
-                    desired_sg.append({
-                        "project_id": project_id,
-                        "ext_port": int(fe["bindPort"]),
-                        "protocol": "tcp",
-                    })
-            if desired_sg:
-                sync_security_group_rules(s, provider, desired_sg)
+                if desired_sg:
+                    sync_security_group_rules(s, _provider, desired_sg)
 
         # Step 2: Create cloud-init seed ISOs
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
@@ -1494,6 +1514,35 @@ def destroy_project_sync(project_id: str):
             if dns_provider and dns_records:
                 logger.info("Teardown %s: deleting DNS records", project_id[:8])
                 delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
+
+        # Clean up security group rules for this project
+        try:
+            from app.models.provider import Provider
+            from app.services.eip_service import _get_ec2_client
+            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+            if not provider and host.provider_id:
+                provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider and provider.security_group_id:
+                ec2 = _get_ec2_client(provider)
+                sg = ec2.describe_security_groups(GroupIds=[provider.security_group_id])
+                for perm in sg["SecurityGroups"][0]["IpPermissions"]:
+                    for ip_range in perm.get("IpRanges", []):
+                        desc = ip_range.get("Description", "")
+                        if desc.startswith(f"troshka-pf:{project_id}:"):
+                            try:
+                                ec2.revoke_security_group_ingress(
+                                    GroupId=provider.security_group_id,
+                                    IpPermissions=[{
+                                        "IpProtocol": perm["IpProtocol"],
+                                        "FromPort": perm["FromPort"],
+                                        "ToPort": perm["ToPort"],
+                                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": desc}],
+                                    }],
+                                )
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning("Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e)
 
         # Release all EIPs for this project
         from app.models.elastic_ip import ElasticIp
