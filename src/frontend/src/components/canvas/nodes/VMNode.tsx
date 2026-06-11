@@ -353,7 +353,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateNode(id); }}>
           ⧉
         </button>
-        {!isNotFound && <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); if (isDeployed) openConsole(); }} disabled={!isDeployed}>
+        {isDeployed && !isNotFound && <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); openConsole(); }}>
           <svg
             width="14"
             height="14"
