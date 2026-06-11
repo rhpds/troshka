@@ -18,6 +18,7 @@ class User(Base):
     auth_source: Mapped[str] = mapped_column(String(20), default="local")
     password_hash: Mapped[str | None] = mapped_column(String(255))
     quota_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    ocp_pull_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

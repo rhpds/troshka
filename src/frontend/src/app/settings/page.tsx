@@ -28,10 +28,21 @@ export default function SettingsPage() {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState("");
 
+  // OCP Pull Secret
+  const [pullSecretMasked, setPullSecretMasked] = useState("");
+  const [hasPullSecret, setHasPullSecret] = useState(false);
+  const [pullSecretInput, setPullSecretInput] = useState("");
+  const [pullSecretSaving, setPullSecretSaving] = useState(false);
+  const [pullSecretEdit, setPullSecretEdit] = useState(false);
+
   useEffect(() => {
     fetch("/api/v1/api-keys/")
       .then((r) => r.json())
       .then((data) => setKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch("/api/v1/auth/ocp-pull-secret")
+      .then((r) => r.json())
+      .then((data) => { setHasPullSecret(data.has_secret); setPullSecretMasked(data.masked || ""); })
       .catch(() => {});
   }, []);
 
@@ -146,6 +157,40 @@ export default function SettingsPage() {
       </PageSection>
       <PageSection>
         <SshKeysSection />
+      </PageSection>
+      <PageSection>
+        <Title headingLevel="h2" style={{ marginBottom: 12 }}>OCP Pull Secret</Title>
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Required for OpenShift installation. Get yours from{" "}
+          <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>console.redhat.com</a>.
+        </p>
+        {hasPullSecret && !pullSecretEdit ? (
+          <Card>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{pullSecretMasked}</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button variant="secondary" onClick={() => setPullSecretEdit(true)}>Replace</Button>
+                <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/ocp-pull-secret", { method: "DELETE" }); setHasPullSecret(false); setPullSecretMasked(""); }}>Delete</Button>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <Card>
+            <CardBody>
+              <textarea style={{ width: "100%", minHeight: 80, padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", resize: "vertical", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={pullSecretInput} onChange={(e) => setPullSecretInput(e.target.value)} placeholder='{"auths":{"cloud.openshift.com":...}}' />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPullSecretInput(""); }}>Cancel</Button>}
+                <Button variant="primary" isDisabled={!pullSecretInput.trim() || pullSecretSaving} onClick={async () => {
+                  setPullSecretSaving(true);
+                  const resp = await fetch("/api/v1/auth/ocp-pull-secret", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_secret: pullSecretInput }) });
+                  if (resp.ok) { setHasPullSecret(true); setPullSecretEdit(false); setPullSecretInput(""); const data = await fetch("/api/v1/auth/ocp-pull-secret").then(r => r.json()); setPullSecretMasked(data.masked || ""); }
+                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
+                  setPullSecretSaving(false);
+                }}>{pullSecretSaving ? "Saving..." : "Save Pull Secret"}</Button>
+              </div>
+            </CardBody>
+          </Card>
+        )}
       </PageSection>
     </>
   );

@@ -102,3 +102,37 @@ def delete_ssh_key(key_id: int, user: User = Depends(get_current_user), db: Sess
         raise HTTPException(status_code=404, detail="Key not found")
     db.delete(key)
     db.commit()
+
+
+# ── OCP Pull Secret ──
+
+@router.get("/ocp-pull-secret")
+def get_ocp_pull_secret(user: User = Depends(get_current_user)):
+    if not user.ocp_pull_secret:
+        return {"has_secret": False, "masked": ""}
+    from app.core.encryption import decrypt
+    raw = decrypt(user.ocp_pull_secret)
+    masked = raw[:20] + "..." if len(raw) > 20 else raw
+    return {"has_secret": True, "masked": masked}
+
+
+@router.put("/ocp-pull-secret")
+def set_ocp_pull_secret(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    secret = body.get("pull_secret", "").strip()
+    if not secret:
+        raise HTTPException(status_code=400, detail="Pull secret is required")
+    import json
+    try:
+        json.loads(secret)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Pull secret must be valid JSON")
+    from app.core.encryption import encrypt
+    user.ocp_pull_secret = encrypt(secret)
+    db.commit()
+    return {"status": "saved"}
+
+
+@router.delete("/ocp-pull-secret", status_code=204)
+def delete_ocp_pull_secret(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    user.ocp_pull_secret = None
+    db.commit()

@@ -207,8 +207,41 @@ def create_project_from_template(
                     "    enabled=1\n"
                     "    gpgcheck=0\n"
                     "    EOF\n"
-                    "  - dnf install -y git ansible-core python3-pip bind-utils\n"
+                    "  - dnf install -y git ansible-core python3-pip bind-utils tmux\n"
                 )
+            # Inject pull secret and bootstrap script
+            pull_secret_json = ""
+            if user.ocp_pull_secret:
+                from app.core.encryption import decrypt
+                pull_secret_json = decrypt(user.ocp_pull_secret)
+            if pull_secret_json:
+                node["data"]["ciUserData"] += (
+                    "  - |\n"
+                    "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
+                    f"    {pull_secret_json}\n"
+                    "    PULLSECRETEOF\n"
+                    "    chown cloud-user:cloud-user /home/cloud-user/pull-secret.json\n"
+                    "    chmod 600 /home/cloud-user/pull-secret.json\n"
+                )
+            node["data"]["ciUserData"] += (
+                "  - |\n"
+                "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
+                "    #!/bin/bash\n"
+                "    set -e\n"
+                "    cd /home/cloud-user\n"
+                "    if [ ! -d agnosticd-v2 ]; then\n"
+                "      echo 'Cloning agnosticd-v2...'\n"
+                "      git clone https://github.com/redhat-cop/agnosticd.git agnosticd-v2\n"
+                "    fi\n"
+                "    echo ''\n"
+                "    echo 'OCP installer ready.'\n"
+                "    echo 'Pull secret: ~/pull-secret.json'\n"
+                "    echo 'To install OCP, run the ansible playbook from agnosticd-v2.'\n"
+                "    SCRIPTEOF\n"
+                "    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n"
+                "    chmod 755 /home/cloud-user/install-ocp.sh\n"
+                "  - su - cloud-user -c 'tmux new-session -d -s setup /home/cloud-user/install-ocp.sh'\n"
+            )
             # Static IP on BMC NIC so it doesn't wait for DHCP
             import ipaddress as _ipaddr
             bmc_ip_raw = body.get("bastion_bmc_ip", "192.168.100.50")

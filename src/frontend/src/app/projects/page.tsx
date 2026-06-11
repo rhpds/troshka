@@ -76,6 +76,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [clusterName, setClusterName] = useState("ocp");
   const [baseDomain, setBaseDomain] = useState("ocp.local");
+  const [hasPullSecret, setHasPullSecret] = useState(false);
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
@@ -100,6 +101,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     fetch(`${API_BASE}/api/v1/auth/ssh-keys`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setSshKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch(`${API_BASE}/api/v1/auth/ocp-pull-secret`)
+      .then((r) => r.ok ? r.json() : {})
+      .then((data) => setHasPullSecret(data.has_secret || false))
       .catch(() => {});
   }, []);
 
@@ -272,7 +277,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Bastion Configuration</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Bastion Image</label>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
                       {libraryImages.length > 0 ? (
                         <select style={inputStyle} value={bastionImageId} onChange={(e) => setBastionImageId(e.target.value)}>
                           <option value="">Select an image...</option>
@@ -287,13 +292,21 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       )}
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>RHEL DVD ISO (for yum repo)</label>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux Binary DVD ISO <span style={{ color: "#f87171" }}>*</span></label>
                       <select style={inputStyle} value={bastionIsoId} onChange={(e) => setBastionIsoId(e.target.value)}>
-                        <option value="">None</option>
+                        <option value="">Select an ISO...</option>
                         {libraryIsos.map((img) => (
                           <option key={img.id} value={img.id}>{img.name}</option>
                         ))}
                       </select>
+                    </div>
+                    <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
+                      {hasPullSecret ? (
+                        <span style={{ color: "#4ade80" }}>configured ✓</span>
+                      ) : (
+                        <span style={{ color: "#f87171" }}>not set — <a href="/settings" style={{ color: "#3b82f6" }}>configure in Settings</a></span>
+                      )}
                     </div>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
@@ -305,7 +318,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       </select>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "#f87171" }}>*</span> <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
                       <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
                     </div>
                     <div>
@@ -430,12 +443,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !!bmcIpError))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !!bmcIpError)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret)) ? 0.4 : 1,
                 }}
               >
                 {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
