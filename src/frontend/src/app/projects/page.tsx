@@ -68,9 +68,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [bastionImageId, setBastionImageId] = useState("");
+  const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
   const [bastionPassword, setBastionPassword] = useState("");
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
+  const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
 
   useEffect(() => {
@@ -84,9 +86,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/library/`)
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => setLibraryImages(
-        (Array.isArray(data) ? data : []).filter((i: any) => i.format === "qcow2" && i.state === "ready")
-      ))
+      .then((data) => {
+        const items = Array.isArray(data) ? data : [];
+        setLibraryImages(items.filter((i: any) => i.format === "qcow2" && i.state === "ready"));
+        setLibraryIsos(items.filter((i: any) => i.format === "iso" && i.state === "ready"));
+      })
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/auth/ssh-keys`)
       .then((r) => r.ok ? r.json() : [])
@@ -121,6 +125,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       } else if (mode === "template" && selectedTemplate) {
         const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
         if (bastionImageId) templateBody.bastion_image_id = bastionImageId;
+        if (bastionIsoId) templateBody.bastion_iso_id = bastionIsoId;
         if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
         if (bastionPassword) templateBody.bastion_password = bastionPassword;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
@@ -245,6 +250,15 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                         <option value="">Blank disk</option>
                         {libraryImages.map((img) => (
                           <option key={img.id} value={img.id}>{img.name} ({img.size_gb} GB)</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>RHEL DVD ISO (for yum repo)</label>
+                      <select style={inputStyle} value={bastionIsoId} onChange={(e) => setBastionIsoId(e.target.value)}>
+                        <option value="">None</option>
+                        {libraryIsos.map((img) => (
+                          <option key={img.id} value={img.id}>{img.name}</option>
                         ))}
                       </select>
                     </div>

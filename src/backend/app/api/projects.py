@@ -106,6 +106,53 @@ def create_project_from_template(
                     node["data"]["size"] = max(item_size_gb, node["data"].get("size", 0))
                     break
 
+    # Attach RHEL DVD ISO to the bastion if provided
+    bastion_iso_id = body.get("bastion_iso_id")
+    if bastion_iso_id:
+        iso_item = db.query(LibraryItem).filter_by(id=bastion_iso_id).first()
+        if iso_item:
+            import uuid as _uuid
+            iso_node_id = str(_uuid.uuid4())
+            # Find bastion VM to get its position and add a second disk controller
+            bastion_vm = None
+            for node in topology.get("nodes", []):
+                if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
+                    bastion_vm = node
+                    break
+            if bastion_vm:
+                bast_x = bastion_vm["position"]["x"]
+                bast_y = bastion_vm["position"]["y"]
+                dc2 = {"id": f"dp-{str(_uuid.uuid4())}", "name": "cdrom0", "bus": "sata"}
+                bastion_vm["data"]["diskControllers"].append(dc2)
+                iso_node = {
+                    "id": iso_node_id,
+                    "type": "storageNode",
+                    "position": {"x": bast_x - 190, "y": bast_y + 170},
+                    "data": {
+                        "label": "rhel-dvd",
+                        "name": "rhel-dvd",
+                        "size": iso_item.size_bytes // (1024 ** 3) if iso_item.size_bytes else 10,
+                        "format": "iso",
+                        "icon": "💿",
+                        "source": "library",
+                        "libraryItemId": iso_item.id,
+                        "libraryItemName": iso_item.name,
+                    },
+                }
+                iso_edge = {
+                    "id": str(_uuid.uuid4()),
+                    "source": iso_node_id,
+                    "target": bastion_vm["id"],
+                    "sourceHandle": "right",
+                    "targetHandle": f"dp-{dc2['id']}-left",
+                    "type": "smoothstep",
+                    "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+                    "animated": False,
+                    "className": "edge-storage-pulse",
+                }
+                topology["nodes"].append(iso_node)
+                topology["edges"].append(iso_edge)
+
     # Enable cloud-init on the bastion
     bastion_ssh_key_id = body.get("bastion_ssh_key_id")
     bastion_password = body.get("bastion_password")
@@ -117,6 +164,26 @@ def create_project_from_template(
                 node["data"]["cloudInitSshKeyId"] = bastion_ssh_key_id
             if bastion_password:
                 node["data"]["cloudInitPassword"] = bastion_password
+            if bastion_iso_id:
+                node["data"]["cloudInitCustomScript"] = (
+                    "runcmd:\n"
+                    "  - mkdir -p /mnt/rhel-dvd\n"
+                    "  - mount /dev/sr0 /mnt/rhel-dvd\n"
+                    "  - |\n"
+                    "    cat > /etc/yum.repos.d/rhel-dvd.repo << 'EOF'\n"
+                    "    [rhel-dvd-baseos]\n"
+                    "    name=RHEL DVD BaseOS\n"
+                    "    baseurl=file:///mnt/rhel-dvd/BaseOS\n"
+                    "    enabled=1\n"
+                    "    gpgcheck=0\n"
+                    "    [rhel-dvd-appstream]\n"
+                    "    name=RHEL DVD AppStream\n"
+                    "    baseurl=file:///mnt/rhel-dvd/AppStream\n"
+                    "    enabled=1\n"
+                    "    gpgcheck=0\n"
+                    "    EOF\n"
+                    "  - dnf install -y git ansible-core python3-pip\n"
+                )
             break
 
     project = Project(
