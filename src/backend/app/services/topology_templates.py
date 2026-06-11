@@ -19,7 +19,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
     disk_node = {
         "id": disk_id,
         "type": "storageNode",
-        "position": {"x": x + 15, "y": y + 300},
+        "position": {"x": x - 190, "y": y + 70},
         "data": {
             "label": f"{name}-disk",
             "name": f"{name}-disk",
@@ -72,7 +72,7 @@ def _bastion_node(x, y, disk_gb=50):
     disk_node = {
         "id": disk_id,
         "type": "storageNode",
-        "position": {"x": x + 15, "y": y + 300},
+        "position": {"x": x - 190, "y": y + 70},
         "data": {
             "label": "bastion-disk",
             "name": "bastion-disk",
@@ -257,7 +257,7 @@ def generate_topology(template_id: str) -> dict:
     external_ips = [{"id": eip_id, "label": "OCP"}]
 
     # Layout constants
-    VM_SPACING = 270        # horizontal gap between VM columns
+    VM_SPACING = 400        # horizontal gap between VM columns (room for disk to the left)
     GW_Y = 0                # gateway row (top)
     NET_ROW_Y = 150         # network/LB/BMC row
     VM_ROW_Y = 350          # VM row
