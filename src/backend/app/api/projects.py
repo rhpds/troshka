@@ -163,7 +163,7 @@ def create_project_from_template(
                 node["data"]["ciCloudUserPassword"] = bastion_password
             if bastion_ssh_key_id:
                 from app.models.user import UserSshKey
-                ssh_key = db.query(UserSshKey).filter_by(id=bastion_ssh_key_id).first()
+                ssh_key = db.query(UserSshKey).filter_by(id=bastion_ssh_key_id, user_id=user.id).first()
                 if ssh_key:
                     node["data"]["ciSshKeyIds"] = [ssh_key.id]
                     node["data"]["ciSshKeys"] = [ssh_key.public_key]
