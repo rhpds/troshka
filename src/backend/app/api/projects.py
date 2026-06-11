@@ -171,7 +171,7 @@ def create_project_from_template(
                 node["data"]["ciUserData"] = (
                     "runcmd:\n"
                     "  - mkdir -p /mnt/rhel-dvd\n"
-                    "  - mount /dev/sr1 /mnt/rhel-dvd || mount /dev/sr0 /mnt/rhel-dvd\n"
+                    "  - mount /dev/cdrom /mnt/rhel-dvd -t iso9660\n"
                     "  - |\n"
                     "    cat > /etc/yum.repos.d/rhel-dvd.repo << 'EOF'\n"
                     "    [rhel-dvd-baseos]\n"
