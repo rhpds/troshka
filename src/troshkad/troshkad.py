@@ -3703,10 +3703,11 @@ def _handle_vm_serial_exec(job, params):
             sys.path.insert(0, sp)
     from pexpect import fdpexpect, TIMEOUT, EOF
 
-    fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
+    fd = os.open(pty_path, os.O_RDWR)
     child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
 
     SHELL = r'[#\$] '
+    ANY_PROMPT = ["login:", SHELL, r"[>%] ", TIMEOUT]
 
     def _login():
         if not password:
@@ -3721,35 +3722,32 @@ def _handle_vm_serial_exec(job, params):
             raise RuntimeError("Login failed")
 
     try:
-        # Poke console — send Ctrl-C + CR directly on the PTY
+        # Always restore echo first in case previous call left it off
+        child.send("stty echo 2>/dev/null\r")
+        time.sleep(0.3)
+
+        # Poke console
         child.send("\x03\r")
         time.sleep(0.5)
-        ANY = ["login:", SHELL, r"[>%] ", TIMEOUT]
-        idx = child.expect(ANY, timeout=3)
+        idx = child.expect(ANY_PROMPT, timeout=3)
         if idx == 0:
             _login()
         elif idx == 3:
             child.send("\r")
-            idx2 = child.expect(ANY, timeout=3)
+            idx2 = child.expect(ANY_PROMPT, timeout=3)
             if idx2 == 0:
                 _login()
             elif idx2 == 3:
                 return {"domain": domain, "output": "", "error": "Console not responding"}
 
-        # Disable echo first, then run command
+        # Run command via temp file, read back with split marker
         import random
-        child.send("stty -echo 2>/dev/null\r")
-        time.sleep(0.5)
-        # Drain any output from stty command
-        try:
-            child.expect(TIMEOUT, timeout=0.5)
-        except TIMEOUT:
-            pass
-
-        tmpf = f"/tmp/.troshka-exec-{random.randint(10000,99999)}"
-        end_mark = f"TROSHKA_END_{random.randint(10000,99999)}"
-        child.send(f"({command}) > {tmpf} 2>&1; cat {tmpf}; rm -f {tmpf}; echo {end_mark}; stty echo 2>/dev/null\r")
-        child.expect(end_mark, timeout=timeout_secs)
+        rid = random.randint(10000, 99999)
+        outf = f"/tmp/.t{rid}"
+        # Marker constructed from two variables so it never appears literally in the echo
+        marker = f"XDONE{rid}X"
+        child.send(f"__a=XDONE; __b={rid}X; ({command}) > {outf} 2>&1; cat {outf}; rm -f {outf}; echo $__a$__b; unset __a __b\r")
+        child.expect(marker, timeout=timeout_secs)
         raw = child.before or ""
 
         # Strip ANSI escapes and clean
@@ -3760,10 +3758,12 @@ def _handle_vm_serial_exec(job, params):
             clean = l.strip()
             if not clean:
                 continue
-            if clean.startswith("stty "):
+            # Skip echoed command line and marker artifacts
+            if "__a=" in clean or "__b=" in clean or f"cat {outf}" in clean or marker in clean:
                 continue
-            if clean.startswith("TROSHKA"):
-                clean = re.sub(r'^TROSHKA\S*>\s*', '', clean).strip()
+            # Strip custom prompt prefix if present
+            if re.match(r'^\S+[>#\$%]\s', clean):
+                clean = re.sub(r'^\S+[>#\$%]\s+', '', clean).strip()
             if clean:
                 out_lines.append(clean)
 

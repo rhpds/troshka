@@ -73,10 +73,9 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append("    sudo: ALL=(ALL) NOPASSWD:ALL")
         lines.append("    groups: wheel")
 
-    # Eject seed ISO after boot
+    # Eject seed ISO (cidata) after boot — skip other CDROMs (e.g. RHEL DVD)
     lines.append("runcmd:")
-    lines.append("  - eject /dev/sr0 2>/dev/null || true")
-    lines.append("  - eject /dev/sr1 2>/dev/null || true")
+    lines.append("  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true")
 
     # Custom user-data — append runcmd items to existing runcmd section
     custom = vm_data.get("ciUserData", "").strip()

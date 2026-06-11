@@ -393,7 +393,7 @@ function ConsolePage() {
                 if (ch in controlKeys) {
                   sendKey.call(r, controlKeys[ch], "", true);
                   sendKey.call(r, controlKeys[ch], "", false);
-                  await delay(5);
+                  await delay(50);
                   continue;
                 }
                 let keysym = ch.charCodeAt(0);
@@ -403,7 +403,7 @@ function ConsolePage() {
                 sendKey.call(r, keysym, "", true);
                 sendKey.call(r, keysym, "", false);
                 if (needsShift) sendKey.call(r, shiftKeysym, "", false);
-                await delay(5);
+                await delay(50);
               }
             }}
             style={btnStyle}

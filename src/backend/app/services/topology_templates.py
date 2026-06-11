@@ -91,8 +91,8 @@ def _bastion_node(x, y, disk_gb=150, cluster_ip="10.0.0.50"):
         "data": {
             "label": "bastion",
             "name": "bastion",
-            "vcpus": 6,
-            "ram": 20,
+            "vcpus": 8,
+            "ram": 32,
             "os": "rhel10",
             "icon": "🖥",
             "nics": [nic_cluster, nic_bmc],

@@ -907,7 +907,12 @@ def reconfigure_project(
                 except TroshkadError:
                     logger.warning("Reconfigure %s: BMC bridge creation failed (non-fatal)", p_id[:8])
 
-            vm_dir_path = _vm_dir(p_id)
+            # Get storage pool for correct disk paths
+            _pool = None
+            if h.storage_pool_id:
+                from app.models.storage_pool import StoragePool
+                _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+            vm_dir_path = _vm_dir(p_id, pool=_pool)
 
             for node in diff["removed_vms"]:
                 dom = _vm_domain_name(p_id, node["id"])
@@ -955,9 +960,10 @@ def reconfigure_project(
                 for d in vm_disks:
                     if d["format"] == "iso":
                         if d.get("library_item_id"):
-                            cdrom_list.append(f"/var/lib/troshka/images/{d['library_item_id']}.iso")
+                            from app.services.deploy_service import _image_cache_path
+                            cdrom_list.append(_image_cache_path(d['library_item_id'], "iso", pool=_pool))
                         continue
-                    path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"])
+                    path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"], pool=_pool)
                     disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
                     old_lib = dep_disk_libs.get(d["node_id"])
                     new_lib = d.get("library_item_id")
@@ -972,7 +978,7 @@ def reconfigure_project(
                     backing = None
                     if d.get("source") == "library" and d.get("library_item_id"):
                         needs_library_download = True
-                        backing = f"/var/lib/troshka/images/{d['library_item_id']}.{d['format']}"
+                        backing = _image_cache_path(d['library_item_id'], d['format'], pool=_pool)
                     elif d.get("source") == "pattern" and d.get("patternId"):
                         backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
                     disks_to_create.append({"path": path, "size_gb": d["size_gb"], "format": d["format"], "backing_file": backing})
@@ -980,7 +986,7 @@ def reconfigure_project(
                         disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
 
                 if vm.get("cloud_init"):
-                    cdrom_list.append(_seed_path(p_id, vm["node_id"]))
+                    cdrom_list.append(_seed_path(p_id, vm["node_id"], pool=_pool))
 
                 if any_disk_changed:
                     if needs_library_download:
