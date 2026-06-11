@@ -218,13 +218,13 @@ def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0):
 
 
 def _gw_net_edge(gw_node, net_node):
-    """Edge from gateway to network."""
+    """Edge from gateway to network (gateway bottom → network top)."""
     return {
         "id": _id(),
         "source": gw_node["id"],
         "target": net_node["id"],
         "sourceHandle": "left",
-        "targetHandle": "right",
+        "targetHandle": "left",
         "type": "smoothstep",
         "style": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
         "animated": True,
@@ -258,22 +258,21 @@ def generate_topology(template_id: str) -> dict:
 
     # Layout constants
     VM_SPACING = 270        # horizontal gap between VM columns
-    NET_ROW_Y = 0           # network/LB/BMC row
-    GW_Y = 130              # gateway row (below networks, above VMs)
-    VM_ROW_Y = 280          # VM row
-    DISK_ROW_Y = VM_ROW_Y + 330  # disk row (below VMs)
+    GW_Y = 0                # gateway row (top)
+    NET_ROW_Y = 150         # network/LB/BMC row
+    VM_ROW_Y = 350          # VM row
     WORKER_ROW_Y = VM_ROW_Y + 370  # worker row (standard layout only)
-    WORKER_DISK_Y = WORKER_ROW_Y + 330
 
     # Bastion position: right side, same row as VMs
     BASTION_X_OFFSET = 4  # columns from vm_x_start (after bootstrap)
 
     if template_id == "ocp-sno":
         vm_x_start = 150
-        net = _net_node("cluster", "10.0.0.0/24", vm_x_start + VM_SPACING - 20, NET_ROW_Y)
+        net_x = vm_x_start + VM_SPACING - 20
+        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y)
         lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
-        gw = _gateway_node(vm_x_start + 2 * VM_SPACING, GW_Y)
+        gw = _gateway_node(net_x, GW_Y)
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y)
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y)
         bast_vm, bast_disk, bast_disk_edge, bast_nic_cl, bast_nic_bmc = _bastion_node(
@@ -292,7 +291,7 @@ def generate_topology(template_id: str) -> dict:
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
         lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
-        gw = _gateway_node(vm_x_start + 4 * VM_SPACING + 50, GW_Y)
+        gw = _gateway_node(net_x, GW_Y)
         vm_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
@@ -319,7 +318,7 @@ def generate_topology(template_id: str) -> dict:
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
         lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
-        gw = _gateway_node(vm_x_start + 4 * VM_SPACING + 50, GW_Y)
+        gw = _gateway_node(net_x, GW_Y)
         cp_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
