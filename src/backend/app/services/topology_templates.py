@@ -286,7 +286,7 @@ def generate_topology(template_id: str) -> dict:
         vm_x_start = 150
         net_x = vm_x_start + VM_SPACING - 20
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y)
+        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y)  # above bastion
         gw = _gateway_node(net_x, GW_Y)
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y)
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y)
@@ -304,8 +304,9 @@ def generate_topology(template_id: str) -> dict:
     elif template_id == "ocp-compact":
         vm_x_start = 150
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
+        bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
+        bmc = _bmc_node(bast_x, NET_ROW_Y)
         gw = _gateway_node(net_x, GW_Y)
         vm_data = []
         for i in range(3):
@@ -331,8 +332,9 @@ def generate_topology(template_id: str) -> dict:
     elif template_id == "ocp-standard":
         vm_x_start = 150
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
+        bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
+        bmc = _bmc_node(bast_x, NET_ROW_Y)
         gw = _gateway_node(net_x, GW_Y)
         cp_data = []
         for i in range(3):
