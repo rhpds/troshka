@@ -612,6 +612,21 @@ COMMAND_HANDLERS["vms/force-off"] = _handle_vm_force_off
 
 def _handle_vm_start(job, params):
     domain = _validate_domain_name(params["domain_name"])
+    # Ensure all bridges referenced in VM XML exist in host namespace
+    import re as _re
+    xml_result = subprocess.run(
+        ["virsh", "dumpxml", "--inactive", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if xml_result.returncode == 0:
+        for bridge in _re.findall(r"source bridge='([^']+)'", xml_result.stdout):
+            check = subprocess.run(["ip", "link", "show", bridge], capture_output=True, timeout=5)
+            if check.returncode != 0:
+                subprocess.run(["ip", "link", "add", bridge, "type", "bridge"], capture_output=True, timeout=5)
+                subprocess.run(["ip", "link", "set", bridge, "type", "bridge",
+                                "forward_delay", "99", "ageing_time", "0"], capture_output=True, timeout=5)
+                subprocess.run(["ip", "link", "set", bridge, "up"], capture_output=True, timeout=5)
+                job["output"].append(f"Created missing dummy bridge {bridge}")
     _run_cmd(job, ["virsh", "start", domain], timeout=60)
     return {"domain": domain, "status": "started"}
 
@@ -2157,32 +2172,10 @@ def _handle_network_full_teardown(job, params):
             except OSError:
                 pass
 
-    # Clean up dummy bridges in host namespace — only if no other VMs reference them
-    for vni in vni_list:
-        bridge = f"br-{vni}"
-        # Check if any running VM still uses this bridge
-        check = subprocess.run(
-            ["virsh", "list", "--name"],
-            capture_output=True, text=True, timeout=10,
-        )
-        bridge_in_use = False
-        for vm_name in check.stdout.strip().split("\n"):
-            if not vm_name.strip() or vm_name.startswith(f"troshka-{pid}"):
-                continue
-            xml = subprocess.run(
-                ["virsh", "dumpxml", vm_name.strip()],
-                capture_output=True, text=True, timeout=10,
-            )
-            if f"bridge='{bridge}'" in xml.stdout:
-                bridge_in_use = True
-                break
-        if not bridge_in_use:
-            try:
-                _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
-            except RuntimeError:
-                pass
-        else:
-            job["output"].append(f"Keeping dummy bridge {bridge} — still used by other VMs")
+    # Dummy bridges (br-{vni}) in host namespace are never deleted during teardown.
+    # They are zero-overhead kernel entries needed by libvirt for VM validation.
+    # Deleting them can break other projects if VNIs are recycled.
+    # The GC or host wipe cleans them up when no VMs exist.
 
     return {"project_id": project_id, "status": "torn_down"}
 
