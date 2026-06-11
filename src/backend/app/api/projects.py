@@ -207,7 +207,7 @@ def create_project_from_template(
                     "    enabled=1\n"
                     "    gpgcheck=0\n"
                     "    EOF\n"
-                    "  - dnf install -y git ansible-core python3-pip\n"
+                    "  - dnf install -y git ansible-core python3-pip bind-utils\n"
                 )
             # Static IP on BMC NIC so it doesn't wait for DHCP
             import ipaddress as _ipaddr

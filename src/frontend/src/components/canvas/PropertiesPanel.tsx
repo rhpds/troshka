@@ -1176,6 +1176,45 @@ export default function PropertiesPanel() {
                           When off, DNS only resolves internal names.
                         </span>
                       </div>
+                      {((data as Record<string, any>).dnsRecords as Array<{name: string; ip: string}> || []).length > 0 && (
+                        <div className="props-field">
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <label className="props-label">DNS Records</label>
+                            <button className="troshka-btn-icon" title="Add record" onClick={() => {
+                              const records = [...((data as Record<string, any>).dnsRecords || [])];
+                              records.push({ name: "", ip: "" });
+                              update("dnsRecords", records);
+                            }}>+</button>
+                          </div>
+                          {((data as Record<string, any>).dnsRecords as Array<{name: string; ip: string}>).map((rec, i) => (
+                            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center" }}>
+                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
+                                const records = [...((data as Record<string, any>).dnsRecords || [])];
+                                records[i] = { ...records[i], name: e.target.value };
+                                update("dnsRecords", records);
+                              }} />
+                              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)" }}>→</span>
+                              <input className="props-input" style={{ flex: 1, fontSize: 10, fontFamily: "monospace" }} value={rec.ip} placeholder="IP" onChange={(e) => {
+                                const records = [...((data as Record<string, any>).dnsRecords || [])];
+                                records[i] = { ...records[i], ip: e.target.value };
+                                update("dnsRecords", records);
+                              }} />
+                              <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
+                                const records = [...((data as Record<string, any>).dnsRecords || [])];
+                                records.splice(i, 1);
+                                update("dnsRecords", records);
+                              }}>×</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {((data as Record<string, any>).dnsRecords || []).length === 0 && (
+                        <div className="props-field">
+                          <button className="troshka-btn-icon" style={{ fontSize: 11, width: "100%", padding: "4px 8px" }} onClick={() => {
+                            update("dnsRecords", [{ name: "", ip: "" }]);
+                          }}>+ Add DNS Record</button>
+                        </div>
+                      )}
                     </>
                   )}
 
