@@ -3630,12 +3630,14 @@ def _handle_vm_serial_exec(job, params):
             out_lines.append(clean)
         output = "\n".join(out_lines)
 
-        if needs_login and password:
-            write("exit")
-            time.sleep(0.3)
-
         return {"domain": domain, "output": output}
     finally:
+        # Always logout and close the session
+        try:
+            os.write(fd, b"\nexit\n")
+            time.sleep(0.3)
+        except Exception:
+            pass
         os.close(fd)
 
 COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec
