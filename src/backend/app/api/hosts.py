@@ -305,25 +305,39 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
             result = deploy_agent(host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs)
             h.agent_status = "connected" if result["success"] else "install_failed"
 
-            # Verify agent version matches expected
-            if result["success"]:
-                try:
-                    from app.services.troshkad_client import troshkad_request
-                    import time
-                    time.sleep(3)  # wait for troshkad to start
-                    health = troshkad_request(h, "GET", "/health", timeout=10)
-                    if health and health.get("version"):
-                        h.agent_version = health["version"]
-                        logger.info("Agent install verified: host %s running version %s", h.id[:8], h.agent_version)
-                except Exception as _ve:
-                    logger.warning("Could not verify agent version after install: %s", _ve)
-
-            # Store troshkad credentials
+            # Store troshkad credentials FIRST (needed for health check below)
             creds = result.get("troshkad_credentials", {})
             if creds.get("token") and creds.get("fingerprint"):
                 h.agent_token = creds["token"]
                 h.agent_cert_fingerprint = creds["fingerprint"]
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
+            # Verify agent version and push update if source changed during reinstall
+            if result["success"]:
+                try:
+                    from app.services.troshkad_client import troshkad_request, push_update, check_health
+                    import time, hashlib
+                    time.sleep(5)
+                    health = troshkad_request(h, "GET", "/health", timeout=10)
+                    if health and health.get("version"):
+                        h.agent_version = health["version"]
+                        logger.info("Agent install verified: host %s running version %s", h.id[:8], h.agent_version)
+
+                        troshkad_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+                            os.path.dirname(os.path.abspath(__file__))))), "troshkad", "troshkad.py")
+                        with open(troshkad_path, "rb") as _f:
+                            current_hash = hashlib.sha256(_f.read()).hexdigest()[:12]
+                        if h.agent_version != current_hash:
+                            logger.info("Agent %s version %s != source %s, pushing update", h.id[:8], h.agent_version, current_hash)
+                            script_text = open(troshkad_path).read().replace('VERSION = "dev"', f'VERSION = "{current_hash}"')
+                            push_update(h, script_text.encode(), current_hash)
+                            time.sleep(5)
+                            health2 = check_health(h)
+                            if health2 and health2.get("version"):
+                                h.agent_version = health2["version"]
+                                logger.info("Agent %s updated to %s after reinstall", h.id[:8], h.agent_version)
+                except Exception as _ve:
+                    logger.warning("Could not verify agent version after install: %s", _ve)
 
             s.commit()
         except Exception:
@@ -876,6 +890,9 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
 
     import hashlib
     version = hashlib.sha256(script_bytes).hexdigest()[:12]
+
+    if not force and host.agent_version == version:
+        return {"status": "up_to_date", "version": version}
 
     # Stamp the version into the script before pushing
     script_text = script_bytes.decode()

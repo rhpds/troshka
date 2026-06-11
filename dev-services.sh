@@ -68,8 +68,47 @@ start_backend() {
     echo "  Backend:    started (port $BACKEND_PORT, PID $(cat "$PID_DIR/backend.pid"))"
 }
 
-stop_backend() {
+check_backend_idle() {
+    local pid
     if [ -f "$PID_DIR/backend.pid" ]; then
+        pid="$(cat "$PID_DIR/backend.pid")"
+        kill -0 "$pid" 2>/dev/null || return 0
+    else
+        return 0
+    fi
+
+    # Check for active HTTP connections (established TCP to backend port)
+    # Check for background threads (deploy, agent install, etc.)
+    # uvicorn idles at ~13-14 threads; above 15 means background work is running
+    local threads
+    threads=$(ps -M "$pid" 2>/dev/null | tail -n +2 | wc -l | tr -d '[:space:]')
+    threads=${threads:-0}
+
+    if [ "$threads" -gt 15 ]; then
+        echo "  Backend:    WARNING — $threads threads (background work in progress)"
+        return 1
+    fi
+    return 0
+}
+
+stop_backend() {
+    local force="${1:-}"
+    if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
+        if [ "$force" != "--force" ]; then
+            if ! check_backend_idle; then
+                echo "  Backend:    waiting for in-flight work to finish..."
+                for i in $(seq 1 30); do
+                    sleep 2
+                    if check_backend_idle 2>/dev/null; then
+                        break
+                    fi
+                    if [ "$i" -eq 30 ]; then
+                        echo "  Backend:    still busy after 60s. Use --force to kill anyway."
+                        exit 1
+                    fi
+                done
+            fi
+        fi
         kill "$(cat "$PID_DIR/backend.pid")" 2>/dev/null || true
         rm -f "$PID_DIR/backend.pid"
     fi
@@ -137,20 +176,42 @@ case "${1:-status}" in
     stop)
         echo "=== Stopping Troshka ==="
         stop_frontend
-        stop_backend
+        stop_backend "${2:-}"
         stop_db
         ;;
     restart)
-        echo "=== Restarting Troshka ==="
-        stop_frontend
-        stop_backend
-        stop_db
-        start_db
-        start_backend
-        start_frontend
-        echo ""
-        echo "  Frontend:   http://localhost:$FRONTEND_PORT"
-        echo "  Backend:    http://localhost:$BACKEND_PORT"
+        case "${2:-all}" in
+            backend)
+                FORCE="${3:-}"
+                echo "=== Restarting Backend ==="
+                stop_backend "$FORCE"
+                start_backend
+                echo ""
+                echo "  Backend:    http://localhost:$BACKEND_PORT"
+                ;;
+            frontend)
+                echo "=== Restarting Frontend ==="
+                stop_frontend
+                start_frontend
+                echo ""
+                echo "  Frontend:   http://localhost:$FRONTEND_PORT"
+                ;;
+            all|--force)
+                FORCE=""
+                [ "${2:-}" = "--force" ] && FORCE="--force"
+                [ "${3:-}" = "--force" ] && FORCE="--force"
+                echo "=== Restarting Troshka ==="
+                stop_frontend
+                stop_backend "$FORCE"
+                stop_db
+                start_db
+                start_backend
+                start_frontend
+                echo ""
+                echo "  Frontend:   http://localhost:$FRONTEND_PORT"
+                echo "  Backend:    http://localhost:$BACKEND_PORT"
+                ;;
+        esac
         ;;
     db)
         case "${2:-start}" in
@@ -159,9 +220,14 @@ case "${1:-status}" in
         esac
         ;;
     backend)
+        FORCE="${3:-}"
         case "${2:-start}" in
             start) start_backend ;;
-            stop) stop_backend ;;
+            stop) stop_backend "$FORCE" ;;
+            restart)
+                stop_backend "$FORCE"
+                start_backend
+                ;;
         esac
         ;;
     frontend)
@@ -172,8 +238,9 @@ case "${1:-status}" in
         ;;
     status) status ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status}"
-        echo "       $0 {db|backend|frontend} {start|stop}"
+        echo "Usage: $0 {start|stop|restart [backend|frontend] [--force]|status}"
+        echo "       $0 backend {start|stop|restart} [--force]"
+        echo "       $0 {db|frontend} {start|stop}"
         exit 1
         ;;
 esac

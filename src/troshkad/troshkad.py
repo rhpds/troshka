@@ -1711,9 +1711,10 @@ def _handle_network_full_setup(job, params):
         if not (range_start and range_end):
             continue
 
-        dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{vni}.conf"
-        dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
-        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{vni}.leases"
+        pid_short = project_id[:8]
+        dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{pid_short}-{vni}.conf"
+        dnsmasq_pid = f"/run/troshka-dnsmasq-{pid_short}-{vni}.pid"
+        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{pid_short}-{vni}.leases"
 
         pid = project_id[:8]
         bmc_bridge = f"br-bmc-{pid}"
@@ -1723,6 +1724,8 @@ def _handle_network_full_setup(job, params):
             "except-interface=lo",
             f"no-dhcp-interface={bmc_bridge}",
             "no-resolv",
+            "server=8.8.8.8",
+            "server=1.1.1.1",
             "no-hosts",
             f"pid-file={dnsmasq_pid}",
             f"dhcp-leasefile={dnsmasq_lease}",
@@ -1780,6 +1783,16 @@ def _handle_network_full_setup(job, params):
                 pass
 
         _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
+        try:
+            with open(dnsmasq_pid) as _pf:
+                _dpid = _pf.read().strip()
+            subprocess.run(
+                ["auditctl", "-a", "exit,always", "-F", "arch=b64", "-S", "kill",
+                 "-F", f"a0={_dpid}", "-k", "dnsmasq-kill"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
         job["output"].append(f"dnsmasq started for VNI {vni} on {bridge}")
 
     # ── nftables inside namespace (flush if already exists, silence expected errors) ──
@@ -2085,11 +2098,28 @@ def _handle_network_full_teardown(job, params):
         except FileNotFoundError:
             pass
 
-    # Kill dnsmasq and PXE HTTP server processes inside namespace
-    try:
-        _run_cmd(job, ["ip", "netns", "exec", ns, "pkill", "-9", "dnsmasq"], timeout=10)
-    except RuntimeError:
-        pass
+    # Kill dnsmasq by PID file (not pkill — that kills ALL dnsmasq on the host)
+    pid_short = project_id[:8] if project_id else ns.replace("troshka-", "")
+    for pidfile in glob.glob(f"/run/troshka-dnsmasq-{pid_short}-*.pid"):
+        try:
+            with open(pidfile) as f:
+                dnsmasq_pid = int(f.read().strip())
+            os.kill(dnsmasq_pid, 9)
+            job["output"].append(f"Killed dnsmasq PID {dnsmasq_pid}")
+        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+            pass
+        try:
+            os.remove(pidfile)
+        except FileNotFoundError:
+            pass
+    # Clean up config and lease files
+    for pat in [f"/etc/dnsmasq.d/troshka-{pid_short}-*.conf",
+                f"/var/lib/troshka/dnsmasq-{pid_short}-*.leases"]:
+        for f in glob.glob(pat):
+            try:
+                os.remove(f)
+            except FileNotFoundError:
+                pass
 
     # Delete namespace
     try:
@@ -2396,9 +2426,11 @@ def _handle_gc_discover(job, params):
     orphan_namespaces = []
     cache_items = []
 
-    # 1. Scan /var/lib/troshka/vms/ for orphan project dirs
-    vms_dir = "/var/lib/troshka/vms"
-    if os.path.exists(vms_dir):
+    # 1. Scan VM dirs for orphan project dirs (local + shared storage)
+    for vms_dir in ["/var/lib/troshka/vms", "/var/lib/troshka/shared/vms",
+                    "/var/lib/troshka/local/vms"]:
+        if not os.path.exists(vms_dir):
+            continue
         try:
             for entry in os.listdir(vms_dir):
                 if entry not in known_project_ids:
@@ -2409,7 +2441,8 @@ def _handle_gc_discover(job, params):
         except Exception as e:
             job["output"].append(f"Failed to scan {vms_dir}: {e}")
 
-    # 2. List all virsh domains starting with troshka-
+    # 2. List all virsh domains starting with troshka- that don't belong to known projects
+    known_domain_prefixes = set(known_domains)
     try:
         result = subprocess.run(
             ["virsh", "list", "--all", "--name"],
@@ -2418,7 +2451,9 @@ def _handle_gc_discover(job, params):
         if result.returncode == 0:
             for domain in result.stdout.strip().split("\n"):
                 domain = domain.strip()
-                if domain.startswith("troshka-") and domain not in known_domains:
+                if not domain.startswith("troshka-"):
+                    continue
+                if not any(domain.startswith(prefix) for prefix in known_domain_prefixes):
                     orphan_domains.append(domain)
                     job["output"].append(f"Orphan domain: {domain}")
     except Exception as e:
@@ -2459,7 +2494,8 @@ def _handle_gc_discover(job, params):
     except Exception as e:
         job["output"].append(f"Failed to list bridges: {e}")
 
-    # 4. List namespaces matching troshka-*
+    # 4. List namespaces matching troshka-* that don't belong to known projects
+    known_ns_prefixes = {f"troshka-{pid[:8]}" for pid in known_project_ids}
     try:
         result = subprocess.run(
             ["ip", "netns", "list"],
@@ -2469,8 +2505,9 @@ def _handle_gc_discover(job, params):
             for line in result.stdout.strip().split("\n"):
                 if line.startswith("troshka-"):
                     ns_name = line.split()[0]
-                    orphan_namespaces.append(ns_name)
-                    job["output"].append(f"Orphan namespace: {ns_name}")
+                    if ns_name not in known_ns_prefixes:
+                        orphan_namespaces.append(ns_name)
+                        job["output"].append(f"Orphan namespace: {ns_name}")
     except Exception as e:
         job["output"].append(f"Failed to list namespaces: {e}")
 
@@ -3036,8 +3073,13 @@ def main():
     cleanup_thread = threading.Thread(target=_job_cleanup_loop, daemon=True)
     cleanup_thread.start()
 
-    # Restore BMC services from previous deploy if configs exist
+    # Restore services from previous deploy
     _restore_bmc_services()
+    _restore_dnsmasq()
+
+    # Watchdog: check dnsmasq every 30s, restart if dead
+    dnsmasq_watchdog = threading.Thread(target=_dnsmasq_watchdog_loop, daemon=True)
+    dnsmasq_watchdog.start()
 
     server = create_server(_config)
     logger.info("troshkad %s listening on port %d", VERSION, _config["port"])
@@ -3073,6 +3115,88 @@ def main():
     finally:
         server.server_close()
         logger.info("troshkad stopped")
+
+
+def _check_and_restart_dnsmasq():
+    """Check all dnsmasq PID files — restart any that died."""
+    restarted = 0
+    for pidfile in glob.glob("/run/troshka-dnsmasq-*.pid"):
+        conf_name = os.path.basename(pidfile).replace(".pid", ".conf")
+        conf_path = f"/etc/dnsmasq.d/{conf_name}"
+        if not os.path.exists(conf_path):
+            continue
+        alive = False
+        try:
+            with open(pidfile) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)
+            alive = True
+        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+            pass
+        if not alive:
+            # Try to find out why it died
+            try:
+                with open(pidfile) as f:
+                    dead_pid = int(f.read().strip())
+                # Check /proc for exit info if recently dead
+                logger.warning("dnsmasq PID %d from %s is dead — restarting", dead_pid, os.path.basename(pidfile))
+            except (FileNotFoundError, ValueError):
+                logger.warning("dnsmasq PID file %s missing or corrupt — restarting", os.path.basename(pidfile))
+            # Find the namespace from the config file
+            ns_name = None
+            try:
+                with open(conf_path) as f:
+                    for line in f:
+                        if line.startswith("no-dhcp-interface=br-bmc-"):
+                            pid_short = line.strip().split("br-bmc-")[1]
+                            ns_name = f"troshka-{pid_short}"
+                            break
+            except Exception:
+                pass
+            if not ns_name:
+                continue
+            # Verify namespace exists
+            ns_check = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True, timeout=5)
+            if ns_name not in ns_check.stdout:
+                continue
+            try:
+                subprocess.run(
+                    ["ip", "netns", "exec", ns_name, "dnsmasq", f"--conf-file={conf_path}"],
+                    capture_output=True, timeout=10,
+                )
+                # Read the new PID and set an audit watch on it
+                try:
+                    with open(pidfile.replace(".conf", ".pid").replace("/etc/dnsmasq.d/", "/run/")) as pf:
+                        new_pid = pf.read().strip()
+                    subprocess.run(
+                        ["auditctl", "-a", "exit,always", "-F", "arch=b64", "-S", "kill",
+                         "-F", f"a0={new_pid}", "-k", "dnsmasq-kill"],
+                        capture_output=True, timeout=5,
+                    )
+                except Exception:
+                    pass
+                logger.info("dnsmasq restored for %s", conf_name)
+                restarted += 1
+            except Exception as e:
+                logger.warning("Failed to restart dnsmasq %s: %s", conf_name, e)
+    return restarted
+
+
+def _restore_dnsmasq():
+    """Restore dnsmasq for all active namespaces on troshkad startup."""
+    restarted = _check_and_restart_dnsmasq()
+    if restarted:
+        logger.info("dnsmasq restore: restarted %d instance(s)", restarted)
+
+
+def _dnsmasq_watchdog_loop():
+    """Periodically check dnsmasq is alive, restart if not."""
+    while True:
+        time.sleep(30)
+        try:
+            _check_and_restart_dnsmasq()
+        except Exception as e:
+            logger.warning("dnsmasq watchdog error: %s", e)
 
 
 def _restore_bmc_services():
@@ -3551,7 +3675,7 @@ COMMAND_HANDLERS["tls/update-certs"] = _handle_tls_update_certs
 
 
 def _handle_vm_serial_exec(job, params):
-    """Execute a command on a VM via its serial console (PTY)."""
+    """Execute a command on a VM via serial console using pexpect + virsh console."""
     domain = _validate_domain_name(params["domain_name"])
     username = params.get("username", "root")
     password = params.get("password", "")
@@ -3562,121 +3686,96 @@ def _handle_vm_serial_exec(job, params):
         raise RuntimeError("No command specified")
 
     result = subprocess.run(
-        ["virsh", "dumpxml", domain],
+        ["virsh", "list", "--all", "--name"],
         capture_output=True, text=True, timeout=10,
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"Cannot get XML for {domain}: {result.stderr}")
+    if domain not in result.stdout.strip().split("\n"):
+        raise RuntimeError(f"Domain {domain} not found")
 
-    import re, select
-    pty_match = re.search(r"source path='(/dev/pts/\d+)'", result.stdout)
-    if not pty_match:
-        raise RuntimeError(f"No serial console PTY found for {domain}")
-    pty_path = pty_match.group(1)
+    import re
+    for sp in ["/opt/troshka/venv/lib/python3.12/site-packages",
+               "/opt/troshka/venv/lib/python3.13/site-packages"]:
+        if sp not in sys.path and os.path.isdir(sp):
+            sys.path.insert(0, sp)
+    import pexpect
 
-    def strip_ansi(s):
-        s = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?[HJK]', '', s)
-        return s.replace('\r\n', '\n').replace('\r', '')
+    PROMPT = r'[#\$] '
+    child = pexpect.spawn("virsh", ["console", domain, "--force"],
+                          timeout=timeout_secs, encoding="utf-8")
 
-    fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
-
-    def read_all(t=2):
-        buf = b""
-        end = time.time() + t
-        while time.time() < end:
-            r, _, _ = select.select([fd], [], [], 0.3)
-            if r:
-                try:
-                    chunk = os.read(fd, 4096)
-                    if chunk:
-                        buf += chunk
-                except Exception:
-                    break
-        return buf.decode(errors="replace")
-
-    def write(s):
-        os.write(fd, (s + "\n").encode())
-        time.sleep(0.1)
+    def _login():
+        if not password:
+            raise RuntimeError("VM is at login prompt but no password provided")
+        child.sendline(username)
+        child.expect("[Pp]assword:", timeout=5)
+        child.sendline(password)
+        # "Last login:" appears before the shell prompt — expect it then wait for prompt
+        idx = child.expect([PROMPT, "Last login", "Login incorrect", pexpect.TIMEOUT], timeout=10)
+        if idx == 1:
+            child.expect(PROMPT, timeout=5)
+        elif idx != 0:
+            raise RuntimeError("Login failed")
 
     try:
-        # Clear any pending output
-        read_all(0.5)
+        # Wait for virsh to connect, then poke console
+        child.expect("Escape character is", timeout=5)
+        import time
+        time.sleep(0.5)
+        child.sendline("")
 
-        # Detect current state — send a newline and see what comes back
-        write("")
-        time.sleep(1)
-        probe = strip_ansi(read_all(1))
+        idx = child.expect(["login:", PROMPT, pexpect.TIMEOUT], timeout=5)
+        if idx == 0:
+            _login()
+        elif idx == 2:
+            # No response — try again
+            child.sendline("")
+            idx2 = child.expect(["login:", PROMPT, pexpect.TIMEOUT], timeout=5)
+            if idx2 == 0:
+                _login()
+            elif idx2 == 2:
+                return {"domain": domain, "output": "", "error": "Console not responding"}
 
-        needs_login = "login:" in probe.lower()
-
-        if needs_login and password:
-            write(username)
-            time.sleep(0.5)
-            read_all(0.5)
-            write(password)
-            time.sleep(1)
-            login_result = strip_ansi(read_all(1))
-            if "login incorrect" in login_result.lower():
-                return {"domain": domain, "output": "", "error": "Login failed"}
-        elif needs_login and not password:
-            return {"domain": domain, "output": "", "error": "VM is at login prompt but no password provided"}
-
-        # Run command between unique markers for clean extraction
+        # At shell — disable echo, run command, re-enable echo
         marker = f"TROSHKA{os.getpid()}{int(time.time()) % 10000}"
-        end_tag = f"{marker}E"
+        child.sendline("stty -echo")
+        import time as _time
+        _time.sleep(0.3)
+        child.sendline(command)
+        child.sendline(f"echo {marker}")
+        child.expect(marker, timeout=timeout_secs)
+        raw = child.before or ""
+        child.sendline("stty echo")
 
-        # Disable echo and bracketed paste for cleaner output
-        write("stty -echo 2>/dev/null; printf '\\e[?2004l' 2>/dev/null")
-        time.sleep(0.3)
-        read_all(0.3)
-
-        write(command)
-        write(f"echo {end_tag}")
-
-        # Poll for end marker instead of sleeping
-        raw = ""
-        deadline = time.time() + timeout_secs
-        while time.time() < deadline:
-            chunk = read_all(0.5)
-            if chunk:
-                raw += strip_ansi(chunk)
-            if end_tag in raw:
-                break
-
-        # Re-enable echo
-        write("stty echo 2>/dev/null")
-        time.sleep(0.2)
-        read_all(0.2)
-
-        # Extract output before end marker
-        end_idx = raw.find(end_tag)
-        if end_idx >= 0:
-            content = raw[:end_idx]
-        else:
-            content = raw
-
-        # Clean up: remove prompts and empty lines
+        # Strip ANSI escapes and clean output
+        raw = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07', '', raw)
+        raw = raw.replace('\r\n', '\n').replace('\r', '')
         out_lines = []
-        for line in content.split("\n"):
+        for line in raw.split("\n"):
             clean = line.strip()
             if not clean:
                 continue
             if marker in clean:
                 continue
-            if re.match(r'^\[.*@.*\]\s*[$#]', clean):
+            if clean.startswith("stty "):
+                continue
+            if re.match(r'^\[.*@.*\]\s*[#$]', clean):
                 continue
             out_lines.append(clean)
-        output = "\n".join(out_lines)
 
-        return {"domain": domain, "output": output}
+        return {"domain": domain, "output": "\n".join(out_lines)}
+    except pexpect.TIMEOUT:
+        return {"domain": domain, "output": "", "error": "Command timed out"}
+    except pexpect.EOF:
+        return {"domain": domain, "output": "", "error": "Console connection closed"}
+    except RuntimeError as e:
+        return {"domain": domain, "output": "", "error": str(e)}
     finally:
-        # Always logout and close the session
         try:
-            os.write(fd, b"\nexit\n")
-            time.sleep(0.3)
+            child.sendline("exit")
+            child.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=2)
         except Exception:
             pass
-        os.close(fd)
+        child.close()
 
 COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec
 

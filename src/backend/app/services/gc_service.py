@@ -98,16 +98,16 @@ def clean_orphans(host, orphans: dict) -> dict:
             cache_items.append(path)
 
     job_id = start_job(host, "/gc/clean", {
-        "orphan_dirs": [op.get("project_id") if isinstance(op, dict) else op for op in orphans.get("orphaned_projects", [])],
-        "orphan_domains": orphans.get("orphaned_domains", []),
-        "orphan_bridges": orphans.get("orphaned_bridges", []),
-        "orphan_namespaces": orphans.get("orphaned_namespaces", []),
+        "orphan_dirs": orphans.get("orphan_dirs", []),
+        "orphan_domains": orphans.get("orphan_domains", []),
+        "orphan_bridges": orphans.get("orphan_bridges", []),
+        "orphan_namespaces": orphans.get("orphan_namespaces", []),
         "cache_items": cache_items,
         "orphan_bmc_project_ids": orphans.get("orphaned_bmc_project_ids", []),
     })
     job = wait_for_job(host, job_id, timeout=120)
 
-    cleaned = len(orphans.get("orphaned_projects", [])) + len(orphans.get("orphaned_domains", [])) + len(orphans.get("orphaned_bridges", []))
+    cleaned = len(orphans.get("orphan_dirs", [])) + len(orphans.get("orphan_domains", [])) + len(orphans.get("orphan_bridges", []))
     return {
         "success": job["status"] == "completed",
         "cleaned": cleaned,
@@ -182,12 +182,12 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             return report
 
         total_orphans = (
-            len(orphans.get("orphaned_projects", []))
-            + len(orphans.get("orphaned_domains", []))
-            + len(orphans.get("orphaned_bridges", []))
-            + len(orphans.get("orphaned_namespaces", []))
-            + len(orphans.get("orphaned_cache", []))
-            + len(orphans.get("stale_cache", []))
+            len(orphans.get("orphan_dirs", []))
+            + len(orphans.get("orphan_domains", []))
+            + len(orphans.get("orphan_bridges", []))
+            + len(orphans.get("orphan_namespaces", []))
+            + len(orphans.get("cache_items", []))
+            + len(orphans.get("orphaned_bmc_project_ids", []))
         )
         report["orphans_found"] = total_orphans
 

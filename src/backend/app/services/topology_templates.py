@@ -66,8 +66,8 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
     return vm_node, disk_node, disk_edge
 
 
-def _bastion_node(x, y, disk_gb=50, cluster_ip="10.0.0.50"):
-    """Bastion/provisioner VM with two NICs (cluster + BMC)."""
+def _bastion_node(x, y, disk_gb=150, cluster_ip="10.0.0.50"):
+    """Bastion/provisioner VM with two NICs (cluster + BMC). Sized to host nested bootstrap VM."""
     nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     nic_bmc = {"id": f"nic-{_id()}", "name": "eth1", "mac": _mac(), "model": "virtio"}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
@@ -91,8 +91,8 @@ def _bastion_node(x, y, disk_gb=50, cluster_ip="10.0.0.50"):
         "data": {
             "label": "bastion",
             "name": "bastion",
-            "vcpus": 2,
-            "ram": 4,
+            "vcpus": 6,
+            "ram": 20,
             "os": "rhel10",
             "icon": "🖥",
             "nics": [nic_cluster, nic_bmc],
@@ -280,6 +280,15 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
     external_ips = [{"id": eip_id, "label": "OCP"}]
 
     ssh_port_forward = {"extIpId": eip_id, "extPort": "22", "intIp": "10.0.0.50", "intPort": "22", "proto": "tcp"}
+    # IPI manages its own VIPs via keepalived — just port-forward from gateway
+    api_vip = "10.0.0.2"
+    ingress_vip = "10.0.0.3"
+    ocp_port_forwards = [
+        ssh_port_forward,
+        {"extIpId": eip_id, "extPort": "6443", "intIp": api_vip, "intPort": "6443", "proto": "tcp"},
+        {"extIpId": eip_id, "extPort": "443", "intIp": ingress_vip, "intPort": "443", "proto": "tcp"},
+        {"extIpId": eip_id, "extPort": "80", "intIp": ingress_vip, "intPort": "80", "proto": "tcp"},
+    ]
 
     # Layout constants
     VM_SPACING = 400        # horizontal gap between VM columns (room for disk to the left)
@@ -295,39 +304,31 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
     if template_id == "ocp-sno":
         vm_x_start = 150
         net_x = vm_x_start + VM_SPACING - 20
-        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y, bmc_password)  # above bastion
-        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
+        net = _net_node("cluster-network", "10.0.0.0/24", net_x, NET_ROW_Y)
+        bmc = _bmc_node(vm_x_start + VM_SPACING, NET_ROW_Y, bmc_password)
+        gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11", cluster_ip="10.0.0.11")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
-            vm_x_start + 2 * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(0.5 * VM_SPACING) - 120, LB_ROW_Y, ext_ip_id=eip_id)
-        nodes = [net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk, bast_vm, bast_disk, lb]
-        edges = [sno_disk_edge, bs_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
-        for vm in [sno_vm, bs_vm]:
-            edges.append(_net_edge(net, vm, "network"))
-            edges.append(_lb_vm_edge(lb, vm))
+            vm_x_start + VM_SPACING, VM_ROW_Y)
+        nodes = [net, bmc, gw, sno_vm, sno_disk, bast_vm, bast_disk]
+        edges = [sno_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
+        edges.append(_net_edge(net, sno_vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
         edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
     elif template_id == "ocp-compact":
         vm_x_start = 150
+        bast_x = vm_x_start + 3 * VM_SPACING
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
-        bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
-        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
+        net = _net_node("cluster-network", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
-        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
+        gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         vm_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             vm_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13", cluster_ip="10.0.0.13")
-        vm_data.append((bs_vm, bs_disk, bs_disk_edge))
-        bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
-            vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, LB_ROW_Y, ext_ip_id=eip_id)
-        nodes = [net, bmc, gw, bast_vm, bast_disk, lb]
+        bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
+        nodes = [net, bmc, gw, bast_vm, bast_disk]
         for vm, disk, disk_edge in vm_data:
             nodes.extend([vm, disk])
             edges.append(disk_edge)
@@ -335,17 +336,16 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         edges.append(_gw_net_edge(gw, net))
         for vm, _, _ in vm_data:
             edges.append(_net_edge(net, vm, "network"))
-            edges.append(_lb_vm_edge(lb, vm))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
         edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
     elif template_id == "ocp-standard":
         vm_x_start = 150
+        bast_x = vm_x_start + 3 * VM_SPACING
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
-        bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
-        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
+        net = _net_node("cluster-network", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
-        gw = _gateway_node(net_x, GW_Y, port_forwards=[ssh_port_forward])
+        gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         cp_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
@@ -354,20 +354,15 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         for i in range(2):
             vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, bmc_ip=f"192.168.100.{20 + i}", cluster_ip=f"10.0.0.{20 + i}")
             w_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13", cluster_ip="10.0.0.13")
-        bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
-            vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, WORKER_ROW_Y + 300, ext_ip_id=eip_id)
-        nodes = [net, bmc, gw, bast_vm, bast_disk, lb]
-        for vm, disk, disk_edge in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
+        bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
+        nodes = [net, bmc, gw, bast_vm, bast_disk]
+        for vm, disk, disk_edge in cp_data + w_data:
             nodes.extend([vm, disk])
             edges.append(disk_edge)
         edges.append(bast_disk_edge)
         edges.append(_gw_net_edge(gw, net))
-        for vm, _, _ in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
+        for vm, _, _ in cp_data + w_data:
             edges.append(_net_edge(net, vm, "network"))
-        for vm, _, _ in cp_data + [(bs_vm, bs_disk, bs_disk_edge)]:
-            edges.append(_lb_vm_edge(lb, vm))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
         edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 

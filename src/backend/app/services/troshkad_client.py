@@ -279,9 +279,13 @@ def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
     return job["status"] == "completed"
 
 
-def check_disk_usage(host, timeout=15):
-    """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct} or error dict."""
-    try:
-        return troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)
-    except TroshkadError as e:
-        return {"free_bytes": 0, "total_bytes": 0, "used_pct": 100, "error": str(e)}
+def check_disk_usage(host, timeout=15, retries=3):
+    """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct}. Raises on failure."""
+    import time
+    for attempt in range(retries):
+        try:
+            return troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)
+        except TroshkadError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(2)
