@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 
 interface BulkDeployModalProps {
   patternId: string;
@@ -14,6 +14,17 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState("");
+  const [guidTemplate, setGuidTemplate] = useState("");
+  const [domain, setDomain] = useState("");
+  const [dnsProviderId, setDnsProviderId] = useState("");
+  const [dnsProviders, setDnsProviders] = useState<Array<{id: string; name: string}>>([]);
+
+  useEffect(() => {
+    fetch("/api/v1/dns-providers")
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setDnsProviders(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
 
   const inputStyle = {
     width: "100%",
@@ -47,6 +58,9 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
           count,
           name_template: nameTemplate,
           auto_deploy: autoDeploy,
+          ...(guidTemplate ? { guid_template: guidTemplate } : {}),
+          ...(domain ? { domain } : {}),
+          ...(dnsProviderId ? { dns_provider_id: dnsProviderId } : {}),
         }),
       });
       if (resp.ok) {
@@ -109,6 +123,32 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
               />
               Auto-deploy after creation
             </label>
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12 }}>
+            <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                  GUID Template
+                  <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"} = seq</span>
+                </label>
+                <input style={inputStyle} value={guidTemplate} onChange={(e) => setGuidTemplate(e.target.value)} placeholder="lab-{n}" />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
+                <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+              </div>
+            </div>
+            {dnsProviders.length > 0 && (
+              <div>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
+                <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
+                  <option value="">None</option>
+                  {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
 
           <div style={{

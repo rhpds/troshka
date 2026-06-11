@@ -40,9 +40,23 @@ interface Pattern {
 }
 
 function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
-  patternName: string; deploying: boolean; onDeploy: (name: string) => void; onClose: () => void;
+  patternName: string; deploying: boolean;
+  onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string) => void;
+  onClose: () => void;
 }) {
   const [name, setName] = useState(patternName);
+  const [guid, setGuid] = useState("");
+  const [domain, setDomain] = useState("");
+  const [dnsProviderId, setDnsProviderId] = useState("");
+  const [dnsProviders, setDnsProviders] = useState<Array<{id: string; name: string}>>([]);
+
+  useEffect(() => {
+    fetch("/api/v1/dns-providers")
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setDnsProviders(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
   const inputStyle = {
     width: "100%", padding: "6px 10px", borderRadius: 6,
     border: "1px solid var(--pf-t--global--border--color--default)",
@@ -70,15 +84,37 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             onChange={(e) => setName(e.target.value)}
             placeholder="Project name"
             autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined); }}
           />
         </div>
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GUID</label>
+              <input style={inputStyle} value={guid} onChange={(e) => setGuid(e.target.value)} placeholder="abc123" />
+            </div>
+            <div style={{ flex: 2 }}>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
+              <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+            </div>
+          </div>
+          {dnsProviders.length > 0 && (
+            <div>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
+              <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
+                <option value="">None</option>
+                {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} disabled={deploying}
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
             Cancel
           </button>
-          <button onClick={() => onDeploy(name)} disabled={!name.trim() || deploying}
+          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined)} disabled={!name.trim() || deploying}
             style={{
               ...inputStyle, width: "auto", cursor: deploying ? "wait" : "pointer",
               padding: "6px 16px", background: "rgba(74,222,128,0.15)",
@@ -127,13 +163,17 @@ export default function PatternsPage() {
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
 
-  const handleDeploy = async (patternId: string, projectName: string) => {
+  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string) => {
     setDeploying(patternId);
     try {
+      const body: Record<string, any> = { name: projectName };
+      if (guid) body.guid = guid;
+      if (domain) body.domain = domain;
+      if (dnsProviderId) body.dns_provider_id = dnsProviderId;
       const resp = await fetch(`/api/v1/patterns/${patternId}/deploy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: projectName }),
+        body: JSON.stringify(body),
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -303,7 +343,7 @@ export default function PatternsPage() {
       {deployPattern && <DeployNameModal
         patternName={deployPattern.name}
         deploying={deploying === deployPattern.id}
-        onDeploy={(name) => handleDeploy(deployPattern.id, name)}
+        onDeploy={(name, guid, domain, dnsProviderId) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
     </>
