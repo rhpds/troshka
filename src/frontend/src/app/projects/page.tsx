@@ -279,7 +279,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user)</span></label>
-                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Required for console access" />
+                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Required for console access" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
                     </div>
                   </div>
                 </div>
