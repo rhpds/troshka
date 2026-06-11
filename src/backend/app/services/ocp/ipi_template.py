@@ -202,16 +202,20 @@ def _setup_bastion_cloud_init(
             "  - su - cloud-user -c 'setsid tmux new-session -d -s setup /home/cloud-user/install-ocp.sh'\n"
         )
 
-        # Static IP on BMC NIC
+        # Bridge on ens3 so the nested bootstrap VM can join the cluster network
         bmc_ip = str(ipaddress.IPv4Address(bastion_bmc_ip))
         node["data"]["ciNetworkConfig"] = (
             "version: 2\n"
             "ethernets:\n"
             "  ens3:\n"
-            "    dhcp4: true\n"
+            "    dhcp4: false\n"
             "  ens4:\n"
             "    addresses:\n"
             f"      - {bmc_ip}/24\n"
+            "bridges:\n"
+            "  br-cluster:\n"
+            "    interfaces: [ens3]\n"
+            "    dhcp4: true\n"
         )
         break
 
@@ -272,7 +276,7 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
         "    ingressVIPs:",
         f"      - {ingress_vip}",
         "    provisioningNetwork: Disabled",
-        "    externalBridge: ens3",
+        "    externalBridge: br-cluster",
         "    bootstrapExternalStaticIP: 10.0.0.99",
         "    bootstrapExternalStaticGateway: 10.0.0.1",
         "    bootstrapExternalStaticDNS: 10.0.0.1",

@@ -3675,7 +3675,7 @@ COMMAND_HANDLERS["tls/update-certs"] = _handle_tls_update_certs
 
 
 def _handle_vm_serial_exec(job, params):
-    """Execute a command on a VM via serial console using pexpect + virsh console."""
+    """Execute a command on a VM via serial console using pexpect fdspawn on the raw PTY."""
     domain = _validate_domain_name(params["domain_name"])
     username = params.get("username", "root")
     password = params.get("password", "")
@@ -3685,97 +3685,100 @@ def _handle_vm_serial_exec(job, params):
     if not command:
         raise RuntimeError("No command specified")
 
+    import re
     result = subprocess.run(
-        ["virsh", "list", "--all", "--name"],
+        ["virsh", "dumpxml", domain],
         capture_output=True, text=True, timeout=10,
     )
-    if domain not in result.stdout.strip().split("\n"):
-        raise RuntimeError(f"Domain {domain} not found")
+    if result.returncode != 0:
+        raise RuntimeError(f"Cannot get XML for {domain}: {result.stderr}")
+    pty_match = re.search(r"source path='(/dev/pts/\d+)'", result.stdout)
+    if not pty_match:
+        raise RuntimeError(f"No serial console PTY found for {domain}")
+    pty_path = pty_match.group(1)
 
-    import re
     for sp in ["/opt/troshka/venv/lib/python3.12/site-packages",
                "/opt/troshka/venv/lib/python3.13/site-packages"]:
         if sp not in sys.path and os.path.isdir(sp):
             sys.path.insert(0, sp)
-    import pexpect
+    from pexpect import fdpexpect, TIMEOUT, EOF
 
-    PROMPT = r'[#\$] '
-    child = pexpect.spawn("virsh", ["console", domain, "--force"],
-                          timeout=timeout_secs, encoding="utf-8")
+    fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
+    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
+
+    SHELL = r'[#\$] '
 
     def _login():
         if not password:
             raise RuntimeError("VM is at login prompt but no password provided")
-        child.sendline(username)
+        child.send(username + "\r")
         child.expect("[Pp]assword:", timeout=5)
-        child.sendline(password)
-        # "Last login:" appears before the shell prompt — expect it then wait for prompt
-        idx = child.expect([PROMPT, "Last login", "Login incorrect", pexpect.TIMEOUT], timeout=10)
+        child.send(password + "\r")
+        idx = child.expect([SHELL, "Last login", "incorrect", TIMEOUT], timeout=10)
         if idx == 1:
-            child.expect(PROMPT, timeout=5)
+            child.expect(SHELL, timeout=5)
         elif idx != 0:
             raise RuntimeError("Login failed")
 
     try:
-        # Wait for virsh to connect, then poke console
-        child.expect("Escape character is", timeout=5)
-        import time
+        # Poke console — send Ctrl-C + CR directly on the PTY
+        child.send("\x03\r")
         time.sleep(0.5)
-        child.sendline("")
-
-        idx = child.expect(["login:", PROMPT, pexpect.TIMEOUT], timeout=5)
+        ANY = ["login:", SHELL, r"[>%] ", TIMEOUT]
+        idx = child.expect(ANY, timeout=3)
         if idx == 0:
             _login()
-        elif idx == 2:
-            # No response — try again
-            child.sendline("")
-            idx2 = child.expect(["login:", PROMPT, pexpect.TIMEOUT], timeout=5)
+        elif idx == 3:
+            child.send("\r")
+            idx2 = child.expect(ANY, timeout=3)
             if idx2 == 0:
                 _login()
-            elif idx2 == 2:
+            elif idx2 == 3:
                 return {"domain": domain, "output": "", "error": "Console not responding"}
 
-        # At shell — disable echo, run command, re-enable echo
-        marker = f"TROSHKA{os.getpid()}{int(time.time()) % 10000}"
-        child.sendline("stty -echo")
-        import time as _time
-        _time.sleep(0.3)
-        child.sendline(command)
-        child.sendline(f"echo {marker}")
-        child.expect(marker, timeout=timeout_secs)
-        raw = child.before or ""
-        child.sendline("stty echo")
+        # Disable echo first, then run command
+        import random
+        child.send("stty -echo 2>/dev/null\r")
+        time.sleep(0.5)
+        # Drain any output from stty command
+        try:
+            child.expect(TIMEOUT, timeout=0.5)
+        except TIMEOUT:
+            pass
 
-        # Strip ANSI escapes and clean output
+        tmpf = f"/tmp/.troshka-exec-{random.randint(10000,99999)}"
+        end_mark = f"TROSHKA_END_{random.randint(10000,99999)}"
+        child.send(f"({command}) > {tmpf} 2>&1; cat {tmpf}; rm -f {tmpf}; echo {end_mark}; stty echo 2>/dev/null\r")
+        child.expect(end_mark, timeout=timeout_secs)
+        raw = child.before or ""
+
+        # Strip ANSI escapes and clean
         raw = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07', '', raw)
         raw = raw.replace('\r\n', '\n').replace('\r', '')
         out_lines = []
-        for line in raw.split("\n"):
-            clean = line.strip()
+        for l in raw.split("\n"):
+            clean = l.strip()
             if not clean:
-                continue
-            if marker in clean:
                 continue
             if clean.startswith("stty "):
                 continue
-            if re.match(r'^\[.*@.*\]\s*[#$]', clean):
-                continue
-            out_lines.append(clean)
+            if clean.startswith("TROSHKA"):
+                clean = re.sub(r'^TROSHKA\S*>\s*', '', clean).strip()
+            if clean:
+                out_lines.append(clean)
 
         return {"domain": domain, "output": "\n".join(out_lines)}
-    except pexpect.TIMEOUT:
+    except TIMEOUT:
         return {"domain": domain, "output": "", "error": "Command timed out"}
-    except pexpect.EOF:
+    except EOF:
         return {"domain": domain, "output": "", "error": "Console connection closed"}
     except RuntimeError as e:
         return {"domain": domain, "output": "", "error": str(e)}
     finally:
         try:
-            child.sendline("exit")
-            child.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=2)
-        except Exception:
+            os.close(fd)
+        except OSError:
             pass
-        child.close()
 
 COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec
 
