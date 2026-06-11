@@ -19,7 +19,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
     disk_node = {
         "id": disk_id,
         "type": "storageNode",
-        "position": {"x": x - 30, "y": y + 250},
+        "position": {"x": x + 15, "y": y + 300},
         "data": {
             "label": f"{name}-disk",
             "name": f"{name}-disk",
@@ -203,13 +203,23 @@ def generate_topology(template_id: str) -> dict:
     eip_id = _id()
     external_ips = [{"id": eip_id, "label": "OCP"}]
 
+    # Layout constants
+    VM_SPACING = 270        # horizontal gap between VM columns
+    NET_ROW_Y = 0           # network/LB/BMC row
+    GW_Y = 130              # gateway row (below networks, above VMs)
+    VM_ROW_Y = 280          # VM row
+    DISK_ROW_Y = VM_ROW_Y + 330  # disk row (below VMs)
+    WORKER_ROW_Y = VM_ROW_Y + 370  # worker row (standard layout only)
+    WORKER_DISK_Y = WORKER_ROW_Y + 330
+
     if template_id == "ocp-sno":
-        net = _net_node("cluster", "10.0.0.0/24", 350, 50)
-        bmc = _bmc_node(550, 50)
-        lb = _lb_node(100, 50)
-        gw = _gateway_node(550, 170)
-        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, 200, 250)
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 500, 250)
+        vm_x_start = 150
+        net = _net_node("cluster", "10.0.0.0/24", vm_x_start + VM_SPACING - 20, NET_ROW_Y)
+        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y)
+        lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
+        gw = _gateway_node(vm_x_start + 2 * VM_SPACING, GW_Y)
+        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y)
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y)
         nodes = [lb, net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk]
         edges = [sno_disk_edge, bs_disk_edge, _gw_net_edge(gw, net)]
         for vm in [sno_vm, bs_vm]:
@@ -217,15 +227,17 @@ def generate_topology(template_id: str) -> dict:
             edges.append(_net_edge(lb, vm, "lb"))
 
     elif template_id == "ocp-compact":
-        net = _net_node("cluster", "10.0.0.0/24", 400, 50)
-        bmc = _bmc_node(650, 50)
-        lb = _lb_node(100, 50)
-        gw = _gateway_node(850, 170)
+        vm_x_start = 150
+        net_x = vm_x_start + int(1.5 * VM_SPACING) - 120  # center over VMs
+        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
+        bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
+        lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
+        gw = _gateway_node(vm_x_start + 3 * VM_SPACING + 50, GW_Y)
         vm_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, 150 + i * 230, 250)
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
             vm_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 150 + 3 * 230, 250)
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y)
         vm_data.append((bs_vm, bs_disk, bs_disk_edge))
         nodes = [lb, net, bmc, gw]
         for vm, disk, disk_edge in vm_data:
@@ -237,19 +249,21 @@ def generate_topology(template_id: str) -> dict:
             edges.append(_net_edge(lb, vm, "lb"))
 
     elif template_id == "ocp-standard":
-        net = _net_node("cluster", "10.0.0.0/24", 450, 50)
-        bmc = _bmc_node(700, 50)
-        lb = _lb_node(100, 50)
-        gw = _gateway_node(900, 170)
+        vm_x_start = 150
+        net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
+        net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
+        bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
+        lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
+        gw = _gateway_node(vm_x_start + 3 * VM_SPACING + 50, GW_Y)
         cp_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, 150 + i * 230, 250)
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
             cp_data.append((vm, disk, disk_edge))
         w_data = []
         for i in range(2):
-            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, 150 + i * 230, 550)
+            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y)
             w_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 150 + 3 * 230, 250)
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y)
         nodes = [lb, net, bmc, gw]
         for vm, disk, disk_edge in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
             nodes.extend([vm, disk])
