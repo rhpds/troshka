@@ -95,7 +95,7 @@ def _bastion_node(x, y, disk_gb=50):
             "nics": [nic_cluster, nic_bmc],
             "diskControllers": [dc],
             "bmcEnabled": False,
-            "firmware": "uefi",
+            "firmware": "bios",
             "secureBoot": False,
             "bootDevices": [disk_id],
             "bootMethod": "disk",
