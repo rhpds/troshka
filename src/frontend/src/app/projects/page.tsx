@@ -255,7 +255,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                         </select>
                       ) : (
                         <div style={{ fontSize: 12, color: "#f87171", padding: "6px 10px", borderRadius: 6, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)" }}>
-                          No RHEL qcow2 images in library. Upload one in Images first.
+                          No qcow2 images in library. Upload the RHEL KVM Guest Image from the Red Hat Download site.
                         </div>
                       )}
                     </div>
