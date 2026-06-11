@@ -1182,19 +1182,28 @@ export default function PropertiesPanel() {
                             <label className="props-label">DNS Records</label>
                             <button className="troshka-btn-icon" title="Add record" onClick={() => {
                               const records = [...((data as Record<string, any>).dnsRecords || [])];
-                              records.push({ name: "", ip: "" });
+                              records.push({ name: "", type: "A", ip: "" });
                               update("dnsRecords", records);
                             }}>+</button>
                           </div>
-                          {((data as Record<string, any>).dnsRecords as Array<{name: string; ip: string}>).map((rec, i) => (
+                          {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string}>).map((rec, i) => (
                             <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center" }}>
-                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
+                              <input className="props-input" style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], name: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)" }}>→</span>
-                              <input className="props-input" style={{ flex: 1, fontSize: 10, fontFamily: "monospace" }} value={rec.ip} placeholder="IP" onChange={(e) => {
+                              <select className="props-input" style={{ width: 50, fontSize: 10, fontFamily: "monospace" }} value={rec.type || "A"} onChange={(e) => {
+                                const records = [...((data as Record<string, any>).dnsRecords || [])];
+                                records[i] = { ...records[i], type: e.target.value };
+                                update("dnsRecords", records);
+                              }}>
+                                <option value="A">A</option>
+                                <option value="CNAME">CNAME</option>
+                                <option value="TXT">TXT</option>
+                                <option value="SRV">SRV</option>
+                              </select>
+                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip} placeholder={rec.type === "CNAME" ? "target" : "IP"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
