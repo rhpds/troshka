@@ -1225,7 +1225,8 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
             _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map, pool, disk_cache)
 
-            if was_running:
+            should_start = was_running or vdata.get("powerOnAtDeploy", True)
+            if should_start:
                 try:
                     job_id = start_job(h, "/vms/start", {"domain_name": dom})
                     wait_for_job(h, job_id, timeout=60)
