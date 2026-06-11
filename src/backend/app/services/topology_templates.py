@@ -12,16 +12,23 @@ def _mac():
     )
 
 
-def _nic():
-    return {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
-
-
-def _disk_controller():
-    return {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
-
-
-def _vm_node(name, vcpus, ram, x, y):
-    return {
+def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
+    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
+    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
+    disk_id = _id()
+    disk_node = {
+        "id": disk_id,
+        "type": "storageNode",
+        "position": {"x": x - 30, "y": y + 250},
+        "data": {
+            "label": f"{name}-disk",
+            "name": f"{name}-disk",
+            "size": disk_gb,
+            "format": "qcow2",
+            "icon": "🛢",
+        },
+    }
+    vm_node = {
         "id": _id(),
         "type": "vmNode",
         "position": {"x": x, "y": y},
@@ -32,15 +39,28 @@ def _vm_node(name, vcpus, ram, x, y):
             "ram": ram,
             "os": "rhcos",
             "icon": "🖥",
-            "nics": [_nic()],
-            "diskControllers": [_disk_controller()],
+            "nics": [nic],
+            "diskControllers": [dc],
             "bmcEnabled": True,
             "firmware": "uefi",
             "secureBoot": False,
-            "bootDevices": [],
+            "bootDevices": [disk_id],
+            "bootMethod": "disk",
             "powerOnAtDeploy": True,
         },
     }
+    disk_edge = {
+        "id": _id(),
+        "source": disk_id,
+        "target": vm_node["id"],
+        "sourceHandle": f"{disk_id}-right",
+        "targetHandle": f"{dc['id']}-left",
+        "type": "smoothstep",
+        "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        "animated": False,
+        "className": "edge-storage-pulse",
+    }
+    return vm_node, disk_node, disk_edge
 
 
 OCP_FRONTENDS = [
@@ -104,16 +124,52 @@ def _bmc_node(x, y):
     }
 
 
-def _wire(src_node, tgt_node):
-    """Create an edge from a network/LB node to a VM node using the VM's first NIC."""
-    nic_id = tgt_node["data"]["nics"][0]["id"]
+def _gateway_node(x, y):
+    return {
+        "id": _id(),
+        "type": "networkNode",
+        "position": {"x": x, "y": y},
+        "data": {
+            "label": "gateway",
+            "name": "gateway",
+            "subtype": "gateway",
+            "gatewayMode": "nat-portforward",
+            "outboundPolicy": "allow-all",
+            "portForwards": [],
+        },
+    }
+
+
+def _net_edge(src_node, tgt_vm, style_type="network"):
+    """Edge from network/LB node to VM's first NIC."""
+    nic_id = tgt_vm["data"]["nics"][0]["id"]
+    styles = {
+        "network": {"stroke": "rgba(34,211,238,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
+        "lb": {"stroke": "rgba(59,130,246,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
+        "gateway": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
+    }
     return {
         "id": _id(),
         "source": src_node["id"],
-        "target": tgt_node["id"],
+        "target": tgt_vm["id"],
         "sourceHandle": f"{src_node['id']}-bottom",
         "targetHandle": f"{nic_id}-top",
         "type": "smoothstep",
+        "style": styles.get(style_type, styles["network"]),
+        "animated": True,
+    }
+
+
+def _gw_net_edge(gw_node, net_node):
+    """Edge from gateway to network (orange handle to orange handle)."""
+    return {
+        "id": _id(),
+        "source": gw_node["id"],
+        "target": net_node["id"],
+        "sourceHandle": f"{gw_node['id']}-left",
+        "targetHandle": f"{net_node['id']}-right",
+        "type": "smoothstep",
+        "style": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
         "animated": True,
     }
 
@@ -140,46 +196,70 @@ TEMPLATES = {
 def generate_topology(template_id: str) -> dict:
     nodes = []
     edges = []
+    eip_id = _id()
+    external_ips = [{"id": eip_id, "label": "OCP"}]
 
     if template_id == "ocp-sno":
-        net = _net_node("cluster", "10.0.0.0/24", 300, 0)
-        bmc = _bmc_node(500, 0)
-        lb = _lb_node(100, 0)
-        sno = _vm_node("sno-0", 8, 32, 200, 200)
-        bootstrap = _vm_node("bootstrap", 4, 16, 450, 200)
-        nodes = [net, bmc, lb, sno, bootstrap]
-        for vm in [sno, bootstrap]:
-            edges.append(_wire(net, vm))
-            edges.append(_wire(lb, vm))
+        net = _net_node("cluster", "10.0.0.0/24", 350, 50)
+        bmc = _bmc_node(550, 50)
+        lb = _lb_node(100, 50)
+        gw = _gateway_node(550, 170)
+        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, 200, 250)
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 500, 250)
+        nodes = [lb, net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk]
+        edges = [sno_disk_edge, bs_disk_edge, _gw_net_edge(gw, net)]
+        for vm in [sno_vm, bs_vm]:
+            edges.append(_net_edge(net, vm, "network"))
+            edges.append(_net_edge(lb, vm, "lb"))
 
     elif template_id == "ocp-compact":
-        net = _net_node("cluster", "10.0.0.0/24", 350, 0)
-        bmc = _bmc_node(600, 0)
-        lb = _lb_node(100, 0)
-        cps = [_vm_node(f"cp-{i}", 8, 16, 150 + i * 220, 200) for i in range(3)]
-        bootstrap = _vm_node("bootstrap", 4, 16, 150 + 3 * 220, 200)
-        nodes = [net, bmc, lb] + cps + [bootstrap]
-        for vm in cps + [bootstrap]:
-            edges.append(_wire(net, vm))
-            edges.append(_wire(lb, vm))
+        net = _net_node("cluster", "10.0.0.0/24", 400, 50)
+        bmc = _bmc_node(650, 50)
+        lb = _lb_node(100, 50)
+        gw = _gateway_node(850, 170)
+        vm_data = []
+        for i in range(3):
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, 150 + i * 230, 250)
+            vm_data.append((vm, disk, disk_edge))
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 150 + 3 * 230, 250)
+        vm_data.append((bs_vm, bs_disk, bs_disk_edge))
+        nodes = [lb, net, bmc, gw]
+        for vm, disk, disk_edge in vm_data:
+            nodes.extend([vm, disk])
+            edges.append(disk_edge)
+        edges.append(_gw_net_edge(gw, net))
+        for vm, _, _ in vm_data:
+            edges.append(_net_edge(net, vm, "network"))
+            edges.append(_net_edge(lb, vm, "lb"))
 
     elif template_id == "ocp-standard":
-        net = _net_node("cluster", "10.0.0.0/24", 400, 0)
-        bmc = _bmc_node(650, 0)
-        lb = _lb_node(100, 0)
-        cps = [_vm_node(f"cp-{i}", 4, 16, 150 + i * 220, 200) for i in range(3)]
-        workers = [_vm_node(f"worker-{i}", 4, 16, 150 + i * 220, 450) for i in range(2)]
-        bootstrap = _vm_node("bootstrap", 4, 16, 150 + 3 * 220, 200)
-        nodes = [net, bmc, lb] + cps + workers + [bootstrap]
-        for vm in cps + workers + [bootstrap]:
-            edges.append(_wire(net, vm))
-        for vm in cps + [bootstrap]:
-            edges.append(_wire(lb, vm))
+        net = _net_node("cluster", "10.0.0.0/24", 450, 50)
+        bmc = _bmc_node(700, 50)
+        lb = _lb_node(100, 50)
+        gw = _gateway_node(900, 170)
+        cp_data = []
+        for i in range(3):
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, 150 + i * 230, 250)
+            cp_data.append((vm, disk, disk_edge))
+        w_data = []
+        for i in range(2):
+            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, 150 + i * 230, 550)
+            w_data.append((vm, disk, disk_edge))
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, 150 + 3 * 230, 250)
+        nodes = [lb, net, bmc, gw]
+        for vm, disk, disk_edge in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
+            nodes.extend([vm, disk])
+            edges.append(disk_edge)
+        edges.append(_gw_net_edge(gw, net))
+        for vm, _, _ in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
+            edges.append(_net_edge(net, vm, "network"))
+        for vm, _, _ in cp_data + [(bs_vm, bs_disk, bs_disk_edge)]:
+            edges.append(_net_edge(lb, vm, "lb"))
 
     else:
         raise ValueError(f"Unknown template: {template_id}")
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "externalIps": external_ips}
 
 
 def list_templates() -> list[dict]:
