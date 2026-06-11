@@ -1939,7 +1939,7 @@ def _handle_lb_setup(job, params):
         lines.append("")
 
     config_content = "\n".join(lines)
-    _log(job, f"Writing HAProxy config to {haproxy_conf}")
+    job["output"].append(f"Writing HAProxy config to {haproxy_conf}")
 
     os.makedirs("/etc/haproxy", exist_ok=True)
     with open(haproxy_conf, "w") as f:
@@ -1957,7 +1957,7 @@ def _handle_lb_setup(job, params):
 
     # Start HAProxy in namespace
     _run_cmd(job, ["ip", "netns", "exec", ns, "haproxy", "-f", haproxy_conf, "-D", "-p", haproxy_pid], timeout=10)
-    _log(job, f"HAProxy started in namespace {ns}")
+    job["output"].append(f"HAProxy started in namespace {ns}")
     return {"status": "started", "config": haproxy_conf}
 
 COMMAND_HANDLERS["lb/setup"] = _handle_lb_setup
@@ -1986,7 +1986,7 @@ def _handle_lb_teardown(job, params):
         except FileNotFoundError:
             pass
 
-    _log(job, f"HAProxy teardown complete for project {pid}")
+    job["output"].append(f"HAProxy teardown complete for project {pid}")
     return {"status": "torn_down"}
 
 COMMAND_HANDLERS["lb/teardown"] = _handle_lb_teardown

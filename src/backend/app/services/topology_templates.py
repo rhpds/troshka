@@ -12,8 +12,8 @@ def _mac():
     )
 
 
-def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip=""):
-    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
+def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
+    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
     disk_id = _id()
     disk_node = {
@@ -293,8 +293,8 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y, bmc_password)  # above bastion
         gw = _gateway_node(net_x, GW_Y)
-        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10")
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11")
+        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11", cluster_ip="10.0.0.11")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + 2 * VM_SPACING, VM_ROW_Y)
         lb = _lb_node(vm_x_start + int(0.5 * VM_SPACING) - 120, LB_ROW_Y)
@@ -315,9 +315,9 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         gw = _gateway_node(net_x, GW_Y)
         vm_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}")
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             vm_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13")
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13", cluster_ip="10.0.0.13")
         vm_data.append((bs_vm, bs_disk, bs_disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
@@ -343,13 +343,13 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         gw = _gateway_node(net_x, GW_Y)
         cp_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}")
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             cp_data.append((vm, disk, disk_edge))
         w_data = []
         for i in range(2):
-            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, bmc_ip=f"192.168.100.{20 + i}")
+            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, bmc_ip=f"192.168.100.{20 + i}", cluster_ip=f"10.0.0.{20 + i}")
             w_data.append((vm, disk, disk_edge))
-        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13")
+        bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13", cluster_ip="10.0.0.13")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
         lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, WORKER_ROW_Y + 300)

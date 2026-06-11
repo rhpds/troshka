@@ -1224,7 +1224,8 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
 
             pool = _get_host_pool(h, s)
             _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
-            _create_seed_isos_via_troshkad(h, p_id, topology, pool)
+            vm_only_topo = {"nodes": [vm_node], "edges": []}
+            _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
 
             _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
             vdata = vm_node.get("data", {})
