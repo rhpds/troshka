@@ -69,7 +69,18 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             <line x1="10" y1="12" x2="20" y2="12" />
             <line x1="10" y1="15" x2="20" y2="15" />
           </svg>
-        ) : d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer" ? "⚖" : <RJ45Icon />}
+        ) : d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer" ? (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="4" cy="12" r="2" />
+            <circle cx="20" cy="6" r="2" />
+            <circle cx="20" cy="12" r="2" />
+            <circle cx="20" cy="18" r="2" />
+            <line x1="6" y1="12" x2="11" y2="12" />
+            <line x1="11" y1="12" x2="18" y2="6" />
+            <line x1="11" y1="12" x2="18" y2="12" />
+            <line x1="11" y1="12" x2="18" y2="18" />
+          </svg>
+        ) : <RJ45Icon />}
       </span>
       <div className="network-node-info">
         <div className="network-node-name">{d.name}</div>

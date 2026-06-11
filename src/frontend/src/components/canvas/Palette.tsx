@@ -57,7 +57,7 @@ const sections: PaletteSection[] = [
         type: "loadbalancer",
         label: "Load Balancer",
         desc: "HAProxy L4",
-        icon: "⚖",
+        icon: "lb",
         iconClass: "palette-icon-lb",
       },
     ],
@@ -128,8 +128,24 @@ function RJ45Icon({ size = 20 }: { size?: number }) {
   );
 }
 
+function LBIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="4" cy="12" r="2" />
+      <circle cx="20" cy="6" r="2" />
+      <circle cx="20" cy="12" r="2" />
+      <circle cx="20" cy="18" r="2" />
+      <line x1="6" y1="12" x2="11" y2="12" />
+      <line x1="11" y1="12" x2="18" y2="6" />
+      <line x1="11" y1="12" x2="18" y2="12" />
+      <line x1="11" y1="12" x2="18" y2="18" />
+    </svg>
+  );
+}
+
 function PaletteIcon({ icon, iconClass }: { icon: string; iconClass: string }) {
   if (icon === "rj45") return <div className={`palette-icon ${iconClass}`}><RJ45Icon /></div>;
+  if (icon === "lb") return <div className={`palette-icon ${iconClass}`}><LBIcon /></div>;
   return <div className={`palette-icon ${iconClass}`}>{icon}</div>;
 }
 
