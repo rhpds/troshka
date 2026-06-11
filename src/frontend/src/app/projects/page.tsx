@@ -67,6 +67,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [patternSearch, setPatternSearch] = useState("");
   const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [bastionImageId, setBastionImageId] = useState("");
+  const [bastionSshKeyId, setBastionSshKeyId] = useState("");
+  const [bastionPassword, setBastionPassword] = useState("");
+  const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
+  const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/patterns/`)
@@ -76,6 +81,16 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     fetch(`${API_BASE}/api/v1/projects/templates`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setTemplates(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch(`${API_BASE}/api/v1/library/`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setLibraryImages(
+        (Array.isArray(data) ? data : []).filter((i: any) => i.format === "qcow2" && i.state === "ready")
+      ))
+      .catch(() => {});
+    fetch(`${API_BASE}/api/v1/auth/ssh-keys`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setSshKeys(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
@@ -104,10 +119,14 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
           onCreated(data.id);
         }
       } else if (mode === "template" && selectedTemplate) {
+        const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
+        if (bastionImageId) templateBody.bastion_image_id = bastionImageId;
+        if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
+        if (bastionPassword) templateBody.bastion_password = bastionPassword;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ template_id: selectedTemplate, name }),
+          body: JSON.stringify(templateBody),
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -208,14 +227,43 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               />
             </div>
             {mode === "template" && selectedTemplate && (
-              <div style={{
-                padding: "8px 12px", borderRadius: 6,
-                background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.3)",
-                fontSize: 12,
-              }}>
-                Template: <strong>{templates.find((t) => t.id === selectedTemplate)?.name}</strong>
-                <div style={{ opacity: 0.6, marginTop: 2 }}>{templates.find((t) => t.id === selectedTemplate)?.description}</div>
-              </div>
+              <>
+                <div style={{
+                  padding: "8px 12px", borderRadius: 6,
+                  background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.3)",
+                  fontSize: 12,
+                }}>
+                  Template: <strong>{templates.find((t) => t.id === selectedTemplate)?.name}</strong>
+                  <div style={{ opacity: 0.6, marginTop: 2 }}>{templates.find((t) => t.id === selectedTemplate)?.description}</div>
+                </div>
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Bastion Configuration</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Bastion Image</label>
+                      <select style={inputStyle} value={bastionImageId} onChange={(e) => setBastionImageId(e.target.value)}>
+                        <option value="">Blank disk</option>
+                        {libraryImages.map((img) => (
+                          <option key={img.id} value={img.id}>{img.name} ({img.size_gb} GB)</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
+                      <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
+                        <option value="">None</option>
+                        {sshKeys.map((k) => (
+                          <option key={k.id} value={k.id}>{k.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password (optional)</label>
+                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="cloud-user password" />
+                    </div>
+                  </div>
+                </div>
+              </>
             )}
             {mode === "pattern" && (
               <div style={{ position: "relative" }}>

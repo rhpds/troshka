@@ -90,6 +90,35 @@ def create_project_from_template(
     if not template_id or template_id not in TEMPLATES:
         raise HTTPException(status_code=404, detail="Template not found")
     topology = generate_topology(template_id)
+
+    bastion_image_id = body.get("bastion_image_id")
+    if bastion_image_id:
+        from app.models.library import LibraryItem
+        item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()
+        if item:
+            item_size_gb = max(1, (item.size_bytes or 0) // (1024 ** 3))
+            for node in topology.get("nodes", []):
+                if node.get("type") == "storageNode" and node.get("data", {}).get("name") == "bastion-disk":
+                    node["data"]["source"] = "library"
+                    node["data"]["libraryItemId"] = item.id
+                    node["data"]["libraryItemName"] = item.name
+                    node["data"]["libraryItemSize"] = item_size_gb
+                    node["data"]["size"] = max(item_size_gb, node["data"].get("size", 0))
+                    break
+
+    # Enable cloud-init on the bastion
+    bastion_ssh_key_id = body.get("bastion_ssh_key_id")
+    bastion_password = body.get("bastion_password")
+    for node in topology.get("nodes", []):
+        if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
+            node["data"]["cloudInit"] = True
+            node["data"]["cloudInitUser"] = "cloud-user"
+            if bastion_ssh_key_id:
+                node["data"]["cloudInitSshKeyId"] = bastion_ssh_key_id
+            if bastion_password:
+                node["data"]["cloudInitPassword"] = bastion_password
+            break
+
     project = Project(
         name=body.get("name", TEMPLATES[template_id]["name"]),
         owner_id=user.id,
