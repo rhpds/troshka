@@ -10,6 +10,7 @@ import type {
 } from "@/stores/canvasStore";
 
 function cidrToRange(cidr: string): [number, number] | null {
+  if (!cidr) return null;
   const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
   if (!match) return null;
   const ip = (parseInt(match[1]) << 24) + (parseInt(match[2]) << 16) + (parseInt(match[3]) << 8) + parseInt(match[4]);
