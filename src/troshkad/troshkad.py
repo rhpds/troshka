@@ -1693,7 +1693,7 @@ def _handle_network_full_setup(job, params):
 
         conf_lines = [
             f"interface={bridge}",
-            "bind-dynamic",
+            "bind-interfaces",
             "except-interface=lo",
             "no-resolv",
             "no-hosts",
