@@ -270,22 +270,28 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           );
         })()}
         {/* Warnings */}
-        {(!hasStorage || !hasWritableDisk || !hasNetwork || hasSharedDisk) && (
-          <div className="vm-node-warnings">
-            {!hasStorage && (
-              <span className="vm-node-warning" title="No storage attached">⚠ No disk</span>
-            )}
-            {hasStorage && !hasWritableDisk && (
-              <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No installable disk device</span>
-            )}
-            {!hasNetwork && (
-              <span className="vm-node-warning" title="No network connected">⚠ No network</span>
-            )}
-            {hasSharedDisk && (
-              <span className="vm-node-warning" title="Disk shared with another VM — requires cluster-aware filesystem">⚠ Shared disk</span>
-            )}
-          </div>
-        )}
+        {(() => {
+          const bmcMissingIp = d.bmcEnabled && !d.bmcIp;
+          return (!hasStorage || !hasWritableDisk || !hasNetwork || hasSharedDisk || bmcMissingIp) ? (
+            <div className="vm-node-warnings">
+              {!hasStorage && (
+                <span className="vm-node-warning" title="No storage attached">⚠ No disk</span>
+              )}
+              {hasStorage && !hasWritableDisk && (
+                <span className="vm-node-warning" title="Only ISO attached — no writable disk to install onto">⚠ No installable disk device</span>
+              )}
+              {!hasNetwork && (
+                <span className="vm-node-warning" title="No network connected">⚠ No network</span>
+              )}
+              {hasSharedDisk && (
+                <span className="vm-node-warning" title="Disk shared with another VM — requires cluster-aware filesystem">⚠ Shared disk</span>
+              )}
+              {bmcMissingIp && (
+                <span className="vm-node-warning" title="BMC enabled but no BMC IP assigned">⚠ No BMC IP</span>
+              )}
+            </div>
+          ) : null;
+        })()}
         {/* Auto-start */}
         <label className="nopan nodrag" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 0" }} onClick={(e) => e.stopPropagation()}>
         <input

@@ -1069,7 +1069,28 @@ def deploy_project_async(project_id: str):
         logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
         _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
-        # Step 3c: Create BMC bridge (before VMs so libvirt can validate the bridge name)
+        # Step 3c: Validate BMC configuration
+        bmc_network_exists = any(
+            n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
+            for n in topology.get("nodes", [])
+        )
+        if bmc_network_exists:
+            missing_bmc_ips = [
+                n["data"].get("name", n["id"][:8])
+                for n in topology.get("nodes", [])
+                if n.get("type") == "vmNode" and n.get("data", {}).get("bmcEnabled") and not n.get("data", {}).get("bmcIp")
+            ]
+            if missing_bmc_ips:
+                error_msg = f"BMC-enabled VMs missing BMC IP: {', '.join(missing_bmc_ips)}"
+                logger.error("Deploy %s: %s", project_id[:8], error_msg)
+                project.state = "error"
+                project.deploy_error = error_msg
+                s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+                _deploy_progress.pop(project_id, None)
+                return
+
+        # Create BMC bridge (before VMs so libvirt can validate the bridge name)
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
             from app.services.troshkad_client import start_job as _sj, wait_for_job as _wj
