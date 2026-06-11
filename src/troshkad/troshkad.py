@@ -1750,13 +1750,12 @@ def _handle_network_full_setup(job, params):
         _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
         job["output"].append(f"dnsmasq started for VNI {vni} on {bridge}")
 
-    # ── nftables inside namespace (flush if already exists) ──
+    # ── nftables inside namespace (flush if already exists, silence expected errors) ──
     for tbl in ["filter", "nat"]:
-        try:
-            _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "flush", "table", "inet", tbl], timeout=10)
-            _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "delete", "table", "inet", tbl], timeout=10)
-        except RuntimeError:
-            pass
+        subprocess.run(["ip", "netns", "exec", ns, "nft", "flush", "table", "inet", tbl],
+                        capture_output=True, timeout=10)
+        subprocess.run(["ip", "netns", "exec", ns, "nft", "delete", "table", "inet", tbl],
+                        capture_output=True, timeout=10)
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "table", "inet", "filter"], timeout=10)
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "filter", "forward",
                     "{ type filter hook forward priority 0; policy drop; }"], timeout=10)
