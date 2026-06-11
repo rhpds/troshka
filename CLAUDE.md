@@ -176,7 +176,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
   - **EBS**: CreateVolume, DeleteVolume, AttachVolume, DetachVolume, DescribeVolumes, ModifyVolume
   - **VPC**: Create/Delete/Modify{Vpc,Subnet,VpcAttribute,SubnetAttribute}, Create/Delete/Attach/Detach InternetGateway, Create/DeleteRoute, Describe{RouteTables,InternetGateways}, AssociateRouteTable
   - **Security Groups**: Create/Delete, Describe{SecurityGroups,SecurityGroupRules}, Authorize/RevokeSecurityGroupIngress
-  - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses
+  - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses, AssignPrivateIpAddresses, UnassignPrivateIpAddresses
   - **FSx**: CreateFileSystem, DeleteFileSystem, DescribeFileSystems, UpdateFileSystem, CreateVolume, DeleteVolume, DescribeVolumes, UpdateVolume, TagResource, UntagResource, ListTagsForResource
   - **IAM** (one-time): CreateServiceLinkedRole for fsx.amazonaws.com
   - **S3**: PutObject, GetObject, DeleteObject, HeadObject, ListBucket on `troshka-images`
