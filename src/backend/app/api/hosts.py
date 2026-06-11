@@ -207,10 +207,13 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
             s.commit()
             _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
             _ca_cert, _host_cert, _host_key = "", "", ""
-            if _sm == "shared" and pool and pool.ca_cert and pool.ca_key and h.ip_address:
+            if _sm == "shared" and h.storage_pool_id and h.ip_address:
+                from app.models.storage_pool import StoragePool
                 from app.services.storage_pool_service import sign_host_cert
-                _host_cert, _host_key = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or "")
-                _ca_cert = pool.ca_cert
+                _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+                if _pool and _pool.ca_cert and _pool.ca_key:
+                    _host_cert, _host_key = sign_host_cert(_pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or "")
+                    _ca_cert = _pool.ca_cert
             result = deploy_agent(h.ip_address, h.private_key, h.id,
                                   storage_mode=_sm,
                                   nfs_server=nfs_kwargs.get("nfs_server", ""),
