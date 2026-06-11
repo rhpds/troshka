@@ -86,6 +86,7 @@ def create_project_from_template(
     db: Session = Depends(get_db),
 ):
     from app.services.topology_templates import generate_topology, TEMPLATES
+    from app.models.library import LibraryItem
     template_id = body.get("template_id")
     if not template_id or template_id not in TEMPLATES:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -93,7 +94,6 @@ def create_project_from_template(
 
     bastion_image_id = body.get("bastion_image_id")
     if bastion_image_id:
-        from app.models.library import LibraryItem
         item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()
         if item:
             item_size_gb = max(1, (item.size_bytes or 0) // (1024 ** 3))
@@ -159,16 +159,19 @@ def create_project_from_template(
     for node in topology.get("nodes", []):
         if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
             node["data"]["cloudInit"] = True
-            node["data"]["cloudInitUser"] = "cloud-user"
-            if bastion_ssh_key_id:
-                node["data"]["cloudInitSshKeyId"] = bastion_ssh_key_id
             if bastion_password:
-                node["data"]["cloudInitPassword"] = bastion_password
+                node["data"]["ciCloudUserPassword"] = bastion_password
+            if bastion_ssh_key_id:
+                from app.models.user import UserSshKey
+                ssh_key = db.query(UserSshKey).filter_by(id=bastion_ssh_key_id).first()
+                if ssh_key:
+                    node["data"]["ciSshKeyIds"] = [ssh_key.id]
+                    node["data"]["ciSshKeys"] = [ssh_key.public_key]
             if bastion_iso_id:
-                node["data"]["cloudInitCustomScript"] = (
+                node["data"]["ciUserData"] = (
                     "runcmd:\n"
                     "  - mkdir -p /mnt/rhel-dvd\n"
-                    "  - mount /dev/sr0 /mnt/rhel-dvd\n"
+                    "  - mount /dev/sr1 /mnt/rhel-dvd || mount /dev/sr0 /mnt/rhel-dvd\n"
                     "  - |\n"
                     "    cat > /etc/yum.repos.d/rhel-dvd.repo << 'EOF'\n"
                     "    [rhel-dvd-baseos]\n"

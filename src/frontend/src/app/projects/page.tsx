@@ -272,8 +272,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       </select>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password (optional)</label>
-                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="cloud-user password" />
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user)</span></label>
+                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Required for console access" />
                     </div>
                   </div>
                 </div>
@@ -342,12 +342,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && !selectedTemplate)}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && !selectedTemplate) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword)) ? 0.4 : 1,
                 }}
               >
                 {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create from Template" : "Create Project"}
