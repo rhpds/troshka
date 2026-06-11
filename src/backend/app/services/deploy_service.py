@@ -720,11 +720,15 @@ def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
         metadata = generate_metadata(vm_label)
         path = _seed_path(project_id, node_id, pool)
 
-        seeds.append({
+        seed = {
             "path": path,
             "user_data": userdata,
             "meta_data": metadata,
-        })
+        }
+        network_config = data.get("ciNetworkConfig", "")
+        if network_config:
+            seed["network_config"] = network_config
+        seeds.append(seed)
 
     if not seeds:
         return
@@ -1464,6 +1468,12 @@ def destroy_project_sync(project_id: str):
             wait_for_job(host, job_id, timeout=30)
         except TroshkadError as e:
             logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
+
+        # Tear down BMC endpoints (sushy-emulator, vbmcd)
+        try:
+            _teardown_bmc_via_troshkad(host, project_id)
+        except Exception as e:
+            logger.warning("Destroy %s: BMC teardown failed (non-fatal): %s", project_id[:8], e)
 
         # Tear down networks via troshkad (serialized to avoid nftables contention)
         with _network_lock:

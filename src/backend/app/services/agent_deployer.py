@@ -73,7 +73,7 @@ cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
 #!/bin/bash
 # Troshka qemu hook — moves TAP interfaces into project namespace
 # NOTE: Do NOT call virsh from this hook — it deadlocks virtqemud.
-# Parse TAP names from the domain XML passed on stdin instead.
+# Parse TAP and bridge names from the domain XML passed on stdin.
 DOMAIN=$1
 ACTION=$2
 if [ "$ACTION" = "started" ]; then
@@ -81,11 +81,17 @@ if [ "$ACTION" = "started" ]; then
     [ -z "$PID" ] && exit 0
     NS="troshka-$PID"
     ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
-    BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F': ' '{print $2}' | head -1)
-    [ -z "$BRIDGE" ] && exit 0
-    # Read domain XML from stdin, extract TAP device names
     XML=$(cat)
-    for TAP in $(echo "$XML" | grep -oP "dev='\\K(vnet|tap)[^']*"); do
+    # Extract all source bridges and target devs in order — they correspond 1:1
+    BRIDGES=$(echo "$XML" | grep -oP "source bridge='\\K[^']+")
+    TAPS=$(echo "$XML" | grep -oP "target dev='\\K(vnet|tap)[^']+")
+    BRIDGE_ARR=($BRIDGES)
+    TAP_ARR=($TAPS)
+    for i in "${!TAP_ARR[@]}"; do
+        TAP="${TAP_ARR[$i]}"
+        BRIDGE="${BRIDGE_ARR[$i]}"
+        [ -z "$TAP" ] && continue
+        [ -z "$BRIDGE" ] && continue
         ip link set "$TAP" netns "$NS" 2>/dev/null
         ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
         ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null

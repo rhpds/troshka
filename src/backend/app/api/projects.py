@@ -188,6 +188,16 @@ def create_project_from_template(
                     "    EOF\n"
                     "  - dnf install -y git ansible-core python3-pip\n"
                 )
+            # Static IP on BMC NIC so it doesn't wait for DHCP
+            node["data"]["ciNetworkConfig"] = (
+                "version: 2\n"
+                "ethernets:\n"
+                "  ens3:\n"
+                "    dhcp4: true\n"
+                "  ens4:\n"
+                "    addresses:\n"
+                "      - 192.168.100.50/24\n"
+            )
             break
 
     project = Project(
