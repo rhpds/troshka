@@ -53,7 +53,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
         "id": _id(),
         "source": disk_id,
         "target": vm_node["id"],
-        "sourceHandle": f"{disk_id}-right",
+        "sourceHandle": "right",
         "targetHandle": f"{dc['id']}-left",
         "type": "smoothstep",
         "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
@@ -152,7 +152,7 @@ def _net_edge(src_node, tgt_vm, style_type="network"):
         "id": _id(),
         "source": src_node["id"],
         "target": tgt_vm["id"],
-        "sourceHandle": f"{src_node['id']}-bottom",
+        "sourceHandle": "bottom",
         "targetHandle": f"{nic_id}-top",
         "type": "smoothstep",
         "style": styles.get(style_type, styles["network"]),
@@ -161,13 +161,13 @@ def _net_edge(src_node, tgt_vm, style_type="network"):
 
 
 def _gw_net_edge(gw_node, net_node):
-    """Edge from gateway to network (orange handle to orange handle)."""
+    """Edge from gateway to network."""
     return {
         "id": _id(),
         "source": gw_node["id"],
         "target": net_node["id"],
-        "sourceHandle": f"{gw_node['id']}-left",
-        "targetHandle": f"{net_node['id']}-right",
+        "sourceHandle": "left",
+        "targetHandle": "right",
         "type": "smoothstep",
         "style": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
         "animated": True,
