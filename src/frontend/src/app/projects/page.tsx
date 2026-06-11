@@ -246,12 +246,18 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Bastion Image</label>
-                      <select style={inputStyle} value={bastionImageId} onChange={(e) => setBastionImageId(e.target.value)}>
-                        <option value="">Blank disk</option>
-                        {libraryImages.map((img) => (
-                          <option key={img.id} value={img.id}>{img.name} ({img.size_gb} GB)</option>
-                        ))}
-                      </select>
+                      {libraryImages.length > 0 ? (
+                        <select style={inputStyle} value={bastionImageId} onChange={(e) => setBastionImageId(e.target.value)}>
+                          <option value="">Select an image...</option>
+                          {libraryImages.map((img) => (
+                            <option key={img.id} value={img.id}>{img.name} ({img.size_gb} GB)</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#f87171", padding: "6px 10px", borderRadius: 6, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)" }}>
+                          No RHEL qcow2 images in library. Upload one in Images first.
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>RHEL DVD ISO (for yum repo)</label>
@@ -342,12 +348,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId)) ? 0.4 : 1,
                 }}
               >
                 {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create from Template" : "Create Project"}
