@@ -63,6 +63,59 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
     return vm_node, disk_node, disk_edge
 
 
+def _bastion_node(x, y, disk_gb=50):
+    """Bastion/provisioner VM with two NICs (cluster + BMC)."""
+    nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
+    nic_bmc = {"id": f"nic-{_id()}", "name": "eth1", "mac": _mac(), "model": "virtio"}
+    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
+    disk_id = _id()
+    disk_node = {
+        "id": disk_id,
+        "type": "storageNode",
+        "position": {"x": x + 15, "y": y + 300},
+        "data": {
+            "label": "bastion-disk",
+            "name": "bastion-disk",
+            "size": disk_gb,
+            "format": "qcow2",
+            "icon": "🛢",
+        },
+    }
+    vm_node = {
+        "id": _id(),
+        "type": "vmNode",
+        "position": {"x": x, "y": y},
+        "data": {
+            "label": "bastion",
+            "name": "bastion",
+            "vcpus": 2,
+            "ram": 4,
+            "os": "rhel10",
+            "icon": "🖥",
+            "nics": [nic_cluster, nic_bmc],
+            "diskControllers": [dc],
+            "bmcEnabled": False,
+            "firmware": "uefi",
+            "secureBoot": False,
+            "bootDevices": [disk_id],
+            "bootMethod": "disk",
+            "powerOnAtDeploy": True,
+        },
+    }
+    disk_edge = {
+        "id": _id(),
+        "source": disk_id,
+        "target": vm_node["id"],
+        "sourceHandle": "right",
+        "targetHandle": f"dp-{dc['id']}-left",
+        "type": "smoothstep",
+        "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        "animated": False,
+        "className": "edge-storage-pulse",
+    }
+    return vm_node, disk_node, disk_edge, nic_cluster, nic_bmc
+
+
 OCP_FRONTENDS = [
     {"name": "api", "bindPort": 6443, "mode": "tcp", "backendPort": 6443},
     {"name": "ingress-https", "bindPort": 443, "mode": "tcp", "backendPort": 443},
@@ -140,13 +193,13 @@ def _gateway_node(x, y):
     }
 
 
-def _net_edge(src_node, tgt_vm, style_type="network"):
-    """Edge from network/LB node to VM's first NIC.
+def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0):
+    """Edge from network/LB node to VM's NIC.
 
     VM handles are rendered as nic-{nic.id}-top and dp-{dc.id}-left
     where nic.id is already 'nic-{uuid}', so the full handle is 'nic-nic-{uuid}-top'.
     """
-    nic_id = tgt_vm["data"]["nics"][0]["id"]
+    nic_id = tgt_vm["data"]["nics"][nic_index]["id"]
     styles = {
         "network": {"stroke": "rgba(34,211,238,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
         "lb": {"stroke": "rgba(59,130,246,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
@@ -212,6 +265,9 @@ def generate_topology(template_id: str) -> dict:
     WORKER_ROW_Y = VM_ROW_Y + 370  # worker row (standard layout only)
     WORKER_DISK_Y = WORKER_ROW_Y + 330
 
+    # Bastion position: right side, same row as VMs
+    BASTION_X_OFFSET = 4  # columns from vm_x_start (after bootstrap)
+
     if template_id == "ocp-sno":
         vm_x_start = 150
         net = _net_node("cluster", "10.0.0.0/24", vm_x_start + VM_SPACING - 20, NET_ROW_Y)
@@ -220,33 +276,42 @@ def generate_topology(template_id: str) -> dict:
         gw = _gateway_node(vm_x_start + 2 * VM_SPACING, GW_Y)
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y)
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y)
-        nodes = [lb, net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk]
-        edges = [sno_disk_edge, bs_disk_edge, _gw_net_edge(gw, net)]
+        bast_vm, bast_disk, bast_disk_edge, bast_nic_cl, bast_nic_bmc = _bastion_node(
+            vm_x_start + 2 * VM_SPACING, VM_ROW_Y)
+        nodes = [lb, net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk, bast_vm, bast_disk]
+        edges = [sno_disk_edge, bs_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
         for vm in [sno_vm, bs_vm]:
             edges.append(_net_edge(net, vm, "network"))
             edges.append(_net_edge(lb, vm, "lb"))
+        edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
     elif template_id == "ocp-compact":
         vm_x_start = 150
-        net_x = vm_x_start + int(1.5 * VM_SPACING) - 120  # center over VMs
+        net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
         lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
-        gw = _gateway_node(vm_x_start + 3 * VM_SPACING + 50, GW_Y)
+        gw = _gateway_node(vm_x_start + 4 * VM_SPACING + 50, GW_Y)
         vm_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
             vm_data.append((vm, disk, disk_edge))
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y)
         vm_data.append((bs_vm, bs_disk, bs_disk_edge))
-        nodes = [lb, net, bmc, gw]
+        bast_vm, bast_disk, bast_disk_edge, bast_nic_cl, bast_nic_bmc = _bastion_node(
+            vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
+        nodes = [lb, net, bmc, gw, bast_vm, bast_disk]
         for vm, disk, disk_edge in vm_data:
             nodes.extend([vm, disk])
             edges.append(disk_edge)
+        edges.append(bast_disk_edge)
         edges.append(_gw_net_edge(gw, net))
         for vm, _, _ in vm_data:
             edges.append(_net_edge(net, vm, "network"))
             edges.append(_net_edge(lb, vm, "lb"))
+        edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
     elif template_id == "ocp-standard":
         vm_x_start = 150
@@ -254,7 +319,7 @@ def generate_topology(template_id: str) -> dict:
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(net_x + VM_SPACING, NET_ROW_Y)
         lb = _lb_node(vm_x_start - 150, NET_ROW_Y)
-        gw = _gateway_node(vm_x_start + 3 * VM_SPACING + 50, GW_Y)
+        gw = _gateway_node(vm_x_start + 4 * VM_SPACING + 50, GW_Y)
         cp_data = []
         for i in range(3):
             vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y)
@@ -264,15 +329,20 @@ def generate_topology(template_id: str) -> dict:
             vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y)
             w_data.append((vm, disk, disk_edge))
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y)
-        nodes = [lb, net, bmc, gw]
+        bast_vm, bast_disk, bast_disk_edge, bast_nic_cl, bast_nic_bmc = _bastion_node(
+            vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
+        nodes = [lb, net, bmc, gw, bast_vm, bast_disk]
         for vm, disk, disk_edge in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
             nodes.extend([vm, disk])
             edges.append(disk_edge)
+        edges.append(bast_disk_edge)
         edges.append(_gw_net_edge(gw, net))
         for vm, _, _ in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
             edges.append(_net_edge(net, vm, "network"))
         for vm, _, _ in cp_data + [(bs_vm, bs_disk, bs_disk_edge)]:
             edges.append(_net_edge(lb, vm, "lb"))
+        edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
     else:
         raise ValueError(f"Unknown template: {template_id}")
