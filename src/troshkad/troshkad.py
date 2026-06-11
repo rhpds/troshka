@@ -1691,10 +1691,15 @@ def _handle_network_full_setup(job, params):
         dnsmasq_pid = f"/run/troshka-dnsmasq-{vni}.pid"
         dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{vni}.leases"
 
+        pid = project_id[:8]
+        veth_ns = f"ve{pid}n"
+        bmc_bridge = f"br-bmc-{pid}"
         conf_lines = [
             f"interface={bridge}",
-            "bind-interfaces",
+            "bind-dynamic",
             "except-interface=lo",
+            f"no-dhcp-interface={veth_ns}",
+            f"no-dhcp-interface={bmc_bridge}",
             "no-resolv",
             "no-hosts",
             f"pid-file={dnsmasq_pid}",
