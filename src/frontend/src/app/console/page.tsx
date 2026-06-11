@@ -388,10 +388,12 @@ function ConsolePage() {
                 "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09,
               };
 
+              const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
               for (const ch of text) {
                 if (ch in controlKeys) {
                   sendKey.call(r, controlKeys[ch], "", true);
                   sendKey.call(r, controlKeys[ch], "", false);
+                  await delay(5);
                   continue;
                 }
                 let keysym = ch.charCodeAt(0);
@@ -401,6 +403,7 @@ function ConsolePage() {
                 sendKey.call(r, keysym, "", true);
                 sendKey.call(r, keysym, "", false);
                 if (needsShift) sendKey.call(r, shiftKeysym, "", false);
+                await delay(5);
               }
             }}
             style={btnStyle}
