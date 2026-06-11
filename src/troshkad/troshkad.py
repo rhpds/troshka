@@ -2424,19 +2424,36 @@ def _handle_gc_discover(job, params):
     except Exception as e:
         job["output"].append(f"Failed to list virsh domains: {e}")
 
-    # 3. List bridges matching br-troshka-*
+    # 3. List orphan bridges — both br-troshka-* and dummy br-{vni} bridges
+    #    not referenced by any defined VM
     try:
+        import re as _re_gc
+        all_vm_bridges = set()
+        vm_list = subprocess.run(["virsh", "list", "--all", "--name"],
+                                 capture_output=True, text=True, timeout=10)
+        for vm_name in vm_list.stdout.strip().split("\n"):
+            if not vm_name.strip():
+                continue
+            xml = subprocess.run(["virsh", "dumpxml", vm_name.strip()],
+                                 capture_output=True, text=True, timeout=10)
+            if xml.returncode == 0:
+                all_vm_bridges.update(_re_gc.findall(r"source bridge='([^']+)'", xml.stdout))
+
         result = subprocess.run(
             ["ip", "-o", "link", "show", "type", "bridge"],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
             for line in result.stdout.strip().split("\n"):
-                if "br-troshka-" in line:
-                    parts = line.split(":", 2)
-                    if len(parts) >= 2:
-                        bridge_name = parts[1].strip().split("@")[0]
-                        if bridge_name.startswith("br-troshka-"):
+                parts = line.split(":", 2)
+                if len(parts) >= 2:
+                    bridge_name = parts[1].strip().split("@")[0]
+                    if bridge_name.startswith("br-") and bridge_name not in all_vm_bridges:
+                        # Skip namespace-internal bridges (they're inside namespaces, not in host)
+                        ns_check = subprocess.run(
+                            ["ip", "link", "show", bridge_name],
+                            capture_output=True, timeout=5)
+                        if ns_check.returncode == 0:
                             orphan_bridges.append(bridge_name)
                             job["output"].append(f"Orphan bridge: {bridge_name}")
     except Exception as e:
