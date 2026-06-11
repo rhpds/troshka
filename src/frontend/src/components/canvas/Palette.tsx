@@ -53,6 +53,13 @@ const sections: PaletteSection[] = [
         icon: "🌐",
         iconClass: "palette-icon-gateway",
       },
+      {
+        type: "loadbalancer",
+        label: "Load Balancer",
+        desc: "HAProxy L4",
+        icon: "⚖",
+        iconClass: "palette-icon-lb",
+      },
     ],
   },
   {

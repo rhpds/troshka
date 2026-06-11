@@ -272,6 +272,25 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
             dnsDomain: item.type === "dns" ? "lab.local" : "",
           },
         };
+      } else if (item.type === "loadbalancer") {
+        const name = nextName("lb");
+        newNode = {
+          id,
+          type: "networkNode",
+          position,
+          data: {
+            label: name,
+            name,
+            subtype: "loadbalancer",
+            networkType: "loadbalancer",
+            frontends: [
+              { name: "https", bindPort: 443, mode: "tcp", backendPort: 443 },
+              { name: "http", bindPort: 80, mode: "tcp", backendPort: 80 },
+            ],
+            dnsRecords: [],
+            dnsTtl: 30,
+          },
+        };
       } else if (item.type === "disk" || item.type === "iso") {
         const prefix = item.type === "iso" ? "boot" : "disk";
         const name = nextName(prefix);

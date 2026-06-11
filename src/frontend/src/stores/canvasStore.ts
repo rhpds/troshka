@@ -333,6 +333,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         strokeDasharray: "6 4",
       };
       animated = true;
+    } else if (
+      (sourceNode.data as any).networkType === "loadbalancer" ||
+      (targetNode.data as any).networkType === "loadbalancer"
+    ) {
+      edgeStyle = {
+        stroke: "rgba(59,130,246,0.5)",
+        strokeWidth: 2,
+        strokeDasharray: "6 4",
+      };
+      animated = true;
     } else {
       edgeStyle = {
         stroke: "rgba(34,211,238,0.5)",

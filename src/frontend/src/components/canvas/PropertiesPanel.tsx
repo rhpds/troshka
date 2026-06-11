@@ -1272,6 +1272,162 @@ export default function PropertiesPanel() {
               </>
             )}
 
+            {/* Load Balancer properties */}
+            {(subtype === "loadbalancer" || (data as Record<string, any>).networkType === "loadbalancer") && (
+              <>
+                <div className="props-divider" />
+                <div className="props-section">
+                  <div className="props-section-title">Frontends</div>
+                  {((data as Record<string, any>).frontends || []).length === 0 && (
+                    <p style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>No frontends configured</p>
+                  )}
+                  {((data as Record<string, any>).frontends || []).map((fe: any, i: number) => (
+                    <div key={i} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                      <input
+                        style={{ width: 70, fontSize: 11 }}
+                        className="props-input"
+                        placeholder="name"
+                        value={fe.name}
+                        onChange={(e) => {
+                          const frontends = [...((data as Record<string, any>).frontends || [])];
+                          frontends[i] = { ...frontends[i], name: e.target.value };
+                          update("frontends", frontends);
+                        }}
+                      />
+                      <input
+                        style={{ width: 50, fontSize: 11 }}
+                        className="props-input"
+                        type="number"
+                        placeholder="bind"
+                        value={fe.bindPort || ""}
+                        onChange={(e) => {
+                          const frontends = [...((data as Record<string, any>).frontends || [])];
+                          frontends[i] = { ...frontends[i], bindPort: parseInt(e.target.value) || 0 };
+                          update("frontends", frontends);
+                        }}
+                      />
+                      <span style={{ fontSize: 10, color: "var(--troshka-text-dim)" }}>-&gt;</span>
+                      <input
+                        style={{ width: 50, fontSize: 11 }}
+                        className="props-input"
+                        type="number"
+                        placeholder="back"
+                        value={fe.backendPort || ""}
+                        onChange={(e) => {
+                          const frontends = [...((data as Record<string, any>).frontends || [])];
+                          frontends[i] = { ...frontends[i], backendPort: parseInt(e.target.value) || 0 };
+                          update("frontends", frontends);
+                        }}
+                      />
+                      <button
+                        style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", padding: "2px 4px", fontSize: 14, lineHeight: 1 }}
+                        title="Remove"
+                        onClick={() => {
+                          const frontends = [...((data as Record<string, any>).frontends || [])];
+                          frontends.splice(i, 1);
+                          update("frontends", frontends);
+                        }}
+                      >&times;</button>
+                    </div>
+                  ))}
+                  <button
+                    className="props-library-btn"
+                    style={{ marginTop: 4 }}
+                    onClick={() => {
+                      const frontends = [...((data as Record<string, any>).frontends || [])];
+                      frontends.push({ name: "", bindPort: 0, mode: "tcp", backendPort: 0 });
+                      update("frontends", frontends);
+                    }}
+                  >
+                    + Add Frontend
+                  </button>
+                </div>
+
+                <div className="props-divider" />
+                <div className="props-section">
+                  <div className="props-section-title">DNS Records</div>
+                  {((data as Record<string, any>).dnsRecords || []).length === 0 && (
+                    <p style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>No DNS record templates configured</p>
+                  )}
+                  {((data as Record<string, any>).dnsRecords || []).map((rec: any, i: number) => (
+                    <div key={i} style={{ background: "var(--troshka-surface2)", borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                      <div className="props-field" style={{ marginBottom: 4 }}>
+                        <label className="props-label">Name Template</label>
+                        <input
+                          className="props-input"
+                          value={rec.name || ""}
+                          placeholder="api.{guid}.{domain}"
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                          onChange={(e) => {
+                            const dnsRecords = [...((data as Record<string, any>).dnsRecords || [])];
+                            dnsRecords[i] = { ...dnsRecords[i], name: e.target.value };
+                            update("dnsRecords", dnsRecords);
+                          }}
+                        />
+                      </div>
+                      <div className="props-row" style={{ marginBottom: 4 }}>
+                        <div className="props-field" style={{ flex: "0 0 60px" }}>
+                          <label className="props-label">Type</label>
+                          <input
+                            className="props-input"
+                            value={rec.type || "A"}
+                            style={{ fontSize: 11 }}
+                            onChange={(e) => {
+                              const dnsRecords = [...((data as Record<string, any>).dnsRecords || [])];
+                              dnsRecords[i] = { ...dnsRecords[i], type: e.target.value };
+                              update("dnsRecords", dnsRecords);
+                            }}
+                          />
+                        </div>
+                        <div className="props-field" style={{ flex: 1 }}>
+                          <label className="props-label">Target</label>
+                          <input
+                            className="props-input"
+                            value={rec.target || "eip"}
+                            style={{ fontFamily: "monospace", fontSize: 11 }}
+                            onChange={(e) => {
+                              const dnsRecords = [...((data as Record<string, any>).dnsRecords || [])];
+                              dnsRecords[i] = { ...dnsRecords[i], target: e.target.value };
+                              update("dnsRecords", dnsRecords);
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <button
+                        style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", padding: "2px 4px", fontSize: 12 }}
+                        onClick={() => {
+                          const dnsRecords = [...((data as Record<string, any>).dnsRecords || [])];
+                          dnsRecords.splice(i, 1);
+                          update("dnsRecords", dnsRecords);
+                        }}
+                      >Remove</button>
+                    </div>
+                  ))}
+                  <button
+                    className="props-library-btn"
+                    style={{ marginTop: 4 }}
+                    onClick={() => {
+                      const dnsRecords = [...((data as Record<string, any>).dnsRecords || [])];
+                      dnsRecords.push({ name: "", type: "A", target: "eip" });
+                      update("dnsRecords", dnsRecords);
+                    }}
+                  >
+                    + Add DNS Record
+                  </button>
+                  <div className="props-field" style={{ marginTop: 8 }}>
+                    <label className="props-label">Default TTL</label>
+                    <input
+                      className="props-input"
+                      type="number"
+                      value={(data as Record<string, any>).dnsTtl || 30}
+                      style={{ width: 80, fontSize: 11 }}
+                      onChange={(e) => update("dnsTtl", parseInt(e.target.value) || 30)}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
             {/* Gateway properties */}
             {subtype === "gateway" && (
               <>

@@ -47,8 +47,10 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           gateway: { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",   glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
           network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
           bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
+          loadbalancer: { bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.6)", glow: "rgba(59,130,246,0.2)", selected: "#3b82f6" },
         };
-        const c = isBmc ? colors.bmc : (colors[d.subtype as keyof typeof colors] || colors.network);
+        const isLb = d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer";
+        const c = isBmc ? colors.bmc : isLb ? colors.loadbalancer : (colors[d.subtype as keyof typeof colors] || colors.network);
         return {
           background: c.bg,
           borderColor: selected ? c.selected : c.border,
@@ -67,7 +69,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             <line x1="10" y1="12" x2="20" y2="12" />
             <line x1="10" y1="15" x2="20" y2="15" />
           </svg>
-        ) : <RJ45Icon />}
+        ) : d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer" ? "⚖" : <RJ45Icon />}
       </span>
       <div className="network-node-info">
         <div className="network-node-name">{d.name}</div>
@@ -154,6 +156,21 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             </div>
           );
         })()}
+        {(d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer") && (() => {
+          const frontends = ((d as any).frontends as Array<{name: string; bindPort: number}>) || [];
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
+              {frontends.length > 0 && (
+                <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace" }}>
+                  {frontends.map((fe, i) => (
+                    <span key={i}>{i > 0 ? ", " : ""}{fe.bindPort}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Networks: top/bottom (blue) for VMs, left/right (orange) for routers/gateways */}
@@ -179,6 +196,13 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         <>
           <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
           <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+        </>
+      )}
+      {/* Load Balancers: top/bottom for VM connections */}
+      {(d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer") && (
+        <>
+          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
+          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
         </>
       )}
     </div>
