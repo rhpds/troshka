@@ -1186,8 +1186,9 @@ export default function PropertiesPanel() {
                               update("dnsRecords", records);
                             }}>+</button>
                           </div>
+                          <div style={{ overflowX: "auto" }}>
                           {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string}>).map((rec, i) => (
-                            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center" }}>
+                            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320 }}>
                               <input className="props-input" style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], name: e.target.value };
@@ -1215,6 +1216,7 @@ export default function PropertiesPanel() {
                               }}>×</button>
                             </div>
                           ))}
+                          </div>
                         </div>
                       )}
                       {((data as Record<string, any>).dnsRecords || []).length === 0 && (
