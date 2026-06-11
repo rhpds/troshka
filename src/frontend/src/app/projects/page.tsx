@@ -177,8 +177,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               <div style={{ display: "flex", gap: 12 }}>
                 {templates.map((t) => (
                   <div key={t.id} style={optionStyle(false)} onClick={() => { setSelectedTemplate(t.id); setName(t.name); setMode("template"); }}>
-                    <div style={{ fontSize: 28, marginBottom: 4 }}>
-                      {t.id.includes("sno") ? "1️⃣" : t.id.includes("compact") ? "3️⃣" : "🏗"}
+                    <div style={{ marginBottom: 4, display: "flex", justifyContent: "center" }}>
+                      <svg width="32" height="32" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M17.448.597a2.792 2.792 0 0 1 2.554 0l14.593 7.57a2.792 2.792 0 0 1 1.455 2.449v18.768a2.792 2.792 0 0 1-1.455 2.449l-14.593 7.57a2.792 2.792 0 0 1-2.554 0L2.855 31.833A2.792 2.792 0 0 1 1.4 29.384V10.616a2.792 2.792 0 0 1 1.455-2.449L17.448.597z" fill="#EE0000"/>
+                        <path d="M25.541 18.648c.256-.144.342-.464.2-.72l-3.63-6.47a.525.525 0 0 0-.717-.197l-6.47 3.63a.526.526 0 0 0-.197.718l3.63 6.47c.143.255.463.34.717.196l6.467-3.627z" fill="#fff"/>
+                        <path d="M20.364 22.193c.256-.144.342-.464.2-.72l-3.63-6.47a.525.525 0 0 0-.718-.197l-6.47 3.63a.526.526 0 0 0-.197.718l3.63 6.47c.144.255.464.34.718.196l6.467-3.627z" fill="#fff" opacity=".7"/>
+                      </svg>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>{t.description}</div>
