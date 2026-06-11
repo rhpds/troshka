@@ -76,6 +76,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [clusterName, setClusterName] = useState("ocp");
   const [baseDomain, setBaseDomain] = useState("ocp.local");
+  const [ocpVersion, setOcpVersion] = useState("4.20");
+  const [autoInstallOcp, setAutoInstallOcp] = useState(true);
   const [hasPullSecret, setHasPullSecret] = useState(false);
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
@@ -141,6 +143,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (bastionBmcIp) templateBody.bastion_bmc_ip = bastionBmcIp;
         if (clusterName) templateBody.cluster_name = clusterName;
         if (baseDomain) templateBody.base_domain = baseDomain;
+        if (ocpVersion) templateBody.ocp_version = ocpVersion;
+        templateBody.auto_install_ocp = autoInstallOcp;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -149,7 +153,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (resp.ok) {
           const data = await resp.json();
           if (autoDeploy) {
-            await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy`, { method: "POST" });
+            const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy`, { method: "POST" });
+            if (!deployResp.ok) {
+              const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+              alert(err.detail || "Deploy failed");
+            }
           }
           onCreated(data.id);
         }
@@ -268,6 +276,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Base Domain</label>
                       <input style={inputStyle} value={baseDomain} onChange={(e) => setBaseDomain(e.target.value)} placeholder="ocp.local" />
                     </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
+                      <input style={inputStyle} value={ocpVersion} onChange={(e) => setOcpVersion(e.target.value)} placeholder="4.20" />
+                    </div>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
                     api.{clusterName}.{baseDomain} → 10.0.0.2 (LB)
@@ -376,6 +388,37 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
                       Deploy immediately after creation
                     </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input type="checkbox" checked={autoInstallOcp} onChange={(e) => setAutoInstallOcp(e.target.checked)} />
+                        Auto-run OCP installer on bastion
+                      </label>
+                      <div style={{ position: "relative", display: "inline-block" }}>
+                        <span
+                          style={{ cursor: "help", fontSize: 12, width: 16, height: 16, borderRadius: "50%", background: "rgba(59,130,246,0.2)", color: "#3b82f6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}
+                          onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; el.style.display = el.style.display === "none" ? "block" : "none"; }}
+                        >i</span>
+                        <div style={{
+                          display: "none", position: "absolute", left: 24, top: -8, zIndex: 100,
+                          background: "var(--pf-t--global--background--color--primary--default)",
+                          border: "1px solid var(--pf-t--global--border--color--default)",
+                          borderRadius: 8, padding: "10px 14px", width: 280,
+                          boxShadow: "0 4px 16px rgba(0,0,0,0.4)", fontSize: 11, lineHeight: 1.6,
+                        }}>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>OCP Installer</div>
+                          <div style={{ fontFamily: "monospace", fontSize: 10 }}>
+                            <div>Watch progress:</div>
+                            <div style={{ paddingLeft: 8 }}>tmux attach -t setup</div>
+                            <div style={{ marginTop: 4 }}>Log file:</div>
+                            <div style={{ paddingLeft: 8 }}>~/install.log</div>
+                            <div style={{ marginTop: 4 }}>Kubeconfig (after install):</div>
+                            <div style={{ paddingLeft: 8 }}>~/ocp-install/auth/kubeconfig</div>
+                            <div style={{ marginTop: 4 }}>Kubeadmin password:</div>
+                            <div style={{ paddingLeft: 8 }}>~/ocp-install/auth/kubeadmin-password</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </>

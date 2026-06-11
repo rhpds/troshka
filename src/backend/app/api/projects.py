@@ -223,23 +223,137 @@ def create_project_from_template(
                     "    chown cloud-user:cloud-user /home/cloud-user/pull-secret.json\n"
                     "    chmod 600 /home/cloud-user/pull-secret.json\n"
                 )
+            # Build install-config.yaml from topology
+            ocp_version = body.get("ocp_version", "4.20")
+            auto_install_ocp = body.get("auto_install_ocp", True)
+            bmc_password_val = bastion_password or "password"
+            bmc_hosts_yaml = ""
+            ssh_pub_key = ""
+            if bastion_ssh_key_id:
+                from app.models.user import UserSshKey
+                _sk = db.query(UserSshKey).filter_by(id=bastion_ssh_key_id, user_id=user.id).first()
+                if _sk:
+                    ssh_pub_key = _sk.public_key
+
+            # Collect BMC-enabled VMs for install-config
+            for topo_node in topology.get("nodes", []):
+                if topo_node.get("type") != "vmNode":
+                    continue
+                td = topo_node.get("data", {})
+                if not td.get("bmcEnabled") or not td.get("bmcIp"):
+                    continue
+                vm_name = td.get("name", "")
+                bmc_ip_addr = td["bmcIp"]
+                boot_mac = td.get("nics", [{}])[0].get("mac", "")
+                role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+                if "bootstrap" in vm_name:
+                    continue
+                bmc_hosts_yaml += (
+                    f"      - name: {vm_name}\n"
+                    f"        role: {role}\n"
+                    f"        bmc:\n"
+                    f"          address: redfish-virtualmedia://{bmc_ip_addr}:8000/redfish/v1/Systems/\n"
+                    f"          username: admin\n"
+                    f"          password: {bmc_password_val}\n"
+                    f"          disableCertificateVerification: true\n"
+                    f"        bootMACAddress: {boot_mac}\n"
+                )
+
+            ic_lines = [
+                "apiVersion: v1",
+                f"baseDomain: {base_domain}",
+                "metadata:",
+                f"  name: {cluster_name}",
+                "networking:",
+                "  networkType: OVNKubernetes",
+                "  clusterNetwork:",
+                "    - cidr: 10.128.0.0/14",
+                "      hostPrefix: 23",
+                "  serviceNetwork:",
+                "    - 172.30.0.0/16",
+                "  machineNetwork:",
+                "    - cidr: 10.0.0.0/24",
+                "platform:",
+                "  baremetal:",
+                "    apiVIPs:",
+                f"      - {lb_ip}",
+                "    ingressVIPs:",
+                f"      - {lb_ip}",
+                "    hosts:",
+            ]
+            ic_lines.append(bmc_hosts_yaml.rstrip())
+            if pull_secret_json:
+                ic_lines.append(f"pullSecret: '{pull_secret_json}'")
+            if ssh_pub_key:
+                ic_lines.append(f"sshKey: '{ssh_pub_key}'")
+            install_config = "\n".join(ic_lines)
+
             node["data"]["ciUserData"] += (
                 "  - |\n"
                 "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
                 "    #!/bin/bash\n"
                 "    set -e\n"
                 "    cd /home/cloud-user\n"
+                "    \n"
+                f"    OCP_VERSION={ocp_version}\n"
+                "    \n"
+                "    # Download openshift-install and oc if not present\n"
+                "    if [ ! -f openshift-install ]; then\n"
+                "      echo \"Downloading openshift-install $OCP_VERSION...\"\n"
+                "      curl -sL https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz | tar xz\n"
+                "      curl -sL https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz | tar xz\n"
+                "      sudo mv oc kubectl /usr/local/bin/\n"
+                "      echo \"Downloaded openshift-install and oc\"\n"
+                "    fi\n"
+                "    \n"
+                "    # Clone agnosticd-v2 for workload deployment later\n"
                 "    if [ ! -d agnosticd-v2 ]; then\n"
                 "      echo 'Cloning agnosticd-v2...'\n"
                 "      git clone https://github.com/redhat-cop/agnosticd.git agnosticd-v2\n"
                 "    fi\n"
+                "    \n"
+                "    # Write install-config if not already present\n"
+                "    if [ ! -d ocp-install ]; then\n"
+                "      mkdir -p ocp-install\n"
+                "    fi\n"
+                "    \n"
                 "    echo ''\n"
-                "    echo 'OCP installer ready.'\n"
-                "    echo 'Pull secret: ~/pull-secret.json'\n"
-                "    echo 'To install OCP, run the ansible playbook from agnosticd-v2.'\n"
+                "    echo '================================================'\n"
+                "    echo 'OCP Bare Metal IPI Installer Ready'\n"
+                "    echo '================================================'\n"
+                "    echo ''\n"
+                "    echo 'install-config.yaml: ~/ocp-install/install-config.yaml'\n"
+                "    echo 'Pull secret:         ~/pull-secret.json'\n"
+                "    echo 'openshift-install:   ~/openshift-install'\n"
+                "    echo 'agnosticd-v2:        ~/agnosticd-v2/'\n"
+                "    echo ''\n"
+                "    echo 'To install OCP:'\n"
+                "    echo '  cd ~/ocp-install'\n"
+                "    echo '  ~/openshift-install create cluster --dir . --log-level info'\n"
+                "    echo ''\n"
+                "    echo 'To watch progress:'\n"
+                "    echo '  tmux attach -t setup'\n"
+                "    echo ''\n"
+                + ("    # Auto-run OCP installer\n"
+                   "    echo 'Starting OCP installation...'\n"
+                   "    cd /home/cloud-user/ocp-install\n"
+                   "    /home/cloud-user/openshift-install create cluster --dir . --log-level info 2>&1 | tee /home/cloud-user/install.log\n"
+                   if auto_install_ocp else "") +
                 "    SCRIPTEOF\n"
                 "    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n"
                 "    chmod 755 /home/cloud-user/install-ocp.sh\n"
+            )
+            # Write install-config.yaml
+            if install_config:
+                node["data"]["ciUserData"] += (
+                    "  - |\n"
+                    "    mkdir -p /home/cloud-user/ocp-install\n"
+                    "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
+                    f"    {install_config}\n"
+                    "    ICEOF\n"
+                    "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
+                )
+            node["data"]["ciUserData"] += (
                 "  - su - cloud-user -c 'tmux new-session -d -s setup /home/cloud-user/install-ocp.sh'\n"
             )
             # Static IP on BMC NIC so it doesn't wait for DHCP
@@ -410,10 +524,19 @@ def deploy_project(
     from app.services.troshkad_client import check_disk_usage
     host = db.query(Host).filter_by(id=result["host_id"]).first()
     if host and host.ip_address:
-        disk = check_disk_usage(host)
-        if disk["used_pct"] >= 90:
-            free_gb = disk["free_bytes"] / (1024 ** 3)
-            raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
+        try:
+            disk = check_disk_usage(host)
+            logger.info("Deploy %s: disk check — %s%% used, %.1f GB free",
+                        project.id[:8], disk["used_pct"], disk["free_bytes"] / (1024 ** 3))
+            if disk["used_pct"] >= 90:
+                free_gb = disk["free_bytes"] / (1024 ** 3)
+                project.state = "draft"
+                db.commit()
+                raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning("Deploy %s: disk check failed (non-fatal): %s", project.id[:8], e)
 
     # Persist VNI map for stop/start/destroy
     project.vni_map = result.get("vni_map")

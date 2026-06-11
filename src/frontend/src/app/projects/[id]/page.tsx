@@ -550,6 +550,18 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
+        {nodes.length === 0 && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 20,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "var(--troshka-bg)",
+          }}>
+            <div style={{ textAlign: "center", opacity: 0.6 }}>
+              <span className="project-btn-spinner" style={{ width: 24, height: 24, marginBottom: 8 }} />
+              <div style={{ fontSize: 13 }}>Loading topology...</div>
+            </div>
+          </div>
+        )}
         {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />}
         <button
           onClick={() => setShowPalette(!showPalette)}
