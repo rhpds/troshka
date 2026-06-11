@@ -73,6 +73,34 @@ def create_project(
     return project
 
 
+@router.get("/templates")
+def list_topology_templates(user: User = Depends(get_current_user)):
+    from app.services.topology_templates import list_templates
+    return list_templates()
+
+
+@router.post("/from-template", status_code=201)
+def create_project_from_template(
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.topology_templates import generate_topology, TEMPLATES
+    template_id = body.get("template_id")
+    if not template_id or template_id not in TEMPLATES:
+        raise HTTPException(status_code=404, detail="Template not found")
+    topology = generate_topology(template_id)
+    project = Project(
+        name=body.get("name", TEMPLATES[template_id]["name"]),
+        owner_id=user.id,
+        topology=topology,
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return {"id": project.id, "name": project.name}
+
+
 @router.get("/{project_id}")
 def get_project(
     project_id: str,
