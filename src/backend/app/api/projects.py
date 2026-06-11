@@ -1145,7 +1145,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
     def _do_redeploy():
         from app.core.database import SessionLocal
         from app.services.deploy_service import (
-            _vm_domain_name, _deploy_progress,
+            _vm_domain_name, _deploy_progress, _get_host_pool,
             _create_seed_isos_via_troshkad,
             _create_vm_disks_via_troshkad, _create_vm_via_troshkad,
         )
@@ -1204,8 +1204,9 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
 
             _setup_pxe_via_troshkad(h, topology, vni_map, p_id)
 
+            pool = _get_host_pool(h, s)
             _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
-            _create_seed_isos_via_troshkad(h, p_id, topology)
+            _create_seed_isos_via_troshkad(h, p_id, topology, pool)
 
             _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
             vdata = vm_node.get("data", {})
@@ -1219,9 +1220,10 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                 "firmware": vdata.get("firmware", "bios"),
                 "secure_boot": vdata.get("secureBoot", False),
             }
+            disk_cache = "none" if pool and pool.mode.startswith("shared") else None
             vm_disks = _find_vm_disks(target_vm_id, topology)
-            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks)
-            _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map)
+            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
+            _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map, pool, disk_cache)
 
             if was_running:
                 try:
