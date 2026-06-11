@@ -50,11 +50,20 @@ interface PatternSummary {
   created_at: string;
 }
 
+interface TemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+}
+
 function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
-  const [mode, setMode] = useState<"choose" | "blank" | "pattern">("choose");
+  const [mode, setMode] = useState<"choose" | "blank" | "pattern" | "template">("choose");
   const [name, setName] = useState("");
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [selectedPattern, setSelectedPattern] = useState<string | null>(null);
+  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
   const [patternSearch, setPatternSearch] = useState("");
   const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -63,6 +72,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     fetch(`${API_BASE}/api/v1/patterns/`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setPatterns(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch(`${API_BASE}/api/v1/projects/templates`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setTemplates(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
@@ -85,6 +98,16 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          onCreated(data.id);
+        }
+      } else if (mode === "template" && selectedTemplate) {
+        const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ template_id: selectedTemplate, name }),
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -150,6 +173,19 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 </div>
               </div>
             </div>
+            {templates.length > 0 && (
+              <div style={{ display: "flex", gap: 12 }}>
+                {templates.map((t) => (
+                  <div key={t.id} style={optionStyle(false)} onClick={() => { setSelectedTemplate(t.id); setName(t.name); setMode("template"); }}>
+                    <div style={{ fontSize: 28, marginBottom: 4 }}>
+                      {t.id.includes("sno") ? "1️⃣" : t.id.includes("compact") ? "3️⃣" : "🏗"}
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
+                    <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>{t.description}</div>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
               <button onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Cancel
@@ -169,6 +205,16 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
               />
             </div>
+            {mode === "template" && selectedTemplate && (
+              <div style={{
+                padding: "8px 12px", borderRadius: 6,
+                background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.3)",
+                fontSize: 12,
+              }}>
+                Template: <strong>{templates.find((t) => t.id === selectedTemplate)?.name}</strong>
+                <div style={{ opacity: 0.6, marginTop: 2 }}>{templates.find((t) => t.id === selectedTemplate)?.description}</div>
+              </div>
+            )}
             {mode === "pattern" && (
               <div style={{ position: "relative" }}>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
@@ -227,20 +273,20 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </div>
             )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => { setMode("choose"); setSelectedPattern(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern)}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && !selectedTemplate)}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && !selectedTemplate) ? 0.4 : 1,
                 }}
               >
-                {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : "Create Project"}
+                {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create from Template" : "Create Project"}
               </button>
             </div>
           </div>
