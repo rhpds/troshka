@@ -107,6 +107,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { label: "Providers", path: "/admin/providers" },
     { label: "Hosts", path: "/admin/hosts" },
     { label: "Storage Pools", path: "/admin/storage-pools" },
+    { label: "DNS Providers", path: "/admin/dns-providers" },
   ];
 
   const masthead = (
