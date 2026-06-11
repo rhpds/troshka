@@ -23,6 +23,8 @@ export default function ProjectCanvasPage() {
   const nodes = useCanvasStore((s) => s.nodes);
   const [showStartOrder, setShowStartOrder] = useState(false);
   const [showExternalIps, setShowExternalIps] = useState(false);
+  const [showPalette, setShowPalette] = useState(true);
+  const [showProperties, setShowProperties] = useState(true);
   const [showPatternModal, setShowPatternModal] = useState(false);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [projectName, setProjectName] = useState("");
@@ -540,12 +542,34 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
-        <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />}
+        <button
+          onClick={() => setShowPalette(!showPalette)}
+          title={showPalette ? "Hide palette" : "Show palette"}
+          style={{
+            position: "absolute", left: showPalette ? 220 : 0, top: "50%", transform: "translateY(-50%)",
+            zIndex: 10, width: 20, height: 48, borderRadius: showPalette ? "0 6px 6px 0" : "0 6px 6px 0",
+            background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderLeft: "none",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            color: "var(--troshka-text-dim)", fontSize: 11, transition: "left 0.2s",
+          }}
+        >{showPalette ? "◂" : "▸"}</button>
         <Canvas
           onSavePattern={() => setShowPatternModal(true)}
           onSnapshotVM={(vmId, vmName, isRunning) => setSnapshotTarget({ vmId, vmName, isRunning })}
         />
-        <PropertiesPanel />
+        <button
+          onClick={() => setShowProperties(!showProperties)}
+          title={showProperties ? "Hide properties" : "Show properties"}
+          style={{
+            position: "absolute", right: showProperties ? 280 : 0, top: "50%", transform: "translateY(-50%)",
+            zIndex: 10, width: 20, height: 48, borderRadius: showProperties ? "6px 0 0 6px" : "6px 0 0 6px",
+            background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderRight: "none",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            color: "var(--troshka-text-dim)", fontSize: 11, transition: "right 0.2s",
+          }}
+        >{showProperties ? "▸" : "◂"}</button>
+        {showProperties && <PropertiesPanel />}
         {toast && (
           <div style={{
             position: "absolute", bottom: 24, left: "50%", transform: "translateX(-50%)",
