@@ -1013,8 +1013,17 @@ def reconfigure_project(
                     current_cfg["disks"] == desired_disks and
                     sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
                 ):
+                    logger.debug("Reconfigure %s: VM %s unchanged, skipping", p_id[:8], vm["name"])
                     continue
 
+                logger.info("Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s nics:%s disks:%s cdroms:%s",
+                            p_id[:8], vm["name"],
+                            current_cfg["boot_devs"] != boot_devs,
+                            current_cfg["vcpus"] != vm["vcpus"],
+                            current_cfg["ram_mb"] != vm["ram_gb"] * 1024,
+                            current_cfg["nics"] != desired_nics,
+                            current_cfg["disks"] != desired_disks,
+                            sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list))
                 _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
                 needs_restart = vm["node_id"] in restart_vm_ids or current_cfg["boot_devs"] != boot_devs or current_cfg["vcpus"] != vm["vcpus"] or current_cfg["ram_mb"] != vm["ram_gb"] * 1024 or current_cfg["nics"] != desired_nics or current_cfg["disks"] != desired_disks
                 try:
