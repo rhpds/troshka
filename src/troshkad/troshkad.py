@@ -3512,5 +3512,104 @@ def _handle_tls_update_certs(job, params):
 COMMAND_HANDLERS["tls/update-certs"] = _handle_tls_update_certs
 
 
+def _handle_vm_serial_exec(job, params):
+    """Execute a command on a VM via its serial console (PTY)."""
+    domain = _validate_domain_name(params["domain_name"])
+    username = params.get("username", "root")
+    password = params.get("password", "")
+    command = params.get("command", "")
+    timeout_secs = params.get("timeout", 10)
+
+    if not command:
+        raise RuntimeError("No command specified")
+
+    # Get PTY path from VM XML
+    result = subprocess.run(
+        ["virsh", "dumpxml", domain],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Cannot get XML for {domain}: {result.stderr}")
+
+    import re
+    pty_match = re.search(r"source path='(/dev/pts/\d+)'", result.stdout)
+    if not pty_match:
+        raise RuntimeError(f"No serial console PTY found for {domain}")
+    pty_path = pty_match.group(1)
+
+    import select
+    fd = os.open(pty_path, os.O_RDWR | os.O_NONBLOCK)
+
+    def read_all(t=2):
+        buf = b""
+        end = time.time() + t
+        while time.time() < end:
+            r, _, _ = select.select([fd], [], [], 0.5)
+            if r:
+                try:
+                    buf += os.read(fd, 4096)
+                except Exception:
+                    break
+        return buf.decode(errors="replace")
+
+    def write(s):
+        os.write(fd, (s + "\n").encode())
+        time.sleep(0.1)
+
+    try:
+        # Clear pending output
+        read_all(0.5)
+
+        if password:
+            # Login flow
+            write(username)
+            time.sleep(1)
+            read_all(1)
+            write(password)
+            time.sleep(2)
+            read_all(2)
+
+        # Send command with unique markers
+        marker = f"__TROSHKA_{os.getpid()}__"
+        write(f"echo {marker}_START")
+        time.sleep(0.5)
+        write(command)
+        time.sleep(0.5)
+        write(f"echo {marker}_END")
+        time.sleep(min(timeout_secs, 30))
+        raw = read_all(3)
+
+        # Extract output between markers
+        start_idx = raw.find(f"{marker}_START")
+        end_idx = raw.find(f"{marker}_END")
+        if start_idx >= 0 and end_idx >= 0:
+            output = raw[start_idx:end_idx]
+            lines = output.split("\n")
+            # Skip the marker echo line and the command echo
+            result_lines = []
+            skip_next = True
+            for line in lines:
+                if marker in line:
+                    skip_next = True
+                    continue
+                if skip_next and command in line:
+                    skip_next = False
+                    continue
+                skip_next = False
+                result_lines.append(line)
+            output = "\n".join(result_lines).strip()
+        else:
+            output = raw.strip()
+
+        if password:
+            write("exit")
+
+        return {"domain": domain, "output": output}
+    finally:
+        os.close(fd)
+
+COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec
+
+
 if __name__ == "__main__":
     main()

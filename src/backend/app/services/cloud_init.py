@@ -78,23 +78,38 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append("  - eject /dev/sr0 2>/dev/null || true")
     lines.append("  - eject /dev/sr1 2>/dev/null || true")
 
-    # Custom user-data — validate YAML before appending
+    # Custom user-data — append runcmd items to existing runcmd section
     custom = vm_data.get("ciUserData", "").strip()
     if custom:
-        import yaml
-        try:
-            parsed = yaml.safe_load(custom)
-            if isinstance(parsed, dict):
-                for line in custom.split("\n"):
-                    if line.strip().startswith("#cloud-config"):
-                        continue
+        in_runcmd = False
+        for line in custom.split("\n"):
+            stripped = line.strip()
+            if stripped == "runcmd:":
+                in_runcmd = True
+                continue
+            if in_runcmd:
+                if line.startswith("  ") or line.startswith("\t"):
                     lines.append(line)
-            elif parsed is not None:
-                logger.warning("Custom user-data is not a YAML mapping, skipping: %s", repr(custom)[:100])
-        except yaml.YAMLError as e:
-            logger.warning("Invalid YAML in custom user-data, skipping: %s", e)
+                elif stripped and not stripped.startswith("#"):
+                    in_runcmd = False
+                    lines.append(line)
+            elif stripped and not stripped.startswith("#cloud-config"):
+                lines.append(line)
 
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    # Validate the generated cloud-config is valid YAML
+    import yaml
+    try:
+        parsed = yaml.safe_load(result)
+        if not isinstance(parsed, dict):
+            logger.error("Generated cloud-config is not a YAML mapping")
+        elif "runcmd" in parsed and not isinstance(parsed["runcmd"], list):
+            logger.error("Generated cloud-config runcmd is not a list")
+    except yaml.YAMLError as e:
+        logger.error("Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---", e, result)
+
+    return result
 
 
 def generate_metadata(vm_name: str, mac: str = "") -> str:

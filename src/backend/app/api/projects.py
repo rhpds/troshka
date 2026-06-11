@@ -345,11 +345,12 @@ def create_project_from_template(
             )
             # Write install-config.yaml
             if install_config:
+                indented_ic = "\n".join("    " + line for line in install_config.split("\n"))
                 node["data"]["ciUserData"] += (
                     "  - |\n"
                     "    mkdir -p /home/cloud-user/ocp-install\n"
                     "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
-                    f"    {install_config}\n"
+                    f"{indented_ic}\n"
                     "    ICEOF\n"
                     "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
                 )
