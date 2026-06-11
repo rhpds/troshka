@@ -1653,11 +1653,20 @@ def _handle_network_full_setup(job, params):
         except RuntimeError:
             pass
 
-        # Create dummy bridge in host namespace for libvirt validation
+        # Create dummy bridge in host namespace for libvirt validation.
+        # This bridge carries no traffic — the qemu hook moves TAPs to the
+        # namespace bridge on VM start. We disable forwarding to prevent
+        # cross-project leaks if the hook ever fails.
         try:
             subprocess.run(["ip", "link", "show", bridge], capture_output=True, check=True, timeout=5)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+            # Disable forwarding on dummy bridge for security isolation.
+            # If the qemu hook fails to move a TAP, it stays on this bridge
+            # with no connectivity — preventing cross-project traffic.
+            subprocess.run(["ip", "link", "set", bridge, "type", "bridge",
+                            "forward_delay", "99", "ageing_time", "0"],
+                           capture_output=True, timeout=5)
         _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
         # Assign bridge IP if DHCP/DNS is enabled
@@ -2148,13 +2157,32 @@ def _handle_network_full_teardown(job, params):
             except OSError:
                 pass
 
-    # Clean up dummy bridges in host namespace
+    # Clean up dummy bridges in host namespace — only if no other VMs reference them
     for vni in vni_list:
         bridge = f"br-{vni}"
-        try:
-            _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
-        except RuntimeError:
-            pass
+        # Check if any running VM still uses this bridge
+        check = subprocess.run(
+            ["virsh", "list", "--name"],
+            capture_output=True, text=True, timeout=10,
+        )
+        bridge_in_use = False
+        for vm_name in check.stdout.strip().split("\n"):
+            if not vm_name.strip() or vm_name.startswith(f"troshka-{pid}"):
+                continue
+            xml = subprocess.run(
+                ["virsh", "dumpxml", vm_name.strip()],
+                capture_output=True, text=True, timeout=10,
+            )
+            if f"bridge='{bridge}'" in xml.stdout:
+                bridge_in_use = True
+                break
+        if not bridge_in_use:
+            try:
+                _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
+            except RuntimeError:
+                pass
+        else:
+            job["output"].append(f"Keeping dummy bridge {bridge} — still used by other VMs")
 
     return {"project_id": project_id, "status": "torn_down"}
 
