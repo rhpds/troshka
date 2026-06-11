@@ -54,7 +54,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120):
         "source": disk_id,
         "target": vm_node["id"],
         "sourceHandle": "right",
-        "targetHandle": f"{dc['id']}-left",
+        "targetHandle": f"dp-{dc['id']}-left",
         "type": "smoothstep",
         "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
         "animated": False,
@@ -141,7 +141,11 @@ def _gateway_node(x, y):
 
 
 def _net_edge(src_node, tgt_vm, style_type="network"):
-    """Edge from network/LB node to VM's first NIC."""
+    """Edge from network/LB node to VM's first NIC.
+
+    VM handles are rendered as nic-{nic.id}-top and dp-{dc.id}-left
+    where nic.id is already 'nic-{uuid}', so the full handle is 'nic-nic-{uuid}-top'.
+    """
     nic_id = tgt_vm["data"]["nics"][0]["id"]
     styles = {
         "network": {"stroke": "rgba(34,211,238,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
@@ -153,7 +157,7 @@ def _net_edge(src_node, tgt_vm, style_type="network"):
         "source": src_node["id"],
         "target": tgt_vm["id"],
         "sourceHandle": "bottom",
-        "targetHandle": f"{nic_id}-top",
+        "targetHandle": f"nic-{nic_id}-top",
         "type": "smoothstep",
         "style": styles.get(style_type, styles["network"]),
         "animated": True,
