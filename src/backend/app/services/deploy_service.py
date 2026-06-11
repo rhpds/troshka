@@ -620,11 +620,24 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
             if gw.get("mode") not in ("nat", "nat-portforward"):
                 gw["mode"] = "nat-portforward"
             pf_list = gw.get("port_forwards", [])
+            # Find the EIP private IP for the LB's extIpId
+            lb_eip_priv = ""
+            lb_ext_ip_id = lb.get("ext_ip_id", "")
+            if lb_ext_ip_id:
+                ext_ips = topology.get("externalIps", [])
+                for eip in ext_ips:
+                    if eip.get("id") == lb_ext_ip_id and eip.get("_private_ip"):
+                        lb_eip_priv = eip["_private_ip"]
+                        break
+            if not lb_eip_priv:
+                eip_priv_ips = gw.get("eip_private_ips", [])
+                lb_eip_priv = eip_priv_ips[0] if eip_priv_ips else ""
             for fe in lb["frontends"]:
                 pf_list.append({
                     "extPort": fe["bindPort"],
                     "intIp": gw.get("transit_ns_ip", ""),
                     "intPort": fe["bindPort"],
+                    "_private_ip": lb_eip_priv,
                 })
             gw["port_forwards"] = pf_list
 

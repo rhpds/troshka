@@ -323,7 +323,8 @@ WantedBy=multi-user.target
 SYSTEMDEOF
 
 systemctl daemon-reload
-systemctl enable --now troshkad
+systemctl enable troshkad
+systemctl restart troshkad
 
 # Open firewall port
 if which firewall-cmd &>/dev/null; then
@@ -487,13 +488,6 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 troshkad_credentials["token"] = line.split("=", 1)[1]
             elif line.startswith("TROSHKAD_FINGERPRINT="):
                 troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
-
-        # Restart troshkad to ensure it picks up the latest troshkad.py
-        if success:
-            subprocess.run(
-                ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "systemctl", "restart", "troshkad"],
-                capture_output=True, timeout=30,
-            )
 
         logger.info("Agent deploy %s on %s (exit %d)", "succeeded" if success else "failed", host_ip, result.returncode)
 

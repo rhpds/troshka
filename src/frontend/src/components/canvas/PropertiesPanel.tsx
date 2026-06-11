@@ -1340,6 +1340,20 @@ export default function PropertiesPanel() {
                     />
                     External access via EIP
                   </label>
+                  {((data as Record<string, any>).external ?? true) && (() => {
+                    const projectIps = useCanvasStore.getState().externalIps;
+                    return projectIps.length > 0 ? (
+                      <div style={{ marginBottom: 8 }}>
+                        <label className="props-label">EIP</label>
+                        <select className="props-input" value={(data as Record<string, any>).extIpId || ""} onChange={(e) => update("extIpId", e.target.value)}>
+                          <option value="">Auto (first EIP)</option>
+                          {projectIps.map((eip: any) => (
+                            <option key={eip.id} value={eip.id}>{eip.ip || eip.label || eip.id.substring(0, 8)}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
                 <div className="props-divider" />
                 <div className="props-section">

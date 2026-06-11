@@ -133,7 +133,7 @@ OCP_DNS_RECORDS = [
 ]
 
 
-def _lb_node(x, y):
+def _lb_node(x, y, ext_ip_id=""):
     return {
         "id": _id(),
         "type": "networkNode",
@@ -146,6 +146,7 @@ def _lb_node(x, y):
             "frontends": OCP_FRONTENDS,
             "lbIp": "10.0.0.2",
             "external": True,
+            "extIpId": ext_ip_id,
             "dnsRecords": OCP_DNS_RECORDS,
             "dnsTtl": 30,
         },
@@ -301,7 +302,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11", cluster_ip="10.0.0.11")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + 2 * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(0.5 * VM_SPACING) - 120, LB_ROW_Y)
+        lb = _lb_node(vm_x_start + int(0.5 * VM_SPACING) - 120, LB_ROW_Y, ext_ip_id=eip_id)
         nodes = [net, bmc, gw, sno_vm, sno_disk, bs_vm, bs_disk, bast_vm, bast_disk, lb]
         edges = [sno_disk_edge, bs_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
         for vm in [sno_vm, bs_vm]:
@@ -325,7 +326,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         vm_data.append((bs_vm, bs_disk, bs_disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, LB_ROW_Y)
+        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, LB_ROW_Y, ext_ip_id=eip_id)
         nodes = [net, bmc, gw, bast_vm, bast_disk, lb]
         for vm, disk, disk_edge in vm_data:
             nodes.extend([vm, disk])
@@ -356,7 +357,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + 3 * VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.13", cluster_ip="10.0.0.13")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + BASTION_X_OFFSET * VM_SPACING, VM_ROW_Y)
-        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, WORKER_ROW_Y + 300)
+        lb = _lb_node(vm_x_start + int(1.5 * VM_SPACING) - 120, WORKER_ROW_Y + 300, ext_ip_id=eip_id)
         nodes = [net, bmc, gw, bast_vm, bast_disk, lb]
         for vm, disk, disk_edge in cp_data + w_data + [(bs_vm, bs_disk, bs_disk_edge)]:
             nodes.extend([vm, disk])

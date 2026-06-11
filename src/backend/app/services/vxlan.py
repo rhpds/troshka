@@ -290,6 +290,7 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                 "frontends": data.get("frontends", []),
                 "lb_ip": data.get("lbIp", ""),
                 "external": data.get("external", True),
+                "ext_ip_id": data.get("extIpId", ""),
                 "backends": backends,
                 "dns_records": data.get("dnsRecords", []),
                 "dns_ttl": data.get("dnsTtl", 30),
