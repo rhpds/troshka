@@ -71,6 +71,8 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
   const [bastionPassword, setBastionPassword] = useState("");
+  const [bastionBmcIp, setBastionBmcIp] = useState("192.168.100.50");
+  const [bmcIpError, setBmcIpError] = useState("");
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
@@ -128,6 +130,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (bastionIsoId) templateBody.bastion_iso_id = bastionIsoId;
         if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
         if (bastionPassword) templateBody.bastion_password = bastionPassword;
+        if (bastionBmcIp) templateBody.bastion_bmc_ip = bastionBmcIp;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -278,8 +281,57 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       </select>
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user)</span></label>
-                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Required for console access" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
+                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                    </div>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <label style={{ fontSize: 12 }}>Bastion BMC IP</label>
+                        <div style={{ position: "relative", display: "inline-block" }}>
+                          <span
+                            style={{ cursor: "help", fontSize: 12, width: 16, height: 16, borderRadius: "50%", background: "rgba(59,130,246,0.2)", color: "#3b82f6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontWeight: 600 }}
+                            title="BMC Network Info"
+                            onClick={(e) => { e.stopPropagation(); const el = e.currentTarget.nextElementSibling as HTMLElement; el.style.display = el.style.display === "none" ? "block" : "none"; }}
+                          >i</span>
+                          <div style={{
+                            display: "none", position: "absolute", left: 24, top: -8, zIndex: 100,
+                            background: "var(--pf-t--global--background--color--primary--default)",
+                            border: "1px solid var(--pf-t--global--border--color--default)",
+                            borderRadius: 8, padding: "10px 14px", width: 260,
+                            boxShadow: "0 4px 16px rgba(0,0,0,0.4)", fontSize: 11, lineHeight: 1.6,
+                          }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>BMC Network (192.168.100.0/24)</div>
+                            <div style={{ fontFamily: "monospace", fontSize: 10 }}>
+                              <div>cp-0:      192.168.100.10:8000</div>
+                              <div>cp-1:      192.168.100.11:8000</div>
+                              <div>cp-2:      192.168.100.12:8000</div>
+                              <div>bootstrap: 192.168.100.13:8000</div>
+                              <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", marginTop: 4, paddingTop: 4 }}>
+                                IPMI: port 623 (same IPs)
+                              </div>
+                              <div>BMC user: admin</div>
+                              <div>BMC pass: (same as password above)</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <input
+                        style={{ ...inputStyle, borderColor: bmcIpError ? "#f87171" : undefined }}
+                        value={bastionBmcIp}
+                        onChange={(e) => {
+                          setBastionBmcIp(e.target.value);
+                          const ip = e.target.value.trim();
+                          if (!ip) { setBmcIpError("Required"); return; }
+                          const match = ip.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+                          if (!match) { setBmcIpError("Invalid IP"); return; }
+                          if (match[1] !== "192.168.100") { setBmcIpError("Must be in 192.168.100.0/24"); return; }
+                          const octet = parseInt(match[2]);
+                          if (octet < 2 || octet > 254 || octet <= 13) { setBmcIpError("Must be > .13 (reserved for BMC endpoints)"); return; }
+                          setBmcIpError("");
+                        }}
+                        placeholder="192.168.100.50"
+                      />
+                      {bmcIpError && <div style={{ fontSize: 11, color: "#f87171", marginTop: 2 }}>{bmcIpError}</div>}
                     </div>
                   </div>
                 </div>
@@ -348,12 +400,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !!bmcIpError))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !!bmcIpError)) ? 0.4 : 1,
                 }}
               >
                 {creating ? "Creating..." : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create from Template" : "Create Project"}

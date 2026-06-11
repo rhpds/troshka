@@ -165,7 +165,7 @@ def _net_node(name, cidr, x, y):
     }
 
 
-def _bmc_node(x, y):
+def _bmc_node(x, y, bmc_password="password"):
     return {
         "id": _id(),
         "type": "networkNode",
@@ -177,7 +177,7 @@ def _bmc_node(x, y):
             "networkType": "bmc",
             "cidr": "192.168.100.0/24",
             "bmcUsername": "admin",
-            "bmcPassword": "password",
+            "bmcPassword": bmc_password,
         },
     }
 
@@ -270,7 +270,7 @@ TEMPLATES = {
 }
 
 
-def generate_topology(template_id: str) -> dict:
+def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
     nodes = []
     edges = []
     eip_id = _id()
@@ -291,7 +291,7 @@ def generate_topology(template_id: str) -> dict:
         vm_x_start = 150
         net_x = vm_x_start + VM_SPACING - 20
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y)  # above bastion
+        bmc = _bmc_node(vm_x_start + 2 * VM_SPACING, NET_ROW_Y, bmc_password)  # above bastion
         gw = _gateway_node(net_x, GW_Y)
         sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10")
         bs_vm, bs_disk, bs_disk_edge = _vm_node("bootstrap", 4, 16, vm_x_start + VM_SPACING, VM_ROW_Y, bmc_ip="192.168.100.11")
@@ -311,7 +311,7 @@ def generate_topology(template_id: str) -> dict:
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
         bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(bast_x, NET_ROW_Y)
+        bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
         gw = _gateway_node(net_x, GW_Y)
         vm_data = []
         for i in range(3):
@@ -339,7 +339,7 @@ def generate_topology(template_id: str) -> dict:
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120
         bast_x = vm_x_start + BASTION_X_OFFSET * VM_SPACING
         net = _net_node("cluster", "10.0.0.0/24", net_x, NET_ROW_Y)
-        bmc = _bmc_node(bast_x, NET_ROW_Y)
+        bmc = _bmc_node(bast_x, NET_ROW_Y, bmc_password)
         gw = _gateway_node(net_x, GW_Y)
         cp_data = []
         for i in range(3):

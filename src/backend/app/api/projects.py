@@ -90,7 +90,8 @@ def create_project_from_template(
     template_id = body.get("template_id")
     if not template_id or template_id not in TEMPLATES:
         raise HTTPException(status_code=404, detail="Template not found")
-    topology = generate_topology(template_id)
+    bastion_password = body.get("bastion_password", "")
+    topology = generate_topology(template_id, bmc_password=bastion_password or "password")
 
     bastion_image_id = body.get("bastion_image_id")
     if bastion_image_id:
@@ -155,7 +156,6 @@ def create_project_from_template(
 
     # Enable cloud-init on the bastion
     bastion_ssh_key_id = body.get("bastion_ssh_key_id")
-    bastion_password = body.get("bastion_password")
     for node in topology.get("nodes", []):
         if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
             node["data"]["cloudInit"] = True
@@ -189,6 +189,14 @@ def create_project_from_template(
                     "  - dnf install -y git ansible-core python3-pip\n"
                 )
             # Static IP on BMC NIC so it doesn't wait for DHCP
+            import ipaddress as _ipaddr
+            bmc_ip_raw = body.get("bastion_bmc_ip", "192.168.100.50")
+            try:
+                bmc_ip = str(_ipaddr.IPv4Address(bmc_ip_raw))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid bastion BMC IP")
+            if not bmc_ip.startswith("192.168.100."):
+                raise HTTPException(status_code=400, detail="Bastion BMC IP must be in 192.168.100.0/24")
             node["data"]["ciNetworkConfig"] = (
                 "version: 2\n"
                 "ethernets:\n"
@@ -196,7 +204,7 @@ def create_project_from_template(
                 "    dhcp4: true\n"
                 "  ens4:\n"
                 "    addresses:\n"
-                "      - 192.168.100.50/24\n"
+                f"      - {bmc_ip}/24\n"
             )
             break
 
