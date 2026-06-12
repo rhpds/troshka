@@ -19,6 +19,36 @@ _MAC_RE = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
 _NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$')
 
 
+def _firefox_cfg_cmd(oauth_url: str) -> str:
+    """Generate a shell command that writes firefox.cfg via base64 decode."""
+    import base64
+    cfg = (
+        "// AutoConfig\n"
+        "try {\n"
+        "  var dominated = false;\n"
+        "  try { Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager)"
+        ".getAllLogins({}).forEach(function(l) { if (l.hostname.indexOf('oauth-openshift') >= 0) dominated = true; }); } catch(e) {}\n"
+        "  if (!dominated) {\n"
+        "    var file = Components.classes['@mozilla.org/file/local;1'].createInstance(Components.interfaces.nsIFile);\n"
+        "    file.initWithPath('/home/cloud-user/ocp-install/auth/kubeadmin-password');\n"
+        "    if (file.exists()) {\n"
+        "      var fis = Components.classes['@mozilla.org/network/file-input-stream;1'].createInstance(Components.interfaces.nsIFileInputStream);\n"
+        "      fis.init(file, 1, 0, 0);\n"
+        "      var sis = Components.classes['@mozilla.org/scriptableinputstream;1'].createInstance(Components.interfaces.nsIScriptableInputStream);\n"
+        "      sis.init(fis);\n"
+        "      var pw = sis.read(sis.available()).trim();\n"
+        "      sis.close();\n"
+        "      var loginInfo = Components.classes['@mozilla.org/login-manager/loginInfo;1'].createInstance(Components.interfaces.nsILoginInfo);\n"
+        f"      loginInfo.init('{oauth_url}', '{oauth_url}/login', null, 'kubeadmin', pw, 'inputUsername', 'inputPassword');\n"
+        "      Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager).addLogin(loginInfo);\n"
+        "    }\n"
+        "  }\n"
+        "} catch(e) {}\n"
+    )
+    b64 = base64.b64encode(cfg.encode()).decode()
+    return f"      echo '{b64}' | base64 -d > $FIREFOX_DIR/firefox.cfg\n"
+
+
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     """Apply OCP Agent-Based configuration to a base topology."""
     cluster_name = config.get("cluster_name", "ocp")
@@ -338,31 +368,7 @@ def _setup_bastion_cloud_init(
             "      echo 'pref(\"browser.disableResetPrompt\", true);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
             "      echo 'pref(\"browser.slowStartup.notificationDisabled\", true);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
             "      echo 'pref(\"browser.laterrun.enabled\", false);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            f"      python3 -c \"\n"
-            f"import os\n"
-            f"cfg = '''// AutoConfig\n"
-            f"try {{\n"
-            f"  var dominated = false;\n"
-            f"  try {{ Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager).getAllLogins({{}}).forEach(function(l) {{ if (l.hostname.indexOf('oauth-openshift') >= 0) dominated = true; }}); }} catch(e) {{}}\n"
-            f"  if (!dominated) {{\n"
-            f"    var file = Components.classes['@mozilla.org/file/local;1'].createInstance(Components.interfaces.nsIFile);\n"
-            f"    file.initWithPath('/home/cloud-user/ocp-install/auth/kubeadmin-password');\n"
-            f"    if (file.exists()) {{\n"
-            f"      var fis = Components.classes['@mozilla.org/network/file-input-stream;1'].createInstance(Components.interfaces.nsIFileInputStream);\n"
-            f"      fis.init(file, 1, 0, 0);\n"
-            f"      var sis = Components.classes['@mozilla.org/scriptableinputstream;1'].createInstance(Components.interfaces.nsIScriptableInputStream);\n"
-            f"      sis.init(fis);\n"
-            f"      var pw = sis.read(sis.available()).trim();\n"
-            f"      sis.close();\n"
-            f"      var loginInfo = Components.classes['@mozilla.org/login-manager/loginInfo;1'].createInstance(Components.interfaces.nsILoginInfo);\n"
-            f"      loginInfo.init('{oauth_url}', '{oauth_url}/login', null, 'kubeadmin', pw, 'inputUsername', 'inputPassword');\n"
-            f"      Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager).addLogin(loginInfo);\n"
-            f"    }}\n"
-            f"  }}\n"
-            f"}} catch(e) {{}}\n"
-            f"'''\n"
-            f"with open(os.path.join('$FIREFOX_DIR', 'firefox.cfg'), 'w') as f: f.write(cfg)\n"
-            f"\"\n"
+            + _firefox_cfg_cmd(oauth_url) +
             "    fi\n"
         )
 
