@@ -763,7 +763,8 @@ def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
 
 
 def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
-    """Create disk images for a VM via troshkad disks/create."""
+    """Create disk images for a VM via troshkad disks/create. Returns list of job IDs."""
+    job_ids = []
     for disk in vm_disks:
         if disk["format"] == "iso":
             continue
@@ -783,11 +784,9 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
         if backing:
             params["backing_file"] = backing
 
-        try:
-            job_id = start_job(host, "/disks/create", params)
-            wait_for_job(host, job_id, timeout=300)
-        except TroshkadError as e:
-            raise RuntimeError(f"Disk creation failed for {dp}: {e}")
+        job_id = start_job(host, "/disks/create", params)
+        job_ids.append(job_id)
+    return job_ids
 
 
 def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, disk_cache=None):
@@ -854,10 +853,7 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, 
         params["disk_cache"] = disk_cache
 
     job_id = start_job(host, "/vms/create", params)
-    job = wait_for_job(host, job_id, timeout=600)
-    if job["status"] == "failed":
-        raise RuntimeError(f"VM creation failed for {vm_name}: {job.get('result', {}).get('error', '')}")
-    return vm_name
+    return job_id
 
 
 def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
@@ -927,16 +923,23 @@ def _start_vms_via_troshkad(host, project_id, topology):
                     logger.warning("Failed to start VM %s: %s", vm_name, e)
                     failed.append((vm["name"], str(e)))
 
-    # Start any VMs not in start order
+    # Start any VMs not in start order (parallel)
+    unordered_jobs = []
     for vm in vms:
         if vm["node_id"] not in ordered_vm_ids:
             vm_name = _vm_domain_name(project_id, vm["node_id"])
             try:
                 job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
-                wait_for_job(host, job_id, timeout=60)
+                unordered_jobs.append((vm["name"], vm_name, job_id))
             except TroshkadError as e:
                 logger.warning("Failed to start VM %s: %s", vm_name, e)
                 failed.append((vm["name"], str(e)))
+    for name, vm_name, job_id in unordered_jobs:
+        try:
+            wait_for_job(host, job_id, timeout=60)
+        except TroshkadError as e:
+            logger.warning("Failed to start VM %s: %s", vm_name, e)
+            failed.append((name, str(e)))
 
     return failed
 
@@ -1177,15 +1180,35 @@ def deploy_project_async(project_id: str):
             _deploy_progress.pop(project_id, None)
             return
 
-        # Step 4: Create VM disks and definitions
+        # Step 4: Create VM disks and definitions (parallel)
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vms = _extract_vms(topology)
+
+        # Fire all disk creation jobs in parallel
+        disk_jobs = []
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
-            _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
-            _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
+            job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+            disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+        for jid in disk_jobs:
+            try:
+                wait_for_job(host, jid, timeout=300)
+            except TroshkadError as e:
+                logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
+
+        # Fire all VM definition jobs in parallel
+        vm_jobs = []
+        for vm in vms:
+            job_id = _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
+            if job_id:
+                vm_jobs.append(job_id)
+        for jid in vm_jobs:
+            try:
+                wait_for_job(host, jid, timeout=300)
+            except TroshkadError as e:
+                logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
         bmc_config = _extract_bmc_config(topology, project_id)
