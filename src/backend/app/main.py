@@ -139,6 +139,34 @@ def health_check():
     return {"status": "healthy", "app": config.app.name, "version": "0.1.0"}
 
 
+@app.get("/api/v1/ocp/versions")
+def ocp_versions():
+    """Fetch available OCP stable versions from the OpenShift Update Service."""
+    import urllib.request
+    channels = []
+    for minor in range(14, 25):
+        channel = f"stable-4.{minor}"
+        try:
+            req = urllib.request.Request(
+                f"https://api.openshift.com/api/upgrades_info/v1/graph?channel={channel}&arch=amd64",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                import json
+                data = json.loads(resp.read())
+                versions = sorted(set(n["version"] for n in data.get("nodes", [])))
+                if versions:
+                    channels.append({
+                        "channel": channel,
+                        "minor": f"4.{minor}",
+                        "latest": versions[-1],
+                        "count": len(versions),
+                    })
+        except Exception:
+            continue
+    return channels
+
+
 @app.get("/api/v1/debug/threads")
 def debug_threads(user=Depends(require_role("admin"))):
     import threading
