@@ -2829,6 +2829,40 @@ def _handle_pattern_capture(job, params):
 COMMAND_HANDLERS["patterns/capture"] = _handle_pattern_capture
 
 
+def _handle_pattern_capture_direct(job, params):
+    """Capture disks by path — doesn't need running VM domains."""
+    disks = params.get("disks", [])
+    import tempfile as _tf
+
+    result_disks = []
+    for disk_info in disks:
+        disk_path = _validate_path(disk_info["disk_path"])
+        presigned_url = _validate_url(disk_info["presigned_url"])
+        cache_path = _validate_path(disk_info["cache_path"])
+
+        if not os.path.exists(disk_path):
+            raise RuntimeError(f"Disk not found: {disk_path}")
+
+        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+            tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+            job["output"].append(f"Flattening {os.path.basename(disk_path)}...")
+            _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+
+            job["output"].append(f"Uploading to S3...")
+            _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            job["output"].append(f"Caching to {cache_path}...")
+            shutil.copy(tmp_flat, cache_path)
+
+        size_bytes = os.path.getsize(cache_path)
+        result_disks.append({"size_bytes": size_bytes})
+
+    return {"status": "uploaded", "disks": result_disks}
+
+COMMAND_HANDLERS["patterns/capture-direct"] = _handle_pattern_capture_direct
+
+
 def _handle_pattern_export(job, params):
     domain = _validate_domain_name(params["domain_name"])
     output_path = _validate_path(params["output_path"])

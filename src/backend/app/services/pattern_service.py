@@ -68,12 +68,17 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
         total = len(disk_nodes)
         processed = 0
 
-        for vm_id, vm_disk_nodes in vm_to_disks.items():
-            domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+        # Get storage pool for correct disk paths
+        pool = None
+        if host.storage_pool_id:
+            from app.models.storage_pool import StoragePool
+            pool = db.query(StoragePool).filter_by(id=host.storage_pool_id).first()
 
-            # Build disk parameters for this VM's disks
+        from app.services.deploy_service import _disk_path
+
+        for vm_id, vm_disk_nodes in vm_to_disks.items():
             disks_params = []
-            disk_metadata = []  # Keep track for DB records
+            disk_metadata = []
             for disk_node in vm_disk_nodes:
                 disk_id = disk_node["id"]
                 fmt = disk_node.get("data", {}).get("format", "qcow2")
@@ -81,19 +86,15 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
                 if fmt == "iso":
                     continue
 
-                # Find disk index by looking at the VM's attached disks
-                disk_index = 0
-                for i, other_disk in enumerate(vm_disk_nodes):
-                    if other_disk["id"] == disk_id:
-                        disk_index = i
-                        break
+                # Compute disk path directly — no virsh needed
+                disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
 
                 s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
                 presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
                 cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
                 disks_params.append({
-                    "disk_index": disk_index,
+                    "disk_path": disk_path,
                     "presigned_url": presigned,
                     "cache_path": cache_path,
                 })
@@ -116,8 +117,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
             }
 
             try:
-                job_id = start_job(host, "/patterns/capture", {
-                    "domain_name": domain_name,
+                job_id = start_job(host, "/patterns/capture-direct", {
                     "disks": disks_params,
                 })
                 job = wait_for_job(host, job_id, timeout=3600)
