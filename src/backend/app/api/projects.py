@@ -685,17 +685,15 @@ def vm_serial_exec(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Execute a command on a VM via serial console."""
+    """Execute a command on a VM via SSH (preferred) or serial console (fallback)."""
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
         raise HTTPException(status_code=409, detail="Project must be active")
 
-    dom = _domain_name(project_id, vm_id)
     command = body.get("command", "")
     if not command:
         raise HTTPException(status_code=400, detail="Command is required")
 
-    # Get credentials from VM's cloud-init config
     vm_node = next(
         (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
         None,
@@ -705,13 +703,43 @@ def vm_serial_exec(
     if not password and vm_node:
         password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
+    timeout = min(body.get("timeout", 10), 60)
+
+    # Try SSH first — faster and more reliable
+    vm_ip = ""
+    if vm_node:
+        for nic in vm_node.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                vm_ip = nic["ip"]
+                break
+
+    if vm_ip and password:
+        try:
+            job_id = start_job(host, "/vm/ssh-exec", {
+                "project_id": project_id,
+                "vm_ip": vm_ip,
+                "username": username,
+                "password": password,
+                "command": command,
+                "timeout": timeout,
+            })
+            job = wait_for_job(host, job_id, timeout=timeout + 30)
+            if job["status"] == "completed":
+                result = job.get("result", {})
+                if not result.get("error"):
+                    return {"output": result.get("output", ""), "error": ""}
+        except TroshkadError:
+            pass
+
+    # Fallback to serial console
+    dom = _domain_name(project_id, vm_id)
     try:
         job_id = start_job(host, "/vm/serial-exec", {
             "domain_name": dom,
             "username": username,
             "password": password,
             "command": command,
-            "timeout": min(body.get("timeout", 10), 60),
+            "timeout": timeout,
         })
         job = wait_for_job(host, job_id, timeout=90)
         if job["status"] == "failed":

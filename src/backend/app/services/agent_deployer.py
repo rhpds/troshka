@@ -30,7 +30,7 @@ fi
 if ! which virsh &>/dev/null || ! which virt-install &>/dev/null || ! which nc &>/dev/null; then
     echo "Installing prerequisites..."
     dnf install -y qemu-kvm libvirt libvirt-client virt-install \
-        python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat || true
+        python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass || true
 else
     echo "Prerequisites already installed, skipping dnf"
 fi
@@ -45,16 +45,11 @@ else
 fi
 systemctl enable --now nftables
 
-# Enable KSM for RAM deduplication (RHEL 10 disables by default)
-echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-echo 5000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
-# Persist KSM settings across reboots
+# Disable KSM — causes soft lockups with nested virtualization
+echo 0 > /sys/kernel/mm/ksm/run 2>/dev/null || true
 mkdir -p /etc/tmpfiles.d
 cat > /etc/tmpfiles.d/ksm.conf << 'KSMEOF'
-w /sys/kernel/mm/ksm/run - - - - 1
-w /sys/kernel/mm/ksm/pages_to_scan - - - - 5000
-w /sys/kernel/mm/ksm/sleep_millisecs - - - - 20
+w /sys/kernel/mm/ksm/run - - - - 0
 KSMEOF
 
 # Allow ec2-user to manage libvirt without polkit agent

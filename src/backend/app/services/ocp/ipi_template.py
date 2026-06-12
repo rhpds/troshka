@@ -172,6 +172,11 @@ def _setup_bastion_cloud_init(
                 "  - dnf install -y git ansible-core python3-pip bind-utils tmux qemu-kvm libvirt\n"
                 "  - for s in virtqemud virtnetworkd virtstoraged virtnodedevd virtsecretd virtinterfaced virtlogd virtproxyd; do systemctl enable --now ${s}.socket 2>/dev/null; done\n"
                 "  - usermod -aG libvirt cloud-user\n"
+                "  - echo 0 > /sys/kernel/mm/ksm/run\n"
+                "  - sysctl -w kernel.watchdog_thresh=60\n"
+                "  - mkdir -p /home/cloud-user/.config/libvirt\n"
+                "  - echo 'uri_default = \"qemu:///system\"' > /home/cloud-user/.config/libvirt/libvirt.conf\n"
+                "  - chown -R cloud-user:cloud-user /home/cloud-user/.config\n"
             )
 
         # Pull secret

@@ -69,6 +69,7 @@ def _create_job(command, params):
         "output": [],
         "result": None,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "_start_time": time.time(),
         "completed_at": None,
         "_process": None,
     }
@@ -350,6 +351,9 @@ def handle_get_job(handler, params):
 @route("POST", "/commands/{command_path}")
 def handle_dispatch_command(handler, params):
     """Dispatch a command job and return job_id + status."""
+    # Cancel any pending drain — new work means we shouldn't restart
+    if _draining:
+        _drain_cancel.set()
     command_path = params["command_path"]
     body = handler._read_body()
     status, response = _dispatch_job(command_path, body)
@@ -2916,23 +2920,43 @@ def _do_update_restart(script_path, new_path):
     os._exit(0)
 
 
+_drain_cancel = threading.Event()
+
 def _drain_and_update(script_path, new_path, force):
     """Background thread: drain jobs, then update and restart."""
     global _draining
     _draining = True
+    _drain_cancel.clear()
     logger.info("Drain started, force=%s", force)
 
-    drain_timeout = _config.get("drain_timeout_seconds", 30)
+    # Short-lived polling jobs that should never block an update
+    _SKIP_DRAIN = {"vms/state", "host/disk-usage", "gc/discover"}
     if not force:
-        # Wait for running jobs to complete
         start = time.time()
-        while _running_job_count() > 0:
-            if time.time() - start > drain_timeout:
-                logger.warning("Drain timeout exceeded, terminating remaining jobs")
+        while time.time() - start < 10:
+            with _jobs_lock:
+                blocking = [j for j in _jobs.values()
+                            if j["status"] == "running"
+                            and j.get("command", "") not in _SKIP_DRAIN]
+            if not blocking:
                 break
-            time.sleep(0.5)
+            if _drain_cancel.is_set():
+                logger.info("Drain cancelled — new work arrived")
+                _draining = False
+                try:
+                    os.remove(new_path)
+                except OSError:
+                    pass
+                return
+            logger.info("Drain waiting on %d job(s): %s",
+                        len(blocking), ", ".join(j.get("command", "?") for j in blocking))
+            time.sleep(1)
 
-    # Terminate any remaining job subprocesses
+    if _drain_cancel.is_set():
+        logger.info("Drain cancelled before restart")
+        _draining = False
+        return
+
     with _jobs_lock:
         for job in _jobs.values():
             if job["status"] == "running" and job.get("_process"):
@@ -3121,7 +3145,8 @@ def _check_and_restart_dnsmasq():
     """Check all dnsmasq PID files — restart any that died."""
     restarted = 0
     for pidfile in glob.glob("/run/troshka-dnsmasq-*.pid"):
-        conf_name = os.path.basename(pidfile).replace(".pid", ".conf")
+        # PID file: troshka-dnsmasq-{pid}-{vni}.pid → conf: troshka-{pid}-{vni}.conf
+        conf_name = os.path.basename(pidfile).replace("troshka-dnsmasq-", "troshka-").replace(".pid", ".conf")
         conf_path = f"/etc/dnsmasq.d/{conf_name}"
         if not os.path.exists(conf_path):
             continue
@@ -3192,7 +3217,7 @@ def _restore_dnsmasq():
 def _dnsmasq_watchdog_loop():
     """Periodically check dnsmasq is alive, restart if not."""
     while True:
-        time.sleep(30)
+        time.sleep(5)
         try:
             _check_and_restart_dnsmasq()
         except Exception as e:
@@ -3781,6 +3806,44 @@ def _handle_vm_serial_exec(job, params):
             pass
 
 COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec
+
+
+def _handle_vm_ssh_exec(job, params):
+    """Execute a command on a VM via SSH through the network namespace."""
+    project_id = params.get("project_id", "")
+    vm_ip = params.get("vm_ip", "")
+    username = params.get("username", "cloud-user")
+    password = params.get("password", "")
+    command = params.get("command", "")
+    timeout_secs = min(params.get("timeout", 10), 60)
+
+    if not command:
+        raise RuntimeError("No command specified")
+    if not vm_ip:
+        raise RuntimeError("No VM IP specified")
+    if not password:
+        raise RuntimeError("No password specified")
+
+    ns = f"troshka-{project_id[:8]}" if project_id else ""
+    ns_prefix = ["ip", "netns", "exec", ns] if ns else []
+
+    result = subprocess.run(
+        ns_prefix + [
+            "sshpass", "-p", password,
+            "ssh", "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", f"ConnectTimeout={min(timeout_secs, 10)}",
+            f"{username}@{vm_ip}",
+            command,
+        ],
+        capture_output=True, text=True, timeout=timeout_secs + 5,
+    )
+    output = result.stdout.strip()
+    error = result.stderr.strip() if result.returncode != 0 else ""
+    return {"output": output, "error": error, "exit_code": result.returncode}
+
+COMMAND_HANDLERS["vm/ssh-exec"] = _handle_vm_ssh_exec
 
 
 if __name__ == "__main__":
