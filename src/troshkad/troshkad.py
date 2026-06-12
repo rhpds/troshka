@@ -3424,7 +3424,7 @@ def _handle_bmc_setup(job, params):
             f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
             f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
             f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
-            f.write(f"SUSHY_EMULATOR_VMEDIA_STORAGE_POOL = '{pool_name}'\n")
+            f.write(f"SUSHY_EMULATOR_STORAGE_POOL = '{pool_name}'\n")
             f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
             if dom_uuid:
                 f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
