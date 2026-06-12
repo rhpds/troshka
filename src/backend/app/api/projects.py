@@ -93,13 +93,6 @@ def create_project_from_template(
     bastion_password = body.get("bastion_password", "")
     topology = generate_topology(template_id, bmc_password=bastion_password or "password")
 
-    # Remove external access (gateway, EIP, port forwards) if not requested
-    if not body.get("external_access", True):
-        gw_ids = {n["id"] for n in topology.get("nodes", []) if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"}
-        topology["nodes"] = [n for n in topology.get("nodes", []) if n["id"] not in gw_ids]
-        topology["edges"] = [e for e in topology.get("edges", []) if e.get("source") not in gw_ids and e.get("target") not in gw_ids]
-        topology["externalIps"] = []
-
     # OCP template customization — resolve DB objects, then delegate to plugin
     from app.models.library import LibraryItem
 
@@ -160,6 +153,10 @@ def create_project_from_template(
         "bastion_bmc_ip": bmc_ip_raw,
         "auto_install_ocp": body.get("auto_install_ocp", True),
     })
+
+    # OCP: skip EIP allocation if external access not requested
+    if not body.get("external_access", False):
+        topology["externalIps"] = []
 
     desc_parts = [TEMPLATES[template_id]["description"]]
     cluster_name = body.get("cluster_name", "ocp")

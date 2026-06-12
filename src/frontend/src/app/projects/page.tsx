@@ -486,12 +486,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   </div>
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                      <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
-                      External access (EIP + port forwarding)
-                    </label>
-                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
                       Deploy immediately after creation
+                    </label>
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
+                      <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
+                      External access (allocate EIP)
                     </label>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
