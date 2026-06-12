@@ -8,13 +8,17 @@ import "react-simple-keyboard/build/css/index.css";
 const XK = {
   Ctrl: 0xffe3, Alt: 0xffe9, Shift: 0xffe1, Super: 0xffeb,
   Tab: 0xff09, Esc: 0xff1b, Del: 0xffff, Return: 0xff0d,
+  Home: 0xff50, End: 0xff57, PgUp: 0xff55, PgDn: 0xff56,
+  Insert: 0xff63, Up: 0xff52, Down: 0xff54, Left: 0xff51, Right: 0xff53,
   F1: 0xffbe, F2: 0xffbf, F3: 0xffc0, F4: 0xffc1, F5: 0xffc2, F6: 0xffc3,
   F7: 0xffc4, F8: 0xffc5, F9: 0xffc6, F10: 0xffc7, F11: 0xffc8, F12: 0xffc9,
 } as const;
 
 const funcKeysyms: Record<string, number> = {
   "{bksp}": 0xff08, "{enter}": 0xff0d, "{tab}": 0xff09, "{space}": 0x0020,
-  "{esc}": 0xff1b, "{del}": XK.Del,
+  "{esc}": 0xff1b, "{del}": XK.Del, "{ins}": XK.Insert,
+  "{home}": XK.Home, "{end}": XK.End, "{pgup}": XK.PgUp, "{pgdn}": XK.PgDn,
+  "{up}": XK.Up, "{down}": XK.Down, "{left}": XK.Left, "{right}": XK.Right,
   "{f1}": XK.F1, "{f2}": XK.F2, "{f3}": XK.F3, "{f4}": XK.F4,
   "{f5}": XK.F5, "{f6}": XK.F6, "{f7}": XK.F7, "{f8}": XK.F8,
   "{f9}": XK.F9, "{f10}": XK.F10, "{f11}": XK.F11, "{f12}": XK.F12,
@@ -30,6 +34,8 @@ const kbLayouts = {
     "{lock} a s d f g h j k l ; ' {enter}",
     "{shift} z x c v b n m , . / {shift}",
     "{ctrl} {alt} {space} {alt} {ctrl}",
+    "{ins} {home} {pgup} {left} {up} {right}",
+    "{del} {end} {pgdn} {left} {down} {right}",
   ],
   shift: [
     "{esc} {f1} {f2} {f3} {f4} {f5} {f6} {f7} {f8} {f9} {f10} {f11} {f12} {del}",
@@ -38,11 +44,15 @@ const kbLayouts = {
     '{lock} A S D F G H J K L : " {enter}',
     "{shift} Z X C V B N M < > ? {shift}",
     "{ctrl} {alt} {space} {alt} {ctrl}",
+    "{ins} {home} {pgup} {left} {up} {right}",
+    "{del} {end} {pgdn} {left} {down} {right}",
   ],
 };
 
 const kbDisplay: Record<string, string> = {
-  "{esc}": "Esc", "{del}": "Del", "{bksp}": "⌫", "{tab}": "Tab ⇥",
+  "{esc}": "Esc", "{del}": "Del", "{ins}": "Ins", "{bksp}": "⌫", "{tab}": "Tab ⇥",
+  "{home}": "Home", "{end}": "End", "{pgup}": "PgUp", "{pgdn}": "PgDn",
+  "{up}": "↑", "{down}": "↓", "{left}": "←", "{right}": "→",
   "{lock}": "Caps", "{enter}": "Enter ↵", "{shift}": "⇧ Shift",
   "{ctrl}": "Ctrl", "{alt}": "Alt", "{space}": " ",
   "{f1}": "F1", "{f2}": "F2", "{f3}": "F3", "{f4}": "F4",
