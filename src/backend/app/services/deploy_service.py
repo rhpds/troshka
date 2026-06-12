@@ -119,6 +119,8 @@ def _extract_vms(topology: dict) -> list[dict]:
             "cloud_init": data.get("cloudInit", False),
             "firmware": data.get("firmware", "bios"),
             "secure_boot": data.get("secureBoot", False),
+            "video_model": data.get("videoModel", "virtio"),
+            "input_model": data.get("inputModel", "virtio"),
         })
     return vms
 
@@ -845,6 +847,8 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, 
         "firmware": vm.get("firmware", "bios"),
         "secure_boot": vm.get("secure_boot", False),
         "boot_devs": boot_devs,
+        "video_model": vm.get("video_model", "virtio"),
+        "input_model": vm.get("input_model", "virtio"),
     }
     if disk_cache:
         params["disk_cache"] = disk_cache

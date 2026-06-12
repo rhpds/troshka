@@ -373,6 +373,30 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
+            <div className="props-field">
+              <label className="props-label">Video</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).videoModel as string || "virtio"}
+                onChange={(e) => update("videoModel", e.target.value)}
+              >
+                <option value="virtio">VirtIO (recommended)</option>
+                <option value="vga">VGA</option>
+                <option value="qxl">QXL</option>
+              </select>
+            </div>
+            <div className="props-field">
+              <label className="props-label">Input</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).inputModel as string || "virtio"}
+                onChange={(e) => update("inputModel", e.target.value)}
+              >
+                <option value="virtio">VirtIO (recommended)</option>
+                <option value="usb">USB</option>
+                <option value="ps2">PS/2</option>
+              </select>
+            </div>
             {(node.data as Record<string, any>).liveBootDevs && (
               <div style={{ background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontSize: 11 }}>
                 <label className="props-label" style={{ color: "rgba(168,85,247,0.9)", fontSize: 10 }}>BMC Live Boot Order</label>

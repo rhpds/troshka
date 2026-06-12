@@ -528,6 +528,8 @@ def _handle_vm_create(job, params):
     firmware = params.get("firmware", "bios")
     secure_boot = params.get("secure_boot", False)
     boot_devs = params.get("boot_devs", [])
+    video_model = params.get("video_model", "virtio")
+    input_model = params.get("input_model", "virtio")
 
     cmd = [
         "virt-install",
@@ -587,6 +589,11 @@ def _handle_vm_create(job, params):
         cmd.extend(["--network", net_arg])
     if seed_iso:
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
+    if video_model in ("virtio", "vga", "qxl"):
+        cmd.extend(["--video", video_model])
+    if input_model == "virtio":
+        cmd.extend(["--input", "type=keyboard,bus=virtio"])
+        cmd.extend(["--input", "type=tablet,bus=virtio"])
     _run_cmd(job, cmd, timeout=600)
     return {"domain": domain, "status": "created"}
 
