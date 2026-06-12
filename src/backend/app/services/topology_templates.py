@@ -12,7 +12,7 @@ def _mac():
     )
 
 
-def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
+def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip=""):
     nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
     dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
@@ -67,8 +67,8 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
     return vm_node, disk_node, disk_edge
 
 
-def _bastion_node(x, y, disk_gb=150, cluster_ip="10.0.0.50"):
-    """Bastion/provisioner VM with two NICs (cluster + BMC). Sized to host nested bootstrap VM."""
+def _bastion_node(x, y, disk_gb=20, cluster_ip="10.0.0.50"):
+    """Bastion/provisioner VM with two NICs (cluster + BMC)."""
     nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     nic_bmc = {"id": f"nic-{_id()}", "name": "eth1", "mac": _mac(), "model": "virtio"}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
@@ -92,8 +92,8 @@ def _bastion_node(x, y, disk_gb=150, cluster_ip="10.0.0.50"):
         "data": {
             "label": "bastion",
             "name": "bastion",
-            "vcpus": 8,
-            "ram": 32,
+            "vcpus": 2,
+            "ram": 4,
             "os": "rhel10",
             "icon": "🖥",
             "nics": [nic_cluster, nic_bmc],
@@ -258,19 +258,19 @@ def _gw_net_edge(gw_node, net_node):
 TEMPLATES = {
     "ocp-sno": {
         "name": "OpenShift SNO (Agent Installer)",
-        "description": "Single Node OpenShift — 8 vCPU, 32 GB RAM",
+        "description": "Single Node OpenShift — 8 vCPU, 32 GB RAM, 50 GB disk",
         "category": "openshift",
         "install_method": "agent",
     },
     "ocp-compact": {
         "name": "OpenShift Compact 3-Node (Agent Installer)",
-        "description": "3 combined control plane + worker nodes — 8 vCPU, 16 GB each",
+        "description": "3 combined CP + worker nodes — 4 vCPU, 16 GB, 50 GB each",
         "category": "openshift",
         "install_method": "agent",
     },
     "ocp-standard": {
         "name": "OpenShift Standard 3+2 (Agent Installer)",
-        "description": "3 control plane + 2 worker nodes",
+        "description": "3 CP (4 vCPU, 16 GB) + 2 workers (4 vCPU, 16 GB)",
         "category": "openshift",
         "install_method": "agent",
     },
@@ -329,7 +329,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         vm_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 8, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             vm_data.append((vm, disk, disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
         nodes = [net, bmc, gw, bast_vm, bast_disk]

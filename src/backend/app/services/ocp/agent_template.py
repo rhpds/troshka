@@ -33,13 +33,6 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     api_vip = "10.0.0.2"
     ingress_vip = "10.0.0.3"
 
-    # Agent-based doesn't need big bastion (no nested virt)
-    for node in topology.get("nodes", []):
-        if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
-            node["data"]["vcpus"] = 2
-            node["data"]["ram"] = 4
-            break
-
     _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip)
     _attach_bastion_image(topology, bastion_image)
     _attach_bastion_iso(topology, bastion_iso)
