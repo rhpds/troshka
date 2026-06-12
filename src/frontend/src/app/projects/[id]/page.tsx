@@ -120,7 +120,6 @@ export default function ProjectCanvasPage() {
     setDeployError(ws.deployError || null);
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
-      loadProject(projectId);
       fetch(`/api/v1/projects/${projectId}`).then((r) => r.ok ? r.json() : null).then((proj) => {
         if (!proj) return;
         const depData: Record<string, string> = {};
@@ -137,20 +136,6 @@ export default function ProjectCanvasPage() {
           useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
         }, 100);
       });
-      setTimeout(() => {
-        if (Object.keys(ws.vmStates).length) {
-          const store = useCanvasStore.getState();
-          useCanvasStore.setState({
-            nodes: store.nodes.map((node) => {
-              if (node.type !== "vmNode") return node;
-              if (node.id in ws.vmStates) {
-                return { ...node, data: { ...node.data, status: ws.vmStates[node.id] } };
-              }
-              return node;
-            }),
-          });
-        }
-      }, 2000);
     }
   }, [ws.projectState, ws.deployError]);
 
