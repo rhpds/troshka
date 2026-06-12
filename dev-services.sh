@@ -77,15 +77,23 @@ check_backend_idle() {
         return 0
     fi
 
-    # Check for active HTTP connections (established TCP to backend port)
-    # Check for background threads (deploy, agent install, etc.)
-    # uvicorn idles at ~13-14 threads; above 15 means background work is running
-    local threads
-    threads=$(ps -M "$pid" 2>/dev/null | tail -n +2 | wc -l | tr -d '[:space:]')
-    threads=${threads:-0}
+    # Check for named background work threads via the debug endpoint
+    local work_threads
+    work_threads=$(curl -s "http://localhost:$BACKEND_PORT/api/v1/debug/threads" 2>/dev/null | \
+        python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    idle = {'MainThread', 'health-poller', 'ws-state-poller', 'AnyIO worker thread'}
+    work = [t['name'] for t in data.get('threads', []) if t['name'] not in idle and not t['name'].startswith('anyio')]
+    if work:
+        print(' '.join(work))
+except:
+    pass
+" 2>/dev/null)
 
-    if [ "$threads" -gt 15 ]; then
-        echo "  Backend:    WARNING — $threads threads (background work in progress)"
+    if [ -n "$work_threads" ]; then
+        echo "  Backend:    WARNING — active: $work_threads"
         return 1
     fi
     return 0
