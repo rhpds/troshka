@@ -484,7 +484,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         if pattern_id and pattern_disk_id:
             pd = db_session.query(PatternDisk).filter_by(id=pattern_disk_id, pattern_id=pattern_id).first()
             if pd and pd.s3_key:
-                cache_path = _pattern_cache_path(pattern_id, pattern_disk_id, pd.format, pool)
+                cache_path = _pattern_cache_path(pattern_id, pd.source_disk_id, pd.format, pool)
                 items_to_cache.append({
                     "item_id": pattern_disk_id,
                     "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
@@ -786,8 +786,14 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
         dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"], pool)
 
         backing = None
-        if disk.get("source") == "pattern" and disk.get("patternId"):
-            backing = _pattern_cache_path(disk["patternId"], disk["patternDiskId"], disk["format"], pool)
+        if disk.get("source") == "pattern" and disk.get("patternId") and disk.get("patternDiskId"):
+            from app.core.database import SessionLocal as _SL
+            from app.models.pattern import PatternDisk as _PD
+            _s = _SL()
+            _pd = _s.query(_PD).filter_by(id=disk["patternDiskId"]).first()
+            _cache_disk_id = _pd.source_disk_id if _pd else disk["patternDiskId"]
+            _s.close()
+            backing = _pattern_cache_path(disk["patternId"], _cache_disk_id, disk["format"], pool)
         elif disk.get("source") == "library" and disk.get("library_item_id"):
             backing = _image_cache_path(disk["library_item_id"], disk["format"], pool)
 
