@@ -176,35 +176,33 @@ def _setup_bastion_cloud_init(
         if ssh_keys:
             node["data"]["ciSshKeys"] = ssh_keys
 
-        # DVD mount + yum repos + packages (no libvirt/qemu needed for agent-based)
+        # DVD mount + yum repos (mounts: runs before packages:)
         if bastion_iso:
             node["data"]["ciUserData"] = (
-                "runcmd:\n"
-                "  - nmcli con up \"cloud-init ens3\" 2>/dev/null || true\n"
-                "  - mkdir -p /mnt/rhel-dvd\n"
+                "bootcmd:\n"
                 "  - |\n"
                 "    for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do\n"
                 "      if blkid $dev 2>/dev/null | grep -qi 'LABEL=.*RHEL\\|TYPE=.*iso9660'; then\n"
                 "        if ! blkid $dev 2>/dev/null | grep -qi 'LABEL=.*cidata'; then\n"
-                "          echo \"$dev /mnt/rhel-dvd iso9660 ro,nofail 0 0\" >> /etc/fstab\n"
-                "          mount /mnt/rhel-dvd\n"
+                "          mkdir -p /mnt/rhel-dvd\n"
+                "          mount -o ro $dev /mnt/rhel-dvd 2>/dev/null\n"
                 "          break\n"
                 "        fi\n"
                 "      fi\n"
                 "    done\n"
-                "  - |\n"
-                "    cat > /etc/yum.repos.d/rhel-dvd.repo << 'EOF'\n"
-                "    [rhel-dvd-baseos]\n"
-                "    name=RHEL DVD BaseOS\n"
-                "    baseurl=file:///mnt/rhel-dvd/BaseOS\n"
-                "    enabled=1\n"
-                "    gpgcheck=0\n"
-                "    [rhel-dvd-appstream]\n"
-                "    name=RHEL DVD AppStream\n"
-                "    baseurl=file:///mnt/rhel-dvd/AppStream\n"
-                "    enabled=1\n"
-                "    gpgcheck=0\n"
-                "    EOF\n"
+                "yum_repos:\n"
+                "  rhel-dvd-baseos:\n"
+                "    name: RHEL DVD BaseOS\n"
+                "    baseurl: file:///mnt/rhel-dvd/BaseOS\n"
+                "    enabled: true\n"
+                "    gpgcheck: false\n"
+                "  rhel-dvd-appstream:\n"
+                "    name: RHEL DVD AppStream\n"
+                "    baseurl: file:///mnt/rhel-dvd/AppStream\n"
+                "    enabled: true\n"
+                "    gpgcheck: false\n"
+                "runcmd:\n"
+                "  - nmcli con up \"cloud-init ens3\" 2>/dev/null || true\n"
             )
 
         # Pull secret
