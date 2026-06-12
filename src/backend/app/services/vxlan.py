@@ -58,12 +58,10 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
     ]
 
     used_vnis = _get_all_used_vnis(db)
-    next_vni = VNI_MIN
+    next_vni = max(used_vnis, default=VNI_MIN - 1) + 1
 
     vni_map = {}
     for node in network_nodes:
-        while next_vni in used_vnis:
-            next_vni += 1
         if next_vni > VNI_MAX:
             raise ValueError("VNI pool exhausted")
         vni_map[node["id"]] = next_vni
