@@ -988,7 +988,15 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         if not project or project.state != "deploying":
             return
 
-        host = s.query(Host).filter_by(id=project.host_id).first()
+        host = s.query(Host).filter_by(id=project.host_id).first() if project.host_id else None
+        if not host:
+            from app.services.placement import find_available_host, calculate_project_requirements
+            reqs = calculate_project_requirements(project.topology or {})
+            host = find_available_host(s, reqs["total_vcpus"], reqs["total_ram_mb"])
+            if host:
+                project.host_id = host.id
+                s.commit()
+                logger.info("Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8])
         if not host or not host.ip_address:
             project.state = "error"
             project.deploy_error = "Host not available"
