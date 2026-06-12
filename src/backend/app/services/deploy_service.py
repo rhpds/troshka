@@ -1468,24 +1468,21 @@ def start_project_async(project_id: str):
         s.close()
 
 
-def destroy_project_sync(project_id: str):
-    """Synchronously destroy a project's VMs and networks. Called before DB delete."""
+def destroy_project_sync(ctx: dict):
+    """Synchronously destroy a project's VMs and networks.
+    ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain)."""
     from app.core.database import SessionLocal
     from app.models.host import Host
-    from app.models.project import Project
 
+    project_id = ctx["project_id"]
     s = SessionLocal()
     try:
-        project = s.query(Project).filter_by(id=project_id).first()
-        if not project or not project.host_id:
-            return
-
-        host = s.query(Host).filter_by(id=project.host_id).first()
+        host = s.query(Host).filter_by(id=ctx["host_id"]).first()
         if not host or not host.ip_address:
             return
 
-        vni_map = project.vni_map or {}
-        topo = project.deployed_topology or project.topology or {}
+        vni_map = ctx.get("vni_map", {})
+        topo = ctx.get("topology", {})
 
         # Destroy VMs via troshkad
         vms = _extract_vms(topo)
@@ -1524,13 +1521,12 @@ def destroy_project_sync(project_id: str):
         s.commit()
 
         # Delete DNS records if configured
-        if project.dns_provider_id:
+        if ctx.get("dns_provider_id"):
             from app.models.dns_provider import DnsProvider
             from app.services.dns_service import delete_dns_records
 
-            dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
-            deployed_topo = project.deployed_topology or {}
-            dns_records = deployed_topo.get("_dns_records", [])
+            dns_provider = s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
+            dns_records = topo.get("_dns_records", [])
             if dns_provider and dns_records:
                 logger.info("Teardown %s: deleting DNS records", project_id[:8])
                 delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
@@ -1539,7 +1535,7 @@ def destroy_project_sync(project_id: str):
         try:
             from app.models.provider import Provider
             from app.services.eip_service import _get_ec2_client
-            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+            provider = s.query(Provider).filter_by(id=host.provider_id).first() if host.provider_id else None
             if not provider and host.provider_id:
                 provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider and provider.security_group_id:

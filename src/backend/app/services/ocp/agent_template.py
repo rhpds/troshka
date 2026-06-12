@@ -12,7 +12,11 @@ Flow:
 5. openshift-install agent wait-for install-complete
 """
 import ipaddress
+import re
 import uuid
+
+_MAC_RE = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$')
 
 
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
@@ -190,7 +194,7 @@ def _setup_bastion_cloud_init(
             api_vip, ingress_vip, password, pull_secret_json, ssh_pub_key,
         )
         agent_config = _build_agent_config(
-            topology, cluster_name, base_domain,
+            topology, cluster_name, base_domain, api_vip, ingress_vip,
         )
 
         # Install script
@@ -233,9 +237,12 @@ def _setup_bastion_cloud_init(
             "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
         )
 
-        # Install graphical desktop in background (non-blocking)
+        # Install graphical desktop in background, start it when done (non-blocking)
+        # Disable GNOME initial setup wizard for all users
         node["data"]["ciUserData"] += (
-            "  - nohup dnf groupinstall -y 'Server with GUI' > /var/log/desktop-install.log 2>&1 &\n"
+            "  - mkdir -p /etc/skel/.config && echo 'yes' > /etc/skel/.config/gnome-initial-setup-done\n"
+            "  - for u in root cloud-user; do d=$(eval echo ~$u); mkdir -p $d/.config && echo 'yes' > $d/.config/gnome-initial-setup-done && chown -R $u:$u $d/.config; done\n"
+            "  - nohup sh -c 'dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox; systemctl set-default graphical.target && systemctl isolate graphical.target' > /var/log/desktop-install.log 2>&1 &\n"
         )
 
         # Static IP on BMC NIC
@@ -253,7 +260,7 @@ def _setup_bastion_cloud_init(
 
 
 def _build_install_config(topology, template_id, cluster_name, base_domain,
-                          api_vip, ingress_vip, bmc_password, pull_secret_json, ssh_pub_key):
+                          api_vip, ingress_vip, password, pull_secret_json, ssh_pub_key):
     num_workers = 0 if template_id in ("ocp-compact", "ocp-sno") else 2
     num_masters = 1 if template_id == "ocp-sno" else 3
 
@@ -285,7 +292,24 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
         f"      - {api_vip}",
         "    ingressVIPs:",
         f"      - {ingress_vip}",
+        "    hosts:",
     ]
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        td = node.get("data", {})
+        if not td.get("bmcEnabled") or not td.get("bmcIp"):
+            continue
+        vm_name = td.get("name", "")
+        boot_mac = td.get("nics", [{}])[0].get("mac", "")
+        if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+            continue
+        role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+        ic_lines.extend([
+            f"      - name: {vm_name}",
+            f"        role: {role}",
+            f"        bootMACAddress: {boot_mac}",
+        ])
     if pull_secret_json:
         ic_lines.append(f"pullSecret: '{pull_secret_json}'")
     if ssh_pub_key:
@@ -294,7 +318,7 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
     return "\n".join(ic_lines)
 
 
-def _build_agent_config(topology, cluster_name, base_domain):
+def _build_agent_config(topology, cluster_name, base_domain, api_vip="10.0.0.2", ingress_vip="10.0.0.3"):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
     hosts_yaml = ""
     for node in topology.get("nodes", []):
@@ -307,6 +331,8 @@ def _build_agent_config(topology, cluster_name, base_domain):
         bmc_ip = td["bmcIp"]
         cluster_ip = td.get("nics", [{}])[0].get("ip", "")
         boot_mac = td.get("nics", [{}])[0].get("mac", "")
+        if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+            continue
         role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
 
         hosts_yaml += (
@@ -383,7 +409,7 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "      echo \"Downloading oc client...\"\n"
         "      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
-        "      sudo mv oc kubectl /usr/local/bin/\n"
+        "      sudo mv oc kubectl /usr/bin/\n"
         "      echo \"Downloaded openshift-install and oc\"\n"
         "    fi\n"
         "    \n"

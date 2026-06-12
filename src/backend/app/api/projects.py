@@ -1348,7 +1348,11 @@ def redeploy_project(
         old_host = db.query(Host).filter_by(id=old_host_id).first()
         if not old_host or not old_host.ip_address:
             raise HTTPException(status_code=503, detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.")
-        destroy_project_sync(project.id)
+        destroy_project_sync({
+            "project_id": project.id, "host_id": project.host_id,
+            "vni_map": project.vni_map or {}, "topology": project.deployed_topology or project.topology or {},
+            "dns_provider_id": project.dns_provider_id, "domain": project.domain,
+        })
         project.host_id = None
         db.commit()
         from app.services.gc_service import sync_host_capacity
@@ -1401,7 +1405,11 @@ def undeploy_project(
         raise HTTPException(status_code=403, detail="Access denied")
 
     if project.host_id:
-        destroy_project_sync(project.id)
+        destroy_project_sync({
+            "project_id": project.id, "host_id": project.host_id,
+            "vni_map": project.vni_map or {}, "topology": project.deployed_topology or project.topology or {},
+            "dns_provider_id": project.dns_provider_id, "domain": project.domain,
+        })
 
     project.state = "draft"
     project.host_id = None
@@ -1426,21 +1434,9 @@ def delete_project(
 
     notify_project(project_id, {"type": "project-deleted"})
 
-    # Close any active console proxies for this project's VMs
-    from app.services.console_proxy import close_proxy
-    topo = project.deployed_topology or project.topology or {}
-    if project.host_id:
-        _host = db.query(Host).filter_by(id=project.host_id).first()
-        if _host:
-            for node in topo.get("nodes", []):
-                if node.get("type") == "vmNode":
-                    dom = _domain_name(project_id, node["id"])
-                    try:
-                        vnc_port = troshkad_get_vnc_port(_host, dom)
-                        if vnc_port:
-                            close_proxy(dom, _host.ip_address, vnc_port)
-                    except Exception:
-                        pass
+    # Close any active console proxies for this project's VMs (no network calls)
+    from app.services.console_proxy import close_proxies_for_project
+    close_proxies_for_project(project_id)
 
     # Release EIPs before deleting DB record (delete cascades null the FK)
     from app.models.elastic_ip import ElasticIp
@@ -1452,11 +1448,18 @@ def delete_project(
         except Exception:
             logger.warning("Failed to release EIP %s on delete", eip.public_ip)
 
-    # Clean up infrastructure in background, delete DB record immediately
+    # Capture all data needed for cleanup BEFORE deleting the DB row
     if project.host_id and project.state in ("active", "stopped", "error"):
-        import threading
-        p_id = project.id
-        threading.Thread(target=destroy_project_sync, args=(p_id,), daemon=True, name=f"destroy-{p_id[:8]}").start()
+        import threading, copy
+        destroy_ctx = {
+            "project_id": project.id,
+            "host_id": project.host_id,
+            "vni_map": copy.deepcopy(project.vni_map or {}),
+            "topology": copy.deepcopy(project.deployed_topology or project.topology or {}),
+            "dns_provider_id": project.dns_provider_id,
+            "domain": project.domain,
+        }
+        threading.Thread(target=destroy_project_sync, args=(destroy_ctx,), daemon=True, name=f"destroy-{project.id[:8]}").start()
 
     db.delete(project)
     db.commit()

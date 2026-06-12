@@ -162,6 +162,10 @@ export function generateMac(): string {
   return `52:54:00:${hex()}:${hex()}:${hex()}`;
 }
 
+export function setLatestVmStates(states: Record<string, string>) {
+  _latestVmStates = states;
+}
+
 export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string }): boolean {
   const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
   if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
@@ -558,6 +562,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           const deployed = get().deployedVmIds;
           const nodes = (t.nodes || []).map((n: Record<string, unknown>) => {
             if (n.type === "vmNode" && n.id) {
+              const wsState = _latestVmStates[n.id as string];
+              if (wsState) {
+                return { ...n, data: { ...(n.data as Record<string, unknown>), status: wsState } };
+              }
               const prev = prevStatusMap[n.id as string];
               if (prev) {
                 return { ...n, data: { ...(n.data as Record<string, unknown>), status: prev } };
@@ -1106,6 +1114,7 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
 let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSavedNodeCount = 0;
 let _loadingProject = false;
+let _latestVmStates: Record<string, string> = {};
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;

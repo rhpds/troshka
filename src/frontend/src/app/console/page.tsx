@@ -12,6 +12,9 @@ export default function ConsolePageWrapper() {
   );
 }
 
+let _activeRfb: Record<string, unknown> | null = null;
+let _activeToken: string | null = null;
+
 function ConsolePage() {
   const searchParams = useSearchParams();
   const vmId = searchParams.get("vm") || "";
@@ -26,6 +29,8 @@ function ConsolePage() {
   const [vmState, setVmState] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
   const [projectDeleted, setProjectDeleted] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [vmPasswords, setVmPasswords] = useState<{label: string; value: string}[]>([]);
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
@@ -65,16 +70,34 @@ function ConsolePage() {
     };
   }, []);
 
+  // Fetch VM password from topology
+  useEffect(() => {
+    if (!projectId || !vmId) return;
+    fetch(`/api/v1/projects/${projectId}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data?.topology?.nodes) return;
+        const vm = data.topology.nodes.find((n: any) => n.id === vmId && n.type === "vmNode");
+        if (!vm?.data) return;
+        const pw: {label: string; value: string}[] = [];
+        if (vm.data.ciCloudUserPassword) pw.push({ label: "cloud-user", value: vm.data.ciCloudUserPassword });
+        if (vm.data.ciRootPassword) pw.push({ label: "root", value: vm.data.ciRootPassword });
+        setVmPasswords(pw);
+      })
+      .catch(() => {});
+  }, [projectId, vmId]);
+
   // Fetch console token from API, retry if VM not running
   const fetchConsoleToken = useCallback(async (): Promise<string | null> => {
-    if (!projectId || !vmId) return null;
+    if (!projectId || !vmId || projectDeleted) return null;
     try {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console`);
+      if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
       if (data.token) return data.token;
     } catch { /* ignore */ }
     return null;
-  }, [projectId, vmId]);
+  }, [projectId, vmId, projectDeleted]);
 
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
@@ -111,9 +134,13 @@ function ConsolePage() {
 
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
       r.addEventListener("connect", () => {
+        _activeRfb = rfb;
+        _activeToken = consoleToken;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
       r.addEventListener("disconnect", () => {
+        _activeRfb = null;
+        _activeToken = null;
         if (mountedRef.current) {
           setStatus("Reconnecting...");
           setConsoleToken(null);
@@ -145,15 +172,18 @@ function ConsolePage() {
     return () => {
       mountedRef.current = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      try {
-        const rfb = rfbRef.current as { disconnect?: () => void; _rfbConnectionState?: string } | null;
-        if (rfb?.disconnect && rfb._rfbConnectionState !== "disconnected") rfb.disconnect();
-      } catch { /* ignore */ }
     };
   }, []);
 
   // When we have a token, connect. When we don't, poll for one.
+  // Module-level _activeRfb survives hot-reloads — skip reconnect if already connected.
   useEffect(() => {
+    if (_activeRfb && _activeToken) {
+      rfbRef.current = _activeRfb;
+      setConsoleToken(_activeToken);
+      setStatus("Connected");
+      return;
+    }
     if (consoleToken && RFBClass.current) {
       createRfb();
     } else if (!consoleToken) {
@@ -164,8 +194,10 @@ function ConsolePage() {
   useEffect(() => {
     if (ws.deleted) {
       setProjectDeleted(true);
-      setStatus("Project deleted");
       if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
+      _activeRfb = null;
+      _activeToken = null;
+      window.close();
     }
   }, [ws.deleted]);
 
@@ -321,6 +353,7 @@ function ConsolePage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ color: statusColor }}>{displayStatus}</span>
+          {toast && <span style={{ color: "#4ade80", fontSize: 12, animation: "fadeIn 0.2s" }}>{toast}</span>}
           {displayStatus === "Connected" && (
             <span
               title={focused ? "Keyboard active — typing goes to VM" : "Click console to activate keyboard"}
@@ -355,6 +388,32 @@ function ConsolePage() {
             style={{ ...btnStyle, background: scaled ? "rgba(74,222,128,0.15)" : "none", borderColor: scaled ? "#4ade80" : "#555" }}
           >
             {scaled ? "Scaled" : "1:1"}
+          </button>
+          <button
+            onClick={() => {
+              const r = rfbRef.current as Record<string, any> | null;
+              if (!r?._canvas) return;
+              const canvas = r._canvas as HTMLCanvasElement;
+              canvas.toBlob((blob) => {
+                if (!blob) return;
+                navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(() => {
+                  setToast("Screenshot copied");
+                  setTimeout(() => setToast(null), 2000);
+                }).catch(() => {
+                  const url = canvas.toDataURL("image/png");
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${vmName}-${new Date().toISOString().slice(0, 19)}.png`;
+                  a.click();
+                  setToast("Screenshot saved");
+                  setTimeout(() => setToast(null), 2000);
+                });
+              });
+            }}
+            style={btnStyle}
+            title="Copy screenshot to clipboard"
+          >
+            Screenshot
           </button>
           <button
             onClick={async (e) => {
@@ -401,11 +460,53 @@ function ConsolePage() {
                 if (needsShift) sendKey.call(r, shiftKeysym, "", false);
                 await delay(100);
               }
+              r.focus?.();
             }}
             style={btnStyle}
           >
             Paste
           </button>
+          {vmPasswords.map((pw) => (
+            <button
+              key={pw.label}
+              onClick={async (e) => {
+                (e.target as HTMLElement).blur();
+                const r = rfbRef.current as Record<string, any> | null;
+                if (!r) return;
+                const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
+                if (!sendKey) return;
+                const shiftChars: Record<string, number> = {
+                  "_": 0x005f, "~": 0x007e, "!": 0x0021, "@": 0x0040,
+                  "#": 0x0023, "$": 0x0024, "%": 0x0025, "^": 0x005e,
+                  "&": 0x0026, "*": 0x002a, "(": 0x0028, ")": 0x0029,
+                  "+": 0x002b, "{": 0x007b, "}": 0x007d, "|": 0x007c,
+                  ":": 0x003a, '"': 0x0022, "<": 0x003c, ">": 0x003e,
+                  "?": 0x003f,
+                };
+                const shiftKeysym = 0xffe1;
+                const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+                for (const ch of pw.value) {
+                  let keysym = ch.charCodeAt(0);
+                  if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
+                  const needsShift = ch in shiftChars || (ch >= "A" && ch <= "Z");
+                  if (needsShift) sendKey.call(r, shiftKeysym, "", true);
+                  sendKey.call(r, keysym, "", true);
+                  sendKey.call(r, keysym, "", false);
+                  if (needsShift) sendKey.call(r, shiftKeysym, "", false);
+                  await delay(100);
+                }
+                sendKey.call(r, 0xff0d, "", true);
+                sendKey.call(r, 0xff0d, "", false);
+                setToast(`${pw.label} password sent`);
+                setTimeout(() => setToast(null), 2000);
+                r.focus?.();
+              }}
+              style={{ ...btnStyle, fontSize: 11 }}
+              title={`Type ${pw.label} password + Enter`}
+            >
+              🔑 {pw.label}
+            </button>
+          ))}
           <button
             onClick={openKeyboard}
             style={{ ...btnStyle, display: "flex", alignItems: "center", gap: 4 }}

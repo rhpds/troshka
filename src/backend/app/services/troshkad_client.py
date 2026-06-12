@@ -67,62 +67,62 @@ def _verify_cert_fingerprint(conn, host):
         )
 
 
-def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT):
-    """Make an HTTPS request to a host's troshkad agent.
+def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, retries=3):
+    """Make an HTTPS request to a host's troshkad agent with automatic retry.
 
-    Args:
-        host: Host model instance (needs ip_address, agent_token, agent_cert_fingerprint)
-        method: HTTP method (GET, POST)
-        path: URL path (e.g., /health, /commands/vms/create)
-        body: Request body dict (will be JSON-encoded)
-        timeout: Request timeout in seconds
-
-    Returns:
-        Parsed JSON response dict
-
-    Raises:
-        TroshkadError: On connection, auth, cert mismatch, or server errors
+    Retries on connection errors and 503s. Non-retryable errors (auth, 4xx) fail immediately.
     """
-    data = json.dumps(body).encode() if body else None
-    headers = {
-        "Authorization": f"Bearer {host.agent_token}",
-    }
-    if data:
-        headers["Content-Type"] = "application/json"
+    last_error = None
+    for attempt in range(retries):
+        data = json.dumps(body).encode() if body else None
+        headers = {
+            "Authorization": f"Bearer {host.agent_token}",
+        }
+        if data:
+            headers["Content-Type"] = "application/json"
 
-    ctx = _make_ssl_context()
-    conn = http.client.HTTPSConnection(
-        host.ip_address, TROSHKAD_PORT, context=ctx, timeout=timeout,
-    )
+        ctx = _make_ssl_context()
+        conn = http.client.HTTPSConnection(
+            host.ip_address, TROSHKAD_PORT, context=ctx, timeout=timeout,
+        )
 
-    try:
-        conn.request(method, path, body=data, headers=headers)
-        # Verify cert fingerprint BEFORE reading response
-        _verify_cert_fingerprint(conn, host)
-        resp = conn.getresponse()
-        resp_body = resp.read().decode()
+        try:
+            conn.request(method, path, body=data, headers=headers)
+            _verify_cert_fingerprint(conn, host)
+            resp = conn.getresponse()
+            resp_body = resp.read().decode()
 
-        if resp.status >= 400:
-            try:
-                error_body = json.loads(resp_body)
-            except (json.JSONDecodeError, ValueError):
-                error_body = {"error": resp_body}
-            raise TroshkadError(
-                f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
-                status_code=resp.status,
-                response=error_body,
-            )
-        return json.loads(resp_body)
-    except TroshkadError:
-        raise
-    except ConnectionError as e:
-        raise TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
-    except TimeoutError as e:
-        raise TroshkadError(f"Connection to troshkad on {host.ip_address} timed out: {e}")
-    except Exception as e:
-        raise TroshkadError(f"troshkad request failed: {e}")
-    finally:
-        conn.close()
+            if resp.status >= 400:
+                try:
+                    error_body = json.loads(resp_body)
+                except (json.JSONDecodeError, ValueError):
+                    error_body = {"error": resp_body}
+                err = TroshkadError(
+                    f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
+                    status_code=resp.status,
+                    response=error_body,
+                )
+                if resp.status == 503 and attempt < retries - 1:
+                    last_error = err
+                    logger.info("troshkad %s returned 503, retrying in 5s (%d/%d)...", host.ip_address, attempt + 1, retries)
+                    time.sleep(5)
+                    continue
+                raise err
+            return json.loads(resp_body)
+        except TroshkadError:
+            raise
+        except (ConnectionError, ConnectionResetError, OSError, TimeoutError) as e:
+            last_error = TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
+            if attempt < retries - 1:
+                logger.info("troshkad %s connection failed, retrying in 5s (%d/%d)...", host.ip_address, attempt + 1, retries)
+                time.sleep(5)
+                continue
+            raise last_error
+        except Exception as e:
+            raise TroshkadError(f"troshkad request failed: {e}")
+        finally:
+            conn.close()
+    raise last_error or TroshkadError(f"troshkad request failed after {retries} retries")
 
 
 def start_job(host, path, params, request_timeout=30):

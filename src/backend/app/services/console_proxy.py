@@ -192,6 +192,14 @@ def close_proxy(vm_full_name: str, host_ip: str, vnc_port: int):
     _cleanup_proxy(key)
 
 
+def close_proxies_for_project(project_id: str):
+    prefix = f"troshka-{project_id[:8]}"
+    with _lock:
+        keys = [k for k in _active_proxies if prefix in k]
+    for key in keys:
+        _cleanup_proxy(key)
+
+
 def close_all_proxies():
     with _lock:
         keys = list(_active_proxies.keys())

@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, setLatestVmStates } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -56,7 +56,10 @@ export default function ProjectCanvasPage() {
   // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
   useEffect(() => {
     fetch(`/api/v1/projects/${projectId}`)
-      .then((r) => r.ok ? r.json() : null)
+      .then((r) => {
+        if (r.status === 404) { router.push("/projects"); return null; }
+        return r.ok ? r.json() : null;
+      })
       .then((data) => {
         if (!data) return;
         setProjectName(data.name);
@@ -169,6 +172,7 @@ export default function ProjectCanvasPage() {
 
   useEffect(() => {
     if (!Object.keys(ws.vmStates).length) return;
+    setLatestVmStates(ws.vmStates);
 
     const ids = new Set<string>(Object.keys(ws.vmStates));
     const hasUndeployed = Object.values(ws.vmStates).some((s) => s === "not_found");

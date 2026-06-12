@@ -813,7 +813,14 @@ def wipe_host(host_id: str, user: User = Depends(require_role("admin")), db: Ses
     for p in projects:
         if p.state in ("active", "stopped"):
             try:
-                destroy_project_sync(p.id)
+                destroy_project_sync({
+                    "project_id": p.id,
+                    "host_id": p.host_id,
+                    "vni_map": p.vni_map or {},
+                    "topology": p.deployed_topology or p.topology or {},
+                    "dns_provider_id": p.dns_provider_id,
+                    "domain": p.domain,
+                })
                 results["projects_destroyed"] += 1
             except Exception:
                 logger.warning("Failed to destroy project %s during wipe", p.id[:8])

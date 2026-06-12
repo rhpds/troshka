@@ -640,7 +640,7 @@ export default function ProjectsPage() {
         const sorted = Array.isArray(data) ? data.sort((a: Project, b: Project) => a.name.localeCompare(b.name)) : [];
         setProjects(sorted);
         setLoading(false);
-        // Clean up deleting IDs for projects that no longer exist
+        // Clean up deleting IDs only when project disappears from the list
         const projectIds = new Set(sorted.map((p: Project) => p.id));
         setDeletingProjects(prev => {
           const updated = new Set(prev);

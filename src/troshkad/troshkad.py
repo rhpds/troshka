@@ -197,7 +197,7 @@ def _dispatch_job(command, params):
     if _draining:
         return 503, {"status": "draining", "error": "server is draining"}
 
-    max_jobs = _config.get("max_concurrent_jobs", 10)
+    max_jobs = _config.get("max_concurrent_jobs", max(20, os.cpu_count() or 20))
     if _running_job_count() >= max_jobs:
         return 503, {"error": f"max_concurrent_jobs ({max_jobs}) reached"}
 
