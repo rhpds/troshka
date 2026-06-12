@@ -171,6 +171,16 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
 
         report = {"host_id": host_id, "host_ip": host.ip_address}
 
+        # Skip GC if any project is deploying on this host
+        from app.models.project import Project
+        deploying = db.query(Project).filter(
+            Project.host_id == host_id,
+            Project.state.in_(("deploying", "reconfiguring")),
+        ).count()
+        if deploying > 0:
+            report["skipped"] = f"{deploying} project(s) deploying — skipping GC"
+            return report
+
         report["capacity"] = sync_host_capacity(db, host)
 
         if not host.ip_address or host.agent_status != "connected":
