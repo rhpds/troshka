@@ -232,6 +232,24 @@ def _setup_bastion_cloud_init(
                 "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
             )
 
+        # Quiesce script — gracefully shuts down all OCP nodes for pattern save
+        node["data"]["ciUserData"] += (
+            "  - |\n"
+            "    cat > /home/cloud-user/quiesce-ocp.sh << 'QEOF'\n"
+            "    #!/bin/bash\n"
+            "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
+            "    echo 'Shutting down nodes...'\n"
+            "    for node in $(oc get nodes -o jsonpath='{.items[*].status.addresses[?(@.type==\"InternalIP\")].address}'); do\n"
+            "      echo \"  Shutting down $node...\"\n"
+            "      ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null core@$node 'sudo shutdown -h now' 2>/dev/null &\n"
+            "    done\n"
+            "    wait\n"
+            "    echo 'All nodes shutting down. Safe to stop project in ~30 seconds.'\n"
+            "    QEOF\n"
+            "    chown cloud-user:cloud-user /home/cloud-user/quiesce-ocp.sh\n"
+            "    chmod 755 /home/cloud-user/quiesce-ocp.sh\n"
+        )
+
         # Launch OCP installer in background
         node["data"]["ciUserData"] += (
             "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
@@ -240,7 +258,82 @@ def _setup_bastion_cloud_init(
         # Install graphical desktop in background, start it when done (non-blocking)
         # Disable GNOME initial setup wizard for all users
         node["data"]["ciUserData"] += (
-            "  - nohup sh -c 'dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox; systemctl disable gnome-initial-setup-first-login.service gnome-initial-setup-first-login.target 2>/dev/null; systemctl set-default graphical.target; systemctl isolate graphical.target' > /var/log/desktop-install.log 2>&1 &\n"
+            "  - |\n"
+            "    nohup sh -c '\n"
+            "      dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox\n"
+            "      dnf remove -y gnome-initial-setup\n"
+            "      mkdir -p /etc/skel/.config && echo yes > /etc/skel/.config/gnome-initial-setup-done\n"
+            "      for u in root cloud-user; do\n"
+            "        d=$(eval echo ~$u)\n"
+            "        mkdir -p $d/.config && echo yes > $d/.config/gnome-initial-setup-done\n"
+            "        chown -R $u:$u $d/.config\n"
+            "      done\n"
+            "      if rpm -q ptyxis >/dev/null 2>&1; then TERM_APP=org.gnome.Ptyxis.desktop; else TERM_APP=org.gnome.Terminal.desktop; fi\n"
+            "      sudo -u cloud-user dbus-run-session bash -c '\n"
+            "        dconf write /org/gnome/shell/favorite-apps \"[\\\"'\"$TERM_APP\"'\\\", \\\"firefox.desktop\\\"]\"\n"
+            "        dconf write /org/gnome/desktop/interface/overlay-scrolling false\n"
+            "        dconf write /org/gnome/desktop/screensaver/lock-enabled false\n"
+            "        dconf write /org/gnome/desktop/session/idle-delay \"uint32 0\"\n"
+            "        dconf write /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type \"\\\"nothing\\\"\"\n"
+            "        dconf write /org/gnome/settings-daemon/plugins/power/idle-dim false\n"
+            "      ' 2>/dev/null\n"
+            "      sed -i '\"'\"'s/^\\[daemon\\]/[daemon]\\nAutomaticLoginEnable=True\\nAutomaticLogin=cloud-user/'\"'\"' /etc/gdm/custom.conf\n"
+            "      systemctl set-default graphical.target\n"
+            "      systemctl isolate graphical.target\n"
+            "    ' > /var/log/desktop-install.log 2>&1 &\n"
+        )
+
+        # Firefox enterprise policies + auto-login for OCP console
+        console_url = f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
+        oauth_url = f"https://oauth-openshift.apps.{cluster_name}.{base_domain}"
+        node["data"]["ciUserData"] += (
+            "  - |\n"
+            "    mkdir -p /etc/firefox/policies\n"
+            "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
+            "    {\n"
+            "      \"policies\": {\n"
+            f"        \"Homepage\": {{\"URL\": \"{console_url}\", \"Locked\": false, \"StartPage\": \"homepage\"}},\n"
+            "        \"OverrideFirstRunPage\": \"\",\n"
+            "        \"OverridePostUpdatePage\": \"\",\n"
+            "        \"UserMessaging\": {\"WhatsNew\": false, \"ExtensionRecommendations\": false, \"FeatureRecommendations\": false, \"UrlbarInterventions\": false, \"SkipOnboarding\": true, \"MoreFromMozilla\": false},\n"
+            "        \"DisableTelemetry\": true,\n"
+            "        \"Certificates\": {\"ImportEnterpriseRoots\": true},\n"
+            "        \"NoDefaultBookmarks\": true,\n"
+            "        \"DontCheckDefaultBrowser\": true\n"
+            "      }\n"
+            "    }\n"
+            "    FPEOF\n"
+        )
+        # AutoConfig: inject kubeadmin saved login into Firefox on first launch
+        node["data"]["ciUserData"] += (
+            "  - |\n"
+            "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
+            "    if [ -n \"$FIREFOX_DIR\" ]; then\n"
+            "      echo 'pref(\"general.config.filename\", \"firefox.cfg\");' > $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
+            "      echo 'pref(\"general.config.obscure_value\", 0);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
+            "      cat > $FIREFOX_DIR/firefox.cfg << 'ACEOF'\n"
+            "// AutoConfig\n"
+            "try {\n"
+            "  var dominated = false;\n"
+            "  try { Components.classes[\"@mozilla.org/login-manager;1\"].getService(Components.interfaces.nsILoginManager).getAllLogins({}).forEach(function(l) { if (l.hostname.indexOf(\"oauth-openshift\") >= 0) dominated = true; }); } catch(e) {}\n"
+            "  if (!dominated) {\n"
+            "    var file = Components.classes[\"@mozilla.org/file/local;1\"].createInstance(Components.interfaces.nsIFile);\n"
+            "    file.initWithPath(\"/home/cloud-user/ocp-install/auth/kubeadmin-password\");\n"
+            "    if (file.exists()) {\n"
+            "      var fis = Components.classes[\"@mozilla.org/network/file-input-stream;1\"].createInstance(Components.interfaces.nsIFileInputStream);\n"
+            "      fis.init(file, 1, 0, 0);\n"
+            "      var sis = Components.classes[\"@mozilla.org/scriptableinputstream;1\"].createInstance(Components.interfaces.nsIScriptableInputStream);\n"
+            "      sis.init(fis);\n"
+            "      var pw = sis.read(sis.available()).trim();\n"
+            "      sis.close();\n"
+            f"      var loginInfo = Components.classes[\"@mozilla.org/login-manager/loginInfo;1\"].createInstance(Components.interfaces.nsILoginInfo);\n"
+            f"      loginInfo.init(\"{oauth_url}\", \"{oauth_url}/login\", null, \"kubeadmin\", pw, \"inputUsername\", \"inputPassword\");\n"
+            "      Components.classes[\"@mozilla.org/login-manager;1\"].getService(Components.interfaces.nsILoginManager).addLogin(loginInfo);\n"
+            "    }\n"
+            "  }\n"
+            "} catch(e) {}\n"
+            "ACEOF\n"
+            "    fi\n"
         )
 
         # Static IP on BMC NIC
@@ -428,6 +521,8 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'\n"
         "    echo ''\n"
         + ("    # Auto-run agent-based installer\n"
+           "    INSTALL_START=$(date +%s)\n"
+           "    echo \"Install started at $(date)\"\n"
            f"    BMC_PASS='{bmc_password}'\n"
            "    echo 'Creating agent ISO...'\n"
            "    cd /home/cloud-user/ocp-install\n"
@@ -467,6 +562,13 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
            "    \n"
            "    echo 'Waiting for cluster installation to complete...'\n"
            "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1\n"
+           "    INSTALL_END=$(date +%s)\n"
+           "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
+           "    echo ''\n"
+           "    echo '================================================'\n"
+           "    echo \"Install completed at $(date)\"\n"
+           "    echo \"Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec\"\n"
+           "    echo '================================================'\n"
            if auto_install else "") +
         "    SCRIPTEOF\n"
         "    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n"
