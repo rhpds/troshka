@@ -257,24 +257,20 @@ def _gw_net_edge(gw_node, net_node):
 
 TEMPLATES = {
     "ocp-sno": {
-        "name": "OpenShift SNO",
+        "name": "OpenShift SNO (Agent Installer)",
         "description": "Single Node OpenShift — 8 vCPU, 32 GB RAM",
         "category": "openshift",
+        "install_method": "agent",
     },
     "ocp-compact": {
-        "name": "OpenShift Compact 3-Node",
+        "name": "OpenShift Compact 3-Node (Agent Installer)",
         "description": "3 combined control plane + worker nodes — 8 vCPU, 16 GB each",
         "category": "openshift",
+        "install_method": "agent",
     },
     "ocp-standard": {
-        "name": "OpenShift Standard 3+2",
+        "name": "OpenShift Standard 3+2 (Agent Installer)",
         "description": "3 control plane + 2 worker nodes",
-        "category": "openshift",
-        "install_method": "ipi",
-    },
-    "ocp-agent-compact": {
-        "name": "OpenShift Compact 3-Node (Agent)",
-        "description": "3 combined CP + worker nodes — agent-based install, no nested virt",
         "category": "openshift",
         "install_method": "agent",
     },
@@ -324,7 +320,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
         edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
 
-    elif template_id in ("ocp-compact", "ocp-agent-compact"):
+    elif template_id == "ocp-compact":
         vm_x_start = 150
         bast_x = vm_x_start + 3 * VM_SPACING
         net_x = vm_x_start + int(1.5 * VM_SPACING) - 120

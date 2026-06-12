@@ -201,7 +201,15 @@ def _setup_bastion_cloud_init(
         )
 
         # Install script
-        node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp, password)
+        # Collect BMC IPs for the install script
+        bmc_ips = []
+        for tnode in topology.get("nodes", []):
+            td = tnode.get("data", {})
+            if tnode.get("type") == "vmNode" and td.get("bmcEnabled") and td.get("bmcIp"):
+                bmc_ips.append(td["bmcIp"])
+        bmc_ips_str = " ".join(bmc_ips)
+
+        node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp, password, bmc_ips_str)
 
         # Write install-config.yaml
         if install_config:
@@ -247,7 +255,8 @@ def _setup_bastion_cloud_init(
 
 def _build_install_config(topology, template_id, cluster_name, base_domain,
                           api_vip, ingress_vip, bmc_password, pull_secret_json, ssh_pub_key):
-    num_workers = 0 if template_id in ("ocp-compact", "ocp-agent-compact") else 2
+    num_workers = 0 if template_id in ("ocp-compact", "ocp-sno") else 2
+    num_masters = 1 if template_id == "ocp-sno" else 3
 
     ic_lines = [
         "apiVersion: v1",
@@ -260,7 +269,7 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
         "    architecture: amd64",
         "controlPlane:",
         "  name: master",
-        "  replicas: 3",
+        f"  replicas: {num_masters}",
         "  architecture: amd64",
         "networking:",
         "  networkType: OVNKubernetes",
@@ -342,7 +351,7 @@ def _build_agent_config(topology, cluster_name, base_domain):
     return "\n".join(ac_lines)
 
 
-def _build_install_script(ocp_version, auto_install, bmc_password=""):
+def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_str=""):
     return (
         "  - |\n"
         "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
@@ -412,7 +421,7 @@ def _build_install_script(ocp_version, auto_install, bmc_password=""):
            "    ISO_URL=\"http://${BASTION_IP}:8080/agent.x86_64.iso\"\n"
            "    echo \"ISO URL: $ISO_URL\"\n"
            "    \n"
-           "    for BMC_IP in 192.168.100.10 192.168.100.11 192.168.100.12; do\n"
+           f"    for BMC_IP in {bmc_ips_str}; do\n"
            "      echo \"Mounting ISO on BMC $BMC_IP...\"\n"
            "      # Get system UUID from sushy\n"
            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
