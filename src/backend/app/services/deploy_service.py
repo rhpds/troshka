@@ -572,8 +572,23 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
         if progress_callback:
             done_count = len(completed) + len(failed)
-            done_bytes = int(total_expected * done_count / max(len(active_jobs), 1))
-            progress_callback(done_bytes, total_expected)
+            # Try to get byte-level progress from running jobs
+            in_progress = []
+            for aj in active_jobs:
+                if aj["job_id"] not in completed and aj["job_id"] not in failed:
+                    try:
+                        job = poll_job(host, aj["job_id"])
+                        output = job.get("output", [])
+                        for line in reversed(output):
+                            if "%" in line and ("/" in line or "MiB" in line or "GiB" in line):
+                                in_progress.append(line.strip().split("\r")[-1].strip())
+                                break
+                    except TroshkadError:
+                        pass
+            detail = f"{done_count}/{len(active_jobs)}"
+            if in_progress:
+                detail += f" | {in_progress[0]}"
+            progress_callback(detail, None)
 
         if len(completed) + len(failed) == last_completed_count:
             stale_polls += 1
@@ -1129,9 +1144,9 @@ def deploy_project_async(project_id: str):
         _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: caching library images", project_id[:8])
-        def _deploy_dl_progress(downloaded, total):
-            pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-            _deploy_progress[project_id] = {"step": "downloading images", "detail": pct}
+        def _deploy_dl_progress(detail, _total):
+            _deploy_progress[project_id] = {"step": "downloading images", "detail": str(detail)}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
             notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
