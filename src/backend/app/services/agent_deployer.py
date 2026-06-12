@@ -348,7 +348,7 @@ else
     echo "No system libvirt, attempting full install"
     /opt/troshka/venv/bin/pip install $PIP_ARGS sushy-tools virtualbmc
 fi
-/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect
+/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli
 echo "BMC venv ready at /opt/troshka/venv"
 
 # Output credentials for backend to capture (tab-separated to avoid colon ambiguity)

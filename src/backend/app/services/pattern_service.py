@@ -90,12 +90,13 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
                 disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
 
                 s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-                presigned = s3_storage.generate_presigned_upload_url(s3_key, expires=7200)
+                bucket = s3_storage._bucket()
+                s3_url = f"s3://{bucket}/{s3_key}"
                 cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
                 disks_params.append({
                     "disk_path": disk_path,
-                    "presigned_url": presigned,
+                    "s3_url": s3_url,
                     "cache_path": cache_path,
                 })
 
@@ -117,8 +118,13 @@ def capture_pattern_disks(pattern_id: str, project_id: str) -> None:
             }
 
             try:
+                from app.services.s3_storage import _get_s3_config
+                creds = _get_s3_config()
                 job_id = start_job(host, "/patterns/capture-direct", {
                     "disks": disks_params,
+                    "aws_access_key_id": creds.get("access_key_id", ""),
+                    "aws_secret_access_key": creds.get("secret_access_key", ""),
+                    "aws_region": creds.get("region", "us-east-1"),
                 })
                 job = wait_for_job(host, job_id, timeout=3600)
 

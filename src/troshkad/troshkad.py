@@ -2865,12 +2865,15 @@ COMMAND_HANDLERS["patterns/capture"] = _handle_pattern_capture
 def _handle_pattern_capture_direct(job, params):
     """Capture disks by path — doesn't need running VM domains."""
     disks = params.get("disks", [])
+    aws_access_key = params.get("aws_access_key_id", "")
+    aws_secret_key = params.get("aws_secret_access_key", "")
+    aws_region = params.get("aws_region", "us-east-1")
     import tempfile as _tf
 
     result_disks = []
     for disk_info in disks:
         disk_path = _validate_path(disk_info["disk_path"])
-        presigned_url = _validate_url(disk_info["presigned_url"])
+        s3_url = disk_info["s3_url"]
         cache_path = _validate_path(disk_info["cache_path"])
 
         if not os.path.exists(disk_path):
@@ -2879,10 +2882,26 @@ def _handle_pattern_capture_direct(job, params):
         with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
             tmp_flat = os.path.join(tmpdir, "flat.qcow2")
             job["output"].append(f"Flattening {os.path.basename(disk_path)}...")
-            _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+            _run_cmd(job, ["qemu-img", "convert", "-c", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
 
             job["output"].append(f"Uploading to S3...")
-            _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+            env = os.environ.copy()
+            if aws_access_key:
+                env["AWS_ACCESS_KEY_ID"] = aws_access_key
+                env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
+                env["AWS_DEFAULT_REGION"] = aws_region
+            aws_bin = "/opt/troshka/venv/bin/aws"
+            if not os.path.exists(aws_bin):
+                aws_bin = "aws"
+            upload_proc = subprocess.run(
+                [aws_bin, "s3", "cp", tmp_flat, s3_url],
+                capture_output=True, text=True, timeout=3600, env=env,
+            )
+            for line in upload_proc.stdout.strip().split("\n"):
+                if line.strip():
+                    job["output"].append(line)
+            if upload_proc.returncode != 0:
+                raise RuntimeError(f"S3 upload failed: {upload_proc.stderr.strip()}")
 
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             job["output"].append(f"Caching to {cache_path}...")
