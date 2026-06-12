@@ -297,6 +297,7 @@ def _setup_bastion_cloud_init(
             "        dconf write /org/gnome/shell/extensions/dash-to-dock/show-mounts false\n"
             "      ' 2>/dev/null\n"
             "      sed -i '\"'\"'s/^\\[daemon\\]/[daemon]\\nAutomaticLoginEnable=True\\nAutomaticLogin=cloud-user/'\"'\"' /etc/gdm/custom.conf\n"
+            "      echo \"export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\" >> /home/cloud-user/.bashrc\n"
             "      systemctl set-default graphical.target\n"
             "      systemctl isolate graphical.target\n"
             "    ' > /var/log/desktop-install.log 2>&1 &\n"
