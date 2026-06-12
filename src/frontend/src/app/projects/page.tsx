@@ -79,6 +79,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [bastionBmcIp, setBastionBmcIp] = useState("192.168.100.50");
   const [bmcIpError, setBmcIpError] = useState("");
   const [autoDeploy, setAutoDeploy] = useState(true);
+  const [autoStart, setAutoStart] = useState(true);
   const [clusterName, setClusterName] = useState("ocp");
   const [baseDomain, setBaseDomain] = useState("ocp.local");
   const [ocpVersion, setOcpVersion] = useState("");
@@ -160,7 +161,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         const resp = await fetch(`${API_BASE}/api/v1/patterns/${selectedPattern}/deploy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, auto_deploy: autoDeploy, auto_start: autoStart }),
         });
         if (resp.ok) {
           const data = await resp.json();
@@ -575,6 +576,20 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                       <div style={{ padding: "8px 12px", fontSize: 13, opacity: 0.5 }}>No patterns found</div>
                     )}
                   </div>
+                )}
+              </div>
+            )}
+            {mode === "pattern" && selectedPattern && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                  <input type="checkbox" checked={autoDeploy} onChange={(e) => { setAutoDeploy(e.target.checked); if (!e.target.checked) setAutoStart(false); }} />
+                  Deploy immediately
+                </label>
+                {autoDeploy && (
+                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
+                    <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+                    Start VMs after deploy
+                  </label>
                 )}
               </div>
             )}

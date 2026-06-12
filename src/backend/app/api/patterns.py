@@ -504,6 +504,12 @@ def deploy_pattern(
     db.commit()
     db.refresh(project)
 
+    if body.auto_deploy:
+        from app.services.deploy_service import deploy_project_async
+        project.state = "deploying"
+        db.commit()
+        threading.Thread(target=deploy_project_async, args=(project.id, body.auto_start), daemon=True, name=f"deploy-{project.id[:8]}").start()
+
     return {
         "id": project.id,
         "name": project.name,

@@ -78,6 +78,8 @@ class PatternDeployRequest(BaseModel):
     guid: str | None = None
     domain: str | None = None
     dns_provider_id: str | None = None
+    auto_deploy: bool = True
+    auto_start: bool = True
 
 
 class PatternBulkDeployRequest(BaseModel):

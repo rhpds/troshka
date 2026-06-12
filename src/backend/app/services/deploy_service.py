@@ -970,7 +970,7 @@ def _project_deleted(project_id: str) -> bool:
         check_s.close()
 
 
-def deploy_project_async(project_id: str):
+def deploy_project_async(project_id: str, auto_start: bool = True):
     """Background thread: deploy a project's topology to a host."""
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -1237,26 +1237,27 @@ def deploy_project_async(project_id: str):
                 _deploy_progress.pop(project_id, None)
                 return
 
-        # Step 5: Start VMs
-        _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-        logger.info("Deploy %s: starting VMs", project_id[:8])
-        start_failures = _start_vms_via_troshkad(host, project_id, topology)
+        # Step 5: Start VMs (unless auto_start is disabled)
+        if auto_start:
+            _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
+            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            logger.info("Deploy %s: starting VMs", project_id[:8])
+            start_failures = _start_vms_via_troshkad(host, project_id, topology)
 
-        if start_failures:
-            failed_names = ", ".join(name for name, _ in start_failures)
-            error_msg = f"Failed to start VMs: {failed_names}"
-            logger.error("Deploy %s: %s", project_id[:8], error_msg)
-            project.state = "error"
-            project.deploy_error = error_msg
-            from app.services.placement import sync_host_capacity
-            sync_host_capacity(s, host)
-            s.commit()
-            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
-            _deploy_progress.pop(project_id, None)
-            return
+            if start_failures:
+                failed_names = ", ".join(name for name, _ in start_failures)
+                error_msg = f"Failed to start VMs: {failed_names}"
+                logger.error("Deploy %s: %s", project_id[:8], error_msg)
+                project.state = "error"
+                project.deploy_error = error_msg
+                from app.services.placement import sync_host_capacity
+                sync_host_capacity(s, host)
+                s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+                _deploy_progress.pop(project_id, None)
+                return
 
-        project.state = "active"
+        project.state = "active" if auto_start else "stopped"
         project.deploy_error = None
         project.deployed_topology = project.topology
 
