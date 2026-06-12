@@ -234,7 +234,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
         finally:
             s.close()
 
-    threading.Thread(target=_auto_install, daemon=True).start()
+    threading.Thread(target=_auto_install, daemon=True, name="auto-install").start()
 
     return host
 
@@ -350,7 +350,7 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
         finally:
             s.close()
 
-    threading.Thread(target=_install, daemon=True).start()
+    threading.Thread(target=_install, daemon=True, name=f"install-{h_id[:8]}").start()
     return {"status": "installing"}
 
 
@@ -578,7 +578,7 @@ def poweron_host(host_id: str, body: PowerOnRequest | None = None, user: User = 
         finally:
             s.close()
 
-    threading.Thread(target=_wait_and_reinstall, daemon=True).start()
+    threading.Thread(target=_wait_and_reinstall, daemon=True, name=f"reinstall-{host_id[:8]}").start()
 
     return {"status": "starting"}
 
@@ -769,7 +769,7 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
         finally:
             s.close()
 
-    threading.Thread(target=_wait_terminated, daemon=True).start()
+    threading.Thread(target=_wait_terminated, daemon=True, name=f"terminate-{host_id[:8]}").start()
 
 
 @router.get("/{host_id}/gc/preview")
@@ -943,7 +943,7 @@ def update_agent(host_id: str, force: bool = False, user: User = Depends(require
         finally:
             s.close()
 
-    threading.Thread(target=_push, daemon=True).start()
+    threading.Thread(target=_push, daemon=True, name=f"update-agent-{host_id[:8]}").start()
     return {"status": "updating", "version": version, "force": force}
 
 

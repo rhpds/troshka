@@ -322,7 +322,7 @@ def deploy_project(
 
     # Deploy in background
     import threading
-    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True).start()
+    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True, name=f"deploy-{project.id[:8]}").start()
 
     return {
         "status": "deploying",
@@ -351,7 +351,7 @@ def stop_project(
     notify_project(project_id, {"type": "project-state", "state": "stopping", "deploy_error": None})
 
     import threading
-    threading.Thread(target=stop_project_async, args=(project.id,), daemon=True).start()
+    threading.Thread(target=stop_project_async, args=(project.id,), daemon=True, name=f"stop-{project.id[:8]}").start()
 
     return {"status": "stopping"}
 
@@ -407,7 +407,7 @@ def start_project(
     notify_project(project_id, {"type": "project-state", "state": "starting", "deploy_error": None})
 
     import threading
-    threading.Thread(target=start_project_async, args=(project.id,), daemon=True).start()
+    threading.Thread(target=start_project_async, args=(project.id,), daemon=True, name=f"start-{project.id[:8]}").start()
 
     return {"status": "starting"}
 
@@ -577,7 +577,7 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
                 s.close()
 
         notify_project(project_id, {"type": "vm-state", "states": {vm_id: "starting"}, "progress": {}})
-        threading.Thread(target=_start_infra_then_vm, daemon=True).start()
+        threading.Thread(target=_start_infra_then_vm, daemon=True, name=f"start-vm-{vm_id[:8]}").start()
         return {"action": "start", "success": True, "starting_project": True}
 
     # Start VM in background — re-cache images if needed, then virsh start
@@ -608,7 +608,7 @@ def start_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user)
         finally:
             s.close()
 
-    threading.Thread(target=_cache_and_start, daemon=True).start()
+    threading.Thread(target=_cache_and_start, daemon=True, name=f"cache-start-{project.id[:8]}").start()
     return {"action": "start", "success": True}
 
 
@@ -1179,7 +1179,7 @@ def reconfigure_project(
         finally:
             s.close()
 
-    threading.Thread(target=_do_reconfigure, daemon=True).start()
+    threading.Thread(target=_do_reconfigure, daemon=True, name=f"reconfig-{p_id[:8]}").start()
     return {"status": "reconfiguring"}
 
 
@@ -1297,7 +1297,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
         finally:
             s.close()
 
-    threading.Thread(target=_do_redeploy, daemon=True).start()
+    threading.Thread(target=_do_redeploy, daemon=True, name=f"redeploy-{p_id[:8]}").start()
     return {"status": "redeploying"}
 
 
@@ -1367,7 +1367,7 @@ def redeploy_project(
     db.commit()
 
     import threading
-    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True).start()
+    threading.Thread(target=deploy_project_async, args=(project.id,), daemon=True, name=f"deploy-{project.id[:8]}").start()
 
     return {
         "status": "deploying",
@@ -1430,7 +1430,7 @@ def delete_project(
     if project.host_id and project.state in ("active", "stopped", "error"):
         import threading
         p_id = project.id
-        threading.Thread(target=destroy_project_sync, args=(p_id,), daemon=True).start()
+        threading.Thread(target=destroy_project_sync, args=(p_id,), daemon=True, name=f"destroy-{p_id[:8]}").start()
 
     db.delete(project)
     db.commit()

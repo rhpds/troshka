@@ -6,7 +6,9 @@ logging.getLogger("uvicorn.access").propagate = True
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+
+from app.core.auth import require_role
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import config
@@ -135,3 +137,12 @@ app.include_router(dns_provider_routes.router, prefix="/api/v1")
 @app.get("/api/v1/health")
 def health_check():
     return {"status": "healthy", "app": config.app.name, "version": "0.1.0"}
+
+
+@app.get("/api/v1/debug/threads")
+def debug_threads(user=Depends(require_role("admin"))):
+    import threading
+    threads = []
+    for t in threading.enumerate():
+        threads.append({"name": t.name, "daemon": t.daemon, "alive": t.is_alive()})
+    return {"count": len(threads), "threads": threads}
