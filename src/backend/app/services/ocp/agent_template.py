@@ -177,7 +177,7 @@ def _setup_bastion_cloud_init(
                 "    enabled=1\n"
                 "    gpgcheck=0\n"
                 "    EOF\n"
-                "  - dnf install -y git ansible-core python3-pip bind-utils tmux\n"
+                "  - dnf install -y git ansible-core python3-pip bind-utils tmux nmstate\n"
             )
 
         # Pull secret
