@@ -134,7 +134,11 @@ def create_project_from_template(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid bastion BMC IP")
 
-    from app.services.ocp.ipi_template import customize_topology as customize_ocp
+    install_method = TEMPLATES.get(template_id, {}).get("install_method", "ipi")
+    if install_method == "agent":
+        from app.services.ocp.agent_template import customize_topology as customize_ocp
+    else:
+        from app.services.ocp.ipi_template import customize_topology as customize_ocp
     customize_ocp(topology, template_id, {
         "cluster_name": body.get("cluster_name", "ocp"),
         "base_domain": body.get("base_domain", "ocp.local"),
