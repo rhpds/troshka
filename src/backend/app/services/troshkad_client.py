@@ -175,7 +175,13 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
     last_output_len = 0
 
     while time.time() < deadline:
-        job = poll_job(host, job_id)
+        try:
+            job = poll_job(host, job_id)
+        except TroshkadError as e:
+            if e.status_code == 404:
+                logger.warning("Job %s not found on %s (agent may have restarted), assuming completed", job_id[:8], host.ip_address)
+                return {"job_id": job_id, "status": "completed", "output": [], "result": {}}
+            raise
 
         # Log new output lines
         new_lines = job.get("output", [])[last_output_len:]
