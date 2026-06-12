@@ -673,6 +673,7 @@ def restart_vm(project_id: str, vm_id: str, user: User = Depends(get_current_use
 
 @router.get("/{project_id}/vms/{vm_id}/console")
 def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.services.console_proxy import create_console_token
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
     vnc_port = troshkad_get_vnc_port(host, dom)
@@ -684,9 +685,9 @@ def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current
     if "error" in proxy:
         return {"error": proxy["error"]}
 
+    token = create_console_token(proxy["ws_port"], user.id, project_id, vm_id)
     return {
-        "ws_port": proxy["ws_port"],
-        "ws_url": proxy["ws_url"],
+        "token": token,
     }
 
 
@@ -1424,6 +1425,22 @@ def delete_project(
         raise HTTPException(status_code=403, detail="Access denied")
 
     notify_project(project_id, {"type": "project-deleted"})
+
+    # Close any active console proxies for this project's VMs
+    from app.services.console_proxy import close_proxy
+    topo = project.deployed_topology or project.topology or {}
+    if project.host_id:
+        _host = db.query(Host).filter_by(id=project.host_id).first()
+        if _host:
+            for node in topo.get("nodes", []):
+                if node.get("type") == "vmNode":
+                    dom = _domain_name(project_id, node["id"])
+                    try:
+                        vnc_port = troshkad_get_vnc_port(_host, dom)
+                        if vnc_port:
+                            close_proxy(dom, _host.ip_address, vnc_port)
+                    except Exception:
+                        pass
 
     # Release EIPs before deleting DB record (delete cascades null the FK)
     from app.models.elastic_ip import ElasticIp

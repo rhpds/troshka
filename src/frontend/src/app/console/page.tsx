@@ -19,12 +19,13 @@ function ConsolePage() {
   const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
-  const [wsPort, setWsPort] = useState<number | null>(null);
+  const [consoleToken, setConsoleToken] = useState<string | null>(null);
   const [scaled, setScaled] = useState(true);
   const [focused, setFocused] = useState(false);
   const [openMenu, setOpenMenu] = useState<"linux" | "windows" | "power" | null>(null);
   const [vmState, setVmState] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
+  const [projectDeleted, setProjectDeleted] = useState(false);
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
@@ -64,49 +65,34 @@ function ConsolePage() {
     };
   }, []);
 
-  // Fetch WebSocket port from API, retry if VM not running
-  const fetchConsolePort = useCallback(async (): Promise<number | null> => {
+  // Fetch console token from API, retry if VM not running
+  const fetchConsoleToken = useCallback(async (): Promise<string | null> => {
     if (!projectId || !vmId) return null;
     try {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console`);
       const data = await resp.json();
-      if (data.ws_port) return data.ws_port;
+      if (data.token) return data.token;
     } catch { /* ignore */ }
     return null;
   }, [projectId, vmId]);
 
   const pollForPort = useCallback(() => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsolePort().then((port) => {
-      if (!mountedRef.current) return;
-      if (port) {
-        setWsPort(port);
+    fetchConsoleToken().then((token) => {
+      if (!mountedRef.current || projectDeleted) return;
+      if (token) {
+        setConsoleToken(token);
       } else {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
       }
     });
-  }, [fetchConsolePort]);
+  }, [fetchConsoleToken, projectDeleted]);
 
-  const probe = useCallback(() => {
-    if (!wsPort || !mountedRef.current) return;
-    const testWs = new WebSocket(`ws://localhost:${wsPort}`);
-    testWs.onopen = () => {
-      testWs.close();
-      if (mountedRef.current) createRfb();
-    };
-    testWs.onerror = () => {
-      testWs.close();
-      if (mountedRef.current) {
-        // Port might be stale, re-fetch from API
-        setWsPort(null);
-        pollForPort();
-      }
-    };
-  }, [wsPort]);
+  const wsUrl = consoleToken ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v1/console/ws/${consoleToken}` : null;
 
   const createRfb = useCallback(() => {
-    if (!wsPort || !canvasRef.current || !RFBClass.current || !mountedRef.current) return;
+    if (!wsUrl || !canvasRef.current || !RFBClass.current || !mountedRef.current) return;
 
     try {
       const old = rfbRef.current as { disconnect?: () => void; _rfbConnectionState?: string } | null;
@@ -117,7 +103,7 @@ function ConsolePage() {
 
     try {
       const RFB = RFBClass.current as new (target: HTMLElement, url: string, opts: Record<string, unknown>) => Record<string, unknown>;
-      const rfb = new RFB(canvasRef.current!, `ws://localhost:${wsPort}`, {});
+      const rfb = new RFB(canvasRef.current!, wsUrl, {});
       rfbRef.current = rfb;
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
@@ -130,16 +116,18 @@ function ConsolePage() {
       r.addEventListener("disconnect", () => {
         if (mountedRef.current) {
           setStatus("Reconnecting...");
-          reconnectTimer.current = setTimeout(probe, 3000);
+          setConsoleToken(null);
+          reconnectTimer.current = setTimeout(pollForPort, 3000);
         }
       });
     } catch {
       if (mountedRef.current) {
         setStatus("Reconnecting...");
-        reconnectTimer.current = setTimeout(probe, 3000);
+        setConsoleToken(null);
+        reconnectTimer.current = setTimeout(pollForPort, 3000);
       }
     }
-  }, [wsPort, probe]);
+  }, [wsUrl, pollForPort]);
 
   // Load noVNC module once
   useEffect(() => {
@@ -164,14 +152,22 @@ function ConsolePage() {
     };
   }, []);
 
-  // When we have a port, connect. When we don't, poll for one.
+  // When we have a token, connect. When we don't, poll for one.
   useEffect(() => {
-    if (wsPort && RFBClass.current) {
+    if (consoleToken && RFBClass.current) {
       createRfb();
-    } else if (!wsPort) {
+    } else if (!consoleToken) {
       pollForPort();
     }
-  }, [wsPort, createRfb, pollForPort]);
+  }, [consoleToken, createRfb, pollForPort]);
+
+  useEffect(() => {
+    if (ws.deleted) {
+      setProjectDeleted(true);
+      setStatus("Project deleted");
+      if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
+    }
+  }, [ws.deleted]);
 
   useEffect(() => {
     document.title = `Console: ${vmName}`;

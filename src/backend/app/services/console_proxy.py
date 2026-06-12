@@ -4,12 +4,15 @@ Console proxy — tunnels VNC from hosts to browser via WebSocket.
 For each VM console request:
 1. Creates an SSH tunnel from a local port to the VNC port on the host
 2. Runs websockify to bridge that local port to a WebSocket
-3. Returns the WebSocket URL for noVNC to connect to
+3. Returns a one-time token for authenticated WebSocket access
 
-Processes are tracked and cleaned up after a timeout.
+Tokens are validated by the /api/v1/console/ws/{token} WebSocket endpoint,
+which proxies to the local websockify port. Raw websockify ports are never
+exposed to the browser.
 """
 import logging
 import os
+import secrets
 import subprocess
 import tempfile
 import threading
@@ -18,9 +21,40 @@ import time
 logger = logging.getLogger(__name__)
 
 _active_proxies: dict[str, dict] = {}
+_console_tokens: dict[str, dict] = {}
 _lock = threading.Lock()
 
 PROXY_TIMEOUT = 3600  # 1 hour
+TOKEN_EXPIRY = 300  # 5 minutes to connect
+
+
+def create_console_token(ws_port: int, user_id: str, project_id: str, vm_id: str) -> str:
+    token = secrets.token_urlsafe(32)
+    with _lock:
+        _console_tokens[token] = {
+            "ws_port": ws_port,
+            "user_id": user_id,
+            "project_id": project_id,
+            "vm_id": vm_id,
+            "created_at": time.time(),
+        }
+    return token
+
+
+def validate_console_token(token: str) -> dict | None:
+    with _lock:
+        info = _console_tokens.get(token)
+        if not info:
+            return None
+        if time.time() - info["created_at"] > TOKEN_EXPIRY:
+            _console_tokens.pop(token, None)
+            return None
+        return info
+
+
+def consume_console_token(token: str) -> dict | None:
+    with _lock:
+        return _console_tokens.pop(token, None)
 
 
 def _find_free_port() -> int:
