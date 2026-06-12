@@ -2239,10 +2239,14 @@ def _handle_network_full_teardown(job, params):
             except OSError:
                 pass
 
-    # Dummy bridges (br-{vni}) in host namespace are never deleted during teardown.
-    # They are zero-overhead kernel entries needed by libvirt for VM validation.
-    # Deleting them can break other projects if VNIs are recycled.
-    # The GC or host wipe cleans them up when no VMs exist.
+    # Delete bridges in host namespace (safe since VNIs are never recycled)
+    for vni in vni_list:
+        bridge = f"br-{vni}"
+        try:
+            _run_cmd(job, ["ip", "link", "delete", bridge], timeout=10)
+            job["output"].append(f"Removed bridge: {bridge}")
+        except RuntimeError:
+            pass
 
     return {"project_id": project_id, "status": "torn_down"}
 
