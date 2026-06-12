@@ -58,3 +58,4 @@ ansible/vars/*-host.yml
 
 # Troshkad test artifacts
 *.py.new
+src/backend/.vni_hwm
