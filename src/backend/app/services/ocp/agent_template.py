@@ -293,7 +293,7 @@ def _setup_bastion_cloud_init(
             "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
             "    #!/bin/bash\n"
             "    set -x\n"
-            "    dnf remove -y gnome-initial-setup gnome-software 2>/dev/null\n"
+            "    dnf remove -y gnome-initial-setup gnome-software gnome-tour 2>/dev/null\n"
             "    systemctl disable --now rhsmcertd 2>/dev/null\n"
             "    systemctl mask rhsmcertd 2>/dev/null\n"
             "    mkdir -p /etc/skel/.config\n"
