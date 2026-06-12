@@ -14,6 +14,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
   const [name, setName] = useState(`${projectName}-pattern`);
   const [description, setDescription] = useState("");
   const [stopVMs, setStopVMs] = useState(hasRunningVMs);
+  const [restartAfter, setRestartAfter] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
@@ -81,6 +82,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           description,
           visibility: "private",
           source_project_id: projectId,
+          restart_after: restartAfter,
         }),
       });
       if (resp.ok) {
@@ -96,7 +98,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
               if (pat.state === "available") break;
               if (pat.state === "error") {
                 setError("Disk capture failed");
-                if (hasRunningVMs && stopVMs) {
+                if (hasRunningVMs && stopVMs && restartAfter) {
                   setSavingStatus("Restarting VMs...");
                   await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
                 }
@@ -106,7 +108,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             }
           }
         }
-        if (hasRunningVMs && stopVMs) {
+        if (hasRunningVMs && stopVMs && restartAfter) {
           setSavingStatus("Restarting VMs...");
           await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
         }
@@ -150,8 +152,14 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             <div>For best results, stop all VMs before creating a pattern. Running VMs may have inconsistent disk state.</div>
             <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
               <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} disabled={saving} />
-              Stop VMs before capture, restart after
+              Stop VMs before capture
             </label>
+            {stopVMs && (
+              <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+                <input type="checkbox" checked={restartAfter} onChange={(e) => setRestartAfter(e.target.checked)} disabled={saving} />
+                Restart project after capture
+              </label>
+            )}
           </div>
         )}
 

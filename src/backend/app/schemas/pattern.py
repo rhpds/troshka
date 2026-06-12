@@ -23,6 +23,7 @@ class PatternCreate(BaseModel):
     visibility: str = "private"
     tags: dict | None = None
     source_project_id: str | None = None
+    restart_after: bool = True
     topology: dict | None = None
     disk_mappings: list[dict] | None = None
 

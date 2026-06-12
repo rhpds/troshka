@@ -239,7 +239,7 @@ def create_pattern(
         from app.services.pattern_service import capture_pattern_disks
         threading.Thread(
             target=capture_pattern_disks,
-            args=(pattern.id, body.source_project_id),
+            args=(pattern.id, body.source_project_id, body.restart_after),
             daemon=True,
         ).start()
 
