@@ -95,6 +95,10 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             const stateResp = await fetch(`/api/v1/patterns/${data.id}`);
             if (stateResp.ok) {
               const pat = await stateResp.json();
+              if (pat.capture_progress) {
+                const cp = pat.capture_progress;
+                setSavingStatus(cp.detail || cp.step || "Capturing disks...");
+              }
               if (pat.state === "available") break;
               if (pat.state === "error") {
                 setError("Disk capture failed");
