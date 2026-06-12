@@ -71,7 +71,7 @@ def _remap_topology(topology: dict) -> dict:
             new_nic_id = f"nic-{uuid.uuid4()}"
             handle_id_map[old_nic_id] = new_nic_id
             nic["id"] = new_nic_id
-            nic["mac"] = _generate_mac()
+            # Preserve MACs — CoreOS/ignition bakes network config with specific MACs
 
         for dc in data.get("diskControllers", []):
             old_dc_id = dc["id"]
