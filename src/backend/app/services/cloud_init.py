@@ -82,14 +82,9 @@ def generate_userdata(vm_data: dict) -> str:
         for pkg in all_packages:
             lines.append(f"  - {pkg}")
 
-    # Eject seed ISO (cidata) after boot — skip other CDROMs (e.g. RHEL DVD)
-    lines.append("runcmd:")
-    if root_hash or cloud_user_hash:
-        lines.append("  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true")
-    lines.append("  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true")
-
-    # Custom user-data — append runcmd items to existing runcmd section
+    # Custom user-data — split into top-level sections and runcmd items
     custom = vm_data.get("ciUserData", "").strip()
+    custom_runcmd_lines = []
     if custom:
         in_runcmd = False
         for line in custom.split("\n"):
@@ -99,12 +94,19 @@ def generate_userdata(vm_data: dict) -> str:
                 continue
             if in_runcmd:
                 if line.startswith("  ") or line.startswith("\t"):
-                    lines.append(line)
+                    custom_runcmd_lines.append(line)
                 elif stripped and not stripped.startswith("#"):
                     in_runcmd = False
                     lines.append(line)
             elif stripped and not stripped.startswith("#cloud-config"):
                 lines.append(line)
+
+    # runcmd — merged from base + custom
+    lines.append("runcmd:")
+    if root_hash or cloud_user_hash:
+        lines.append("  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true")
+    lines.append("  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true")
+    lines.extend(custom_runcmd_lines)
 
     result = "\n".join(lines)
 
