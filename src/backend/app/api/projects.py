@@ -377,7 +377,7 @@ def force_stop_project(
     for vm in vms:
         dom = _domain_name(project_id, vm["id"])
         try:
-            job_id = start_job(host, "/vms/destroy", {"domain_name": dom})
+            job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
             wait_for_job(host, job_id, timeout=30, poll_interval=2)
         except TroshkadError:
             logger.warning("Failed to force-stop VM %s", dom)

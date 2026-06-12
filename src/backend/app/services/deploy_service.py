@@ -1295,31 +1295,7 @@ def stop_project_async(project_id: str):
             except TroshkadError as e:
                 logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
 
-        # Tear down BMC endpoints before network teardown
-        bmc_config = _extract_bmc_config(topology, project_id)
-        if bmc_config:
-            logger.info("Stop %s: tearing down BMC endpoints", project_id[:8])
-            try:
-                _teardown_bmc_via_troshkad(host, project_id)
-            except Exception:
-                logger.warning("Stop %s: BMC teardown failed (non-fatal)", project_id[:8])
-
-        # Tear down networks via troshkad (serialized to avoid nftables contention)
-        vni_map = project.vni_map or {}
-        if vni_map:
-            with _network_lock:
-                _teardown_networks_via_troshkad(host, project_id, vni_map)
-
-        # Disassociate EIPs (but don't release — keep for redeploy)
-        from app.models.elastic_ip import ElasticIp
-        from app.services.eip_service import disassociate_eip
-        project_eips = s.query(ElasticIp).filter_by(project_id=project_id, state="associated").all()
-        for eip in project_eips:
-            try:
-                disassociate_eip(s, eip, host)
-            except Exception:
-                logger.warning("Failed to disassociate EIP %s on stop", eip.public_ip)
-
+        # BMC, networks, and EIPs stay intact on stop — only torn down on delete
         project.state = "stopped"
         project.deploy_error = None
         s.commit()
