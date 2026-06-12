@@ -237,6 +237,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>{t.description}</div>
+                    {t.deploy_time && <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>⏱ {t.deploy_time}</div>}
                   </div>
                 ))}
               </div>

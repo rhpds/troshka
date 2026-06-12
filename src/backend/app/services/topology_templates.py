@@ -261,18 +261,21 @@ TEMPLATES = {
         "description": "Single Node OpenShift — 8 vCPU, 32 GB RAM, 50 GB disk",
         "category": "openshift",
         "install_method": "agent",
+        "deploy_time": "~25 min",
     },
     "ocp-compact": {
         "name": "OpenShift Compact 3-Node (Agent Installer)",
         "description": "3 combined CP + worker nodes — 4 vCPU, 16 GB, 50 GB each",
         "category": "openshift",
         "install_method": "agent",
+        "deploy_time": "~40 min",
     },
     "ocp-standard": {
         "name": "OpenShift Standard 3+2 (Agent Installer)",
         "description": "3 CP (4 vCPU, 16 GB) + 2 workers (4 vCPU, 16 GB)",
         "category": "openshift",
         "install_method": "agent",
+        "deploy_time": "~45 min",
     },
 }
 
