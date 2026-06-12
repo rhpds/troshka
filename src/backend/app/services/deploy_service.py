@@ -1213,17 +1213,14 @@ def deploy_project_async(project_id: str):
             except TroshkadError as e:
                 logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
 
-        # Fire all VM definition jobs in parallel
-        vm_jobs = []
+        # Create VM definitions sequentially (virt-install storage pool race condition)
         for vm in vms:
             job_id = _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
             if job_id:
-                vm_jobs.append(job_id)
-        for jid in vm_jobs:
-            try:
-                wait_for_job(host, jid, timeout=300)
-            except TroshkadError as e:
-                logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
+                try:
+                    wait_for_job(host, job_id, timeout=300)
+                except TroshkadError as e:
+                    logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
         bmc_config = _extract_bmc_config(topology, project_id)
