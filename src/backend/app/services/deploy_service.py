@@ -1010,6 +1010,12 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         topology = project.topology or {}
         vni_map = project.vni_map or {}
+        if not vni_map:
+            from app.services.vxlan import allocate_vnis_for_project
+            vni_map = allocate_vnis_for_project(s, topology)
+            project.vni_map = vni_map
+            s.commit()
+            logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
 
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
