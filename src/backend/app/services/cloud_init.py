@@ -72,6 +72,10 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append("    sudo: ALL=(ALL) NOPASSWD:ALL")
         lines.append("    groups: wheel")
 
+    # Ensure guest agent is running for host-guest communication
+    lines.append("packages:")
+    lines.append("  - qemu-guest-agent")
+
     # Eject seed ISO (cidata) after boot — skip other CDROMs (e.g. RHEL DVD)
     lines.append("runcmd:")
     if root_hash or cloud_user_hash:

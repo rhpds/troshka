@@ -129,7 +129,7 @@ function ConsolePage() {
       const rfb = new RFB(canvasRef.current!, wsUrl, {});
       rfbRef.current = rfb;
       rfb.scaleViewport = true;
-      rfb.resizeSession = true;
+      rfb.resizeSession = false;
       rfb.focusOnClick = true;
 
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
@@ -619,7 +619,7 @@ function ConsolePage() {
         transition: "background 0.2s",
       }} />
       <div style={{ flex: 1, position: "relative", background: "#000" }}>
-        <div ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+        <div ref={canvasRef} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
         {displayStatus !== "Connected" && (
           <div style={{
             position: "absolute", inset: 0,
