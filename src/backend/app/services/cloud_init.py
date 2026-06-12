@@ -105,11 +105,12 @@ def generate_userdata(vm_data: dict) -> str:
     try:
         parsed = yaml.safe_load(result)
         if not isinstance(parsed, dict):
-            logger.error("Generated cloud-config is not a YAML mapping")
+            raise ValueError("Generated cloud-config is not a YAML mapping")
         elif "runcmd" in parsed and not isinstance(parsed["runcmd"], list):
-            logger.error("Generated cloud-config runcmd is not a list")
-    except yaml.YAMLError as e:
+            raise ValueError("Generated cloud-config runcmd is not a list")
+    except (yaml.YAMLError, ValueError) as e:
         logger.error("Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---", e, result)
+        raise ValueError(f"Cloud-init user-data is invalid YAML: {e}")
 
     # Check for duplicate top-level keys (safe_load silently takes the last one)
     top_keys = re.findall(r'^([a-zA-Z_][a-zA-Z0-9_-]*):', result, re.MULTILINE)
