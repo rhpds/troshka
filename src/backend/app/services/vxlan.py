@@ -9,6 +9,7 @@ VNI ranges:
   0-999: reserved
 """
 import logging
+import os
 
 from sqlalchemy.orm import Session
 
@@ -58,7 +59,18 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
     ]
 
     used_vnis = _get_all_used_vnis(db)
-    next_vni = max(used_vnis, default=VNI_MIN - 1) + 1
+    db_max = max(used_vnis, default=VNI_MIN - 1)
+
+    # Read high-water mark from host file (survives DB wipes)
+    hwm_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".vni_hwm")
+    file_hwm = VNI_MIN - 1
+    try:
+        with open(hwm_file) as f:
+            file_hwm = int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        pass
+
+    next_vni = max(db_max, file_hwm) + 1
 
     vni_map = {}
     for node in network_nodes:
@@ -68,6 +80,15 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
         used_vnis.add(next_vni)
         logger.info("Allocated VNI %d for network %s", next_vni, node["data"].get("name"))
         next_vni += 1
+
+    # Persist high-water mark
+    if vni_map:
+        hwm = max(vni_map.values())
+        try:
+            with open(hwm_file, "w") as f:
+                f.write(str(hwm))
+        except OSError:
+            pass
 
     return vni_map
 
