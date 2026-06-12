@@ -202,11 +202,12 @@ def _gateway_node(x, y, port_forwards=None):
     }
 
 
-def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0):
+def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0, vm_handle="top"):
     """Edge from network/LB node to VM's NIC.
 
     VM handles are rendered as nic-{nic.id}-top and dp-{dc.id}-left
     where nic.id is already 'nic-{uuid}', so the full handle is 'nic-nic-{uuid}-top'.
+    vm_handle: "top" or "bottom" — controls which side of the VM the edge connects to.
     """
     nic_id = tgt_vm["data"]["nics"][nic_index]["id"]
     styles = {
@@ -218,8 +219,8 @@ def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0):
         "id": _id(),
         "source": src_node["id"],
         "target": tgt_vm["id"],
-        "sourceHandle": "bottom",
-        "targetHandle": f"nic-{nic_id}-top",
+        "sourceHandle": "bottom" if vm_handle == "top" else "top",
+        "targetHandle": f"nic-{nic_id}-{vm_handle}",
         "type": "smoothstep",
         "style": styles.get(style_type, styles["network"]),
         "animated": True,
@@ -265,14 +266,14 @@ TEMPLATES = {
     },
     "ocp-compact": {
         "name": "OpenShift Compact 3-Node (Agent Installer)",
-        "description": "3 combined CP + worker nodes — 4 vCPU, 16 GB, 50 GB each",
+        "description": "3 combined CP + worker nodes — 4 vCPU, 16 GB, 120 GB each",
         "category": "openshift",
         "install_method": "agent",
         "deploy_time": "~40 min",
     },
     "ocp-standard": {
         "name": "OpenShift Standard 3+2 (Agent Installer)",
-        "description": "3 CP (4 vCPU, 16 GB) + 2 workers (4 vCPU, 16 GB)",
+        "description": "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)",
         "category": "openshift",
         "install_method": "agent",
         "deploy_time": "~45 min",
@@ -314,14 +315,14 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         net = _net_node("cluster-network", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(vm_x_start + VM_SPACING, NET_ROW_Y, bmc_password)
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
-        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
+        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, disk_gb=120, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
             vm_x_start + VM_SPACING, VM_ROW_Y)
         nodes = [net, bmc, gw, sno_vm, sno_disk, bast_vm, bast_disk]
         edges = [sno_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
         edges.append(_net_edge(net, sno_vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
 
     elif template_id == "ocp-compact":
         vm_x_start = 150
@@ -332,7 +333,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         vm_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             vm_data.append((vm, disk, disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
         nodes = [net, bmc, gw, bast_vm, bast_disk]
@@ -344,7 +345,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         for vm, _, _ in vm_data:
             edges.append(_net_edge(net, vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
 
     elif template_id == "ocp-standard":
         vm_x_start = 150
@@ -355,11 +356,11 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         cp_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
+            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
             cp_data.append((vm, disk, disk_edge))
         w_data = []
         for i in range(2):
-            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, bmc_ip=f"192.168.100.{20 + i}", cluster_ip=f"10.0.0.{20 + i}")
+            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{20 + i}", cluster_ip=f"10.0.0.{20 + i}")
             w_data.append((vm, disk, disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
         nodes = [net, bmc, gw, bast_vm, bast_disk]
@@ -371,7 +372,7 @@ def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
         for vm, _, _ in cp_data + w_data:
             edges.append(_net_edge(net, vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1))
+        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
 
     else:
         raise ValueError(f"Unknown template: {template_id}")

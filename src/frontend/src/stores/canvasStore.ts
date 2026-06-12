@@ -97,6 +97,8 @@ interface CanvasState {
   projectState: string;
   deployedVmIds: Set<string>;
   deployedDiskSizes: Record<string, number>;
+  deployedNodeData: Record<string, string>;
+  deployedEdgeKey: string;
   showMinimap: boolean;
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
@@ -160,6 +162,23 @@ export function generateMac(): string {
   return `52:54:00:${hex()}:${hex()}:${hex()}`;
 }
 
+export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string }): boolean {
+  const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
+  if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
+  const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
+  const deployedNodeIds = Object.keys(deployedNodeData).sort().join(",");
+  if (currentNodeIds !== deployedNodeIds) return true;
+  const edgeKey = edges.map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`).sort().join("|");
+  if (edgeKey !== deployedEdgeKey) return true;
+  for (const n of nodes) {
+    const deployed = deployedNodeData[n.id];
+    if (!deployed) return true;
+    const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+    if (JSON.stringify(stable) !== deployed) return true;
+  }
+  return false;
+}
+
 export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   nodes: [],
   edges: [],
@@ -172,6 +191,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   projectState: "draft" as string,
   deployedVmIds: new Set<string>(),
   deployedDiskSizes: {} as Record<string, number>,
+  deployedNodeData: {} as Record<string, string>,
+  deployedEdgeKey: "",
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
@@ -209,6 +230,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         edges: get().edges.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target)),
         selectedNodeId: removedIds.has(get().selectedNodeId || "") ? null : get().selectedNodeId,
       });
+      set({ topologyDirty: computeTopologyDirty(get()) });
     } else {
       set({ nodes: updatedNodes });
     }
@@ -226,6 +248,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().pushHistory();
     }
     set({ edges: applyEdgeChanges(changes, get().edges) });
+    if (removals.length > 0) set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   onConnect: (connection) => {
@@ -377,13 +400,15 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         },
         get().edges,
       ),
-      topologyDirty: true,
     });
+    set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   addNode: (node) => {
     get().pushHistory();
-    set({ nodes: [...get().nodes, node], topologyDirty: true });
+    const nodes = [...get().nodes, node];
+    set({ nodes });
+    set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   updateNodeData: (nodeId, data) => {
@@ -395,10 +420,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           ? { ...node, data: { ...node.data, ...data } }
           : node,
       ),
-      ...(isStatusOnly ? {} : { topologyDirty: true }),
       // Force React Flow to re-route edges by creating new edge references
       ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
     });
+    if (!isStatusOnly) set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   setAllVmStatus: (status) => {
@@ -420,8 +445,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
       selectedNodeId:
         get().selectedNodeId === nodeId ? null : get().selectedNodeId,
-      topologyDirty: true,
     });
+    set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   setSelectedNode: (nodeId) => {
@@ -564,6 +589,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         if (project?.state === "draft") {
           delete (window as any).__deployedTopology;
         }
+
 
         _loadingProject = false;
       })
@@ -802,6 +828,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         else topNetIds.add(src.id);
       }
     }
+    // BMC networks always go to bottom
+    for (const n of networks) {
+      if ((n.data as Record<string, any>).networkType === "bmc") {
+        topNetIds.delete(n.id);
+        bottomNetIds.add(n.id);
+      }
+    }
     // Unconnected networks go to top
     for (const n of networks) {
       if (!topNetIds.has(n.id) && !bottomNetIds.has(n.id)) topNetIds.add(n.id);
@@ -903,14 +936,27 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
     currentY = maxVmBottom + gapY;
 
-    // Bottom networks row — centered under the VM area
+    // Bottom networks row — position under the connected VM when possible
     if (bottomNets.length > 0) {
-      const vmAreaWidth = cursorX - 40;
-      const netTotalWidth = bottomNets.length * (netW + gapX) - gapX;
-      const netStartX = 40 + (vmAreaWidth - netTotalWidth) / 2;
-      bottomNets.forEach((n, i) => {
-        updated.set(n.id, { x: Math.max(40, netStartX + i * (netW + gapX)), y: currentY });
-      });
+      const unplacedBottom: typeof bottomNets = [];
+      for (const n of bottomNets) {
+        const connVms = networkToVms.get(n.id) || [];
+        const connVmPos = connVms.map((vid) => updated.get(vid)).filter(Boolean);
+        if (connVmPos.length > 0) {
+          const avgX = connVmPos.reduce((sum, p) => sum + p!.x, 0) / connVmPos.length;
+          updated.set(n.id, { x: avgX, y: currentY });
+        } else {
+          unplacedBottom.push(n);
+        }
+      }
+      if (unplacedBottom.length > 0) {
+        const vmAreaWidth = cursorX - 40;
+        const netTotalWidth = unplacedBottom.length * (netW + gapX) - gapX;
+        const netStartX = 40 + (vmAreaWidth - netTotalWidth) / 2;
+        unplacedBottom.forEach((n, i) => {
+          updated.set(n.id, { x: Math.max(40, netStartX + i * (netW + gapX)), y: currentY });
+        });
+      }
       currentY += netH + gapY;
     }
 
@@ -922,11 +968,29 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       });
     }
 
+    // Fix edge handles for bottom networks: VM bottom → network top
+    const bottomNetIdSet = new Set(bottomNets.map((n) => n.id));
+    const updatedEdges = edges.map((e) => {
+      const src = nodes.find((n) => n.id === e.source);
+      const tgt = nodes.find((n) => n.id === e.target);
+      if (!src || !tgt) return e;
+      if (src.type === "networkNode" && tgt.type === "vmNode" && bottomNetIdSet.has(src.id)) {
+        const handle = (e.targetHandle || "").replace(/-top$/, "-bottom");
+        return { ...e, sourceHandle: "top", targetHandle: handle };
+      }
+      if (tgt.type === "networkNode" && src.type === "vmNode" && bottomNetIdSet.has(tgt.id)) {
+        const handle = (e.sourceHandle || "").replace(/-top$/, "-bottom");
+        return { ...e, sourceHandle: handle, targetHandle: "top" };
+      }
+      return e;
+    });
+
     set({
       nodes: nodes.map((n) => {
         const pos = updated.get(n.id);
         return pos ? { ...n, position: pos } : n;
       }),
+      edges: updatedEdges,
     });
   },
 }), {

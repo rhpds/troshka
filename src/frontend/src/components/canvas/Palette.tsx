@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useCanvasStore } from "@/stores/canvasStore";
 
 interface PaletteItemDef {
   type: string;
@@ -169,7 +170,25 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void }) {
+  const [showDesc, setShowDesc] = useState(false);
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [showPasswords, setShowPasswords] = useState(false);
+  const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
+  const nodes = useCanvasStore((s) => s.nodes);
+  const passwords = React.useMemo(() => {
+    const result: { label: string; value: string }[] = [];
+    for (const n of nodes) {
+      const d = n.data as Record<string, any>;
+      if (n.type === "vmNode" && d.ciCloudUserPassword) {
+        result.push({ label: `${d.name || d.label || n.id} (cloud-user)`, value: d.ciCloudUserPassword });
+      }
+      if (n.type === "networkNode" && d.networkType === "bmc" && d.bmcPassword) {
+        result.push({ label: "BMC", value: d.bmcPassword });
+      }
+    }
+    return result;
+  }, [nodes]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [snapshots, setSnapshots] = useState<SnapshotItem[]>([]);
   const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
@@ -199,6 +218,62 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps }: { onOpe
 
   return (
     <div className="canvas-palette">
+      {projectDescription && (
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+          <div
+            style={{ fontSize: 11, padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--pf-t--global--text--color--subtle)" }}
+            onClick={() => setShowDesc(!showDesc)}
+          >
+            <span>INFO</span>
+            <span style={{ fontSize: 9 }}>{showDesc ? "▾" : "▸"}</span>
+          </div>
+          {showDesc && (
+            editingDesc ? (
+              <div style={{ padding: "0 12px 8px" }}>
+                <textarea
+                  autoFocus
+                  defaultValue={projectDescription}
+                  style={{ width: "100%", fontSize: 11, lineHeight: 1.6, background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 4, padding: "4px 6px", resize: "vertical", minHeight: 60 }}
+                  onBlur={(e) => { setEditingDesc(false); if (onDescriptionChange && e.target.value !== projectDescription) onDescriptionChange(e.target.value); }}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditingDesc(false); }}
+                />
+              </div>
+            ) : (
+              <div
+                style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", padding: "0 12px 8px", lineHeight: 1.6, cursor: "pointer" }}
+                onClick={() => setEditingDesc(true)}
+                title="Click to edit"
+              >
+                {projectDescription.split(" | ").map((part, i) => <div key={i}>{part}</div>)}
+              </div>
+            )
+          )}
+        </div>
+      )}
+      {passwords.length > 0 && (
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+          <div
+            style={{ fontSize: 11, padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--pf-t--global--text--color--subtle)" }}
+            onClick={() => setShowPasswords(!showPasswords)}
+          >
+            <span>PASSWORDS</span>
+            <span style={{ fontSize: 9 }}>{showPasswords ? "▾" : "▸"}</span>
+          </div>
+          {showPasswords && (
+            <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
+              {passwords.map((pw, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                  <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>{pw.label}</span>
+                  <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                    onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has(pw.label)) s.delete(pw.label); else s.add(pw.label); return s; })}
+                  >{revealedPasswords.has(pw.label) ? pw.value : "••••••"}</code>
+                  <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw.value)} title="Copy">Copy</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {sections.map((section, sIdx) => (
         <React.Fragment key={section.title}>
           {sIdx > 0 && <div className="palette-divider" />}

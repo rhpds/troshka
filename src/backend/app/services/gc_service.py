@@ -186,17 +186,18 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             + len(orphans.get("orphan_domains", []))
             + len(orphans.get("orphan_bridges", []))
             + len(orphans.get("orphan_namespaces", []))
-            + len(orphans.get("cache_items", []))
             + len(orphans.get("orphaned_bmc_project_ids", []))
         )
         report["orphans_found"] = total_orphans
+        report["cache_items_found"] = len(orphans.get("cache_items", []))
 
-        if total_orphans > 0 and not dry_run:
+        cache_count = len(orphans.get("cache_items", []))
+        if (total_orphans > 0 or cache_count > 0) and not dry_run:
             cleanup = clean_orphans(host, orphans)
             report["cleanup"] = cleanup
-            log.info("Host %s GC: cleaned %d orphans", host_id[:8], cleanup["cleaned"])
-        elif total_orphans > 0:
-            report["cleanup"] = {"dry_run": True, "would_clean": total_orphans}
+            log.info("Host %s GC: cleaned %d orphans, %d cache items", host_id[:8], cleanup["cleaned"], cache_count)
+        elif total_orphans > 0 or cache_count > 0:
+            report["cleanup"] = {"dry_run": True, "would_clean": total_orphans + cache_count}
         else:
             report["cleanup"] = {"cleaned": 0}
             log.info("Host %s GC: no orphans found", host_id[:8])

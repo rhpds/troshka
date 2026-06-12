@@ -593,6 +593,33 @@ def _handle_vm_create(job, params):
 COMMAND_HANDLERS["vms/create"] = _handle_vm_create
 
 
+def _delete_vm_disks(job, domain):
+    """Delete disk files for a domain before undefining it.
+    Files are owned by qemu:qemu, so delete as qemu user to avoid NFS root_squash issues."""
+    try:
+        result = subprocess.run(
+            ["virsh", "domblklist", domain, "--details"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] == "disk" and parts[3].startswith("/"):
+                path = parts[3]
+                try:
+                    subprocess.run(["sudo", "-u", "qemu", "rm", "-f", "--", path], timeout=5, check=True)
+                    job["output"].append(f"Deleted disk: {path}")
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    try:
+                        os.remove(path)
+                        job["output"].append(f"Deleted disk (root): {path}")
+                    except Exception:
+                        job["output"].append(f"Warning: could not delete {path}")
+    except Exception:
+        job["output"].append("Warning: could not list domain disks, undefine may leave orphan files")
+
+
 def _handle_vm_destroy(job, params):
     domain = _validate_domain_name(params["domain_name"])
     # Destroy (force stop) — may fail if already stopped, that's OK
@@ -600,7 +627,8 @@ def _handle_vm_destroy(job, params):
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
     except RuntimeError:
         job["output"].append("Domain may already be stopped, continuing with undefine")
-    _run_cmd(job, ["virsh", "undefine", domain, "--nvram", "--remove-all-storage"], timeout=30)
+    _delete_vm_disks(job, domain)
+    _run_cmd(job, ["virsh", "undefine", domain, "--nvram"], timeout=30)
     return {"domain": domain, "status": "destroyed"}
 
 COMMAND_HANDLERS["vms/destroy"] = _handle_vm_destroy
@@ -1048,7 +1076,7 @@ COMMAND_HANDLERS["vms/reconfigure"] = _handle_vm_reconfigure
 
 
 def _handle_vm_undefine(job, params):
-    """Undefine a VM: force stop if running, then undefine."""
+    """Undefine a VM: force stop if running, delete disks, then undefine."""
     domain = _validate_domain_name(params["domain_name"])
     remove_storage = params.get("remove_storage", True)
 
@@ -1058,12 +1086,10 @@ def _handle_vm_undefine(job, params):
     except RuntimeError:
         job["output"].append(f"Domain {domain} may already be stopped")
 
-    # Build undefine command
-    cmd = ["virsh", "undefine", domain, "--nvram"]
     if remove_storage:
-        cmd.append("--remove-all-storage")
+        _delete_vm_disks(job, domain)
 
-    _run_cmd(job, cmd, timeout=30)
+    _run_cmd(job, ["virsh", "undefine", domain, "--nvram"], timeout=30)
     return {"domain": domain, "status": "undefined"}
 
 COMMAND_HANDLERS["vms/undefine"] = _handle_vm_undefine
@@ -2940,6 +2966,14 @@ def _handle_files_remove(job, params):
             removed += 1
         except FileNotFoundError:
             job["output"].append(f"Skipped (not found): {validated_path}")
+        except PermissionError:
+            try:
+                subprocess.run(["sudo", "-u", "qemu", "rm", "-rf", "--", validated_path], timeout=10, check=True)
+                job["output"].append(f"Removed as qemu: {validated_path}")
+                removed += 1
+            except Exception as e2:
+                job["output"].append(f"Failed to remove {validated_path}: {e2}")
+                raise
         except Exception as e:
             job["output"].append(f"Failed to remove {validated_path}: {e}")
             raise

@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -28,6 +28,7 @@ export default function ProjectCanvasPage() {
   const [showPatternModal, setShowPatternModal] = useState(false);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [projectDesc, setProjectDesc] = useState("");
   const [projectState, setProjectState] = useState("draft");
   const ws = useVmStateSocket(projectId);
 
@@ -59,15 +60,12 @@ export default function ProjectCanvasPage() {
       .then((data) => {
         if (!data) return;
         setProjectName(data.name);
+        setProjectDesc(data.description || "");
         setProjectState(data.state);
         setDeployError(data.deploy_error || null);
         prevStateRef.current = data.state;
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
-        const currentNodes = (data.topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
-        const deployedNodes = (data.deployed_topology?.nodes || []).map((n: Record<string, unknown>) => n.id).sort();
-        if (JSON.stringify(currentNodes) !== JSON.stringify(deployedNodes)) {
-          useCanvasStore.setState({ topologyDirty: true });
-        }
+        // topologyDirty is computed from deployedNodeData/deployedEdgeKey after they're set below
         const depSizes: Record<string, number> = {};
         for (const n of (data.deployed_topology?.nodes || [])) {
           if (n.type === "storageNode" && n.data?.size) {
@@ -75,6 +73,19 @@ export default function ProjectCanvasPage() {
           }
         }
         useCanvasStore.setState({ deployedDiskSizes: depSizes });
+        const depNodeData: Record<string, string> = {};
+        for (const n of (data.deployed_topology?.nodes || [])) {
+          const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+          depNodeData[n.id] = JSON.stringify(stable);
+        }
+        const depEdgeKey = (data.deployed_topology?.edges || [])
+          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+          .sort().join("|");
+        useCanvasStore.setState({ deployedNodeData: depNodeData, deployedEdgeKey: depEdgeKey });
+        setTimeout(() => {
+          const s = useCanvasStore.getState();
+          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
+        }, 100);
 
         // Expose BMC data to properties panel
         if (data.bmc) {
@@ -107,8 +118,22 @@ export default function ProjectCanvasPage() {
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
       loadProject(projectId);
-      // Re-apply VM states after loadProject replaces nodes — topology on
-      // server has no status field, so WS states need to be reapplied
+      fetch(`/api/v1/projects/${projectId}`).then((r) => r.ok ? r.json() : null).then((proj) => {
+        if (!proj) return;
+        const depData: Record<string, string> = {};
+        for (const n of (proj.deployed_topology?.nodes || [])) {
+          const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+          depData[n.id] = JSON.stringify(stable);
+        }
+        const depEdge = (proj.deployed_topology?.edges || [])
+          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+          .sort().join("|");
+        useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
+        setTimeout(() => {
+          const s = useCanvasStore.getState();
+          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
+        }, 100);
+      });
       setTimeout(() => {
         if (Object.keys(ws.vmStates).length) {
           const store = useCanvasStore.getState();
@@ -162,7 +187,7 @@ export default function ProjectCanvasPage() {
           const liveBootDevs = ws.vmBootDevs[node.id] || null;
           return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null, liveBootDevs } };
         }
-        return { ...node, data: { ...node.data, status: "stopped", redeployStep: null, redeployDetail: null } };
+        return node;
       }),
     });
   }, [ws.vmStates, ws.vmProgress, ws.vmBootDevs]);
@@ -562,7 +587,10 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} />}
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} onDescriptionChange={(desc) => {
+          fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
+            .then((r) => { if (r.ok) setProjectDesc(desc); });
+        }} />}
         <button
           onClick={() => setShowPalette(!showPalette)}
           title={showPalette ? "Hide palette" : "Show palette"}

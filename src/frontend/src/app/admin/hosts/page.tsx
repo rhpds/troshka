@@ -734,8 +734,11 @@ export default function AdminHostsPage() {
                       const parts = [];
                       if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
                       else parts.push("Capacity: already in sync");
-                      if (orphans > 0) parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
-                      else parts.push("No orphans found");
+                      if (orphans > 0) {
+                        parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                        if (report.cleanup?.output) parts.push(report.cleanup.output);
+                        if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
+                      } else parts.push("No orphans found");
                       const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
                       const staleCache = report.orphans?.stale_cache?.length || 0;
                       if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);

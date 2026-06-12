@@ -11,6 +11,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const nodes = useCanvasStore((s) => s.nodes);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const projectState = useCanvasStore((s) => s.projectState);
+  const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const updateNodeInternals = useUpdateNodeInternals();
   const d = data as unknown as VMNodeData;
@@ -30,6 +31,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const isDeployed = (projectState === "active" || projectState === "stopped" || projectState === "starting") && deployedVmIds.has(id);
   const startOrder = useCanvasStore((s) => s.startOrder);
   const autoStart = (() => { const e = startOrder.find((o) => o.vmId === id); return e ? e.autoStart : true; })();
+
+  const isDirty = React.useMemo(() => {
+    const deployed = deployedNodeData[id];
+    if (!deployed) return false;
+    const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = d as Record<string, unknown>;
+    return JSON.stringify(stable) !== deployed;
+  }, [id, d, deployedNodeData]);
 
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [nicsExpanded, setNicsExpanded] = useState(false);
@@ -174,6 +182,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       <div className="vm-node-header">
         <div className="vm-node-icon">{String(d.icon || "🖥")}</div>
         <span className="vm-node-title">{d.name}</span>
+        {isDirty && <span title="Unsaved changes — republish to apply" style={{ fontSize: 10, opacity: 0.6 }}>💾</span>}
         {(actionPending || d.status === "redeploying") ? (
           <span title={d.redeployStep as string || ""} className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
         ) : (

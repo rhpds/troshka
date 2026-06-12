@@ -170,7 +170,7 @@ def _setup_bastion_cloud_init(
                 "    enabled=1\n"
                 "    gpgcheck=0\n"
                 "    EOF\n"
-                "  - dnf install -y git ansible-core python3-pip bind-utils tmux nmstate\n"
+                "  - dnf install -y git ansible-core python3-pip bind-utils nmstate\n"
             )
 
         # Pull secret
@@ -228,9 +228,14 @@ def _setup_bastion_cloud_init(
                 "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
             )
 
-        # Launch installer in tmux
+        # Launch OCP installer in background
         node["data"]["ciUserData"] += (
-            "  - su - cloud-user -c 'setsid tmux new-session -d -s setup /home/cloud-user/install-ocp.sh'\n"
+            "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
+        )
+
+        # Install graphical desktop in background (non-blocking)
+        node["data"]["ciUserData"] += (
+            "  - nohup dnf groupinstall -y 'Server with GUI' > /var/log/desktop-install.log 2>&1 &\n"
         )
 
         # Static IP on BMC NIC
@@ -437,7 +442,7 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
            "    \n"
            "    \n"
            "    echo 'Waiting for cluster installation to complete...'\n"
-           "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | tee /home/cloud-user/install.log\n"
+           "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1\n"
            if auto_install else "") +
         "    SCRIPTEOF\n"
         "    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n"

@@ -154,8 +154,17 @@ def create_project_from_template(
         "auto_install_ocp": body.get("auto_install_ocp", True),
     })
 
+    desc_parts = [TEMPLATES[template_id]["description"]]
+    cluster_name = body.get("cluster_name", "ocp")
+    base_domain = body.get("base_domain", "ocp.local")
+    ocp_version = body.get("ocp_version", "")
+    if ocp_version:
+        desc_parts.append(f"OCP {ocp_version}")
+    desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
+
     project = Project(
         name=body.get("name", TEMPLATES[template_id]["name"]),
+        description=" | ".join(desc_parts),
         owner_id=user.id,
         topology=topology,
     )

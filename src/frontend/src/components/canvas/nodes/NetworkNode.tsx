@@ -34,6 +34,12 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
   const [fwdExpanded, setFwdExpanded] = useState(false);
   const projectState = useCanvasStore((s) => s.projectState);
+  const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
+  const isDirty = React.useMemo(() => {
+    const deployed = deployedNodeData[id];
+    if (!deployed) return false;
+    return JSON.stringify(d) !== deployed;
+  }, [id, d, deployedNodeData]);
 
   const networkType = (data as Record<string, any>).networkType;
   const isBmc = networkType === "bmc";
@@ -83,7 +89,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         ) : <RJ45Icon />}
       </span>
       <div className="network-node-info">
-        <div className="network-node-name">{d.name}</div>
+        <div className="network-node-name">{d.name}{isDirty && <span title="Unsaved changes" style={{ fontSize: 9, marginLeft: 4 }}>💾</span>}</div>
         {d.subtype === "network" && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span className="network-node-cidr">{d.cidr}</span>

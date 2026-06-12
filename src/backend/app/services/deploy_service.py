@@ -937,6 +937,17 @@ def _start_vms_via_troshkad(host, project_id, topology):
     return failed
 
 
+def _project_deleted(project_id: str) -> bool:
+    """Check if a project was deleted mid-deploy."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    check_s = SessionLocal()
+    try:
+        return check_s.query(Project).filter_by(id=project_id).first() is None
+    finally:
+        check_s.close()
+
+
 def deploy_project_async(project_id: str):
     """Background thread: deploy a project's topology to a host."""
     from app.core.database import SessionLocal
@@ -1085,6 +1096,11 @@ def deploy_project_async(project_id: str):
                 if desired_sg:
                     sync_security_group_rules(s, _provider, desired_sg)
 
+        if _project_deleted(project_id):
+            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            _deploy_progress.pop(project_id, None)
+            return
+
         # Step 2: Create cloud-init seed ISOs
         _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
@@ -1096,6 +1112,11 @@ def deploy_project_async(project_id: str):
         notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
         logger.info("Deploy %s: deploying metadata service", project_id[:8])
         _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
+
+        if _project_deleted(project_id):
+            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            _deploy_progress.pop(project_id, None)
+            return
 
         # Step 3: Cache library images on host
         _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
@@ -1146,6 +1167,11 @@ def deploy_project_async(project_id: str):
             })
             _wj(host, _bj, timeout=30)
             logger.info("Deploy %s: BMC bridge created", project_id[:8])
+
+        if _project_deleted(project_id):
+            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            _deploy_progress.pop(project_id, None)
+            return
 
         # Step 4: Create VM disks and definitions
         _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}

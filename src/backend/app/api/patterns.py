@@ -349,6 +349,26 @@ def delete_pattern(
     db.delete(pattern)
     db.commit()
 
+    # Clean pattern cache on all hosts in background
+    import threading
+    def _clean_pattern_cache(pid: str):
+        from app.core.database import SessionLocal
+        from app.models.host import Host
+        from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+        s = SessionLocal()
+        try:
+            for host in s.query(Host).filter(Host.agent_status == "connected").all():
+                cache_path = f"/var/lib/troshka/cache/patterns/{pid}"
+                shared_path = f"/var/lib/troshka/shared/cache/patterns/{pid}"
+                try:
+                    job_id = start_job(host, "/files/remove", {"paths": [cache_path, shared_path]})
+                    wait_for_job(host, job_id, timeout=15)
+                except TroshkadError:
+                    pass
+        finally:
+            s.close()
+    threading.Thread(target=_clean_pattern_cache, args=(pattern_id,), daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # Sharing

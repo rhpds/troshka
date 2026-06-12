@@ -67,18 +67,26 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [patternSearch, setPatternSearch] = useState("");
   const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [nameAutoSet, setNameAutoSet] = useState(true);
+  const versionedName = (tName: string, ver: string) => ver ? tName.replace(/^(OpenShift)/, `$1 ${ver}`) : tName;
   const [bastionImageId, setBastionImageId] = useState("");
   const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
-  const [bastionPassword, setBastionPassword] = useState("");
+  const [bastionPassword, setBastionPassword] = useState(() => {
+    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  });
   const [bastionBmcIp, setBastionBmcIp] = useState("192.168.100.50");
   const [bmcIpError, setBmcIpError] = useState("");
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [clusterName, setClusterName] = useState("ocp");
   const [baseDomain, setBaseDomain] = useState("ocp.local");
-  const [ocpVersion, setOcpVersion] = useState("4.20");
+  const [ocpVersion, setOcpVersion] = useState("");
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
+  const [customVersion, setCustomVersion] = useState(false);
+  const [customVersionText, setCustomVersionText] = useState("");
+  const [loadingVersions, setLoadingVersions] = useState(true);
   const [hasPullSecret, setHasPullSecret] = useState(false);
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
@@ -95,14 +103,33 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/ocp/versions`)
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => { setOcpVersions(Array.isArray(data) ? data : []); if (data.length) setOcpVersion(data[data.length - 1].minor); })
-      .catch(() => {});
+      .then((data) => {
+        setOcpVersions(Array.isArray(data) ? data : []);
+        if (data.length) {
+          const ver = data[data.length - 1].minor;
+          setOcpVersion(ver);
+          setName((prev) => prev ? prev.replace(/^(OpenShift)(\s+\d+\.\d+)?/, `$1 ${ver}`) : prev);
+        }
+        setLoadingVersions(false);
+      })
+      .catch(() => { setLoadingVersions(false); });
     fetch(`${API_BASE}/api/v1/library/`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
         const items = Array.isArray(data) ? data : [];
-        setLibraryImages(items.filter((i: any) => i.format === "qcow2" && i.state === "ready"));
-        setLibraryIsos(items.filter((i: any) => i.format === "iso" && i.state === "ready"));
+        const images = items.filter((i: any) => i.format === "qcow2" && i.state === "ready");
+        const isos = items.filter((i: any) => i.format === "iso" && i.state === "ready");
+        setLibraryImages(images);
+        setLibraryIsos(isos);
+        const defaultImg = images.find((i: any) => /rhel\s+\d+(\.\d+)?\s+image/i.test(i.name));
+        if (defaultImg) {
+          setBastionImageId(defaultImg.id);
+          const verMatch = defaultImg.name.match(/(\d+\.\d+)/);
+          if (verMatch) {
+            const matchingIso = isos.find((i: any) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
+            if (matchingIso) setBastionIsoId(matchingIso.id);
+          }
+        }
       })
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/auth/ssh-keys`)
@@ -157,6 +184,30 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         });
         if (resp.ok) {
           const data = await resp.json();
+          // Load topology into canvas store, auto-arrange, save back before deploying
+          const projResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}`);
+          if (projResp.ok) {
+            const proj = await projResp.json();
+            const t = proj.topology || {};
+            if ((t.nodes || []).length > 0) {
+              const { useCanvasStore } = await import("@/stores/canvasStore");
+              useCanvasStore.setState({
+                currentProjectId: data.id,
+                nodes: t.nodes || [],
+                edges: t.edges || [],
+                hiddenNodeIds: t.hiddenNodeIds || [],
+                startOrder: t.startOrder || [],
+                externalIps: t.externalIps || [],
+              });
+              useCanvasStore.getState().autoLayout();
+              const s = useCanvasStore.getState();
+              await fetch(`${API_BASE}/api/v1/projects/${data.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
+              });
+            }
+          }
           if (autoDeploy) {
             const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy`, { method: "POST" });
             if (!deployResp.ok) {
@@ -229,7 +280,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             {templates.length > 0 && (
               <div style={{ display: "flex", gap: 12 }}>
                 {templates.map((t) => (
-                  <div key={t.id} style={optionStyle(false)} onClick={() => { setSelectedTemplate(t.id); setName(t.name); setMode("template"); }}>
+                  <div key={t.id} style={optionStyle(false)} onClick={() => { setSelectedTemplate(t.id); setName(versionedName(t.name, ocpVersion)); setNameAutoSet(true); setMode("template"); }}>
                     <div style={{ marginBottom: 4, display: "flex", justifyContent: "center" }}>
                       <svg width="28" height="28" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg">
                         <path d="M21.665,11.812c-0.11-1.377-0.476-2.724-1.08-3.966L24,6.599c-0.268-0.556-0.585-1.092-0.943-1.595 l-1.601,0.583c-3.534-4.95-10.412-6.098-15.363-2.565c-3.144,2.244-4.883,5.972-4.582,9.823l1.604-0.584 c0.051,0.615,0.153,1.224,0.305,1.822L0,15.335c0.338,1.339,0.922,2.604,1.721,3.731l1.812-0.659 c3.526,4.95,10.398,6.106,15.349,2.58c1.555-1.107,2.796-2.6,3.599-4.332c0.802-1.715,1.144-3.61,0.991-5.497L21.665,11.812z M16.925,9.177c0.687,1.227,0.998,2.629,0.895,4.032l1.809-0.657c-0.063,0.856-0.282,1.694-0.646,2.471 c-1.67,3.584-5.928,5.138-9.514,3.472c-0.782-0.365-1.491-0.87-2.092-1.49l-1.813,0.66c-0.979-1.01-1.64-2.285-1.903-3.667 l3.426-1.242c-0.121-0.624-0.159-1.262-0.111-1.896H6.97l-1.604,0.583c0.294-3.932,3.72-6.881,7.652-6.587 c0.868,0.065,1.716,0.288,2.504,0.658V5.508c0.778,0.364,1.483,0.867,2.082,1.483l1.599-0.582c0.002,0.002,0.004,0.003,0.006,0.005 c0.441,0.454,0.82,0.965,1.128,1.518L16.925,9.177z"/>
@@ -255,7 +306,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               <input
                 style={inputStyle}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { setName(e.target.value); setNameAutoSet(false); }}
                 placeholder="My Project"
                 autoFocus={mode === "blank"}
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
@@ -284,11 +335,29 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                     <div style={{ flex: 1 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
-                      <select style={inputStyle} value={ocpVersion} onChange={(e) => setOcpVersion(e.target.value)}>
-                        {ocpVersions.length > 0 ? ocpVersions.map((v) => (
-                          <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
-                        )) : <option value="4.20">4.20</option>}
-                      </select>
+                      {loadingVersions ? (
+                        <div style={{ ...inputStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <span className="project-btn-spinner" style={{ width: 14, height: 14, aspectRatio: "1 / 1" }} />
+                        </div>
+                      ) : customVersion ? (
+                        <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
+                          const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
+                          if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
+                        }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(ocpVersions.length ? ocpVersions[ocpVersions.length - 1].minor : "4.20"); } }} />
+                      ) : (
+                        <select style={inputStyle} value={ocpVersion} onChange={(e) => {
+                          if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
+                          else {
+                            setOcpVersion(e.target.value);
+                            if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, e.target.value)); }
+                          }
+                        }}>
+                          {ocpVersions.map((v) => (
+                            <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
+                          ))}
+                          <option value="__other__">Other...</option>
+                        </select>
+                      )}
                     </div>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
@@ -301,7 +370,18 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
                       {libraryImages.length > 0 ? (
-                        <select style={inputStyle} value={bastionImageId} onChange={(e) => setBastionImageId(e.target.value)}>
+                        <select style={inputStyle} value={bastionImageId} onChange={(e) => {
+                          setBastionImageId(e.target.value);
+                          const img = libraryImages.find((i) => i.id === e.target.value);
+                          if (img) {
+                            const ver = img.name.match(/(\d+\.\d+)/);
+                            if (ver) {
+                              const match = libraryIsos.find((i) => i.name.includes(ver[1]) && /dvd|binary/i.test(i.name));
+                              if (match) setBastionIsoId(match.id);
+                              else setBastionIsoId("");
+                            }
+                          }
+                        }}>
                           <option value="">Select an image...</option>
                           {libraryImages.map((img) => (
                             <option key={img.id} value={img.id}>{img.name} ({img.size_gb} GB)</option>
@@ -341,7 +421,15 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "#f87171" }}>*</span> <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
-                      <input style={inputStyle} type="password" value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <input style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }} value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                        <button
+                          type="button"
+                          style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
+                          onClick={() => { navigator.clipboard.writeText(bastionPassword); }}
+                          title="Copy password"
+                        >Copy</button>
+                      </div>
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
@@ -496,12 +584,12 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)) ? 0.4 : 1,
                 }}
               >
                 {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
