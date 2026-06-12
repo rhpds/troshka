@@ -159,6 +159,12 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                         state="available",
                     )
                     db.add(pd)
+                    # Register in shared cache so deploys don't re-download
+                    if pool and pool.mode.startswith("shared"):
+                        from app.services.deploy_service import _create_shared_cache_entry, _mark_shared_cache_ready
+                        cache_path = f"/var/lib/troshka/shared/cache/patterns/{pattern_id}/{metadata['disk_id']}.{metadata['format']}"
+                        _create_shared_cache_entry(db, pool, metadata["disk_id"], "pattern", cache_path)
+                        _mark_shared_cache_ready(db, pool.id, metadata["disk_id"], "pattern", size_bytes)
                 db.commit()
                 log.info("Pattern %s: VM %s capture done (%d/%d)", pattern_id[:8], jinfo["vm_id"][:8], i + 1, len(all_jobs))
 
