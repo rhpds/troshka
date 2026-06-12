@@ -550,7 +550,10 @@ def _handle_vm_create(job, params):
         boot_parts.extend(boot_devs)
     else:
         boot_parts.append("hd")
-    boot_parts.append("cdrom")
+    # Add cdrom after hd if VM has a cdrom device (ensures disk boots before ISO)
+    has_cdrom = any(d.get("device") == "cdrom" for d in disks)
+    if has_cdrom:
+        boot_parts.append("cdrom")
     boot_parts.append("menu=on")
     cmd.extend(["--boot", ",".join(boot_parts)])
     cmd.extend(["--install", "no_install=yes"])
