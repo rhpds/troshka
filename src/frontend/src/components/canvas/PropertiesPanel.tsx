@@ -166,7 +166,7 @@ export default function PropertiesPanel() {
     updateNodeData(node.id, { [field]: value });
   };
 
-  const isCollapsed = (key: string) => collapsed[key] ?? false;
+  const isCollapsed = (key: string) => collapsed[key] ?? true;
   const toggleSection = (key: string) => setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
@@ -252,6 +252,55 @@ export default function PropertiesPanel() {
                   Power on at deploy
                 </label>
               </div>
+              <div className="props-field">
+                <label className="props-label">OS Type</label>
+                <select
+                  className="props-select"
+                  value={(data as unknown as VMNodeData).os}
+                  onChange={(e) => update("os", e.target.value)}
+                >
+                  <optgroup label="Red Hat Enterprise Linux">
+                    <option value="rhel10">RHEL 10</option>
+                    <option value="rhel9">RHEL 9</option>
+                    <option value="rhel8">RHEL 8</option>
+                    <option value="rhel7">RHEL 7</option>
+                  </optgroup>
+                  <optgroup label="CentOS / Alma / Rocky">
+                    <option value="centos-stream10">CentOS Stream 10</option>
+                    <option value="centos-stream9">CentOS Stream 9</option>
+                    <option value="almalinux9">AlmaLinux 9</option>
+                    <option value="rocky9">Rocky Linux 9</option>
+                  </optgroup>
+                  <optgroup label="Fedora">
+                    <option value="fedora42">Fedora 42</option>
+                    <option value="fedora41">Fedora 41</option>
+                    <option value="fedora40">Fedora 40</option>
+                  </optgroup>
+                  <optgroup label="Ubuntu">
+                    <option value="ubuntu24.04">Ubuntu 24.04 LTS</option>
+                    <option value="ubuntu22.04">Ubuntu 22.04 LTS</option>
+                  </optgroup>
+                  <optgroup label="Debian">
+                    <option value="debian12">Debian 12</option>
+                    <option value="debian11">Debian 11</option>
+                  </optgroup>
+                  <optgroup label="SUSE">
+                    <option value="sles15">SLES 15</option>
+                    <option value="opensuse15.5">openSUSE Leap 15.5</option>
+                  </optgroup>
+                  <optgroup label="Windows">
+                    <option value="win2k25">Windows Server 2025</option>
+                    <option value="win2k22">Windows Server 2022</option>
+                    <option value="win2k19">Windows Server 2019</option>
+                    <option value="win11">Windows 11</option>
+                    <option value="win10">Windows 10</option>
+                  </optgroup>
+                  <optgroup label="Other">
+                    <option value="rhcos">Red Hat CoreOS</option>
+                    <option value="generic">Generic OS</option>
+                  </optgroup>
+                </select>
+              </div>
             </>)}
           </div>
           <div className="props-divider" />
@@ -291,54 +340,7 @@ export default function PropertiesPanel() {
                 />
               </div>
             </div>
-            <div className="props-field">
-              <label className="props-label">OS Type</label>
-              <select
-                className="props-select"
-                value={(data as unknown as VMNodeData).os}
-                onChange={(e) => update("os", e.target.value)}
-              >
-                <optgroup label="Red Hat Enterprise Linux">
-                  <option value="rhel10">RHEL 10</option>
-                  <option value="rhel9">RHEL 9</option>
-                  <option value="rhel8">RHEL 8</option>
-                  <option value="rhel7">RHEL 7</option>
-                </optgroup>
-                <optgroup label="CentOS / Alma / Rocky">
-                  <option value="centos-stream10">CentOS Stream 10</option>
-                  <option value="centos-stream9">CentOS Stream 9</option>
-                  <option value="almalinux9">AlmaLinux 9</option>
-                  <option value="rocky9">Rocky Linux 9</option>
-                </optgroup>
-                <optgroup label="Fedora">
-                  <option value="fedora42">Fedora 42</option>
-                  <option value="fedora41">Fedora 41</option>
-                  <option value="fedora40">Fedora 40</option>
-                </optgroup>
-                <optgroup label="Ubuntu">
-                  <option value="ubuntu24.04">Ubuntu 24.04 LTS</option>
-                  <option value="ubuntu22.04">Ubuntu 22.04 LTS</option>
-                </optgroup>
-                <optgroup label="Debian">
-                  <option value="debian12">Debian 12</option>
-                  <option value="debian11">Debian 11</option>
-                </optgroup>
-                <optgroup label="SUSE">
-                  <option value="sles15">SLES 15</option>
-                  <option value="opensuse15.5">openSUSE Leap 15.5</option>
-                </optgroup>
-                <optgroup label="Windows">
-                  <option value="win2k25">Windows Server 2025</option>
-                  <option value="win2k22">Windows Server 2022</option>
-                  <option value="win2k19">Windows Server 2019</option>
-                  <option value="win11">Windows 11</option>
-                  <option value="win10">Windows 10</option>
-                </optgroup>
-                <optgroup label="Other">
-                  <option value="generic">Generic OS</option>
-                </optgroup>
-              </select>
-            </div></>)}
+            </>)}
           </div>
           <div className="props-divider" />
 
@@ -373,30 +375,6 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
-            <div className="props-field">
-              <label className="props-label">Video</label>
-              <select
-                className="props-select"
-                value={(data as Record<string, any>).videoModel as string || "virtio"}
-                onChange={(e) => update("videoModel", e.target.value)}
-              >
-                <option value="virtio">VirtIO (recommended)</option>
-                <option value="vga">VGA</option>
-                <option value="qxl">QXL</option>
-              </select>
-            </div>
-            <div className="props-field">
-              <label className="props-label">Input</label>
-              <select
-                className="props-select"
-                value={(data as Record<string, any>).inputModel as string || "virtio"}
-                onChange={(e) => update("inputModel", e.target.value)}
-              >
-                <option value="virtio">VirtIO (recommended)</option>
-                <option value="usb">USB</option>
-                <option value="ps2">PS/2</option>
-              </select>
-            </div>
             {(node.data as Record<string, any>).liveBootDevs && (
               <div style={{ background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontSize: 11 }}>
                 <label className="props-label" style={{ color: "rgba(168,85,247,0.9)", fontSize: 10 }}>BMC Live Boot Order</label>
@@ -595,6 +573,38 @@ export default function PropertiesPanel() {
               );
             })()}
             </>}
+          </div>
+          <div className="props-divider" />
+
+          <div className="props-section">
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("io")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("io") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              I/O
+            </div>
+            {!isCollapsed("io") && <><div className="props-field">
+              <label className="props-label">Video</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).videoModel as string || "virtio"}
+                onChange={(e) => update("videoModel", e.target.value)}
+              >
+                <option value="virtio">VirtIO (recommended)</option>
+                <option value="vga">VGA</option>
+                <option value="qxl">QXL</option>
+              </select>
+            </div>
+            <div className="props-field">
+              <label className="props-label">Input</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).inputModel as string || "virtio"}
+                onChange={(e) => update("inputModel", e.target.value)}
+              >
+                <option value="virtio">VirtIO (recommended)</option>
+                <option value="usb">USB</option>
+                <option value="ps2">PS/2</option>
+              </select>
+            </div></>}
           </div>
           <div className="props-divider" />
 
