@@ -550,6 +550,7 @@ def _handle_vm_create(job, params):
         boot_parts.extend(boot_devs)
     else:
         boot_parts.append("hd")
+    boot_parts.append("cdrom")
     boot_parts.append("menu=on")
     cmd.extend(["--boot", ",".join(boot_parts)])
     cmd.extend(["--install", "no_install=yes"])
