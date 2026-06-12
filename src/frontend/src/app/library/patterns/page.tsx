@@ -109,6 +109,18 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             </div>
           )}
         </div>
+        <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={autoDeploy} onChange={(e) => { setAutoDeploy(e.target.checked); if (!e.target.checked) setAutoStart(false); }} />
+            Deploy immediately
+          </label>
+          {autoDeploy && (
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
+              <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+              Start VMs after deploy
+            </label>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
           <button onClick={onClose} disabled={deploying}
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>

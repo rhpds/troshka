@@ -587,7 +587,11 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         pass
             detail = f"{done_count}/{len(active_jobs)}"
             if in_progress:
-                detail += f" | {in_progress[0]}"
+                line = in_progress[0]
+                if "AWSAccessKey" in line or "Signature" in line or "https://" in line:
+                    line = ""
+                if line:
+                    detail += f" | {line}"
             progress_callback(detail, None)
 
         if len(completed) + len(failed) == last_completed_count:
