@@ -85,6 +85,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [ocpVersion, setOcpVersion] = useState("");
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
+  const [externalAccess, setExternalAccess] = useState(false);
   const [customVersion, setCustomVersion] = useState(false);
   const [customVersionText, setCustomVersionText] = useState("");
   const [loadingVersions, setLoadingVersions] = useState(true);
@@ -178,6 +179,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (baseDomain) templateBody.base_domain = baseDomain;
         if (ocpVersion) templateBody.ocp_version = ocpVersion;
         templateBody.auto_install_ocp = autoInstallOcp;
+        templateBody.external_access = externalAccess;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -484,6 +486,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   </div>
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
+                      External access (EIP + port forwarding)
+                    </label>
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
                       Deploy immediately after creation
                     </label>
