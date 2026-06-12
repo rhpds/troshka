@@ -604,6 +604,27 @@ export default function PropertiesPanel() {
                 <option value="usb">USB</option>
                 <option value="ps2">PS/2</option>
               </select>
+            </div>
+            <div className="props-field">
+              <label className="props-label">Serial</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).serialModel as string || "virtio"}
+                onChange={(e) => update("serialModel", e.target.value)}
+              >
+                <option value="virtio">VirtIO</option>
+                <option value="isa">ISA</option>
+              </select>
+            </div>
+            <div className="props-field">
+              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={(data as Record<string, any>).serialConsole !== false}
+                  onChange={(e) => update("serialConsole", e.target.checked)}
+                />
+                Serial Console
+              </label>
             </div></>}
           </div>
           <div className="props-divider" />

@@ -168,7 +168,10 @@ def _setup_bastion_cloud_init(
             continue
 
         node["data"]["cloudInit"] = True
-        node["data"]["ciPackages"] = ["git", "ansible-core", "python3-pip", "bind-utils", "nmstate"]
+        node["data"]["ciPackages"] = [
+            "git", "ansible-core", "python3-pip", "bind-utils", "nmstate",
+            "@Server with GUI", "firefox", "gnome-shell-extension-dash-to-dock",
+        ]
         if password:
             node["data"]["ciCloudUserPassword"] = password
         if ssh_key_ids:
@@ -289,8 +292,7 @@ def _setup_bastion_cloud_init(
         node["data"]["ciUserData"] += (
             "  - |\n"
             "    nohup sh -c '\n"
-            "      dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox gnome-shell-extension-dash-to-dock\n"
-            "      dnf remove -y gnome-initial-setup gnome-software\n"
+            "      dnf remove -y gnome-initial-setup gnome-software 2>/dev/null\n"
             "      systemctl disable --now rhsmcertd 2>/dev/null; systemctl mask rhsmcertd 2>/dev/null\n"
             "      mkdir -p /etc/skel/.config && echo yes > /etc/skel/.config/gnome-initial-setup-done\n"
             "      for u in root cloud-user; do\n"
