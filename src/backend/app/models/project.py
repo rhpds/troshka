@@ -26,7 +26,7 @@ class Project(Base):
     run_timer_started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     poweroff_mode: Mapped[str] = mapped_column(String(20), default="simultaneous")
-    topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=lambda: {"nodes": [], "edges": []})
     vni_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deployed_topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deploy_error: Mapped[str | None] = mapped_column(Text, nullable=True)

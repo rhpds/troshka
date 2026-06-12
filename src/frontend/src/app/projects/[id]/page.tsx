@@ -550,7 +550,7 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
-        {nodes.length === 0 && (
+        {nodes.length === 0 && !project && (
           <div style={{
             position: "absolute", inset: 0, zIndex: 20,
             display: "flex", alignItems: "center", justifyContent: "center",
