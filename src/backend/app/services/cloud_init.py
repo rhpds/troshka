@@ -39,23 +39,10 @@ def generate_userdata(vm_data: dict) -> str:
     root_hash = _sha512_crypt(root_pw) if root_pw else None
     cloud_user_hash = _sha512_crypt(cloud_user_pw) if cloud_user_pw else None
 
-    chpasswd_users = []
-    if root_hash:
-        chpasswd_users.append({"name": "root", "password": root_hash, "type": "hash"})
-    if cloud_user_hash:
-        chpasswd_users.append({"name": "cloud-user", "password": cloud_user_hash, "type": "hash"})
-
-    if chpasswd_users:
-        lines.append("chpasswd:")
-        lines.append("  expire: false")
-        lines.append("  users:")
-        for u in chpasswd_users:
-            lines.append(f"    - name: {u['name']}")
-            lines.append(f"      password: {u['password']}")
-            lines.append(f"      type: {u['type']}")
+    if root_hash or cloud_user_hash:
         lines.append("ssh_pwauth: true")
 
-    # Users
+    # Users — single block with passwords inline
     lines.append("disable_root: false")
     cloud_user_sudo = vm_data.get("ciCloudUserSudo", True)
     lines.append("users:")
@@ -63,8 +50,11 @@ def generate_userdata(vm_data: dict) -> str:
     if root_hash:
         lines.append("  - name: root")
         lines.append("    lock_passwd: false")
+        lines.append(f"    passwd: {root_hash}")
     lines.append("  - name: cloud-user")
     lines.append("    lock_passwd: false")
+    if cloud_user_hash:
+        lines.append(f"    passwd: {cloud_user_hash}")
     if all_keys:
         lines.append("    ssh_authorized_keys:")
         for key in all_keys:
@@ -97,8 +87,10 @@ def generate_userdata(vm_data: dict) -> str:
 
     result = "\n".join(lines)
 
-    # Validate the generated cloud-config is valid YAML
+    # Validate the generated cloud-config is valid YAML with no duplicate keys
     import yaml
+    import re
+
     try:
         parsed = yaml.safe_load(result)
         if not isinstance(parsed, dict):
@@ -107,6 +99,14 @@ def generate_userdata(vm_data: dict) -> str:
             logger.error("Generated cloud-config runcmd is not a list")
     except yaml.YAMLError as e:
         logger.error("Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---", e, result)
+
+    # Check for duplicate top-level keys (safe_load silently takes the last one)
+    top_keys = re.findall(r'^([a-zA-Z_][a-zA-Z0-9_-]*):', result, re.MULTILINE)
+    seen = set()
+    for k in top_keys:
+        if k in seen:
+            logger.error("Generated cloud-config has duplicate top-level key: '%s'", k)
+        seen.add(k)
 
     return result
 
