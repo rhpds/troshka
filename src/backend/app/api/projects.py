@@ -91,7 +91,8 @@ def create_project_from_template(
     if not template_id or template_id not in TEMPLATES:
         raise HTTPException(status_code=404, detail="Template not found")
     bastion_password = body.get("bastion_password", "")
-    topology = generate_topology(template_id, bmc_password=bastion_password or "password")
+    external_access = body.get("external_access", False)
+    topology = generate_topology(template_id, bmc_password=bastion_password or "password", external_access=external_access)
 
     # OCP template customization — resolve DB objects, then delegate to plugin
     from app.models.library import LibraryItem
@@ -153,10 +154,6 @@ def create_project_from_template(
         "bastion_bmc_ip": bmc_ip_raw,
         "auto_install_ocp": body.get("auto_install_ocp", True),
     })
-
-    # OCP: skip EIP allocation if external access not requested
-    if not body.get("external_access", False):
-        topology["externalIps"] = []
 
     desc_parts = [TEMPLATES[template_id]["description"]]
     cluster_name = body.get("cluster_name", "ocp")

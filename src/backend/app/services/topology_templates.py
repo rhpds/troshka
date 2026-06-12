@@ -281,22 +281,24 @@ TEMPLATES = {
 }
 
 
-def generate_topology(template_id: str, bmc_password: str = "password") -> dict:
+def generate_topology(template_id: str, bmc_password: str = "password", external_access: bool = True) -> dict:
     nodes = []
     edges = []
-    eip_id = _id()
-    external_ips = [{"id": eip_id, "label": "OCP"}]
+    external_ips = []
+    ocp_port_forwards = []
 
-    ssh_port_forward = {"extIpId": eip_id, "extPort": "22", "intIp": "10.0.0.50", "intPort": "22", "proto": "tcp"}
-    # IPI manages its own VIPs via keepalived — just port-forward from gateway
     api_vip = "10.0.0.2"
     ingress_vip = "10.0.0.3"
-    ocp_port_forwards = [
-        ssh_port_forward,
-        {"extIpId": eip_id, "extPort": "6443", "intIp": api_vip, "intPort": "6443", "proto": "tcp"},
-        {"extIpId": eip_id, "extPort": "443", "intIp": ingress_vip, "intPort": "443", "proto": "tcp"},
-        {"extIpId": eip_id, "extPort": "80", "intIp": ingress_vip, "intPort": "80", "proto": "tcp"},
-    ]
+
+    if external_access:
+        eip_id = _id()
+        external_ips = [{"id": eip_id, "label": "OCP"}]
+        ocp_port_forwards = [
+            {"extIpId": eip_id, "extPort": "22", "intIp": "10.0.0.50", "intPort": "22", "proto": "tcp"},
+            {"extIpId": eip_id, "extPort": "6443", "intIp": api_vip, "intPort": "6443", "proto": "tcp"},
+            {"extIpId": eip_id, "extPort": "443", "intIp": ingress_vip, "intPort": "443", "proto": "tcp"},
+            {"extIpId": eip_id, "extPort": "80", "intIp": ingress_vip, "intPort": "80", "proto": "tcp"},
+        ]
 
     # Layout constants
     VM_SPACING = 400        # horizontal gap between VM columns (room for disk to the left)
