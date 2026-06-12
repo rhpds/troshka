@@ -2886,10 +2886,33 @@ def _handle_pattern_capture_direct(job, params):
 
         with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
             tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-            job["output"].append(f"Flattening {os.path.basename(disk_path)}...")
-            _run_cmd(job, ["qemu-img", "convert", "-c", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+            src_size = os.path.getsize(disk_path)
+            src_size_gb = round(src_size / (1024**3), 1)
+            job["output"].append(f"Flattening {os.path.basename(disk_path)} ({src_size_gb} GB)...")
 
-            job["output"].append(f"Uploading to S3...")
+            # Monitor flatten progress in background thread
+            flatten_done = threading.Event()
+            def _monitor_flatten():
+                while not flatten_done.is_set():
+                    try:
+                        if os.path.exists(tmp_flat):
+                            cur = os.path.getsize(tmp_flat)
+                            cur_gb = round(cur / (1024**3), 1)
+                            job["output"].append(f"Flattening: {cur_gb} GB written...")
+                    except OSError:
+                        pass
+                    flatten_done.wait(10)
+            mon = threading.Thread(target=_monitor_flatten, daemon=True)
+            mon.start()
+
+            _run_cmd(job, ["qemu-img", "convert", "-c", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+            flatten_done.set()
+
+            flat_size = os.path.getsize(tmp_flat)
+            flat_size_gb = round(flat_size / (1024**3), 1)
+            job["output"].append(f"Flattened: {flat_size_gb} GB (compressed)")
+            job["output"].append(f"Uploading {flat_size_gb} GB to S3...")
+
             env = os.environ.copy()
             if aws_access_key:
                 env["AWS_ACCESS_KEY_ID"] = aws_access_key
@@ -2898,13 +2921,26 @@ def _handle_pattern_capture_direct(job, params):
             aws_bin = "/opt/troshka/venv/bin/aws"
             if not os.path.exists(aws_bin):
                 aws_bin = "aws"
-            upload_proc = subprocess.run(
+            upload_proc = subprocess.Popen(
                 [aws_bin, "s3", "cp", tmp_flat, s3_url],
-                capture_output=True, text=True, timeout=3600, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
             )
-            for line in upload_proc.stdout.strip().split("\n"):
+            # Stream stderr (aws cli progress) to job output
+            last_progress = ""
+            while upload_proc.poll() is None:
+                line = upload_proc.stderr.readline()
+                if line.strip():
+                    progress = line.strip().split("\r")[-1].strip()
+                    if progress != last_progress:
+                        job["output"].append(progress)
+                        last_progress = progress
+            # Capture remaining output
+            for line in upload_proc.stdout.read().strip().split("\n"):
                 if line.strip():
                     job["output"].append(line)
+            if upload_proc.returncode != 0:
+                remaining_err = upload_proc.stderr.read().strip()
+                raise RuntimeError(f"S3 upload failed: {remaining_err}")
             if upload_proc.returncode != 0:
                 raise RuntimeError(f"S3 upload failed: {upload_proc.stderr.strip()}")
 
