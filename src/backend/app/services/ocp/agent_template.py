@@ -201,12 +201,13 @@ def _setup_bastion_cloud_init(
         )
 
         # Install script
-        # Collect BMC IPs for the install script
+        # Collect BMC IPs for the install script (validated)
         bmc_ips = []
         for tnode in topology.get("nodes", []):
             td = tnode.get("data", {})
             if tnode.get("type") == "vmNode" and td.get("bmcEnabled") and td.get("bmcIp"):
-                bmc_ips.append(td["bmcIp"])
+                ip = str(ipaddress.IPv4Address(td["bmcIp"]))
+                bmc_ips.append(ip)
         bmc_ips_str = " ".join(bmc_ips)
 
         node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp, password, bmc_ips_str)
@@ -439,6 +440,18 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
            "        -H 'Content-Type: application/json' \\\n"
            "        -d '{\"ResetType\": \"ForceRestart\"}' || true\n"
            "      echo \"Booted $BMC_IP from ISO\"\n"
+           "    done\n"
+           "    \n"
+           "    # Wait for disk write to complete, then eject ISO so nodes reboot from disk\n"
+           "    echo 'Waiting 3 minutes for disk write before ejecting ISO...'\n"
+           "    sleep 180\n"
+           "    echo 'Ejecting virtual media from all nodes...'\n"
+           f"    for BMC_IP in {bmc_ips_str}; do\n"
+           "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
+           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' || true\n"
+           "      # Force reboot to boot from disk\n"
+           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset\" -H 'Content-Type: application/json' -d '{\"ResetType\": \"ForceRestart\"}' || true\n"
+           "      echo \"  Ejected and rebooted $BMC_IP\"\n"
            "    done\n"
            "    \n"
            "    echo 'Waiting for cluster installation to complete...'\n"
