@@ -240,9 +240,7 @@ def _setup_bastion_cloud_init(
         # Install graphical desktop in background, start it when done (non-blocking)
         # Disable GNOME initial setup wizard for all users
         node["data"]["ciUserData"] += (
-            "  - mkdir -p /etc/skel/.config && echo 'yes' > /etc/skel/.config/gnome-initial-setup-done\n"
-            "  - for u in root cloud-user; do d=$(eval echo ~$u); mkdir -p $d/.config && echo 'yes' > $d/.config/gnome-initial-setup-done && chown -R $u:$u $d/.config; done\n"
-            "  - nohup sh -c 'dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox; systemctl set-default graphical.target && systemctl isolate graphical.target' > /var/log/desktop-install.log 2>&1 &\n"
+            "  - nohup sh -c 'dnf groupinstall -y \"Server with GUI\" && dnf install -y firefox; systemctl disable gnome-initial-setup-first-login.service gnome-initial-setup-first-login.target 2>/dev/null; systemctl set-default graphical.target; systemctl isolate graphical.target' > /var/log/desktop-install.log 2>&1 &\n"
         )
 
         # Static IP on BMC NIC
@@ -445,7 +443,7 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
            "    echo \"HTTP server PID: $HTTP_PID\"\n"
            "    \n"
            "    # Boot each CP node via Redfish virtual media\n"
-           "    BASTION_IP=$(ip -4 addr show ens3 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}')\n"
+           "    BASTION_IP=$(ip -4 addr show ens4 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}')\n"
            "    ISO_URL=\"http://${BASTION_IP}:8080/agent.x86_64.iso\"\n"
            "    echo \"ISO URL: $ISO_URL\"\n"
            "    \n"
