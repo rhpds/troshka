@@ -179,17 +179,8 @@ def _setup_bastion_cloud_init(
         # DVD mount + yum repos (mounts: runs before packages:)
         if bastion_iso:
             node["data"]["ciUserData"] = (
-                "bootcmd:\n"
-                "  - |\n"
-                "    for dev in /dev/sr0 /dev/sr1 /dev/cdrom; do\n"
-                "      if blkid $dev 2>/dev/null | grep -qi 'LABEL=.*RHEL\\|TYPE=.*iso9660'; then\n"
-                "        if ! blkid $dev 2>/dev/null | grep -qi 'LABEL=.*cidata'; then\n"
-                "          mkdir -p /mnt/rhel-dvd\n"
-                "          mount -o ro $dev /mnt/rhel-dvd 2>/dev/null\n"
-                "          break\n"
-                "        fi\n"
-                "      fi\n"
-                "    done\n"
+                "mounts:\n"
+                "  - [/dev/sr0, /mnt/rhel-dvd, iso9660, \"ro,nofail\", \"0\", \"0\"]\n"
                 "yum_repos:\n"
                 "  rhel-dvd-baseos:\n"
                 "    name: RHEL DVD BaseOS\n"
