@@ -343,6 +343,8 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
     raw_boot_devs = vm.get("boot_devices") or None
     has_iso = any(d["format"] == "iso" for d in vm_disks)
     has_disk = any(d["format"] != "iso" for d in vm_disks)
+    has_cdrom_controller = any(dc.get("bus") == "sata" and "cdrom" in dc.get("name", "")
+                               for dc in vm.get("disk_controllers", []))
     if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
         if has_iso and has_disk:
             return ["cdrom", "hd"]
@@ -364,6 +366,9 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
         if dev not in seen:
             boot_devs.append(dev)
             seen.add(dev)
+    # Add cdrom fallback if VM has a cdrom controller but no cdrom in boot order
+    if has_cdrom_controller and "cdrom" not in seen:
+        boot_devs.append("cdrom")
     return boot_devs or ["hd"]
 
 
