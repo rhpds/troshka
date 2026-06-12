@@ -2657,9 +2657,13 @@ def _handle_gc_clean(job, params):
                         job["output"].append(f"Killed BMC process PID {p} ({fname})")
                     except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
                         pass
+            # Remove libvirt storage pool
+            pool_name = f"troshka-vmedia-{project_id[:8]}"
+            subprocess.run(["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10)
+            subprocess.run(["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10)
             # Remove directory
             shutil.rmtree(bmc_dir, ignore_errors=True)
-            job["output"].append(f"Removed BMC dir: {bmc_dir}")
+            job["output"].append(f"Removed BMC dir + pool: {bmc_dir}")
             removed_bmc += 1
 
         # Remove BMC bridge
@@ -3384,7 +3388,20 @@ def _handle_bmc_setup(job, params):
     with open(htpasswd_path, "w") as f:
         f.write(f"{bmc_username}:{bcrypt_hash}\n")
 
-    # 4. Start sushy-emulator per VM
+    # 4. Create per-project libvirt storage pool for virtual media
+    vmedia_dir = os.path.join(bmc_dir, "vmedia")
+    os.makedirs(vmedia_dir, exist_ok=True)
+    pool_name = f"troshka-vmedia-{pid}"
+    # Remove existing pool if any
+    subprocess.run(["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10)
+    subprocess.run(["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10)
+    subprocess.run(["virsh", "pool-define-as", pool_name, "dir", "--target", vmedia_dir],
+                   capture_output=True, timeout=10)
+    subprocess.run(["virsh", "pool-start", pool_name], capture_output=True, timeout=10)
+    subprocess.run(["virsh", "pool-autostart", pool_name], capture_output=True, timeout=10)
+    job["output"].append(f"Storage pool {pool_name} created at {vmedia_dir}")
+
+    # 5. Start sushy-emulator per VM
     for vm in vms:
         domain_name = _validate_domain_name(vm["domain_name"])
         bmc_ip = _validate_ip(vm["bmc_ip"])
@@ -3407,6 +3424,7 @@ def _handle_bmc_setup(job, params):
             f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
             f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
             f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
+            f.write(f"SUSHY_EMULATOR_VMEDIA_STORAGE_POOL = '{pool_name}'\n")
             f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
             if dom_uuid:
                 f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
@@ -3593,6 +3611,12 @@ def _handle_bmc_teardown(job, params):
         _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
     except RuntimeError:
         pass
+
+    # Destroy libvirt storage pool for virtual media
+    pool_name = f"troshka-vmedia-{pid}"
+    subprocess.run(["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10)
+    subprocess.run(["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10)
+    job["output"].append(f"Removed storage pool {pool_name}")
 
     if os.path.isdir(bmc_dir):
         shutil.rmtree(bmc_dir, ignore_errors=True)

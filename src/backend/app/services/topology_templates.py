@@ -15,6 +15,7 @@ def _mac():
 def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
     nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
+    dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
     disk_id = _id()
     disk_node = {
         "id": disk_id,
@@ -36,7 +37,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=120, bmc_ip="", cluster_ip=""):
         "os": "rhcos",
         "icon": "🖥",
         "nics": [nic],
-        "diskControllers": [dc],
+        "diskControllers": [dc, dc_cdrom],
         "bmcEnabled": True,
         "firmware": "uefi",
         "secureBoot": False,

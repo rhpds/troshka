@@ -201,7 +201,7 @@ def _setup_bastion_cloud_init(
         )
 
         # Install script
-        node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp)
+        node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp, password)
 
         # Write install-config.yaml
         if install_config:
@@ -342,7 +342,7 @@ def _build_agent_config(topology, cluster_name, base_domain):
     return "\n".join(ac_lines)
 
 
-def _build_install_script(ocp_version, auto_install):
+def _build_install_script(ocp_version, auto_install, bmc_password=""):
     return (
         "  - |\n"
         "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
@@ -393,6 +393,7 @@ def _build_install_script(ocp_version, auto_install):
         "    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'\n"
         "    echo ''\n"
         + ("    # Auto-run agent-based installer\n"
+           f"    BMC_PASS='{bmc_password}'\n"
            "    echo 'Creating agent ISO...'\n"
            "    cd /home/cloud-user/ocp-install\n"
            "    cp install-config.yaml install-config.yaml.bak\n"
@@ -413,16 +414,19 @@ def _build_install_script(ocp_version, auto_install):
            "    \n"
            "    for BMC_IP in 192.168.100.10 192.168.100.11 192.168.100.12; do\n"
            "      echo \"Mounting ISO on BMC $BMC_IP...\"\n"
-           "      # Insert virtual media\n"
-           "      curl -sk -X POST \"https://${BMC_IP}:8000/redfish/v1/Managers/1/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia\" \\\n"
+           "      # Get system UUID from sushy\n"
+           "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
+           "      echo \"  System: $SYS_ID\"\n"
+           "      # Insert virtual media (Systems path, HTTP, with auth)\n"
+           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia\" \\\n"
            "        -H 'Content-Type: application/json' \\\n"
            "        -d \"{\\\"Image\\\": \\\"${ISO_URL}\\\", \\\"Inserted\\\": true, \\\"WriteProtected\\\": true}\" || true\n"
            "      # Set boot from CD\n"
-           "      curl -sk -X PATCH \"https://${BMC_IP}:8000/redfish/v1/Systems/1\" \\\n"
+           "      curl -s -u admin:$BMC_PASS -X PATCH \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}\" \\\n"
            "        -H 'Content-Type: application/json' \\\n"
            "        -d '{\"Boot\": {\"BootSourceOverrideTarget\": \"Cd\", \"BootSourceOverrideEnabled\": \"Once\"}}' || true\n"
            "      # Power cycle\n"
-           "      curl -sk -X POST \"https://${BMC_IP}:8000/redfish/v1/Systems/1/Actions/ComputerSystem.Reset\" \\\n"
+           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset\" \\\n"
            "        -H 'Content-Type: application/json' \\\n"
            "        -d '{\"ResetType\": \"ForceRestart\"}' || true\n"
            "      echo \"Booted $BMC_IP from ISO\"\n"
