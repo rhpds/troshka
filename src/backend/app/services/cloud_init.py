@@ -73,7 +73,9 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append("    groups: wheel")
 
     # Packages
-    ci_packages = vm_data.get("ciPackages", [])
+    import re
+    _pkg_re = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+\-._]*$')
+    ci_packages = [p for p in vm_data.get("ciPackages", []) if _pkg_re.fullmatch(str(p))]
     all_packages = ["qemu-guest-agent"] + [p for p in ci_packages if p != "qemu-guest-agent"]
     if all_packages:
         lines.append("packages:")
