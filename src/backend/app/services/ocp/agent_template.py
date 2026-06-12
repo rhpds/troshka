@@ -345,6 +345,9 @@ def _build_agent_config(topology, cluster_name, base_domain):
         "metadata:",
         f"  name: {cluster_name}",
         "rendezvousIP: 10.0.0.10",
+        "additionalNTPSources:",
+        "  - clock.redhat.com",
+        "  - pool.ntp.org",
         "hosts:",
     ]
     ac_lines.append(hosts_yaml.rstrip())

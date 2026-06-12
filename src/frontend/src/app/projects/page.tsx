@@ -77,6 +77,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [clusterName, setClusterName] = useState("ocp");
   const [baseDomain, setBaseDomain] = useState("ocp.local");
   const [ocpVersion, setOcpVersion] = useState("4.20");
+  const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
   const [hasPullSecret, setHasPullSecret] = useState(false);
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
@@ -91,6 +92,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     fetch(`${API_BASE}/api/v1/projects/templates`)
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setTemplates(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch(`${API_BASE}/api/v1/ocp/versions`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => { setOcpVersions(Array.isArray(data) ? data : []); if (data.length) setOcpVersion(data[data.length - 1].minor); })
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/library/`)
       .then((r) => r.ok ? r.json() : [])
@@ -278,7 +283,11 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                     <div style={{ flex: 1 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
-                      <input style={inputStyle} value={ocpVersion} onChange={(e) => setOcpVersion(e.target.value)} placeholder="4.20" />
+                      <select style={inputStyle} value={ocpVersion} onChange={(e) => setOcpVersion(e.target.value)}>
+                        {ocpVersions.length > 0 ? ocpVersions.map((v) => (
+                          <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
+                        )) : <option value="4.20">4.20</option>}
+                      </select>
                     </div>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
