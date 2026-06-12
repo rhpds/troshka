@@ -144,7 +144,7 @@ def ocp_versions():
     """Fetch available OCP stable versions from the OpenShift Update Service."""
     import urllib.request
     channels = []
-    for minor in range(14, 25):
+    for minor in range(18, 25):
         channel = f"stable-4.{minor}"
         try:
             req = urllib.request.Request(
