@@ -745,7 +745,10 @@ export default function AdminHostsPage() {
                       const repaired = report.network_repair?.repaired || 0;
                       if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
                       else parts.push("Network bridges: OK");
-                      alert(parts.join("\n"));
+                      if (report.cleanup?.output) parts.push(report.cleanup.output);
+                      const fullMsg = parts.join("\n");
+                      const copy = window.confirm(fullMsg + "\n\nClick OK to copy to clipboard.");
+                      if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
                       loadData();
                     } else {
                       alert("GC failed — check server logs");

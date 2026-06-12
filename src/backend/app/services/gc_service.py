@@ -107,7 +107,9 @@ def clean_orphans(host, orphans: dict) -> dict:
     })
     job = wait_for_job(host, job_id, timeout=120)
 
-    cleaned = len(orphans.get("orphan_dirs", [])) + len(orphans.get("orphan_domains", [])) + len(orphans.get("orphan_bridges", []))
+    cleaned = (len(orphans.get("orphan_dirs", [])) + len(orphans.get("orphan_domains", []))
+               + len(orphans.get("orphan_bridges", [])) + len(orphans.get("orphan_namespaces", []))
+               + len(orphans.get("orphaned_bmc_project_ids", [])))
     return {
         "success": job["status"] == "completed",
         "cleaned": cleaned,
