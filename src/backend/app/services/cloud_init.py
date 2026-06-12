@@ -41,8 +41,19 @@ def generate_userdata(vm_data: dict) -> str:
 
     if root_hash or cloud_user_hash:
         lines.append("ssh_pwauth: true")
+        lines.append("chpasswd:")
+        lines.append("  expire: false")
+        lines.append("  users:")
+        if cloud_user_hash:
+            lines.append(f"    - name: cloud-user")
+            lines.append(f"      password: {cloud_user_hash}")
+            lines.append(f"      type: hash")
+        if root_hash:
+            lines.append(f"    - name: root")
+            lines.append(f"      password: {root_hash}")
+            lines.append(f"      type: hash")
 
-    # Users — single block with passwords inline
+    # Users
     lines.append("disable_root: false")
     cloud_user_sudo = vm_data.get("ciCloudUserSudo", True)
     lines.append("users:")
@@ -50,11 +61,8 @@ def generate_userdata(vm_data: dict) -> str:
     if root_hash:
         lines.append("  - name: root")
         lines.append("    lock_passwd: false")
-        lines.append(f"    passwd: {root_hash}")
     lines.append("  - name: cloud-user")
     lines.append("    lock_passwd: false")
-    if cloud_user_hash:
-        lines.append(f"    passwd: {cloud_user_hash}")
     if all_keys:
         lines.append("    ssh_authorized_keys:")
         for key in all_keys:
@@ -65,6 +73,8 @@ def generate_userdata(vm_data: dict) -> str:
 
     # Eject seed ISO (cidata) after boot — skip other CDROMs (e.g. RHEL DVD)
     lines.append("runcmd:")
+    if root_hash or cloud_user_hash:
+        lines.append("  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true")
     lines.append("  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true")
 
     # Custom user-data — append runcmd items to existing runcmd section
