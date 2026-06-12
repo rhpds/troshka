@@ -53,16 +53,17 @@ def generate_userdata(vm_data: dict) -> str:
             lines.append(f"      password: {root_hash}")
             lines.append(f"      type: hash")
 
-    # Users
+    # Users — no 'default' entry (it locks passwords on RHEL 10)
     lines.append("disable_root: false")
     cloud_user_sudo = vm_data.get("ciCloudUserSudo", True)
     lines.append("users:")
-    lines.append("  - default")
     if root_hash:
         lines.append("  - name: root")
         lines.append("    lock_passwd: false")
     lines.append("  - name: cloud-user")
     lines.append("    lock_passwd: false")
+    if cloud_user_hash:
+        lines.append(f"    passwd: {cloud_user_hash}")
     if all_keys:
         lines.append("    ssh_authorized_keys:")
         for key in all_keys:

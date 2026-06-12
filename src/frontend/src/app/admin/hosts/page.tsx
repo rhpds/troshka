@@ -723,35 +723,40 @@ export default function AdminHostsPage() {
                   }}>
                     {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
-                  <Button variant="secondary" isDisabled={hostBusy} onClick={async () => {
+                  <Button variant="secondary" isLoading={updating === `gc-${h.id}`} isDisabled={hostBusy || updating === `gc-${h.id}`} onClick={async () => {
                     if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
-                    const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
-                    if (resp.ok) {
-                      const report = await resp.json();
-                      const cap = report.capacity || {};
-                      const orphans = report.orphans_found || 0;
-                      const cleaned = report.cleanup?.cleaned || 0;
-                      const parts = [];
-                      if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
-                      else parts.push("Capacity: already in sync");
-                      if (orphans > 0) {
-                        parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                    setUpdating(`gc-${h.id}`);
+                    try {
+                      const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
+                      if (resp.ok) {
+                        const report = await resp.json();
+                        const cap = report.capacity || {};
+                        const orphans = report.orphans_found || 0;
+                        const cleaned = report.cleanup?.cleaned || 0;
+                        const parts = [];
+                        if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
+                        else parts.push("Capacity: already in sync");
+                        if (orphans > 0) {
+                          parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
+                          if (report.cleanup?.output) parts.push(report.cleanup.output);
+                          if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
+                        } else parts.push("No orphans found");
+                        const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
+                        const staleCache = report.orphans?.stale_cache?.length || 0;
+                        if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
+                        const repaired = report.network_repair?.repaired || 0;
+                        if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
+                        else parts.push("Network bridges: OK");
                         if (report.cleanup?.output) parts.push(report.cleanup.output);
-                        if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
-                      } else parts.push("No orphans found");
-                      const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
-                      const staleCache = report.orphans?.stale_cache?.length || 0;
-                      if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
-                      const repaired = report.network_repair?.repaired || 0;
-                      if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
-                      else parts.push("Network bridges: OK");
-                      if (report.cleanup?.output) parts.push(report.cleanup.output);
-                      const fullMsg = parts.join("\n");
-                      const copy = window.confirm(fullMsg + "\n\nClick OK to copy to clipboard.");
-                      if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
-                      loadData();
-                    } else {
-                      alert("GC failed — check server logs");
+                        const fullMsg = parts.join("\n");
+                        const copy = window.confirm(fullMsg + "\n\nClick OK to copy to clipboard.");
+                        if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
+                        loadData();
+                      } else {
+                        alert("GC failed — check server logs");
+                      }
+                    } finally {
+                      setUpdating(null);
                     }
                   }}>
                     Clean
