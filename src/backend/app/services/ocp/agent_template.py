@@ -168,6 +168,7 @@ def _setup_bastion_cloud_init(
             continue
 
         node["data"]["cloudInit"] = True
+        node["data"]["ciPackages"] = ["git", "ansible-core", "python3-pip", "bind-utils", "nmstate"]
         if password:
             node["data"]["ciCloudUserPassword"] = password
         if ssh_key_ids:
@@ -204,7 +205,6 @@ def _setup_bastion_cloud_init(
                 "    enabled=1\n"
                 "    gpgcheck=0\n"
                 "    EOF\n"
-                "  - dnf install -y git ansible-core python3-pip bind-utils nmstate\n"
             )
 
         # Pull secret

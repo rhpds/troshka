@@ -594,6 +594,7 @@ def _handle_vm_create(job, params):
     if input_model == "virtio":
         cmd.extend(["--input", "type=keyboard,bus=virtio"])
         cmd.extend(["--input", "type=tablet,bus=virtio"])
+    cmd.extend(["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"])
     _run_cmd(job, cmd, timeout=600)
     return {"domain": domain, "status": "created"}
 
