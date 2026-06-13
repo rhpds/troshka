@@ -559,12 +559,13 @@ export default function ProjectCanvasPage() {
         <div style={{
           position: "absolute", inset: 0, zIndex: 100,
           display: "flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(0,0,0,0.5)", pointerEvents: "auto",
+          pointerEvents: "none",
         }}>
           <div style={{
             background: "var(--pf-t--global--background--color--primary--default)",
             borderRadius: 12, padding: 24, width: 420, maxWidth: "90vw",
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            pointerEvents: "auto",
             border: `1px solid ${projectState === "error" ? "rgba(239,68,68,0.4)" : "var(--pf-t--global--border--color--default)"}`,
           }}>
             <h3 style={{ margin: "0 0 16px", display: "flex", alignItems: "center", gap: 8 }}>
@@ -592,6 +593,11 @@ export default function ProjectCanvasPage() {
             )}
             {projectState === "error" && (
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+                {deployError && (
+                  <button onClick={() => navigator.clipboard.writeText(deployError)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--subtle)", cursor: "pointer", fontSize: 12 }}>
+                    Copy Error
+                  </button>
+                )}
                 <button onClick={() => setDeployError(null)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
                   Dismiss
                 </button>

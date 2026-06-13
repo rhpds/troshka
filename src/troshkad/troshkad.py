@@ -3231,6 +3231,15 @@ def _handle_files_remove(job, params):
 COMMAND_HANDLERS["files/remove"] = _handle_files_remove
 
 
+def _handle_files_stat(job, params):
+    path = _validate_path(params["path"])
+    exists = os.path.exists(path)
+    size = os.path.getsize(path) if exists else 0
+    return {"exists": exists, "size": size}
+
+COMMAND_HANDLERS["files/stat"] = _handle_files_stat
+
+
 # ── Update mechanism ──
 
 def _do_update_restart(script_path, new_path):

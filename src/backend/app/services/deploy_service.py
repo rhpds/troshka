@@ -517,8 +517,18 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         for ic in items_to_cache:
             status, entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
             if status == "ready":
-                logger.info("  %s already on shared storage, skipping", ic["name"])
-                continue
+                try:
+                    jid = start_job(host, "/files/stat", {"path": ic["cache_path"]})
+                    stat_job = wait_for_job(host, jid, timeout=10)
+                    if stat_job.get("result", {}).get("exists"):
+                        logger.info("  %s already on shared storage, skipping", ic["name"])
+                        continue
+                except TroshkadError:
+                    pass
+                logger.warning("  %s cache entry says ready but file missing, re-downloading", ic["name"])
+                if entry:
+                    db_session.delete(entry)
+                    db_session.commit()
             elif status == "downloading":
                 logger.info("  %s being downloaded by another host, waiting...", ic["name"])
                 if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
@@ -1559,7 +1569,15 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         _push("console", "waiting for OpenShift console")
         _t.sleep(5)
 
-    # Phase 6: Save kubeadmin to Firefox
+    # Phase 6: Trust OCP CA cert
+    _push("firefox", "trusting OCP CA certificate")
+    _exec_on_bastion(host, project_id, bastion_ip, password,
+                      "sudo bash -c 'export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+                      "oc get secret -n openshift-ingress router-certs-default -o jsonpath=\"{.data.tls\\\\.crt}\" 2>/dev/null | "
+                      "base64 -d > /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && update-ca-trust' 2>/dev/null || true",
+                      timeout=15)
+
+    # Phase 7: Save kubeadmin to Firefox
     _push("firefox", "saving credentials to Firefox")
     _exec_on_bastion(host, project_id, bastion_ip, password,
                       "which geckodriver >/dev/null 2>&1 && python3 -c 'import selenium' 2>/dev/null && "

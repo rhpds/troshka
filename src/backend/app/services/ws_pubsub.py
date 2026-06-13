@@ -162,7 +162,19 @@ def _poll_active_projects():
                             if vm_info.get("boot_devs"):
                                 vm_boot_devs[node["id"]] = vm_info["boot_devs"]
 
-            if vm_states != last.get("vm_states") or vm_progress != last.get("vm_progress") or vm_boot_devs != last.get("vm_boot_devs"):
+            # Log VM state changes
+            prev_vm_states = last.get("vm_states", {})
+            for vm_id, new_state in vm_states.items():
+                old_state = prev_vm_states.get(vm_id)
+                if old_state and old_state != new_state:
+                    vm_label = ""
+                    for node in (project.topology or {}).get("nodes", []):
+                        if node["id"] == vm_id:
+                            vm_label = node.get("data", {}).get("label", vm_id[:8])
+                            break
+                    logger.info("VM state change: %s/%s %s → %s", project.name[:30], vm_label, old_state, new_state)
+
+            if vm_states != prev_vm_states or vm_progress != last.get("vm_progress") or vm_boot_devs != last.get("vm_boot_devs"):
                 notify_project(project_id, {
                     "type": "vm-state",
                     "states": vm_states,
