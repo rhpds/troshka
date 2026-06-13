@@ -580,6 +580,16 @@ def _handle_vm_create(job, params):
             except FileExistsError:
                 pass
         disk_cache = params.get("disk_cache")
+        if disk_cache == "none" and device != "cdrom":
+            try:
+                info = subprocess.run(["qemu-img", "info", "--output=json", path],
+                                      capture_output=True, text=True, timeout=10)
+                if info.returncode == 0:
+                    import json as _json
+                    if _json.loads(info.stdout).get("backing-filename"):
+                        disk_cache = "writeback"
+            except Exception:
+                pass
         disk_arg = f"path={path},bus={bus}"
         if disk_cache:
             disk_arg += f",cache={disk_cache}"

@@ -308,7 +308,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           )}
         </div>
       )}
-      {ocpHealth && (
+      {ocpHealth && ocpHealth.phase !== "ssh" && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"
@@ -356,7 +356,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   </div>
                 );
               })()}
-              {ocpHealth.phase !== "ready" && projectId && (
+              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "ssh" && projectId && (
                 <div style={{ marginTop: 4 }}>
                   <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }} onClick={() => { setOcpLog(""); setOcpLogModal(true); }}>View Install Log</span>
                 </div>

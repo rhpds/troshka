@@ -173,10 +173,14 @@ def _setup_bastion_cloud_init(
                 "  - nmcli con up \"cloud-init ens3\" 2>/dev/null || true\n"
             )
 
+        # Guard: skip all remaining runcmd blocks if cluster already installed (pattern deploy)
+        _guard = "    [ -f /home/cloud-user/ocp-install/auth/kubeconfig ] && exit 0\n"
+
         # Pull secret
         if pull_secret_json:
             node["data"]["ciUserData"] += (
                 "  - |\n"
+                + _guard +
                 "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
                 f"    {pull_secret_json}\n"
                 "    PULLSECRETEOF\n"
@@ -212,6 +216,7 @@ def _setup_bastion_cloud_init(
             indented_ic = "\n".join("    " + line for line in install_config.split("\n"))
             node["data"]["ciUserData"] += (
                 "  - |\n"
+                + _guard +
                 "    mkdir -p /home/cloud-user/ocp-install\n"
                 "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
                 f"{indented_ic}\n"
@@ -224,39 +229,12 @@ def _setup_bastion_cloud_init(
             indented_ac = "\n".join("    " + line for line in agent_config.split("\n"))
             node["data"]["ciUserData"] += (
                 "  - |\n"
+                + _guard +
                 "    cat > /home/cloud-user/ocp-install/agent-config.yaml << 'ACEOF'\n"
                 f"{indented_ac}\n"
                 "    ACEOF\n"
                 "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
             )
-
-        # Quiesce script — gracefully shuts down all OCP nodes for pattern save
-        node["data"]["ciUserData"] += (
-            "  - |\n"
-            "    cat > /home/cloud-user/quiesce-ocp.sh << 'QEOF'\n"
-            "    #!/bin/bash\n"
-            "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
-            "    echo 'Ejecting virtual media and shutting down nodes...'\n"
-            "    for node in $(oc get nodes -o name); do\n"
-            "      echo \"  Shutting down $node...\"\n"
-            "      oc debug $node -- chroot /host bash -c 'eject /dev/sr0 2>/dev/null; systemctl poweroff' 2>/dev/null &\n"
-            "    done\n"
-            "    wait\n"
-            "    echo 'Waiting for nodes to shut down...'\n"
-            "    for i in $(seq 1 60); do\n"
-            "      READY=$(timeout 5 oc get nodes --no-headers 2>/dev/null | grep -c Ready || echo 0)\n"
-            "      if [ \"$READY\" = \"0\" ]; then\n"
-            "        echo 'All nodes are down.'\n"
-            "        break\n"
-            "      fi\n"
-            "      echo \"  $READY node(s) still up...\"\n"
-            "      sleep 5\n"
-            "    done\n"
-            "    echo 'Safe to stop project and save as pattern.'\n"
-            "    QEOF\n"
-            "    chown cloud-user:cloud-user /home/cloud-user/quiesce-ocp.sh\n"
-            "    chmod 755 /home/cloud-user/quiesce-ocp.sh\n"
-        )
 
         # Launch OCP installer in background
         node["data"]["ciUserData"] += (
@@ -266,6 +244,7 @@ def _setup_bastion_cloud_init(
         # Desktop setup script — written as a file to avoid nested quoting issues
         node["data"]["ciUserData"] += (
             "  - |\n"
+            + _guard +
             "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
             "    #!/bin/bash\n"
             "    set -x\n"
@@ -320,13 +299,14 @@ def _setup_bastion_cloud_init(
             "    systemctl isolate graphical.target\n"
             "    DESKTOPEOF\n"
             "    chmod 755 /root/setup-desktop.sh\n"
-            "    nohup /root/setup-desktop.sh > /var/log/desktop-install.log 2>&1 &\n"
+            "    [ -f /var/log/desktop-install.log ] || nohup /root/setup-desktop.sh > /var/log/desktop-install.log 2>&1 &\n"
         )
 
         # Firefox enterprise policies
         console_url = f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
         node["data"]["ciUserData"] += (
             "  - |\n"
+            + _guard +
             "    mkdir -p /etc/firefox/policies\n"
             "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
             "    {\n"
@@ -347,6 +327,7 @@ def _setup_bastion_cloud_init(
         # Firefox default prefs (suppress crash recovery, update prompts)
         node["data"]["ciUserData"] += (
             "  - |\n"
+            + _guard +
             "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
             "    if [ -n \"$FIREFOX_DIR\" ]; then\n"
             "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
@@ -504,6 +485,12 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "    set -e\n"
         "    cd /home/cloud-user\n"
         "    \n"
+        "    # Skip if cluster is already installed (pattern deploy)\n"
+        "    if [ -f /home/cloud-user/ocp-install/auth/kubeconfig ]; then\n"
+        "      echo 'Cluster already installed, skipping.'\n"
+        "      exit 0\n"
+        "    fi\n"
+        "    \n"
         "    # Wait for network\n"
         "    echo 'Waiting for network...'\n"
         "    for i in $(seq 1 15); do\n"
@@ -546,9 +533,6 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "    echo '  # Serve ISO and boot nodes via BMC'\n"
         "    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'\n"
         "    echo ''\n"
-        "    echo 'To gracefully shut down the cluster (for pattern save):'\n"
-        "    echo '  ~/quiesce-ocp.sh'\n"
-        "    echo '  # Then stop the project in Troshka and Save as Pattern'\n"
         "    echo ''\n"
         + ("    # Auto-run agent-based installer\n"
            "    INSTALL_START=$(date +%s)\n"
