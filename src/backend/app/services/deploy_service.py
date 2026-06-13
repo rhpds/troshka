@@ -1516,56 +1516,152 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     # Detect mode: pattern deploy (cluster pre-installed) vs fresh install (install-ocp.sh running)
     is_pattern = _is_pattern_deploy(topology)
     if not is_pattern:
-        # Fresh install — monitor install.log progress
+        # Fresh install — monitor install.log progress with structured phases
         _push("installing", "waiting for OpenShift install")
-        install_deadline = _t.time() + 5400  # 90 min for fresh install
-        last_phase_change = _t.time()
-        last_detail = ""
+        install_deadline = _t.time() + 5400
+        tracked_ops = ["authentication", "console", "image-registry", "ingress",
+                       "monitoring", "openshift-apiserver", "openshift-samples",
+                       "olm-packageserver"]
+        _op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
+        phases_seen = set()
+
         while _t.time() < install_deadline:
             result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                       "tail -20 /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=10)
-            if result:
-                noise = ("belongs-to-majority-group", "Sleeping for", "validation", "never initialized",
-                         "Agent Rest API", "Bootstrap Kube API", "Could not update",
-                         "New image status", "image pull", "sha256:", "quay.io", "registry.redhat")
-                lines = [l.strip() for l in result.strip().split("\n")
-                         if l.strip() and ("level=" in l or "Install complete" in l or "Install completed" in l or "waiting for install" in l)
-                         and not any(n in l for n in noise)]
-                if not lines:
-                    _push("installing", "waiting for install to start")
-                    _t.sleep(15)
-                    continue
-                last = lines[-1]
-                if "Install complete" in last or "Install completed" in last:
-                    _push("ready", "install complete")
-                    break
-                detail = last.split("msg=")[-1] if "msg=" in last else last
-                tracked_ops = ["authentication", "console", "image-registry", "ingress",
-                              "monitoring", "openshift-apiserver", "openshift-samples",
-                              "olm-packageserver"]
-                _op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
-                not_available = set()
-                for l in reversed(lines):
-                    msg = l.split("msg=")[-1] if "msg=" in l else l
-                    if ("are not available" in msg or "is not available" in msg) and "Cluster operator" in msg:
-                        for real_name, alias in _op_aliases.items():
-                            if real_name in msg:
-                                not_available.add(alias)
-                        for op in tracked_ops:
-                            if op in msg:
-                                not_available.add(op)
+                                       "tail -50 /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=10)
+            if not result:
+                _t.sleep(15)
+                continue
+
+            full_text = result
+            # Detect phases from log content
+            if "Install complete" in full_text or "Install completed" in full_text or "All cluster operators have completed" in full_text:
+                phases_seen.update(["validation", "bootstrap", "control-plane", "operators"])
+                items = [f"Validation: ✓", f"Bootstrap: ✓", f"Control plane: ✓", f"Cluster operators: ✓"]
+                _push("ready", "install complete", items=items)
+                break
+
+            if "validation:" in full_text:
+                phases_seen.add("validating")
+            if "Preparing cluster" in full_text:
+                phases_seen.add("validation")
+            if "Bootstrap Kube API Initialized" in full_text:
+                phases_seen.add("bootstrap-api")
+            if "Bootstrap is complete" in full_text or "cluster bootstrap is complete" in full_text:
+                phases_seen.add("bootstrap")
+            if "Waiting up to" in full_text and "to initialize" in full_text:
+                phases_seen.add("bootstrap")
+            if "Working towards" in full_text:
+                phases_seen.add("control-plane")
+            if "Cluster is initialized" in full_text:
+                phases_seen.add("initialized")
+
+            # Parse per-node status from log
+            node_status = {}
+            for l in full_text.split("\n"):
+                for cp in cp_names:
+                    if f"Host {cp}" in l or f"Host: {cp}" in l or f"Node {cp}" in l:
+                        msg = l.split("msg=")[-1] if "msg=" in l else l
+                        if "Writing image to disk: 100%" in msg:
+                            node_status[cp] = "written"
+                        elif "Writing image to disk" in msg:
+                            pct = msg.split("Writing image to disk:")[-1].strip().rstrip("%") if ":" in msg else ""
+                            node_status.setdefault(cp, f"writing {pct}%")
+                        elif "Rebooting" in msg:
+                            node_status[cp] = "rebooting"
+                        elif "Waiting for bootkube" in msg:
+                            node_status[cp] = "bootkube"
+                        elif "Configuring" in msg:
+                            node_status[cp] = "configuring"
+                        elif "Joined" in msg:
+                            node_status[cp] = "joined"
+                        elif "Done" in msg or "completing installation" in msg:
+                            node_status[cp] = "done"
+
+            items = []
+            if "validation" in phases_seen:
+                items.append("Validation: ✓")
+            elif "validating" in phases_seen:
+                items.append("Validation: ⏳")
+            else:
+                items.append("Validation: —")
+
+            if node_status:
+                all_done = all(s in ("done", "joined") for s in node_status.values())
+                items.append(f"Installing nodes: {'✓' if all_done else '⏳'}")
+                for cp in cp_names:
+                    s = node_status.get(cp, "—")
+                    items.append(f"  {cp}: {s}")
+
+            has_bootkube = any(s == "bootkube" for s in node_status.values())
+            has_configuring = any(s in ("configuring", "joined", "done") for s in node_status.values())
+
+            if has_bootkube or has_configuring or "bootstrap-api" in phases_seen:
+                items.append(f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}")
+
+            if "bootstrap" in phases_seen:
+                items.append("Bootstrap: ✓")
+            elif "bootstrap-api" in phases_seen:
+                items.append("Bootstrap: ⏳")
+            elif has_bootkube:
+                items.append("Bootstrap: ⏳")
+            elif node_status:
+                items.append("Bootstrap: —")
+
+            if "bootstrap" in phases_seen and "control-plane" not in phases_seen:
+                items.append("API: ⏳")
+
+            if "control-plane" in phases_seen:
+                items.append("API: ✓")
+                cp_detail = "⏳"
+                for l in reversed(full_text.split("\n")):
+                    if "Working towards" in l:
+                        msg = l.split("msg=")[-1] if "msg=" in l else l
+                        import re as _re
+                        m = _re.search(r'([\d.]+)', msg)
+                        if m:
+                            cp_detail = f"OCP {m.group(1)} ⏳"
                         break
-                items = None
-                if not_available:
-                    items = [f"{op}: {'✗' if op in not_available else '✓'}" for op in tracked_ops]
-                if len(detail) > 60:
-                    detail = detail[:57] + "..."
-                if detail != last_detail:
-                    last_phase_change = _t.time()
-                    last_detail = detail
-                phase_secs = int(_t.time() - last_phase_change)
-                phase_time = f"{phase_secs // 60}m {phase_secs % 60:02d}s" if phase_secs >= 60 else f"{phase_secs}s"
-                _push("installing", f"{detail} [{phase_time}]", items=items)
+                if "initialized" in phases_seen:
+                    cp_detail = cp_detail.replace(" ⏳", " ✓")
+                items.append(f"Cluster init: {cp_detail}")
+            elif "bootstrap" in phases_seen:
+                items.append("Cluster init: —")
+
+            # Parse operator status from latest "not available" line
+            not_available = set()
+            for l in reversed(full_text.split("\n")):
+                if ("are not available" in l or "is not available" in l) and "Cluster operator" in l:
+                    msg = l.split("msg=")[-1] if "msg=" in l else l
+                    for real_name, alias in _op_aliases.items():
+                        if real_name in msg:
+                            not_available.add(alias)
+                    for op in tracked_ops:
+                        if op in msg:
+                            not_available.add(op)
+                    break
+
+            if "initialized" in phases_seen:
+                items.append("Cluster operators: ✓")
+            elif not_available:
+                phases_seen.add("operators")
+                avail = len(tracked_ops) - len(not_available)
+                items.append(f"Cluster operators: {avail}/{len(tracked_ops)}")
+                for op in tracked_ops:
+                    items.append(f"  {op}: {'✗' if op in not_available else '✓'}")
+            elif "control-plane" in phases_seen:
+                items.append("Cluster operators: ⏳")
+
+            # Extract progress percentage if available
+            detail = "installing"
+            for l in reversed(full_text.split("\n")):
+                if "done (" in l:
+                    msg = l.split("msg=")[-1] if "msg=" in l else l
+                    detail = msg.strip()
+                    if len(detail) > 60:
+                        detail = detail[:57] + "..."
+                    break
+
+            _push("installing", detail, items=items)
             _t.sleep(15)
         else:
             _push("timeout", "install timed out")
