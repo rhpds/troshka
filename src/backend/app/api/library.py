@@ -357,10 +357,8 @@ def import_from_url(
                 sess.commit()
                 return
 
-            client = _get_s3_client()
             bucket = _bucket()
 
-            # Check disk space before downloading
             disk = check_disk_usage(host)
             if disk.get("used_pct", 100) >= 90:
                 free_gb = disk.get("free_bytes", 0) / (1024 ** 3)
@@ -372,63 +370,29 @@ def import_from_url(
             it.state = "importing"
             sess.commit()
 
-            # Calculate number of parts needed
             cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
-            chunk_size = 500 * 1024 * 1024
-
-            # Create multipart upload and generate presigned URLs
-            mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
-            upload_id = mpu["UploadId"]
-
-            # Generate presigned URLs for up to 100 parts (max file size 50GB)
-            # Troshkad will use only what it needs based on actual file size
-            max_parts = 100
-            upload_parts = []
-            for pn in range(1, max_parts + 1):
-                url = client.generate_presigned_url(
-                    "upload_part",
-                    Params={"Bucket": bucket, "Key": s3_key, "UploadId": upload_id, "PartNumber": pn},
-                    ExpiresIn=14400,
-                )
-                upload_parts.append({"part_num": pn, "presigned_url": url})
-
-            # Single troshkad job replaces 13 SSH calls
-            import_params = {
-                "download_url": body.url,
-                "cache_path": cache_path,
-                "s3_multipart": {
-                    "part_size_bytes": chunk_size,
-                    "upload_parts": upload_parts,
-                }
-            }
+            s3_upload_url = f"s3://{bucket}/{s3_key}"
+            from app.services.s3_storage import _get_s3_config
+            s3_creds = _get_s3_config()
 
             try:
-                job_id = start_job(host, "/library/import", import_params)
+                job_id = start_job(host, "/library/import", {
+                    "download_url": body.url,
+                    "cache_path": cache_path,
+                    "s3_upload_url": s3_upload_url,
+                    "aws_access_key_id": s3_creds.get("access_key_id", ""),
+                    "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
+                    "aws_region": s3_creds.get("region", "us-east-1"),
+                })
                 job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)
 
                 if job["status"] == "failed":
                     logger.error("Import %s: troshkad job failed: %s", item_id[:8], job.get("error", "unknown"))
-                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
                     it.state = "error"
                     sess.commit()
                     return
 
-                # Complete S3 multipart upload with ETags from job result
-                result = job.get("result", {})
-                etags = result.get("etags", [])
-
-                if not etags:
-                    logger.error("Import %s: no etags in job result", item_id[:8])
-                    client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
-                    it.state = "error"
-                    sess.commit()
-                    return
-
-                # Complete multipart upload
-                parts = [{"PartNumber": e["part"], "ETag": e["etag"]} for e in etags]
-                client.complete_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts})
-
-                # Update item with final size
+                client = _get_s3_client()
                 head = client.head_object(Bucket=bucket, Key=s3_key)
                 it.size_bytes = head["ContentLength"]
                 it.state = "ready"
@@ -438,7 +402,6 @@ def import_from_url(
 
             except TroshkadError as e:
                 logger.error("Import %s: troshkad error: %s", item_id[:8], e)
-                client.abort_multipart_upload(Bucket=bucket, Key=s3_key, UploadId=upload_id)
                 it.state = "error"
                 sess.commit()
 

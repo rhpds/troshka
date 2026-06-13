@@ -25,7 +25,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
     from app.models.project import Project
     from app.models.host import Host
     from app.services import s3_storage
-    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+    from app.services.troshkad_client import start_job, poll_job, TroshkadError
 
     db = SessionLocal()
     try:
@@ -96,7 +96,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
                 bucket = s3_storage._bucket()
                 s3_url = f"s3://{bucket}/{s3_key}"
-                cache_path = f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+                cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
                 disks_params.append({
                     "disk_path": disk_path,
@@ -116,13 +116,16 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 continue
 
             try:
+                domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
                 job_id = start_job(host, "/patterns/capture-direct", {
                     "disks": disks_params,
+                    "domain_name": domain_name,
                     "aws_access_key_id": creds.get("access_key_id", ""),
                     "aws_secret_access_key": creds.get("secret_access_key", ""),
                     "aws_region": creds.get("region", "us-east-1"),
                 })
-                all_jobs.append({"job_id": job_id, "vm_id": vm_id, "disks_params": disks_params, "disk_metadata": disk_metadata})
+                vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
+                all_jobs.append({"job_id": job_id, "vm_id": vm_id, "vm_name": vm_name, "disks_params": disks_params, "disk_metadata": disk_metadata})
                 all_metadata.extend(disk_metadata)
                 log.info("Pattern %s: started capture job for VM %s (%d disks)", pattern_id[:8], vm_id[:8], len(disks_params))
             except TroshkadError as e:
@@ -131,13 +134,57 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 db.commit()
                 return
 
-        # Wait for all jobs to complete
-        _capture_progress[pattern_id] = {"step": "uploading", "detail": f"0/{len(all_jobs)} VMs"}
-        for i, jinfo in enumerate(all_jobs):
-            try:
-                _capture_progress[pattern_id] = {"step": "uploading", "detail": f"{i}/{len(all_jobs)} VMs done, waiting on {jinfo['vm_id'][:8]}"}
-                job = wait_for_job(host, jinfo["job_id"], timeout=3600)
+        # Poll all jobs concurrently, update progress with per-VM status
+        import time as _time
+        completed_jobs = set()
+        deadline = _time.time() + 3600
+        _capture_progress[pattern_id] = {"step": "capturing", "detail": f"0/{len(all_jobs)} VMs done"}
 
+        while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
+            lines = []
+            for idx, jinfo in enumerate(all_jobs):
+                if jinfo["job_id"] in completed_jobs:
+                    lines.append(f"{jinfo['vm_name']}: done")
+                    continue
+                try:
+                    job = poll_job(host, jinfo["job_id"])
+                except TroshkadError:
+                    lines.append(f"{jinfo['vm_name']}: polling...")
+                    continue
+                if job["status"] in ("completed", "failed"):
+                    completed_jobs.add(jinfo["job_id"])
+                    jinfo["_result"] = job
+                    if job["status"] == "failed":
+                        lines.append(f"{jinfo['vm_name']}: FAILED")
+                    else:
+                        lines.append(f"{jinfo['vm_name']}: done")
+                else:
+                    output = job.get("output", [])
+                    last = ""
+                    for line in reversed(output):
+                        if "Flatten" in line or "Upload" in line or "Commit" in line or "Snapshot" in line or "Trim" in line:
+                            last = line
+                            break
+                    lines.append(f"{jinfo['vm_name']}: {last}" if last else f"{jinfo['vm_name']}: working...")
+            progress = {
+                "step": "capturing",
+                "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
+                "vms": lines,
+            }
+            _capture_progress[pattern_id] = progress
+            from app.services.ws_pubsub import notify_pattern
+            notify_pattern(pattern_id, {"type": "capture-progress", **progress})
+            _time.sleep(5)
+
+        # Process results
+        for jinfo in all_jobs:
+            job = jinfo.get("_result")
+            if not job:
+                try:
+                    job = poll_job(host, jinfo["job_id"])
+                except TroshkadError:
+                    job = {"status": "failed", "result": {"error": "Job lost"}}
+            try:
                 if job["status"] == "failed":
                     error_msg = job.get("result", {}).get("error", "Pattern capture failed")
                     log.error("Failed to capture pattern %s VM %s: %s", pattern_id[:8], jinfo["vm_id"][:8], error_msg)
@@ -159,14 +206,8 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                         state="available",
                     )
                     db.add(pd)
-                    # Register in shared cache so deploys don't re-download
-                    if pool and pool.mode.startswith("shared"):
-                        from app.services.deploy_service import _create_shared_cache_entry, _mark_shared_cache_ready
-                        cache_path = f"/var/lib/troshka/shared/cache/patterns/{pattern_id}/{metadata['disk_id']}.{metadata['format']}"
-                        _create_shared_cache_entry(db, pool, metadata["disk_id"], "pattern", cache_path)
-                        _mark_shared_cache_ready(db, pool.id, metadata["disk_id"], "pattern", size_bytes)
                 db.commit()
-                log.info("Pattern %s: VM %s capture done (%d/%d)", pattern_id[:8], jinfo["vm_id"][:8], i + 1, len(all_jobs))
+                log.info("Pattern %s: VM %s capture done", pattern_id[:8], jinfo["vm_id"][:8])
 
             except TroshkadError as e:
                 log.error("Troshkad error capturing pattern %s VM %s: %s", pattern_id[:8], jinfo["vm_id"][:8], str(e))
@@ -227,6 +268,8 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
             log.warning("Failed to save pattern metadata to S3 for %s", pattern_id[:8])
 
         log.info("Pattern %s capture complete", pattern_id)
+        from app.services.ws_pubsub import notify_pattern
+        notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
 
     except Exception as e:
         log.exception("Pattern capture failed for %s: %s", pattern_id, e)
@@ -235,6 +278,8 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
             if pattern:
                 pattern.state = "error"
                 db.commit()
+                from app.services.ws_pubsub import notify_pattern
+                notify_pattern(pattern_id, {"type": "capture-complete", "state": "error"})
         except Exception:
             pass
     finally:

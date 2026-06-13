@@ -19,34 +19,6 @@ _MAC_RE = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
 _NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$')
 
 
-def _firefox_cfg_cmd(oauth_url: str) -> str:
-    """Generate a shell command that writes firefox.cfg via base64 decode."""
-    import base64
-    cfg = (
-        "// AutoConfig\n"
-        "try {\n"
-        "  var dominated = false;\n"
-        "  try { Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager)"
-        ".getAllLogins({}).forEach(function(l) { if (l.hostname.indexOf('oauth-openshift') >= 0) dominated = true; }); } catch(e) {}\n"
-        "  if (!dominated) {\n"
-        "    var file = Components.classes['@mozilla.org/file/local;1'].createInstance(Components.interfaces.nsIFile);\n"
-        "    file.initWithPath('/home/cloud-user/ocp-install/auth/kubeadmin-password');\n"
-        "    if (file.exists()) {\n"
-        "      var fis = Components.classes['@mozilla.org/network/file-input-stream;1'].createInstance(Components.interfaces.nsIFileInputStream);\n"
-        "      fis.init(file, 1, 0, 0);\n"
-        "      var sis = Components.classes['@mozilla.org/scriptableinputstream;1'].createInstance(Components.interfaces.nsIScriptableInputStream);\n"
-        "      sis.init(fis);\n"
-        "      var pw = sis.read(sis.available()).trim();\n"
-        "      sis.close();\n"
-        "      var loginInfo = Components.classes['@mozilla.org/login-manager/loginInfo;1'].createInstance(Components.interfaces.nsILoginInfo);\n"
-        f"      loginInfo.init('{oauth_url}', '{oauth_url}/login', null, 'kubeadmin', pw, 'inputUsername', 'inputPassword');\n"
-        "      Components.classes['@mozilla.org/login-manager;1'].getService(Components.interfaces.nsILoginManager).addLogin(loginInfo);\n"
-        "    }\n"
-        "  }\n"
-        "} catch(e) {}\n"
-    )
-    b64 = base64.b64encode(cfg.encode()).decode()
-    return f"      echo '{b64}' | base64 -d > $FIREFOX_DIR/firefox.cfg\n"
 
 
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
@@ -170,7 +142,9 @@ def _setup_bastion_cloud_init(
         node["data"]["cloudInit"] = True
         node["data"]["ciPackages"] = [
             "git", "ansible-core", "python3-pip", "bind-utils", "nmstate",
-            "@Server with GUI", "firefox", "gnome-shell-extension-dash-to-dock",
+            "@Server with GUI", "firefox", "ptyxis", "gnome-shell-extension-dash-to-dock",
+            "google-noto-sans-fonts", "google-noto-sans-mono-fonts", "dejavu-sans-fonts",
+            "desktop-backgrounds-gnome",
         ]
         if password:
             node["data"]["ciCloudUserPassword"] = password
@@ -229,7 +203,9 @@ def _setup_bastion_cloud_init(
                 bmc_ips.append(ip)
         bmc_ips_str = " ".join(bmc_ips)
 
-        node["data"]["ciUserData"] += _build_install_script(ocp_version, auto_install_ocp, password, bmc_ips_str)
+        node["data"]["ciUserData"] += _build_install_script(
+            ocp_version, auto_install_ocp, password, bmc_ips_str,
+            cluster_name, base_domain)
 
         # Write install-config.yaml
         if install_config:
@@ -293,7 +269,7 @@ def _setup_bastion_cloud_init(
             "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
             "    #!/bin/bash\n"
             "    set -x\n"
-            "    dnf remove -y gnome-initial-setup gnome-software gnome-tour 2>/dev/null\n"
+            "    dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null\n"
             "    systemctl disable --now rhsmcertd 2>/dev/null\n"
             "    systemctl mask rhsmcertd 2>/dev/null\n"
             "    mkdir -p /etc/skel/.config\n"
@@ -325,9 +301,27 @@ def _setup_bastion_cloud_init(
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/show-mounts false\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/mutter/dynamic-workspaces false\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/num-workspaces 1\n"
+            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/button-layout \"'appmenu:minimize,maximize,close'\"\n"
+            "    MONITORS_XML='<monitors version=\"2\"><configuration><logicalmonitor><x>0</x><y>0</y><scale>1</scale><primary>yes</primary><monitor><monitorspec><connector>Virtual-1</connector><vendor>unknown</vendor><product>unknown</product><serial>unknown</serial></monitorspec><mode><width>1920</width><height>1080</height><rate>60</rate></mode></monitor></logicalmonitor></configuration></monitors>'\n"
+            "    for u in root cloud-user; do\n"
+            "      d=$(eval echo ~$u)\n"
+            "      mkdir -p $d/.config\n"
+            "      echo \"$MONITORS_XML\" > $d/.config/monitors.xml\n"
+            "      chown -R $u:$u $d/.config\n"
+            "    done\n"
+            "    mkdir -p /var/lib/gdm/.config\n"
+            "    echo \"$MONITORS_XML\" > /var/lib/gdm/.config/monitors.xml\n"
+            "    chown -R gdm:gdm /var/lib/gdm/.config\n"
             "    sed -i '/^\\[daemon\\]/a AutomaticLoginEnable=True' /etc/gdm/custom.conf\n"
             "    sed -i '/^AutomaticLoginEnable/a AutomaticLogin=cloud-user' /etc/gdm/custom.conf\n"
             "    echo 'export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig' >> /home/cloud-user/.bashrc\n"
+            "    cat >> /home/cloud-user/.bashrc << 'MOTDEOF'\n"
+            "    if [ -f /home/cloud-user/ocp-install/auth/kubeadmin-password ]; then\n"
+            "      echo -e \"\\n\\033[1;32mOpenShift Console:\\033[0m https://console-openshift-console.apps.$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:.*||' || echo ocp.ocp.local)\"\n"
+            "      echo -e \"\\033[1;32mUsername:\\033[0m kubeadmin\"\n"
+            "      echo -e \"\\033[1;32mPassword:\\033[0m $(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\\n\"\n"
+            "    fi\n"
+            "    MOTDEOF\n"
             "    systemctl set-default graphical.target\n"
             "    systemctl isolate graphical.target\n"
             "    DESKTOPEOF\n"
@@ -335,16 +329,15 @@ def _setup_bastion_cloud_init(
             "    nohup /root/setup-desktop.sh > /var/log/desktop-install.log 2>&1 &\n"
         )
 
-        # Firefox enterprise policies + auto-login for OCP console
+        # Firefox enterprise policies
         console_url = f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
-        oauth_url = f"https://oauth-openshift.apps.{cluster_name}.{base_domain}"
         node["data"]["ciUserData"] += (
             "  - |\n"
             "    mkdir -p /etc/firefox/policies\n"
             "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
             "    {\n"
             "      \"policies\": {\n"
-            f"        \"Homepage\": {{\"URL\": \"{console_url}\", \"Locked\": false, \"StartPage\": \"homepage\"}},\n"
+            f"        \"Homepage\": {{\"URL\": \"{console_url}\", \"Locked\": true, \"StartPage\": \"homepage\"}},\n"
             "        \"OverrideFirstRunPage\": \"\",\n"
             "        \"OverridePostUpdatePage\": \"\",\n"
             "        \"UserMessaging\": {\"WhatsNew\": false, \"ExtensionRecommendations\": false, \"FeatureRecommendations\": false, \"UrlbarInterventions\": false, \"SkipOnboarding\": true, \"MoreFromMozilla\": false},\n"
@@ -357,20 +350,20 @@ def _setup_bastion_cloud_init(
             "    }\n"
             "    FPEOF\n"
         )
-        # AutoConfig: inject kubeadmin saved login into Firefox on first launch
+        # Firefox default prefs (suppress crash recovery, update prompts)
         node["data"]["ciUserData"] += (
             "  - |\n"
             "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
             "    if [ -n \"$FIREFOX_DIR\" ]; then\n"
-            "      echo 'pref(\"general.config.filename\", \"firefox.cfg\");' > $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"general.config.obscure_value\", 0);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.sessionstore.resume_from_crash\", false);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.shell.checkDefaultBrowser\", false);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.startup.homepage_override.mstone\", \"ignore\");' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.disableResetPrompt\", true);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.slowStartup.notificationDisabled\", true);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            "      echo 'pref(\"browser.laterrun.enabled\", false);' >> $FIREFOX_DIR/defaults/pref/autoconfig.js\n"
-            + _firefox_cfg_cmd(oauth_url) +
+            "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
+            "      cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'\n"
+            "    pref(\"browser.sessionstore.resume_from_crash\", false);\n"
+            "    pref(\"browser.shell.checkDefaultBrowser\", false);\n"
+            "    pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\n"
+            "    pref(\"browser.disableResetPrompt\", true);\n"
+            "    pref(\"browser.slowStartup.notificationDisabled\", true);\n"
+            "    pref(\"browser.laterrun.enabled\", false);\n"
+            "    ACEOF\n"
             "    fi\n"
         )
 
@@ -508,7 +501,8 @@ def _build_agent_config(topology, cluster_name, base_domain, api_vip="10.0.0.2",
     return "\n".join(ac_lines)
 
 
-def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_str=""):
+def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_str="",
+                          cluster_name="ocp", base_domain="ocp.local"):
     return (
         "  - |\n"
         "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
@@ -617,6 +611,55 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
            "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' 2>/dev/null\n"
            "    done\n"
+           "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
+           "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
+           "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d > /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && update-ca-trust\n"
+           "    # Save kubeadmin password into Firefox password manager via Selenium\n"
+           "    pip3 install -q selenium 2>/dev/null\n"
+           "    curl -sL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | tar xz -C /usr/local/bin/\n"
+           "    cat > /root/ocp-autologin.py << 'SELENEOF'\n"
+           "    import time, glob, os, sys\n"
+           "    from selenium import webdriver\n"
+           "    from selenium.webdriver.common.by import By\n"
+           "    from selenium.webdriver.firefox.options import Options\n"
+           "    from selenium.webdriver.support.ui import WebDriverWait\n"
+           "    from selenium.webdriver.support import expected_conditions as EC\n"
+           "    console_url = sys.argv[1]\n"
+           "    pw = open(os.path.expanduser('~cloud-user/ocp-install/auth/kubeadmin-password')).read().strip()\n"
+           "    profile = glob.glob('/home/cloud-user/.mozilla/firefox/*.default-default')[0]\n"
+           "    opts = Options()\n"
+           "    opts.add_argument('-profile')\n"
+           "    opts.add_argument(profile)\n"
+           "    opts.add_argument('-remote-allow-system-access')\n"
+           "    opts.accept_insecure_certs = True\n"
+           "    opts.set_preference('signon.rememberSignons', True)\n"
+           "    opts.set_preference('signon.autofillForms', True)\n"
+           "    opts.set_preference('signon.storeWhenAutocompleteOff', True)\n"
+           "    opts.set_preference('browser.startup.page', 1)\n"
+           "    driver = webdriver.Firefox(options=opts)\n"
+           "    try:\n"
+           "        driver.get(console_url)\n"
+           "        wait = WebDriverWait(driver, 30)\n"
+           "        u = wait.until(EC.presence_of_element_located((By.ID, 'inputUsername')))\n"
+           "        p = driver.find_element(By.ID, 'inputPassword')\n"
+           "        u.clear(); u.send_keys('kubeadmin')\n"
+           "        p.clear(); p.send_keys(pw)\n"
+           "        driver.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()\n"
+           "        time.sleep(3)\n"
+           "        driver.set_context('chrome')\n"
+           "        for _ in range(15):\n"
+           "            try:\n"
+           "                driver.find_element(By.CSS_SELECTOR, 'popupnotification[id*=password] button.popup-notification-primary-button').click()\n"
+           "                print('Password saved to Firefox'); break\n"
+           "            except Exception: pass\n"
+           "            time.sleep(0.5)\n"
+           "        driver.set_context('content')\n"
+           "        time.sleep(1)\n"
+           "    finally:\n"
+           "        driver.quit()\n"
+           "    SELENEOF\n"
+           f"    sudo -u cloud-user bash -c 'export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; python3 /root/ocp-autologin.py https://console-openshift-console.apps.{cluster_name}.{base_domain}' 2>&1 || true\n"
+           "    rm -f /root/ocp-autologin.py\n"
            "    # Cleanup: remove cached ISO and temp files\n"
            "    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n"
            "    dnf clean all 2>/dev/null\n"

@@ -332,9 +332,7 @@ def _image_cache_path(item_id: str, fmt: str, pool=None) -> str:
 
 
 def _pattern_cache_path(pattern_id: str, disk_id: str, fmt: str, pool=None) -> str:
-    if pool and pool.mode.startswith("shared"):
-        return f"/var/lib/troshka/shared/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
-    return f"/var/lib/troshka/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+    return f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
 
 def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[str]:
@@ -526,16 +524,22 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             items_needing_download.append(ic)
         items_to_cache = items_needing_download
 
-    # Generate presigned URLs and start download jobs
+    # Start download jobs using aws s3 cp
+    from app.services.s3_storage import _get_s3_config
+    s3_creds = _get_s3_config()
+    s3_bucket = s3_storage._bucket()
     active_jobs = []
     for ic in items_to_cache:
-        url = s3_storage.generate_presigned_url(ic["s3_key"], expires=7200)
+        s3_url = f"s3://{s3_bucket}/{ic['s3_key']}"
         try:
             job_id = start_job(host, "/images/cache", {
-                "url": url,
+                "s3_url": s3_url,
                 "dest_path": ic["cache_path"],
                 "expected_size": ic.get("expected_size", 0),
                 "expected_format": "qcow2" if ic["cache_path"].endswith(".qcow2") else None,
+                "aws_access_key_id": s3_creds.get("access_key_id", ""),
+                "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
+                "aws_region": s3_creds.get("region", "us-east-1"),
             })
             active_jobs.append({"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]})
             logger.info("  cache job started: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])

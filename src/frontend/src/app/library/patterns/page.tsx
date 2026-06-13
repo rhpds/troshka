@@ -34,6 +34,7 @@ interface Pattern {
   disk_count: number;
   total_size_gb: number;
   total_size_bytes: number;
+  capture_progress?: { step?: string; detail?: string; vms?: string[] };
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;
@@ -305,11 +306,18 @@ export default function PatternsPage() {
                   {pattern.description && (
                     <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
                   )}
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>
-                    {pattern.disk_count} disk{pattern.disk_count !== 1 ? "s" : ""}
-                    {" · "}{formatSize(pattern.total_size_bytes)}
-                    {" · "}{new Date(pattern.created_at).toLocaleDateString()}
-                  </div>
+                  {saving && pattern.capture_progress?.vms ? (
+                    <div style={{ fontSize: 12, opacity: 0.8, whiteSpace: "pre-line", lineHeight: 1.6 }}>
+                      {pattern.capture_progress.detail}
+                      {"\n"}{pattern.capture_progress.vms.join("\n")}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, opacity: 0.6 }}>
+                      {pattern.disk_count} disk{pattern.disk_count !== 1 ? "s" : ""}
+                      {" · "}{formatSize(pattern.total_size_bytes)}
+                      {" · "}{new Date(pattern.created_at).toLocaleDateString()}
+                    </div>
+                  )}
                 </CardBody>
                 <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
                   <Button variant="primary" size="sm" isDisabled={saving} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name })}>
@@ -318,6 +326,14 @@ export default function PatternsPage() {
                   <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setBulkPatternId(pattern.id)}>
                     Bulk Deploy
                   </Button>
+                  {saving && (
+                    <Button variant="warning" size="sm" onClick={() => {
+                      if (!window.confirm("Cancel pattern capture? This will stop the capture and clean up.")) return;
+                      fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
+                        if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
+                      });
+                    }}>Cancel</Button>
+                  )}
                   {!saving && (
                     <Button variant="danger" size="sm" onClick={() => {
                       if (!window.confirm(`Delete pattern "${pattern.name}"? This cannot be undone.`)) return;

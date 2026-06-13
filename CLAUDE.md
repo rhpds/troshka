@@ -137,7 +137,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 ### Host Operations
 - Disk paths: `/var/lib/troshka/vms/{project_id}/{vm_id[:8]}-{disk_id[:8]}.{format}`
 - Image cache: `/var/lib/troshka/images/{item_id}.{format}`
-- Pattern cache: `/var/lib/troshka/cache/patterns/{pattern_id}/`
+- Pattern cache: `/var/lib/troshka/local/cache/patterns/{pattern_id}/` (always local NVMe, never shared NFS — each host downloads from S3)
 - Snapshot cache: `/var/lib/troshka/cache/snapshots/{item_id}/`
 - PXE boot files: `/var/lib/troshka/pxe/{vni}/tftpboot/` and `/var/lib/troshka/pxe/{vni}/mnt/`
 - Domain names: `troshka-{project_id[:8]}-{vm_id[:8]}`
@@ -178,10 +178,12 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
   - **Security Groups**: Create/Delete, Describe{SecurityGroups,SecurityGroupRules}, Authorize/RevokeSecurityGroupIngress
   - **Elastic IPs**: Allocate/Release/Associate/Disassociate Address, DescribeAddresses, AssignPrivateIpAddresses, UnassignPrivateIpAddresses
   - **FSx**: CreateFileSystem, DeleteFileSystem, DescribeFileSystems, UpdateFileSystem, CreateVolume, DeleteVolume, DescribeVolumes, UpdateVolume, TagResource, UntagResource, ListTagsForResource
+  - **VPC Endpoints**: CreateVpcEndpoint, DeleteVpcEndpoints, DescribeVpcEndpoints, ModifyVpcEndpoint
   - **IAM** (one-time): CreateServiceLinkedRole for fsx.amazonaws.com
   - **S3**: PutObject, GetObject, DeleteObject, HeadObject, ListBucket on `troshka-images`
-- IAM policy is a managed policy `troshka-policy` (not inline — inline has 2KB limit)
+- IAM policy is a managed policy `troshka-policy` — source of truth at `infra/iam-policy.json`
 - VPC setup creates subnets in all AZs — provisioner retries across AZs if instance type not supported
+- VPC setup creates an S3 Gateway Endpoint — keeps S3 traffic on AWS private network (free, no NAT fees)
 - Provisioner never falls back to default VPC — requires explicit VPC setup
 - `Setup VPC` auto-creates a troshka-managed VPC if none exists (tagged `ManagedBy: troshka`)
 - VPC discovery only lists troshka-managed VPCs, not all VPCs in the account

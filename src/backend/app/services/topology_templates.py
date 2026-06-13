@@ -187,6 +187,7 @@ def _bmc_node(x, y, bmc_password="password"):
 
 
 def _gateway_node(x, y, port_forwards=None):
+    mode = "nat-portforward" if port_forwards else "nat"
     return {
         "id": _id(),
         "type": "networkNode",
@@ -195,7 +196,7 @@ def _gateway_node(x, y, port_forwards=None):
             "label": "gateway",
             "name": "gateway",
             "subtype": "gateway",
-            "gatewayMode": "nat-portforward",
+            "gatewayMode": mode,
             "outboundPolicy": "allow-all",
             "portForwards": port_forwards or [],
         },

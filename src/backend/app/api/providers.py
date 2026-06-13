@@ -354,6 +354,25 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
             except Exception:
                 pass
 
+        # S3 Gateway Endpoint — keeps S3 traffic off the internet (free, faster)
+        try:
+            ec2.create_vpc_endpoint(
+                VpcId=vpc_id,
+                ServiceName=f"com.amazonaws.{provider.default_region}.s3",
+                RouteTableIds=[rt_id],
+                VpcEndpointType="Gateway",
+                TagSpecifications=[{
+                    "ResourceType": "vpc-endpoint",
+                    "Tags": [
+                        {"Key": "Name", "Value": "troshka-s3-endpoint"},
+                        {"Key": "ManagedBy", "Value": "troshka"},
+                    ],
+                }],
+            )
+            logger.info("Created S3 Gateway Endpoint for VPC %s", vpc_id)
+        except Exception as e:
+            logger.warning("S3 endpoint creation failed (non-fatal): %s", e)
+
         from app.services.provisioner import ensure_security_group
         sg_id = ensure_security_group(vpc_id, credentials=creds)
 

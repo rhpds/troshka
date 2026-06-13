@@ -135,6 +135,44 @@ async def project_websocket(websocket: WebSocket, project_id: str):
             db.close()
 
 
+@router.websocket("/api/v1/patterns/{pattern_id}/ws")
+async def pattern_websocket(websocket: WebSocket, pattern_id: str):
+    token = websocket.query_params.get("token")
+    db = SessionLocal()
+    try:
+        user = _authenticate_ws(token, db)
+        if not user:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+        from app.models.pattern import Pattern
+        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+        if not pattern or (pattern.owner_id != user.id and user.role != "admin"):
+            await websocket.close(code=4004, reason="Pattern not found")
+            return
+        db.close()
+        db = None
+
+        await websocket.accept()
+        from app.services.ws_pubsub import subscribe_pattern, unsubscribe_pattern
+        subscribe_pattern(pattern_id, websocket)
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=HEARTBEAT_INTERVAL)
+                except asyncio.TimeoutError:
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.send_json({"type": "ping"})
+                except WebSocketDisconnect:
+                    break
+        finally:
+            unsubscribe_pattern(pattern_id, websocket)
+    except Exception:
+        logger.debug("Pattern WS error for %s", pattern_id[:8], exc_info=True)
+    finally:
+        if db:
+            db.close()
+
+
 @router.websocket("/api/v1/console/ws/{token}")
 async def console_websocket_proxy(websocket: WebSocket, token: str):
     """Authenticated WebSocket proxy to VNC console.

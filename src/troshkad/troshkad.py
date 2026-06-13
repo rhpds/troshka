@@ -408,8 +408,8 @@ def _storage_path(category):
     if mode == "shared":
         shared = _config.get("shared_mount", "/var/lib/troshka/shared")
         local = _config.get("local_mount", "/var/lib/troshka/local")
-        shared_categories = {"vms", "images", "cache/patterns", "cache/snapshots"}
-        local_categories = {"pxe", "bmc", "tmp"}
+        shared_categories = {"vms", "images", "cache/snapshots"}
+        local_categories = {"pxe", "bmc", "tmp", "cache/patterns"}
         if category in shared_categories:
             return os.path.join(shared, category)
         elif category in local_categories:
@@ -483,9 +483,15 @@ def _validate_project_id(pid):
     return pid
 
 
+def _job_log(job, msg):
+    """Append a line to job output and log to systemd."""
+    job["output"].append(msg)
+    logger.info("[%s] %s", job["job_id"][:8], msg)
+
+
 def _run_cmd(job, cmd, timeout=600):
     """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
-    job["output"].append(f"$ {' '.join(cmd)}")
+    _job_log(job, f"$ {' '.join(cmd)}")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     job["_process"] = proc
     try:
@@ -497,9 +503,11 @@ def _run_cmd(job, cmd, timeout=600):
     finally:
         job["_process"] = None
     if stdout:
-        job["output"].extend(stdout.strip().split("\n"))
+        for line in stdout.strip().split("\n"):
+            _job_log(job, line)
     if stderr:
-        job["output"].extend(stderr.strip().split("\n"))
+        for line in stderr.strip().split("\n"):
+            _job_log(job, line)
     if proc.returncode != 0:
         raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(cmd)}")
     return proc
@@ -567,7 +575,7 @@ def _handle_vm_create(job, params):
             try:
                 os.link(link_from, path)
                 _chown_qemu(path)
-                job["output"].append(f"Linked {os.path.basename(path)} -> {link_from}")
+                _job_log(job,f"Linked {os.path.basename(path)} -> {link_from}")
             except FileExistsError:
                 pass
         disk_cache = params.get("disk_cache")
@@ -615,17 +623,17 @@ def _delete_vm_disks(job, domain):
                 path = parts[3]
                 try:
                     subprocess.run(["sudo", "-u", "qemu", "rm", "-f", "--", path], timeout=5, check=True)
-                    job["output"].append(f"Deleted disk: {path}")
+                    _job_log(job,f"Deleted disk: {path}")
                 except FileNotFoundError:
                     pass
                 except Exception:
                     try:
                         os.remove(path)
-                        job["output"].append(f"Deleted disk (root): {path}")
+                        _job_log(job,f"Deleted disk (root): {path}")
                     except Exception:
-                        job["output"].append(f"Warning: could not delete {path}")
+                        _job_log(job,f"Warning: could not delete {path}")
     except Exception:
-        job["output"].append("Warning: could not list domain disks, undefine may leave orphan files")
+        _job_log(job,"Warning: could not list domain disks, undefine may leave orphan files")
 
 
 def _handle_vm_destroy(job, params):
@@ -634,7 +642,7 @@ def _handle_vm_destroy(job, params):
     try:
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
     except RuntimeError:
-        job["output"].append("Domain may already be stopped, continuing with undefine")
+        _job_log(job,"Domain may already be stopped, continuing with undefine")
     _delete_vm_disks(job, domain)
     _run_cmd(job, ["virsh", "undefine", domain, "--nvram"], timeout=30)
     return {"domain": domain, "status": "destroyed"}
@@ -666,7 +674,7 @@ def _handle_vm_start(job, params):
                 subprocess.run(["ip", "link", "set", bridge, "type", "bridge",
                                 "forward_delay", "99", "ageing_time", "0"], capture_output=True, timeout=5)
                 subprocess.run(["ip", "link", "set", bridge, "up"], capture_output=True, timeout=5)
-                job["output"].append(f"Created missing dummy bridge {bridge}")
+                _job_log(job,f"Created missing dummy bridge {bridge}")
     _run_cmd(job, ["virsh", "start", domain], timeout=60)
     return {"domain": domain, "status": "started"}
 
@@ -689,7 +697,7 @@ def _handle_vm_stop(job, params):
         if result.returncode != 0 or result.stdout.strip() in ("shut off", ""):
             return {"domain": domain, "status": "stopped", "method": "shutdown"}
     # Force destroy if graceful shutdown didn't work
-    job["output"].append(f"Graceful shutdown timed out after {grace}s, forcing destroy")
+    _job_log(job,f"Graceful shutdown timed out after {grace}s, forcing destroy")
     try:
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
     except RuntimeError:
@@ -967,7 +975,7 @@ def _handle_vm_reconfigure(job, params):
             path = source.get("file") if source is not None else None
             if path and path not in desired_paths:
                 devices.remove(d)
-                job["output"].append(f"Removed disk {path} from {domain}")
+                _job_log(job,f"Removed disk {path} from {domain}")
 
         # Add new disks
         target_letters = "bcdefghijklmnop"
@@ -996,7 +1004,7 @@ def _handle_vm_reconfigure(job, params):
             target = ET.SubElement(disk_elem, "target")
             target.set("dev", target_dev)
             target.set("bus", disk_info.get("bus", "virtio"))
-            job["output"].append(f"Added disk {disk_info['path']} as {target_dev} to {domain}")
+            _job_log(job,f"Added disk {disk_info['path']} as {target_dev} to {domain}")
 
     # ── CDROMs ──
     if cdroms is not None:
@@ -1037,7 +1045,7 @@ def _handle_vm_reconfigure(job, params):
                 target.set("dev", target_dev)
                 target.set("bus", cdrom_bus)
                 ET.SubElement(disk_elem, "readonly")
-                job["output"].append(f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
+                _job_log(job,f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
 
     # ── VNC ──
     if vnc_listen:
@@ -1068,15 +1076,15 @@ def _handle_vm_reconfigure(job, params):
     stdout, stderr = proc.communicate(input=new_xml, timeout=30)
     if proc.returncode != 0:
         raise RuntimeError(f"virsh define failed: {stderr}")
-    job["output"].append(f"Redefined {domain}")
+    _job_log(job,f"Redefined {domain}")
 
     restarted = False
     if restart and was_active:
         _run_cmd(job, ["virsh", "start", domain], timeout=60)
         restarted = True
-        job["output"].append(f"Reconfigured and restarted {domain}")
+        _job_log(job,f"Reconfigured and restarted {domain}")
     else:
-        job["output"].append(f"Reconfigured {domain}")
+        _job_log(job,f"Reconfigured {domain}")
 
     return {"domain": domain, "status": "reconfigured", "restarted": restarted}
 
@@ -1092,7 +1100,7 @@ def _handle_vm_undefine(job, params):
     try:
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
     except RuntimeError:
-        job["output"].append(f"Domain {domain} may already be stopped")
+        _job_log(job,f"Domain {domain} may already be stopped")
 
     if remove_storage:
         _delete_vm_disks(job, domain)
@@ -1173,35 +1181,39 @@ COMMAND_HANDLERS["seeds/create"] = _handle_seed_create
 import fcntl
 
 def _handle_image_cache(job, params):
-    url = _validate_url(params["url"])
+    s3_url = params.get("s3_url", "")
+    url = params.get("url", "")
     dest_path = _validate_path(params["dest_path"])
     expected_size = params.get("expected_size", 0)
+    aws_access_key = params.get("aws_access_key_id", "")
+    aws_secret_key = params.get("aws_secret_access_key", "")
+    aws_region = params.get("aws_region", "us-east-1")
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
     lock_path = dest_path + ".lock"
     lock_fd = open(lock_path, "w")
     try:
-        # Non-blocking try — if another job holds the lock, wait for it
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            job["output"].append(f"Another download in progress for {os.path.basename(dest_path)}, waiting...")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Block until lock released
-            # Check if the other job already completed the download
+            _job_log(job,f"Another download in progress for {os.path.basename(dest_path)}, waiting...")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
             if os.path.exists(dest_path) and expected_size > 0:
                 actual = os.path.getsize(dest_path)
                 if actual >= expected_size - 1024:
-                    job["output"].append(f"Already downloaded by another job ({actual} bytes)")
+                    _job_log(job,f"Already downloaded by another job ({actual} bytes)")
                     return {"path": dest_path, "status": "cached", "waited": True}
 
-        # Check if already fully cached
         if os.path.exists(dest_path) and expected_size > 0:
             actual = os.path.getsize(dest_path)
             if actual >= expected_size - 1024:
-                job["output"].append(f"Already cached ({actual} bytes)")
+                _job_log(job,f"Already cached ({actual} bytes)")
                 return {"path": dest_path, "status": "cached", "skipped": True}
 
-        _run_cmd(job, ["curl", "-fSL", "-o", dest_path, url], timeout=3600)
+        if s3_url:
+            _s3_download(job, s3_url, dest_path, aws_access_key, aws_secret_key, aws_region)
+        else:
+            _run_cmd(job, ["curl", "-fSL", "-o", dest_path, _validate_url(url)], timeout=3600)
         fmt = params.get("expected_format")
         if fmt == "qcow2":
             _run_cmd(job, ["qemu-img", "check", dest_path], timeout=60)
@@ -1275,7 +1287,7 @@ def _handle_pxe_setup(job, params):
     except (subprocess.TimeoutExpired, OSError):
         pass
     _run_cmd(job, ["mount", "-o", "loop,ro", iso_path, mount_point], timeout=30)
-    job["output"].append(f"Mounted ISO at {mount_point}")
+    _job_log(job,f"Mounted ISO at {mount_point}")
 
     # Copy kernel + initrd preserving directory structure so GRUB finds them
     found = False
@@ -1292,15 +1304,15 @@ def _handle_pxe_setup(job, params):
             shutil.copy2(i_src, i_dest)
             os.chmod(k_dest, 0o644)
             os.chmod(i_dest, 0o644)
-            job["output"].append(f"Copied kernel to {paths['kernel']}")
-            job["output"].append(f"Copied initrd to {paths['initrd']}")
+            _job_log(job,f"Copied kernel to {paths['kernel']}")
+            _job_log(job,f"Copied initrd to {paths['initrd']}")
             found = True
             break
     if not found:
         # List top-level dirs to help debug
         try:
             contents = os.listdir(mount_point)
-            job["output"].append(f"ISO contents: {contents}")
+            _job_log(job,f"ISO contents: {contents}")
         except OSError:
             pass
         raise RuntimeError("Could not find kernel/initrd in ISO — unsupported distro layout")
@@ -1316,7 +1328,7 @@ def _handle_pxe_setup(job, params):
                 dest = os.path.join(tftp_root, fname)
                 shutil.copy2(src, dest)
                 os.chmod(dest, 0o644)
-        job["output"].append(f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)")
+        _job_log(job,f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)")
         for bl_path in _UEFI_BOOTLOADER_PATHS:
             bl_name = os.path.basename(bl_path)
             if os.path.isfile(os.path.join(tftp_root, bl_name)):
@@ -1330,7 +1342,7 @@ def _handle_pxe_setup(job, params):
                 bl_dest = os.path.join(tftp_root, bl_name)
                 shutil.copy2(bl_src, bl_dest)
                 os.chmod(bl_dest, 0o644)
-                job["output"].append(f"Copied BIOS bootloader from {bl_path}")
+                _job_log(job,f"Copied BIOS bootloader from {bl_path}")
                 boot_filename = bl_name
                 break
     if not boot_filename:
@@ -1338,11 +1350,11 @@ def _handle_pxe_setup(job, params):
             if os.path.exists(syslinux_path):
                 shutil.copy2(syslinux_path, os.path.join(tftp_root, "pxelinux.0"))
                 boot_filename = "pxelinux.0"
-                job["output"].append(f"Copied pxelinux.0 from {syslinux_path}")
+                _job_log(job,f"Copied pxelinux.0 from {syslinux_path}")
                 break
     if not boot_filename:
         boot_filename = "pxelinux.0"
-        job["output"].append("WARNING: No bootloader found in ISO or on host")
+        _job_log(job,"WARNING: No bootloader found in ISO or on host")
 
     # Patch GRUB config to add inst.repo pointing to our HTTP server
     install_url = f"http://{gateway_ip}:{http_port}/" if gateway_ip else ""
@@ -1354,13 +1366,13 @@ def _handle_pxe_setup(job, params):
             grub_cfg = grub_cfg.replace(" quiet", f" inst.repo={install_url} quiet")
             with open(grub_cfg_path, "w") as f:
                 f.write(grub_cfg)
-            job["output"].append(f"Patched grub.cfg with inst.repo={install_url}")
+            _job_log(job,f"Patched grub.cfg with inst.repo={install_url}")
         elif "inst.stage2" in grub_cfg:
             import re
             grub_cfg = re.sub(r'inst\.stage2=\S+', f'inst.repo={install_url}', grub_cfg)
             with open(grub_cfg_path, "w") as f:
                 f.write(grub_cfg)
-            job["output"].append(f"Replaced inst.stage2 with inst.repo={install_url} in grub.cfg")
+            _job_log(job,f"Replaced inst.stage2 with inst.repo={install_url} in grub.cfg")
 
     # Generate BIOS PXE boot config (pxelinux.cfg/default)
     append_line = "initrd=initrd.img"
@@ -1369,7 +1381,7 @@ def _handle_pxe_setup(job, params):
     pxe_cfg = f"DEFAULT install\nLABEL install\n  KERNEL vmlinuz\n  APPEND {append_line}\n"
     with open(os.path.join(tftp_root, "pxelinux.cfg", "default"), "w") as f:
         f.write(pxe_cfg)
-    job["output"].append("Generated pxelinux.cfg/default")
+    _job_log(job,"Generated pxelinux.cfg/default")
 
     # Ensure dnsmasq config has TFTP enabled and restart it
     dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{vni}.conf"
@@ -1383,7 +1395,7 @@ def _handle_pxe_setup(job, params):
         filtered.append(f"dhcp-boot={boot_filename}\n")
         with open(dnsmasq_conf, "w") as f:
             f.writelines(filtered)
-        job["output"].append(f"Configured dnsmasq TFTP with boot file {boot_filename}")
+        _job_log(job,f"Configured dnsmasq TFTP with boot file {boot_filename}")
         # Always kill and restart dnsmasq in the correct namespace
         if os.path.exists(dnsmasq_pid):
             try:
@@ -1395,7 +1407,7 @@ def _handle_pxe_setup(job, params):
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
         _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
-        job["output"].append("Restarted dnsmasq with TFTP enabled")
+        _job_log(job,"Restarted dnsmasq with TFTP enabled")
 
     # Start HTTP server in namespace to serve ISO contents (ISO already mounted above)
     pid_file = f"/run/troshka-pxe-http-{vni}.pid"
@@ -1443,7 +1455,7 @@ httpd.serve_forever()
     except (subprocess.TimeoutExpired, OSError):
         pass
 
-    job["output"].append(f"Started HTTP install source on port {http_port}")
+    _job_log(job,f"Started HTTP install source on port {http_port}")
     return {
         "status": "ok",
         "tftp_root": tftp_root,
@@ -1455,86 +1467,43 @@ COMMAND_HANDLERS["pxe/setup"] = _handle_pxe_setup
 
 
 def _handle_library_import(job, params):
-    """Download image, optionally flatten, optionally upload to S3 multipart."""
-    download_url = _validate_url(params["download_url"])
+    """Download image, optionally flatten, optionally upload to S3."""
+    download_url = params.get("download_url", "")
+    s3_download_url = params.get("s3_download_url", "")
     cache_path = _validate_path(params["cache_path"])
     flatten = params.get("flatten", False)
-    s3_multipart = params.get("s3_multipart")
+    s3_upload_url = params.get("s3_upload_url", "")
+    aws_access_key = params.get("aws_access_key_id", "")
+    aws_secret_key = params.get("aws_secret_access_key", "")
+    aws_region = params.get("aws_region", "us-east-1")
 
     temp_files = []
     try:
-        # 1. Download the file
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        job["output"].append(f"Downloading from {download_url}...")
-        _run_cmd(job, ["curl", "-fSL", "-o", cache_path, download_url], timeout=7200)
+        if s3_download_url:
+            _job_log(job,f"Downloading from S3...")
+            _s3_download(job, s3_download_url, cache_path, aws_access_key, aws_secret_key, aws_region)
+        elif download_url:
+            _job_log(job,f"Downloading from {download_url}...")
+            _run_cmd(job, ["curl", "-fSL", "-o", cache_path, _validate_url(download_url)], timeout=7200)
 
-        # 2. Flatten if requested
         if flatten:
-            job["output"].append("Flattening QCOW2 chain...")
+            _job_log(job,"Flattening QCOW2 chain...")
             flat_path = cache_path + ".flat"
             temp_files.append(flat_path)
             _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", cache_path, flat_path], timeout=3600)
             os.rename(flat_path, cache_path)
             temp_files.remove(flat_path)
-            job["output"].append("Flattening complete")
+            _job_log(job,"Flattening complete")
 
-        # 3. S3 multipart upload if requested
-        etags = []
-        if s3_multipart:
-            part_size_bytes = s3_multipart["part_size_bytes"]
-            upload_parts = s3_multipart["upload_parts"]
-            job["output"].append(f"Splitting file into {len(upload_parts)} parts...")
+        if s3_upload_url:
+            _job_log(job,"Uploading to S3...")
+            _s3_upload(job, cache_path, s3_upload_url, aws_access_key, aws_secret_key, aws_region)
 
-            # Split file
-            import tempfile as _tf
-            with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
-                tmp_prefix = os.path.join(tmpdir, "part-")
-                _run_cmd(job, ["split", "-b", str(part_size_bytes), "-d", cache_path, tmp_prefix], timeout=600)
-
-                # Upload each part
-                part_files = sorted(glob.glob(f"{tmp_prefix}*"))
-                for idx, part_file in enumerate(part_files):
-                    part_num = idx + 1
-                    if part_num > len(upload_parts):
-                        job["output"].append(f"Warning: more parts than presigned URLs, skipping part {part_num}")
-                        continue
-
-                    presigned_url = upload_parts[idx]["presigned_url"]
-                    job["output"].append(f"Uploading part {part_num}/{len(upload_parts)}...")
-
-                    # Use curl to upload and capture response headers
-                    proc = subprocess.Popen(
-                        ["curl", "-sfL", "-X", "PUT", "-T", part_file, "-D-", "-o", "/dev/null", presigned_url],
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    )
-                    stdout, stderr = proc.communicate(timeout=600)
-                    if proc.returncode != 0:
-                        raise RuntimeError(f"Part {part_num} upload failed: {stderr}")
-
-                    # Extract ETag from response headers
-                    etag = ""
-                    for line in stdout.split("\n"):
-                        if line.lower().startswith("etag:"):
-                            etag = line.split(":", 1)[1].strip()
-                            break
-
-                    if not etag:
-                        raise RuntimeError(f"No ETag in response for part {part_num}")
-
-                    etags.append({"part": part_num, "etag": etag})
-                    job["output"].append(f"Part {part_num} uploaded, ETag: {etag}")
-
-        # Get final file size
         size_bytes = os.path.getsize(cache_path)
-
-        result = {"status": "completed", "size_bytes": size_bytes}
-        if etags:
-            result["etags"] = etags
-
-        return result
+        return {"status": "completed", "size_bytes": size_bytes}
 
     finally:
-        # Cleanup any temp files
         for temp_file in temp_files:
             try:
                 if os.path.exists(temp_file):
@@ -1559,7 +1528,7 @@ def _handle_network_setup(job, params):
     try:
         _run_cmd(job, ["ip", "netns", "add", ns])
     except RuntimeError:
-        job["output"].append(f"Namespace {ns} may already exist, continuing")
+        _job_log(job,f"Namespace {ns} may already exist, continuing")
 
     # Create bridge in namespace
     _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge_name, "type", "bridge"])
@@ -1580,7 +1549,7 @@ def _handle_network_teardown(job, params):
     try:
         _run_cmd(job, ["ip", "netns", "delete", ns])
     except RuntimeError:
-        job["output"].append(f"Namespace {ns} may not exist, continuing")
+        _job_log(job,f"Namespace {ns} may not exist, continuing")
 
     return {"network": network_name, "status": "removed"}
 
@@ -1625,7 +1594,7 @@ def _handle_network_full_setup(job, params):
     # ── Namespace + veth setup (idempotent — reuse if already exists) ──
     ns_exists = subprocess.run(["ip", "netns", "exec", ns, "true"], capture_output=True, timeout=5).returncode == 0
     if ns_exists:
-        job["output"].append(f"Namespace {ns} already exists, reusing")
+        _job_log(job,f"Namespace {ns} already exists, reusing")
     else:
         _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
         _run_cmd(job, ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns], timeout=10)
@@ -1642,7 +1611,7 @@ def _handle_network_full_setup(job, params):
         pass
 
     _run_cmd(job, ["sysctl", "-w", "net.ipv4.ip_forward=1"], timeout=10)
-    job["output"].append("Namespace and veth pair configured")
+    _job_log(job,"Namespace and veth pair configured")
 
     # ── VXLAN + Bridge setup (inside namespace) ──
     for net in networks:
@@ -1670,7 +1639,7 @@ def _handle_network_full_setup(job, params):
             _run_cmd(job, ["ip", "link", "add", vxlan_if, "type", "vxlan",
                             "id", str(vni), "local", host_ip, "dstport", "4789", "nolearning"], timeout=10)
         except RuntimeError:
-            job["output"].append(f"VXLAN {vxlan_if} already exists, reusing")
+            _job_log(job,f"VXLAN {vxlan_if} already exists, reusing")
 
         # Add peers
         for peer in peers:
@@ -1680,19 +1649,19 @@ def _handle_network_full_setup(job, params):
                     _run_cmd(job, ["bridge", "fdb", "append", "00:00:00:00:00:00",
                                     "dev", vxlan_if, "dst", peer], timeout=10)
                 except (ValueError, RuntimeError):
-                    job["output"].append(f"Warning: skipping peer {peer}")
+                    _job_log(job,f"Warning: skipping peer {peer}")
 
         # Move VXLAN into namespace (may already be there)
         try:
             _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
         except RuntimeError:
-            job["output"].append(f"VXLAN {vxlan_if} already in namespace, reusing")
+            _job_log(job,f"VXLAN {vxlan_if} already in namespace, reusing")
 
         # Create bridge inside namespace (may already exist)
         try:
             _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"], timeout=10)
         except RuntimeError:
-            job["output"].append(f"Bridge {bridge} already exists, reusing")
+            _job_log(job,f"Bridge {bridge} already exists, reusing")
         try:
             _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge], timeout=10)
         except RuntimeError:
@@ -1734,7 +1703,7 @@ def _handle_network_full_setup(job, params):
                 except RuntimeError:
                     pass
 
-        job["output"].append(f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
+        _job_log(job,f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
 
     # ── DHCP (dnsmasq inside namespace) ──
     for net in networks:
@@ -1807,12 +1776,20 @@ def _handle_network_full_setup(job, params):
         with open(dnsmasq_conf, "w") as f:
             f.write("\n".join(conf_lines) + "\n")
 
-        # Kill existing dnsmasq for this VNI
+        # Kill existing dnsmasq for this VNI and wait for port release
         if os.path.exists(dnsmasq_pid):
             try:
                 with open(dnsmasq_pid) as f:
                     old_pid = int(f.read().strip())
                 os.kill(old_pid, signal.SIGTERM)
+                for _ in range(20):
+                    try:
+                        os.kill(old_pid, 0)
+                        time.sleep(0.25)
+                    except ProcessLookupError:
+                        break
+                else:
+                    os.kill(old_pid, signal.SIGKILL)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
             try:
@@ -1831,7 +1808,7 @@ def _handle_network_full_setup(job, params):
             )
         except Exception:
             pass
-        job["output"].append(f"dnsmasq started for VNI {vni} on {bridge}")
+        _job_log(job,f"dnsmasq started for VNI {vni} on {bridge}")
 
     # ── nftables inside namespace (flush if already exists, silence expected errors) ──
     for tbl in ["filter", "nat"]:
@@ -1898,7 +1875,7 @@ def _handle_network_full_setup(job, params):
                 _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
                                 "iifname", veth_ns, "tcp", "dport", str(int_port), "accept"], timeout=10)
 
-    job["output"].append("Namespace nftables configured")
+    _job_log(job,"Namespace nftables configured")
 
     # ── nftables in HOST namespace ──
     if gateway and gateway.get("mode") in ("nat", "nat-portforward"):
@@ -1964,9 +1941,9 @@ def _handle_network_full_setup(job, params):
                                         "ip", "daddr", priv_ip, "tcp", "dport", str(ext_port),
                                         "dnat", "ip", "to", f"{pf_transit_ip}:{ext_port}"], timeout=10)
                     else:
-                        job["output"].append(f"Skipping port forward :{ext_port} — no EIP private IP yet")
+                        _job_log(job,f"Skipping port forward :{ext_port} — no EIP private IP yet")
 
-        job["output"].append("Host nftables configured")
+        _job_log(job,"Host nftables configured")
 
     return {
         "project_id": project_id,
@@ -2037,7 +2014,7 @@ def _handle_lb_setup(job, params):
         lines.append("")
 
     config_content = "\n".join(lines)
-    job["output"].append(f"Writing HAProxy config to {haproxy_conf}")
+    _job_log(job,f"Writing HAProxy config to {haproxy_conf}")
 
     os.makedirs("/etc/haproxy", exist_ok=True)
     with open(haproxy_conf, "w") as f:
@@ -2055,7 +2032,7 @@ def _handle_lb_setup(job, params):
 
     # Start HAProxy in namespace
     _run_cmd(job, ["ip", "netns", "exec", ns, "haproxy", "-f", haproxy_conf, "-D", "-p", haproxy_pid], timeout=10)
-    job["output"].append(f"HAProxy started in namespace {ns}")
+    _job_log(job,f"HAProxy started in namespace {ns}")
     return {"status": "started", "config": haproxy_conf}
 
 COMMAND_HANDLERS["lb/setup"] = _handle_lb_setup
@@ -2084,7 +2061,7 @@ def _handle_lb_teardown(job, params):
         except FileNotFoundError:
             pass
 
-    job["output"].append(f"HAProxy teardown complete for project {pid}")
+    _job_log(job,f"HAProxy teardown complete for project {pid}")
     return {"status": "torn_down"}
 
 COMMAND_HANDLERS["lb/teardown"] = _handle_lb_teardown
@@ -2143,7 +2120,7 @@ def _handle_network_full_teardown(job, params):
             with open(pidfile) as f:
                 dnsmasq_pid = int(f.read().strip())
             os.kill(dnsmasq_pid, 9)
-            job["output"].append(f"Killed dnsmasq PID {dnsmasq_pid}")
+            _job_log(job,f"Killed dnsmasq PID {dnsmasq_pid}")
         except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
             pass
         try:
@@ -2163,7 +2140,7 @@ def _handle_network_full_teardown(job, params):
     try:
         _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
     except RuntimeError:
-        job["output"].append(f"Namespace {ns} may not exist")
+        _job_log(job,f"Namespace {ns} may not exist")
 
     # Delete host-side veth
     try:
@@ -2245,7 +2222,7 @@ def _handle_network_full_teardown(job, params):
         bridge = f"br-{vni}"
         try:
             _run_cmd(job, ["ip", "link", "delete", bridge], timeout=10)
-            job["output"].append(f"Removed bridge: {bridge}")
+            _job_log(job,f"Removed bridge: {bridge}")
         except RuntimeError:
             pass
 
@@ -2294,7 +2271,7 @@ def _handle_seed_create_batch(job, params):
             ])
         _chown_qemu(path)
         created += 1
-        job["output"].append(f"Seed ISO created: {path}")
+        _job_log(job,f"Seed ISO created: {path}")
 
     return {"created": created, "status": "completed"}
 
@@ -2384,9 +2361,9 @@ def _handle_metadata_deploy(job, params):
     # Step 1: Kill existing metadata service for this project
     try:
         _run_cmd(job, ["pkill", "-9", "-f", f"metadata-{project_id[:8]}.py"], timeout=5)
-        job["output"].append(f"Killed existing metadata service (if any)")
+        _job_log(job,f"Killed existing metadata service (if any)")
     except RuntimeError:
-        job["output"].append(f"No existing metadata service to kill")
+        _job_log(job,f"No existing metadata service to kill")
 
     # Step 2: Add metadata IP to each bridge inside namespace
     for bridge in bridges:
@@ -2395,10 +2372,10 @@ def _handle_metadata_deploy(job, params):
                 "ip", "netns", "exec", namespace,
                 "ip", "addr", "add", "169.254.169.254/32", "dev", bridge
             ], timeout=10)
-            job["output"].append(f"Added metadata IP to {bridge} in {namespace}")
+            _job_log(job,f"Added metadata IP to {bridge} in {namespace}")
         except RuntimeError as e:
             if "File exists" in str(e) or "RTNETLINK answers: File exists" in str(e):
-                job["output"].append(f"Metadata IP already exists on {bridge}, continuing")
+                _job_log(job,f"Metadata IP already exists on {bridge}, continuing")
             else:
                 raise
 
@@ -2410,7 +2387,7 @@ def _handle_metadata_deploy(job, params):
     os.makedirs("/opt/troshka", exist_ok=True)
     with open(script_path, "w") as f:
         f.write(script_content)
-    job["output"].append(f"Wrote metadata service script to {script_path}")
+    _job_log(job,f"Wrote metadata service script to {script_path}")
 
     # Step 4: Start metadata service in namespace
     log_file = f"/var/log/troshka-metadata-{project_id[:8]}.log"
@@ -2424,11 +2401,11 @@ def _handle_metadata_deploy(job, params):
 
     # Check if process is still running
     if proc.poll() is not None:
-        job["output"].append(f"Warning: metadata service may have failed to start (check {log_file})")
+        _job_log(job,f"Warning: metadata service may have failed to start (check {log_file})")
         return {"status": "started", "pid": None, "warning": "Process exited immediately"}
 
     pid = proc.pid
-    job["output"].append(f"Started metadata service in {namespace} (PID {pid}, log: {log_file})")
+    _job_log(job,f"Started metadata service in {namespace} (PID {pid}, log: {log_file})")
 
     return {"status": "started", "pid": pid}
 
@@ -2479,9 +2456,9 @@ def _handle_gc_discover(job, params):
                     full_path = os.path.join(vms_dir, entry)
                     if os.path.isdir(full_path):
                         orphan_dirs.append(full_path + "/")
-                        job["output"].append(f"Orphan dir: {full_path}/")
+                        _job_log(job,f"Orphan dir: {full_path}/")
         except Exception as e:
-            job["output"].append(f"Failed to scan {vms_dir}: {e}")
+            _job_log(job,f"Failed to scan {vms_dir}: {e}")
 
     # 2. List all virsh domains starting with troshka- that don't belong to known projects
     known_domain_prefixes = set(known_domains)
@@ -2497,9 +2474,9 @@ def _handle_gc_discover(job, params):
                     continue
                 if not any(domain.startswith(prefix) for prefix in known_domain_prefixes):
                     orphan_domains.append(domain)
-                    job["output"].append(f"Orphan domain: {domain}")
+                    _job_log(job,f"Orphan domain: {domain}")
     except Exception as e:
-        job["output"].append(f"Failed to list virsh domains: {e}")
+        _job_log(job,f"Failed to list virsh domains: {e}")
 
     # 3. List orphan bridges — both br-troshka-* and dummy br-{vni} bridges
     #    not referenced by any defined VM
@@ -2532,9 +2509,9 @@ def _handle_gc_discover(job, params):
                             capture_output=True, timeout=5)
                         if ns_check.returncode == 0:
                             orphan_bridges.append(bridge_name)
-                            job["output"].append(f"Orphan bridge: {bridge_name}")
+                            _job_log(job,f"Orphan bridge: {bridge_name}")
     except Exception as e:
-        job["output"].append(f"Failed to list bridges: {e}")
+        _job_log(job,f"Failed to list bridges: {e}")
 
     # 4. List namespaces matching troshka-* that don't belong to known projects
     known_ns_prefixes = {f"troshka-{pid[:8]}" for pid in known_project_ids}
@@ -2549,12 +2526,14 @@ def _handle_gc_discover(job, params):
                     ns_name = line.split()[0]
                     if ns_name not in known_ns_prefixes:
                         orphan_namespaces.append(ns_name)
-                        job["output"].append(f"Orphan namespace: {ns_name}")
+                        _job_log(job,f"Orphan namespace: {ns_name}")
     except Exception as e:
-        job["output"].append(f"Failed to list namespaces: {e}")
+        _job_log(job,f"Failed to list namespaces: {e}")
 
     # 5. Scan cache dirs for staleness (report all items, backend will decide eviction)
+    local = _config.get("local_mount", "/var/lib/troshka/local")
     cache_dirs = [
+        (f"{local}/cache/patterns", "pattern"),
         ("/var/lib/troshka/cache/patterns", "pattern"),
         ("/var/lib/troshka/cache/snapshots", "snapshot"),
         ("/var/lib/troshka/images", "image"),
@@ -2575,7 +2554,7 @@ def _handle_gc_discover(job, params):
                     except Exception:
                         pass
             except Exception as e:
-                job["output"].append(f"Failed to scan {cache_dir}: {e}")
+                _job_log(job,f"Failed to scan {cache_dir}: {e}")
 
     # 6. Discover orphaned BMC directories
     orphaned_bmc = []
@@ -2586,7 +2565,7 @@ def _handle_gc_discover(job, params):
             full = os.path.join(bmc_base, entry)
             if os.path.isdir(full) and entry not in known_bmc:
                 orphaned_bmc.append(entry)
-                job["output"].append(f"Orphaned BMC dir: {entry}")
+                _job_log(job,f"Orphaned BMC dir: {entry}")
 
     return {
         "orphan_dirs": orphan_dirs,
@@ -2620,10 +2599,10 @@ def _handle_gc_clean(job, params):
             validated = _validate_path(path)
             if os.path.isdir(validated):
                 shutil.rmtree(validated)
-                job["output"].append(f"Removed dir: {validated}")
+                _job_log(job,f"Removed dir: {validated}")
                 removed_dirs += 1
         except Exception as e:
-            job["output"].append(f"Failed to remove {path}: {e}")
+            _job_log(job,f"Failed to remove {path}: {e}")
 
     # 2. Remove orphan domains (virsh destroy + undefine)
     for domain in orphan_domains:
@@ -2633,22 +2612,22 @@ def _handle_gc_clean(job, params):
             try:
                 _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
             except RuntimeError:
-                job["output"].append(f"Domain {domain} may already be stopped")
+                _job_log(job,f"Domain {domain} may already be stopped")
             _run_cmd(job, ["virsh", "undefine", domain, "--nvram"], timeout=30)
-            job["output"].append(f"Removed domain: {domain}")
+            _job_log(job,f"Removed domain: {domain}")
             removed_domains += 1
         except Exception as e:
-            job["output"].append(f"Failed to remove domain {domain}: {e}")
+            _job_log(job,f"Failed to remove domain {domain}: {e}")
 
     # 3. Remove orphan bridges
     for bridge in orphan_bridges:
         try:
             _validate_bridge_name(bridge)
             _run_cmd(job, ["ip", "link", "delete", bridge], timeout=10)
-            job["output"].append(f"Removed bridge: {bridge}")
+            _job_log(job,f"Removed bridge: {bridge}")
             removed_bridges += 1
         except Exception as e:
-            job["output"].append(f"Failed to remove bridge {bridge}: {e}")
+            _job_log(job,f"Failed to remove bridge {bridge}: {e}")
 
     # 4. Remove orphan namespaces
     for ns in orphan_namespaces:
@@ -2657,10 +2636,10 @@ def _handle_gc_clean(job, params):
             if not ns.startswith("troshka-"):
                 raise ValueError(f"Invalid namespace name: {ns}")
             _run_cmd(job, ["ip", "netns", "delete", ns], timeout=10)
-            job["output"].append(f"Removed namespace: {ns}")
+            _job_log(job,f"Removed namespace: {ns}")
             removed_namespaces += 1
         except Exception as e:
-            job["output"].append(f"Failed to remove namespace {ns}: {e}")
+            _job_log(job,f"Failed to remove namespace {ns}: {e}")
 
     # 5. Remove cache items (validated paths)
     for path in cache_items:
@@ -2668,15 +2647,15 @@ def _handle_gc_clean(job, params):
             validated = _validate_path(path)
             if os.path.isdir(validated):
                 shutil.rmtree(validated)
-                job["output"].append(f"Removed cache dir: {validated}")
+                _job_log(job,f"Removed cache dir: {validated}")
             else:
                 os.remove(validated)
-                job["output"].append(f"Removed cache file: {validated}")
+                _job_log(job,f"Removed cache file: {validated}")
             removed_cache += 1
         except FileNotFoundError:
-            job["output"].append(f"Cache item not found (skipped): {path}")
+            _job_log(job,f"Cache item not found (skipped): {path}")
         except Exception as e:
-            job["output"].append(f"Failed to remove cache item {path}: {e}")
+            _job_log(job,f"Failed to remove cache item {path}: {e}")
 
     # 6. Clean up orphaned BMC resources
     orphan_bmc_ids = params.get("orphan_bmc_project_ids", [])
@@ -2692,7 +2671,7 @@ def _handle_gc_clean(job, params):
                         with open(pid_path) as f:
                             p = int(f.read().strip())
                         os.kill(p, signal.SIGTERM)
-                        job["output"].append(f"Killed BMC process PID {p} ({fname})")
+                        _job_log(job,f"Killed BMC process PID {p} ({fname})")
                     except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
                         pass
             # Remove libvirt storage pool
@@ -2701,7 +2680,7 @@ def _handle_gc_clean(job, params):
             subprocess.run(["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10)
             # Remove directory
             shutil.rmtree(bmc_dir, ignore_errors=True)
-            job["output"].append(f"Removed BMC dir + pool: {bmc_dir}")
+            _job_log(job,f"Removed BMC dir + pool: {bmc_dir}")
             removed_bmc += 1
 
         # Remove BMC bridge
@@ -2746,7 +2725,7 @@ def _handle_snapshot_create(job, params):
                 break
             time.sleep(1)
     except RuntimeError:
-        job["output"].append("VM may already be stopped")
+        _job_log(job,"VM may already be stopped")
 
     # Get disk path from domain XML
     result = subprocess.run(
@@ -2792,33 +2771,117 @@ def _get_disk_path_by_index(domain, disk_index):
     raise RuntimeError(f"Disk index {disk_index} not found for domain {domain} (found {disk_count} disks)")
 
 
+
+def _s3_upload(job, local_path, s3_url, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
+    """Upload a file to S3 using aws cli with file-size progress monitoring."""
+    total_bytes = os.path.getsize(local_path)
+    total_gb = round(total_bytes / (1024**3), 1)
+    env = os.environ.copy()
+    if aws_access_key:
+        env["AWS_ACCESS_KEY_ID"] = aws_access_key
+        env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
+        env["AWS_DEFAULT_REGION"] = aws_region
+    aws_bin = "/opt/troshka/venv/bin/aws"
+    if not os.path.exists(aws_bin):
+        aws_bin = "aws"
+    proc = subprocess.Popen(
+        [aws_bin, "s3", "cp", local_path, s3_url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+    )
+    while proc.poll() is None:
+        try:
+            with open(f"/proc/{proc.pid}/io") as f:
+                for line in f:
+                    if line.startswith("read_bytes:"):
+                        read_bytes = int(line.split(":")[1].strip())
+                        cur_gb = round(read_bytes / (1024**3), 1)
+                        pct = min(100, int(read_bytes * 100 / total_bytes)) if total_bytes > 0 else 0
+                        _job_log(job, f"Uploading: {cur_gb} of {total_gb} GB ({pct}%)")
+                        break
+        except (OSError, FileNotFoundError):
+            pass
+        time.sleep(5)
+    if proc.returncode != 0:
+        raise RuntimeError(f"S3 upload failed (exit {proc.returncode})")
+
+
+def _s3_download(job, s3_url, local_path, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
+    """Download a file from S3 using aws cli with file-size progress monitoring."""
+    env = os.environ.copy()
+    if aws_access_key:
+        env["AWS_ACCESS_KEY_ID"] = aws_access_key
+        env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
+        env["AWS_DEFAULT_REGION"] = aws_region
+    aws_bin = "/opt/troshka/venv/bin/aws"
+    if not os.path.exists(aws_bin):
+        aws_bin = "aws"
+    proc = subprocess.Popen(
+        [aws_bin, "s3", "cp", s3_url, local_path],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+    )
+    while proc.poll() is None:
+        try:
+            cur = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+            if cur > 0:
+                cur_gb = round(cur / (1024**3), 1)
+                _job_log(job, f"Downloading: {cur_gb} GB")
+        except OSError:
+            pass
+        time.sleep(5)
+    if proc.returncode != 0:
+        raise RuntimeError(f"S3 download failed (exit {proc.returncode})")
+
+
 def _handle_snapshot_capture(job, params):
     """Capture a disk snapshot: flatten, upload to S3, cache locally."""
     domain = _validate_domain_name(params["domain_name"])
     disk_index = int(params["disk_index"])
-    presigned_url = _validate_url(params["presigned_url"])
+    s3_url = params.get("s3_url", "")
     cache_path = _validate_path(params["cache_path"])
+    aws_access_key = params.get("aws_access_key_id", "")
+    aws_secret_key = params.get("aws_secret_access_key", "")
+    aws_region = params.get("aws_region", "us-east-1")
 
     import tempfile as _tf
 
-    # Get disk path
+    running = _is_domain_running(domain)
+    snapshotted = False
+    if running:
+        snapshotted = _snapshot_domain(job, domain)
+
     disk_path = _get_disk_path_by_index(domain, disk_index)
-    job["output"].append(f"Disk {disk_index} path: {disk_path}")
+    if snapshotted:
+        backing = subprocess.run(
+            ["qemu-img", "info", "--output=json", disk_path],
+            capture_output=True, text=True, timeout=30)
+        if backing.returncode == 0:
+            import json as _json
+            bfn = _json.loads(backing.stdout).get("full-backing-filename", "")
+            if bfn and os.path.exists(bfn):
+                disk_path = bfn
+    _job_log(job,f"Disk {disk_index} path: {disk_path}")
 
-    # Flatten to temp file
-    with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
-        tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-        job["output"].append("Flattening disk...")
-        _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+    _local_tmp = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    os.makedirs(_local_tmp, exist_ok=True)
+    try:
+        with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
+            tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+            _job_log(job,"Flattening disk...")
+            cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
+            if running and not snapshotted:
+                cmd.insert(2, "-U")
+            cmd.extend([disk_path, tmp_flat])
+            _run_cmd(job, cmd, timeout=3600)
 
-        # Upload to S3
-        job["output"].append("Uploading to S3...")
-        _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+            _job_log(job,"Uploading to S3...")
+            _s3_upload(job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region)
 
-        # Copy to cache
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        job["output"].append(f"Caching to {cache_path}...")
-        shutil.copy(tmp_flat, cache_path)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            _job_log(job,f"Caching to {cache_path}...")
+            shutil.copy(tmp_flat, cache_path)
+    finally:
+        if snapshotted:
+            _commit_snapshot(job, domain)
 
     size_bytes = os.path.getsize(cache_path)
     return {"status": "uploaded", "size_bytes": size_bytes}
@@ -2826,71 +2889,198 @@ def _handle_snapshot_capture(job, params):
 COMMAND_HANDLERS["snapshots/capture"] = _handle_snapshot_capture
 
 
-def _handle_pattern_capture(job, params):
-    """Capture multiple disks for pattern export."""
-    domain = _validate_domain_name(params["domain_name"])
-    disks = params.get("disks", [])
+def _is_domain_running(domain):
+    """Check if a libvirt domain is currently running."""
+    try:
+        result = subprocess.run(
+            ["virsh", "domstate", domain], capture_output=True, text=True, timeout=5)
+        return result.returncode == 0 and "running" in result.stdout
+    except Exception:
+        return False
 
-    import tempfile as _tf
 
-    result_disks = []
+def _cleanup_stale_snapshots(job, domain):
+    """Clean up any leftover .troshka-capture overlays from previous captures.
+    Must be called BEFORE creating a new snapshot."""
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        return
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == "disk" and ".troshka-capture" in parts[3]:
+            target = parts[2]
+            overlay = parts[3]
+            _job_log(job, f"Found stale overlay on {target}, cleaning up...")
+            # Abort any active block job first
+            subprocess.run(["virsh", "blockjob", domain, target, "--abort"],
+                           capture_output=True, text=True, timeout=30)
+            # Wait for abort to complete
+            for _ in range(60):
+                info = subprocess.run(["virsh", "blockjob", domain, target, "--info"],
+                                      capture_output=True, text=True, timeout=5)
+                if info.returncode != 0 or "No current block job" in info.stderr:
+                    break
+                time.sleep(1)
+            # Commit and pivot
+            r = subprocess.run(
+                ["virsh", "blockcommit", domain, target, "--active", "--pivot", "--wait"],
+                capture_output=True, text=True, timeout=300)
+            if r.returncode == 0:
+                try:
+                    os.remove(overlay)
+                except OSError:
+                    pass
+                _job_log(job, f"Cleaned stale overlay for {target}")
+            else:
+                _job_log(job, f"Could not clean stale overlay for {target}: {r.stderr.strip()}")
 
-    for disk_info in disks:
-        disk_index = int(disk_info["disk_index"])
-        presigned_url = _validate_url(disk_info["presigned_url"])
-        cache_path = _validate_path(disk_info["cache_path"])
 
-        # Get disk path
-        disk_path = _get_disk_path_by_index(domain, disk_index)
-        job["output"].append(f"Disk {disk_index} path: {disk_path}")
+def _snapshot_domain(job, domain):
+    """Fstrim → clean stale overlays → freeze → snapshot → thaw.
+    Total freeze time < 1 second.
+    Returns True if snapshot created, False if failed (use -U fallback)."""
+    try:
+        r = subprocess.run(["virsh", "domfstrim", domain],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            _job_log(job, f"Trimmed free blocks: {domain}")
+    except Exception:
+        pass
 
-        # Flatten to temp file
-        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
-            tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-            job["output"].append(f"Flattening disk {disk_index}...")
-            _run_cmd(job, ["qemu-img", "convert", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+    _cleanup_stale_snapshots(job, domain)
 
-            # Upload to S3
-            job["output"].append(f"Uploading disk {disk_index} to S3...")
-            _run_cmd(job, ["curl", "-sfL", "-X", "PUT", "-T", tmp_flat, presigned_url], timeout=3600)
+    frozen = False
+    try:
+        r = subprocess.run(["virsh", "domfsfreeze", domain],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            frozen = True
+    except Exception:
+        pass
 
-            # Copy to cache
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            job["output"].append(f"Caching disk {disk_index} to {cache_path}...")
-            shutil.copy(tmp_flat, cache_path)
+    try:
+        result = subprocess.run(
+            ["virsh", "snapshot-create-as", domain, "--name", "troshka-capture",
+             "--disk-only", "--atomic", "--no-metadata"],
+            capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip())
+    except Exception as e:
+        _job_log(job, f"Snapshot failed ({e}), using crash-consistent mode")
+        if frozen:
+            subprocess.run(["virsh", "domfsthaw", domain],
+                           capture_output=True, text=True, timeout=10)
+        return False
+    finally:
+        if frozen:
+            subprocess.run(["virsh", "domfsthaw", domain],
+                           capture_output=True, text=True, timeout=10)
 
-        size_bytes = os.path.getsize(cache_path)
-        result_disks.append({"size_bytes": size_bytes})
+    _job_log(job, "Snapshot created, VM running on overlay (freeze < 1s)")
+    return True
 
-    return {"status": "uploaded", "disks": result_disks}
 
-COMMAND_HANDLERS["patterns/capture"] = _handle_pattern_capture
+def _commit_snapshot(job, domain):
+    """Block-commit overlays back to base, wait, pivot, delete overlay."""
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        return
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == "disk" and ".troshka-capture" in parts[3]:
+            target = parts[2]
+            overlay = parts[3]
+            _job_log(job, f"Committing overlay {target} back to base...")
+            r = subprocess.run(
+                ["virsh", "blockcommit", domain, target, "--active", "--pivot",
+                 "--wait", "--verbose"],
+                capture_output=True, text=True, timeout=3600)
+            if r.returncode == 0:
+                try:
+                    os.remove(overlay)
+                except OSError:
+                    pass
+                _job_log(job, f"Overlay committed and removed for {target}")
+            else:
+                _job_log(job, f"Block-commit failed for {target}: {r.stderr.strip()}")
+                # Don't leave a broken state — abort and try once more
+                subprocess.run(["virsh", "blockjob", domain, target, "--abort"],
+                               capture_output=True, text=True, timeout=30)
+                time.sleep(2)
+                r2 = subprocess.run(
+                    ["virsh", "blockcommit", domain, target, "--active", "--pivot", "--wait"],
+                    capture_output=True, text=True, timeout=300)
+                if r2.returncode == 0:
+                    try:
+                        os.remove(overlay)
+                    except OSError:
+                        pass
+                    _job_log(job, f"Overlay committed on retry for {target}")
+                else:
+                    _job_log(job, f"WARNING: overlay stuck for {target}, needs manual cleanup")
+
+
 
 
 def _handle_pattern_capture_direct(job, params):
-    """Capture disks by path — doesn't need running VM domains."""
+    """Capture disks by path — uses external snapshot for running VMs.
+
+    Running VM flow:
+      1. freeze → snapshot → thaw (sub-second) — VM writes go to overlay
+      2. Flatten the now read-only base disk (minutes, VM unaffected)
+      3. Upload to S3
+      4. Block-commit overlay back to base
+
+    If snapshot fails: skip freeze entirely, use -U for crash-consistent capture.
+    NEVER hold freeze during flatten.
+    """
     disks = params.get("disks", [])
+    domain_name = params.get("domain_name", "")
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
     import tempfile as _tf
 
+    running = False
+    snapshotted = False
+    if domain_name:
+        running = _is_domain_running(domain_name)
+        if running:
+            snapshotted = _snapshot_domain(job, domain_name)
+
     result_disks = []
-    for disk_info in disks:
+    try:
+      for disk_info in disks:
         disk_path = _validate_path(disk_info["disk_path"])
         s3_url = disk_info["s3_url"]
         cache_path = _validate_path(disk_info["cache_path"])
 
+        if snapshotted:
+            backing = subprocess.run(
+                ["qemu-img", "info", "--output=json", disk_path],
+                capture_output=True, text=True, timeout=30)
+            if backing.returncode == 0:
+                import json as _json
+                info = _json.loads(backing.stdout)
+                bfn = info.get("full-backing-filename", "")
+                if bfn and os.path.exists(bfn):
+                    disk_path = bfn
+
         if not os.path.exists(disk_path):
             raise RuntimeError(f"Disk not found: {disk_path}")
 
-        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+        _local_tmp = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+        os.makedirs(_local_tmp, exist_ok=True)
+        with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
             tmp_flat = os.path.join(tmpdir, "flat.qcow2")
             src_size = os.path.getsize(disk_path)
             src_size_gb = round(src_size / (1024**3), 1)
-            job["output"].append(f"Flattening {os.path.basename(disk_path)} ({src_size_gb} GB)...")
+            _job_log(job,f"Flattening {os.path.basename(disk_path)} ({src_size_gb} GB)...")
 
-            # Monitor flatten progress in background thread
             flatten_done = threading.Event()
             def _monitor_flatten():
                 while not flatten_done.is_set():
@@ -2898,58 +3088,48 @@ def _handle_pattern_capture_direct(job, params):
                         if os.path.exists(tmp_flat):
                             cur = os.path.getsize(tmp_flat)
                             cur_gb = round(cur / (1024**3), 1)
-                            job["output"].append(f"Flattening: {cur_gb} GB written...")
+                            _job_log(job, f"Flattening: {cur_gb} of {src_size_gb} GB")
                     except OSError:
                         pass
                     flatten_done.wait(10)
             mon = threading.Thread(target=_monitor_flatten, daemon=True)
             mon.start()
 
-            _run_cmd(job, ["qemu-img", "convert", "-c", "-O", "qcow2", disk_path, tmp_flat], timeout=3600)
+            cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
+            if running and not snapshotted:
+                cmd.insert(2, "-U")
+            cmd.extend([disk_path, tmp_flat])
+            _run_cmd(job, cmd, timeout=3600)
             flatten_done.set()
 
             flat_size = os.path.getsize(tmp_flat)
             flat_size_gb = round(flat_size / (1024**3), 1)
-            job["output"].append(f"Flattened: {flat_size_gb} GB (compressed)")
-            job["output"].append(f"Uploading {flat_size_gb} GB to S3...")
+            _job_log(job, f"Flattened: {flat_size_gb} GB (compressed)")
 
-            env = os.environ.copy()
-            if aws_access_key:
-                env["AWS_ACCESS_KEY_ID"] = aws_access_key
-                env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
-                env["AWS_DEFAULT_REGION"] = aws_region
-            aws_bin = "/opt/troshka/venv/bin/aws"
-            if not os.path.exists(aws_bin):
-                aws_bin = "aws"
-            upload_proc = subprocess.Popen(
-                [aws_bin, "s3", "cp", tmp_flat, s3_url],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-            )
-            # Stream stderr (aws cli progress) to job output
-            last_progress = ""
-            while upload_proc.poll() is None:
-                line = upload_proc.stderr.readline()
-                if line.strip():
-                    progress = line.strip().split("\r")[-1].strip()
-                    if progress != last_progress:
-                        job["output"].append(progress)
-                        last_progress = progress
-            # Capture remaining output
-            for line in upload_proc.stdout.read().strip().split("\n"):
-                if line.strip():
-                    job["output"].append(line)
-            if upload_proc.returncode != 0:
-                remaining_err = upload_proc.stderr.read().strip()
-                raise RuntimeError(f"S3 upload failed: {remaining_err}")
-            if upload_proc.returncode != 0:
-                raise RuntimeError(f"S3 upload failed: {upload_proc.stderr.strip()}")
+            # Start overlay commit in background — safe because upload reads from local temp, not the VM disk
+            commit_thread = None
+            if snapshotted:
+                def _do_commit():
+                    _commit_snapshot(job, domain_name)
+                commit_thread = threading.Thread(target=_do_commit, daemon=True)
+                commit_thread.start()
+                snapshotted = False
+
+            _job_log(job, f"Uploading {flat_size_gb} GB to S3...")
+            _s3_upload(job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region)
 
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            job["output"].append(f"Caching to {cache_path}...")
+            _job_log(job, f"Caching to {cache_path}...")
             shutil.copy(tmp_flat, cache_path)
+
+            if commit_thread:
+                commit_thread.join(timeout=600)
 
         size_bytes = os.path.getsize(cache_path)
         result_disks.append({"size_bytes": size_bytes})
+    finally:
+        if snapshotted:
+            _commit_snapshot(job, domain_name)
 
     return {"status": "uploaded", "disks": result_disks}
 
@@ -3026,23 +3206,23 @@ def _handle_files_remove(job, params):
         try:
             if os.path.isdir(validated_path):
                 shutil.rmtree(validated_path)
-                job["output"].append(f"Removed directory: {validated_path}")
+                _job_log(job,f"Removed directory: {validated_path}")
             else:
                 os.remove(validated_path)
-                job["output"].append(f"Removed file: {validated_path}")
+                _job_log(job,f"Removed file: {validated_path}")
             removed += 1
         except FileNotFoundError:
-            job["output"].append(f"Skipped (not found): {validated_path}")
+            _job_log(job,f"Skipped (not found): {validated_path}")
         except PermissionError:
             try:
                 subprocess.run(["sudo", "-u", "qemu", "rm", "-rf", "--", validated_path], timeout=10, check=True)
-                job["output"].append(f"Removed as qemu: {validated_path}")
+                _job_log(job,f"Removed as qemu: {validated_path}")
                 removed += 1
             except Exception as e2:
-                job["output"].append(f"Failed to remove {validated_path}: {e2}")
+                _job_log(job,f"Failed to remove {validated_path}: {e2}")
                 raise
         except Exception as e:
-            job["output"].append(f"Failed to remove {validated_path}: {e}")
+            _job_log(job,f"Failed to remove {validated_path}: {e}")
             raise
 
     return {"removed": removed}
@@ -3151,7 +3331,7 @@ def _handle_nft_reset(job, params):
                 _run_cmd(job, ["nft", "flush", "chain", "inet", table_type, chain_name], timeout=5)
                 _run_cmd(job, ["nft", "delete", "chain", "inet", table_type, chain_name], timeout=5)
                 flushed += 1
-                job["output"].append(f"Deleted chain {table_type}/{chain_name}")
+                _job_log(job,f"Deleted chain {table_type}/{chain_name}")
             except RuntimeError:
                 pass
     return {"flushed_chains": flushed}
@@ -3284,11 +3464,32 @@ def _check_and_restart_dnsmasq():
     """Check all dnsmasq PID files — restart any that died."""
     restarted = 0
     for pidfile in glob.glob("/run/troshka-dnsmasq-*.pid"):
-        # PID file: troshka-dnsmasq-{pid}-{vni}.pid → conf: troshka-{pid}-{vni}.conf
+        # PID file: troshka-dnsmasq-{project_id[:8]}-{vni}.pid
         conf_name = os.path.basename(pidfile).replace("troshka-dnsmasq-", "troshka-").replace(".pid", ".conf")
         conf_path = f"/etc/dnsmasq.d/{conf_name}"
         if not os.path.exists(conf_path):
+            # Orphan PID file — config gone, remove it
+            try:
+                os.remove(pidfile)
+            except OSError:
+                pass
             continue
+        # Check if any VM domains exist for this project
+        parts = os.path.basename(pidfile).replace("troshka-dnsmasq-", "").replace(".pid", "").split("-")
+        project_prefix = parts[0] if parts else ""
+        if project_prefix:
+            domain_check = subprocess.run(
+                ["virsh", "list", "--all", "--name"],
+                capture_output=True, text=True, timeout=5)
+            has_domains = any(f"troshka-{project_prefix}-" in line for line in domain_check.stdout.split("\n"))
+            if not has_domains:
+                try:
+                    os.remove(pidfile)
+                    os.remove(conf_path)
+                    logger.info("Cleaned orphan dnsmasq files for deleted project %s", project_prefix)
+                except OSError:
+                    pass
+                continue
         alive = False
         try:
             with open(pidfile) as f:
@@ -3476,7 +3677,7 @@ def _handle_bmc_setup(job, params):
     vms = params.get("vms", [])
 
     if not vms:
-        job["output"].append("No BMC-enabled VMs, skipping")
+        _job_log(job,"No BMC-enabled VMs, skipping")
         return {"status": "skipped"}
 
     pid = project_id[:8]
@@ -3505,7 +3706,7 @@ def _handle_bmc_setup(job, params):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
-    job["output"].append(f"BMC bridge {bridge} created in namespace {ns}")
+    _job_log(job,f"BMC bridge {bridge} created in namespace {ns}")
 
     # 2. Assign BMC IPs to the bridge
     for vm in vms:
@@ -3534,7 +3735,7 @@ def _handle_bmc_setup(job, params):
                    capture_output=True, timeout=10)
     subprocess.run(["virsh", "pool-start", pool_name], capture_output=True, timeout=10)
     subprocess.run(["virsh", "pool-autostart", pool_name], capture_output=True, timeout=10)
-    job["output"].append(f"Storage pool {pool_name} created at {vmedia_dir}")
+    _job_log(job,f"Storage pool {pool_name} created at {vmedia_dir}")
 
     # 5. Start sushy-emulator per VM
     for vm in vms:
@@ -3582,7 +3783,7 @@ def _handle_bmc_setup(job, params):
         with open(pid_path, "w") as f:
             f.write(str(proc.pid))
 
-        job["output"].append(f"sushy-emulator started for {domain_name} at {bmc_ip}:8000 (PID {proc.pid})")
+        _job_log(job,f"sushy-emulator started for {domain_name} at {bmc_ip}:8000 (PID {proc.pid})")
 
     # 5. Start vbmcd and register VMs for IPMI
     vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
@@ -3638,7 +3839,7 @@ def _handle_bmc_setup(job, params):
         if os.path.exists(vbmcd_pid_path):
             break
 
-    job["output"].append(f"vbmcd started (wrapper PID {proc.pid})")
+    _job_log(job,f"vbmcd started (wrapper PID {proc.pid})")
 
     for vm in vms:
         domain_name = _validate_domain_name(vm["domain_name"])
@@ -3649,7 +3850,7 @@ def _handle_bmc_setup(job, params):
                         "--username", bmc_username, "--password", bmc_password,
                         "--libvirt-uri", "qemu:///system"], timeout=30)
         _run_cmd(job, ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "start", domain_name], timeout=30)
-        job["output"].append(f"vbmc registered {domain_name} at {bmc_ip}:623")
+        _job_log(job,f"vbmc registered {domain_name} at {bmc_ip}:623")
 
     return {
         "status": "ok",
@@ -3694,7 +3895,7 @@ def _handle_bmc_create_bridge(job, params):
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "addr", "add",
                         f"{bmc_ip}/{prefix}", "dev", bridge], timeout=10)
 
-    job["output"].append(f"BMC bridge {bridge} created (services not started)")
+    _job_log(job,f"BMC bridge {bridge} created (services not started)")
     return {"status": "ok", "bridge": bridge}
 
 COMMAND_HANDLERS["bmc/create-bridge"] = _handle_bmc_create_bridge
@@ -3720,7 +3921,7 @@ def _handle_bmc_teardown(job, params):
                         p = int(f.read().strip())
                     os.kill(p, signal.SIGTERM)
                     killed += 1
-                    job["output"].append(f"Killed sushy-emulator PID {p}")
+                    _job_log(job,f"Killed sushy-emulator PID {p}")
                 except (ValueError, ProcessLookupError, PermissionError):
                     pass
 
@@ -3732,13 +3933,13 @@ def _handle_bmc_teardown(job, params):
                 p = int(f.read().strip())
             os.kill(p, signal.SIGTERM)
             killed += 1
-            job["output"].append(f"Killed vbmcd PID {p}")
+            _job_log(job,f"Killed vbmcd PID {p}")
         except (ValueError, ProcessLookupError, PermissionError):
             pass
 
     try:
         _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "del", bridge], timeout=10)
-        job["output"].append(f"Removed BMC bridge {bridge} from namespace")
+        _job_log(job,f"Removed BMC bridge {bridge} from namespace")
     except RuntimeError:
         pass
 
@@ -3751,11 +3952,11 @@ def _handle_bmc_teardown(job, params):
     pool_name = f"troshka-vmedia-{pid}"
     subprocess.run(["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10)
     subprocess.run(["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10)
-    job["output"].append(f"Removed storage pool {pool_name}")
+    _job_log(job,f"Removed storage pool {pool_name}")
 
     if os.path.isdir(bmc_dir):
         shutil.rmtree(bmc_dir, ignore_errors=True)
-        job["output"].append(f"Removed BMC config dir: {bmc_dir}")
+        _job_log(job,f"Removed BMC config dir: {bmc_dir}")
 
     return {"status": "ok", "killed": killed}
 
@@ -3806,7 +4007,7 @@ def _handle_vm_migrate(job, params):
     # Check domain state
     state_proc = subprocess.run(["virsh", "domstate", domain], capture_output=True, text=True, timeout=10)
     state = state_proc.stdout.strip()
-    job["output"].append(f"VM state: {state}")
+    _job_log(job,f"VM state: {state}")
 
     cmd = [
         "virsh", "migrate",

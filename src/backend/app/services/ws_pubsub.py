@@ -77,6 +77,18 @@ def notify_project(project_id: str, message: dict):
     asyncio.run_coroutine_threadsafe(_send_to_subscribers(project_id, message), _loop)
 
 
+def notify_pattern(pattern_id: str, message: dict):
+    notify_project(f"pattern:{pattern_id}", message)
+
+
+def subscribe_pattern(pattern_id: str, ws: WebSocket):
+    subscribe(f"pattern:{pattern_id}", ws)
+
+
+def unsubscribe_pattern(pattern_id: str, ws: WebSocket):
+    unsubscribe(f"pattern:{pattern_id}", ws)
+
+
 _last_states: dict[str, dict] = {}
 _POLL_INTERVAL = 5
 

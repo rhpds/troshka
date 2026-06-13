@@ -108,7 +108,10 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
                     time.sleep(5)
                     continue
                 raise err
-            return json.loads(resp_body)
+            result = json.loads(resp_body)
+            if attempt > 0:
+                logger.info("troshkad %s connection re-established", host.ip_address)
+            return result
         except TroshkadError:
             raise
         except (ConnectionError, ConnectionResetError, OSError, TimeoutError) as e:

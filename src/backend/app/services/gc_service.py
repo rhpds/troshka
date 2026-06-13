@@ -158,6 +158,59 @@ def repair_networks(db: Session, host) -> dict:
     return {"repaired": repaired}
 
 
+def clean_s3_orphan_patterns(db: Session, dry_run: bool = False) -> dict:
+    """Delete S3 pattern folders that have no matching Pattern record in the DB."""
+    from app.models.pattern import Pattern
+
+    try:
+        from app.services import s3_storage
+        from app.services.s3_storage import _get_s3_config
+        creds = _get_s3_config()
+        import boto3
+        s3 = boto3.client("s3",
+            region_name=creds.get("region", "us-east-1"),
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"))
+        bucket = s3_storage._bucket()
+    except Exception as e:
+        return {"error": f"S3 not configured: {e}"}
+
+    active_ids = {p.id for p in db.query(Pattern).all()}
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix="patterns/", Delimiter="/")
+    orphan_prefixes = []
+    for cp in resp.get("CommonPrefixes", []):
+        prefix = cp["Prefix"]
+        pattern_id = prefix.strip("/").split("/")[-1]
+        if pattern_id not in active_ids:
+            orphan_prefixes.append(prefix)
+
+    deleted = 0
+    deleted_bytes = 0
+    for prefix in orphan_prefixes:
+        objects = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+        if objects and not dry_run:
+            deleted_bytes += sum(o["Size"] for o in objects)
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": o["Key"]} for o in objects]})
+            deleted += len(objects)
+            log.info("S3 GC: deleted %d objects from orphan pattern %s", len(objects), prefix)
+
+    aborted = 0
+    try:
+        mp_resp = s3.list_multipart_uploads(Bucket=bucket, Prefix="patterns/")
+        for upload in mp_resp.get("Uploads", []):
+            key_pattern_id = upload["Key"].split("/")[1] if "/" in upload["Key"] else ""
+            if key_pattern_id not in active_ids and not dry_run:
+                s3.abort_multipart_upload(Bucket=bucket, Key=upload["Key"], UploadId=upload["UploadId"])
+                aborted += 1
+    except Exception:
+        pass
+
+    result = {"orphan_prefixes": len(orphan_prefixes), "deleted": deleted, "aborted_multipart": aborted}
+    if deleted_bytes:
+        result["deleted_gb"] = round(deleted_bytes / (1024**3), 1)
+    return result
+
+
 def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
     """Full reconciliation: sync capacity + discover + clean orphans + repair networks."""
     from app.core.database import SessionLocal
@@ -219,6 +272,10 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             report["network_repair"] = network_repair
             if network_repair.get("repaired", 0) > 0:
                 log.info("Host %s GC: repaired %d bridges", host_id[:8], network_repair["repaired"])
+
+        s3_cleanup = clean_s3_orphan_patterns(db, dry_run)
+        if s3_cleanup.get("deleted", 0) > 0 or s3_cleanup.get("aborted_multipart", 0) > 0:
+            report["s3_cleanup"] = s3_cleanup
 
         return report
 

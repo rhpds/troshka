@@ -360,10 +360,13 @@ def delete_pattern(
         s = SessionLocal()
         try:
             for host in s.query(Host).filter(Host.agent_status == "connected").all():
-                cache_path = f"/var/lib/troshka/cache/patterns/{pid}"
-                shared_path = f"/var/lib/troshka/shared/cache/patterns/{pid}"
+                paths = [
+                    f"/var/lib/troshka/local/cache/patterns/{pid}",
+                    f"/var/lib/troshka/cache/patterns/{pid}",
+                    f"/var/lib/troshka/shared/cache/patterns/{pid}",
+                ]
                 try:
-                    job_id = start_job(host, "/files/remove", {"paths": [cache_path, shared_path]})
+                    job_id = start_job(host, "/files/remove", {"paths": paths})
                     wait_for_job(host, job_id, timeout=15)
                 except TroshkadError:
                     pass
@@ -515,11 +518,7 @@ def deploy_pattern(
     return {
         "id": project.id,
         "name": project.name,
-        "description": project.description,
-        "owner_id": project.owner_id,
         "state": project.state,
-        "topology": project.topology,
-        "created_at": project.created_at,
     }
 
 

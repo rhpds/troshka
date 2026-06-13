@@ -13,11 +13,12 @@ interface SavePatternModalProps {
 export default function SavePatternModal({ projectId, projectName, hasRunningVMs, onSaved, onClose }: SavePatternModalProps) {
   const [name, setName] = useState(`${projectName}-pattern`);
   const [description, setDescription] = useState("");
-  const [stopVMs, setStopVMs] = useState(hasRunningVMs);
+  const [stopVMs, setStopVMs] = useState(false);
   const [restartAfter, setRestartAfter] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
+  const [patternId, setPatternId] = useState<string | null>(null);
 
   const inputStyle = {
     width: "100%",
@@ -87,29 +88,48 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
       });
       if (resp.ok) {
         const data = await resp.json();
-        // Wait for disk capture to complete (flatten + S3 upload)
+        setPatternId(data.id);
+        // Wait for capture via WebSocket
         if (data.state !== "available") {
           setSavingStatus("Capturing disks...");
-          for (let i = 0; i < 120; i++) {
-            await new Promise((r) => setTimeout(r, 3000));
-            const stateResp = await fetch(`/api/v1/patterns/${data.id}`);
-            if (stateResp.ok) {
-              const pat = await stateResp.json();
-              if (pat.capture_progress) {
-                const cp = pat.capture_progress;
-                setSavingStatus(cp.detail || cp.step || "Capturing disks...");
-              }
-              if (pat.state === "available") break;
-              if (pat.state === "error") {
-                setError("Disk capture failed");
-                if (hasRunningVMs && stopVMs && restartAfter) {
-                  setSavingStatus("Restarting VMs...");
-                  await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
+          const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          const wsUrl = `${wsProto}//${window.location.host}/api/v1/patterns/${data.id}/ws`;
+          const result = await new Promise<"available" | "error" | "timeout">((resolve) => {
+            const ws = new WebSocket(wsUrl);
+            const timeout = setTimeout(() => { ws.close(); resolve("timeout"); }, 1800000);
+            ws.onmessage = (ev) => {
+              try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === "capture-progress") {
+                  const vms = msg.vms as string[] | undefined;
+                  if (vms && vms.length > 0) {
+                    setSavingStatus(msg.detail + "\n" + vms.join("\n"));
+                  } else {
+                    setSavingStatus(msg.detail || "Capturing...");
+                  }
+                } else if (msg.type === "capture-complete") {
+                  clearTimeout(timeout);
+                  ws.close();
+                  resolve(msg.state === "available" ? "available" : "error");
                 }
-                setSaving(false);
-                return;
-              }
+              } catch {}
+            };
+            ws.onerror = () => { clearTimeout(timeout); ws.close(); resolve("error"); };
+            ws.onclose = () => { clearTimeout(timeout); };
+          });
+          if (result === "error") {
+            setError("Disk capture failed");
+            if (hasRunningVMs && stopVMs && restartAfter) {
+              setSavingStatus("Restarting VMs...");
+              await fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" });
             }
+            setSaving(false);
+            return;
+          }
+          if (result === "timeout") {
+            setError("Capture is still running — check the Patterns page for status");
+            setSaving(false);
+            return;
           }
         }
         if (hasRunningVMs && stopVMs && restartAfter) {
@@ -153,10 +173,10 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)",
             color: "#fbbf24", fontSize: 13,
           }}>
-            <div>For best results, stop all VMs before creating a pattern. Running VMs may have inconsistent disk state.</div>
+            <div>Running VMs will be frozen during capture for a consistent snapshot.</div>
             <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
               <input type="checkbox" checked={stopVMs} onChange={(e) => setStopVMs(e.target.checked)} disabled={saving} />
-              Stop VMs before capture
+              Stop VMs before capture instead
             </label>
             {stopVMs && (
               <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
@@ -185,13 +205,29 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button
-              onClick={onClose}
-              disabled={saving}
-              style={{ ...inputStyle, width: "auto", cursor: saving ? "not-allowed" : "pointer", padding: "6px 16px", opacity: saving ? 0.4 : 1 }}
-            >
-              Cancel
-            </button>
+            {saving && patternId ? (
+              <button
+                onClick={async () => {
+                  if (!window.confirm("Cancel pattern capture? This will stop the capture and clean up.")) return;
+                  await fetch(`/api/v1/patterns/${patternId}`, { method: "DELETE" });
+                  setSaving(false);
+                  setSavingStatus("");
+                  setPatternId(null);
+                  onClose();
+                }}
+                style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px", background: "rgba(248,113,113,0.15)", borderColor: "#f87171", color: "#f87171" }}
+              >
+                Cancel Capture
+              </button>
+            ) : (
+              <button
+                onClick={onClose}
+                disabled={saving}
+                style={{ ...inputStyle, width: "auto", cursor: saving ? "not-allowed" : "pointer", padding: "6px 16px", opacity: saving ? 0.4 : 1 }}
+              >
+                Cancel
+              </button>
+            )}
             <button
               onClick={handleSave}
               disabled={saving}
@@ -201,9 +237,14 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
                 borderColor: "#4ade80", color: "#4ade80", opacity: saving ? 0.6 : 1,
               }}
             >
-              {saving ? <><span className="project-btn-spinner" style={{ marginRight: 6 }} />{savingStatus || "Saving..."}</> : "Save Pattern"}
+              {saving ? <><span className="project-btn-spinner" style={{ marginRight: 6 }} />Saving...</> : "Save Pattern"}
             </button>
           </div>
+          {saving && savingStatus && (
+            <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginTop: 12, whiteSpace: "pre-line", lineHeight: 1.6 }}>
+              {savingStatus}
+            </div>
+          )}
         </div>
       </div>
     </div>
