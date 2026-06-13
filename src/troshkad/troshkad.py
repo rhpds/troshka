@@ -574,9 +574,9 @@ def _handle_vm_create(job, params):
             link_from = _validate_path(link_from)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             try:
-                os.link(link_from, path)
+                shutil.copy2(link_from, path)
                 _chown_qemu(path)
-                _job_log(job,f"Linked {os.path.basename(path)} -> {link_from}")
+                _job_log(job, f"Copied {os.path.basename(path)} from {os.path.basename(link_from)}")
             except FileExistsError:
                 pass
         disk_cache = params.get("disk_cache")

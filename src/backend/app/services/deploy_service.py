@@ -1236,13 +1236,15 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         vms = _extract_vms(topology)
 
         # Fire all disk creation jobs in parallel
+        _update_deploy_progress(project_id, "creating disks", "preparing VM disks")
         disk_jobs = []
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
             job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
             disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
-        for jid in disk_jobs:
+        for di, jid in enumerate(disk_jobs):
             try:
+                _update_deploy_progress(project_id, "creating disks", f"{di}/{len(disk_jobs)}")
                 job = wait_for_job(host, jid, timeout=300)
                 if job.get("status") == "failed":
                     raise TroshkadError(f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}")

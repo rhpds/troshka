@@ -98,8 +98,8 @@ def clean_orphans(host, orphans: dict) -> dict:
             cache_items.append(path)
 
     job_id = start_job(host, "/gc/clean", {
-        "orphan_dirs": orphans.get("orphan_dirs", []),
-        "orphan_domains": orphans.get("orphan_domains", []),
+        "orphan_dirs": list(set(orphans.get("orphan_dirs", []))),
+        "orphan_domains": list(set(orphans.get("orphan_domains", []))),
         "orphan_bridges": orphans.get("orphan_bridges", []),
         "orphan_namespaces": orphans.get("orphan_namespaces", []),
         "cache_items": cache_items,
