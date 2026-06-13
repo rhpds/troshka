@@ -580,16 +580,6 @@ def _handle_vm_create(job, params):
             except FileExistsError:
                 pass
         disk_cache = params.get("disk_cache")
-        if disk_cache == "none" and device != "cdrom":
-            try:
-                info = subprocess.run(["qemu-img", "info", "--output=json", path],
-                                      capture_output=True, text=True, timeout=10)
-                if info.returncode == 0:
-                    import json as _json
-                    if _json.loads(info.stdout).get("backing-filename"):
-                        disk_cache = "writeback"
-            except Exception:
-                pass
         disk_arg = f"path={path},bus={bus}"
         if disk_cache:
             disk_arg += f",cache={disk_cache}"
@@ -615,6 +605,7 @@ def _handle_vm_create(job, params):
         cmd.extend(["--input", "type=tablet,bus=virtio"])
     cmd.extend(["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"])
     _run_cmd(job, cmd, timeout=600)
+
     return {"domain": domain, "status": "created"}
 
 COMMAND_HANDLERS["vms/create"] = _handle_vm_create
@@ -1139,6 +1130,12 @@ def _handle_disk_create(job, params):
     cmd = ["qemu-img", "create", "-f", fmt]
     if backing:
         backing = _validate_path(backing)
+        local_backing = os.path.join(os.path.dirname(path), os.path.basename(backing))
+        if not os.path.exists(local_backing):
+            _job_log(job, f"Copying backing image to project dir...")
+            shutil.copy2(backing, local_backing)
+            _chown_qemu(local_backing)
+        backing = local_backing
         cmd.extend(["-b", backing, "-F", fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)

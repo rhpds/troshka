@@ -254,7 +254,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       {projectDescription && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
-            style={{ fontSize: 11, padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--pf-t--global--text--color--subtle)" }}
+            className="palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={() => setShowDesc(!showDesc)}
           >
             <span>INFO</span>
@@ -308,7 +309,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           )}
         </div>
       )}
-      {ocpHealth && ocpHealth.phase !== "ssh" && (
+      {ocpHealth && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"

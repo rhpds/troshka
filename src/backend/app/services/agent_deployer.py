@@ -35,6 +35,10 @@ else
     echo "Prerequisites already installed, skipping dnf"
 fi
 
+# Disable QEMU disk locking — safe because Troshka manages unique disk paths per VM.
+# Without this, multiple VMs sharing the same backing image (library image) cause write lock conflicts on NFS.
+grep -q 'lock_manager' /etc/libvirt/qemu.conf 2>/dev/null || echo 'lock_manager = "none"' >> /etc/libvirt/qemu.conf
+
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then
     systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
