@@ -109,7 +109,7 @@ export default function ProjectCanvasPage() {
     fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => setIsAdmin(d.role === "admin"));
   }, []);
 
-  const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string } | null>(null);
+  const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string; items?: string[] } | null>(null);
 
   // WebSocket → project state
   const prevStateRef = React.useRef(projectState);
@@ -430,16 +430,6 @@ export default function ProjectCanvasPage() {
               ⚡ Deploy
             </button>
           )}
-          {projectState === "deploying" && (
-            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}${deployProgress.detail ? ": " + deployProgress.detail : ""}` : "Deploying..."}
-            </button>
-          )}
-          {projectState === "reconfiguring" && (
-            <button className="project-stop-btn" disabled style={{ opacity: 0.8 }}>
-              <span className="project-btn-spinner" /> {deployProgress ? `${deployProgress.step}${deployProgress.detail ? ": " + deployProgress.detail : ""}` : "Applying changes..."}
-            </button>
-          )}
           {projectState === "active" && (
             <>
               <button className="project-stop-btn" onClick={() => {
@@ -558,9 +548,49 @@ export default function ProjectCanvasPage() {
           )}
         </div>
       </div>
-      {deployError && (
-        <div style={{ padding: "8px 16px", background: "rgba(239,68,68,0.15)", color: "#ef4444", fontSize: 12, fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: 120, overflowY: "auto", borderBottom: "1px solid rgba(239,68,68,0.3)" }}>
-          {deployError}
+      {(projectState === "deploying" || projectState === "reconfiguring" || (projectState === "error" && deployError)) && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 100,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.5)", pointerEvents: "auto",
+        }}>
+          <div style={{
+            background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 420, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: `1px solid ${projectState === "error" ? "rgba(239,68,68,0.4)" : "var(--pf-t--global--border--color--default)"}`,
+          }}>
+            <h3 style={{ margin: "0 0 16px", display: "flex", alignItems: "center", gap: 8 }}>
+              {projectState === "error" ? (
+                <span style={{ color: "#ef4444" }}>Deploy Failed</span>
+              ) : (
+                <><span className="project-btn-spinner" /> {projectState === "deploying" ? "Deploying..." : "Applying Changes..."}</>
+              )}
+            </h3>
+            {deployProgress && projectState !== "error" && (
+              <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0 }}>
+                <span style={{ opacity: 0.7 }}>{deployProgress.step}</span>
+                {deployProgress.detail ? `: ${deployProgress.detail}` : ""}
+              </div>
+            )}
+            {deployProgress?.items && projectState !== "error" && (
+              <div style={{ fontSize: 12, opacity: 0.6, whiteSpace: "pre-line", lineHeight: 1.6, maxHeight: 200, overflowY: "auto" }}>
+                {deployProgress.items.join("\n")}
+              </div>
+            )}
+            {deployError && (
+              <div style={{ fontSize: 12, color: "#ef4444", fontFamily: "monospace", whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto", marginTop: 8, padding: 8, background: "rgba(239,68,68,0.08)", borderRadius: 6 }}>
+                {deployError}
+              </div>
+            )}
+            {projectState === "error" && (
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+                <button onClick={() => setDeployError(null)} style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
       <div className={`canvas-editor ${projectState === "draft" ? "design-mode" : ""}`} style={{ position: "relative" }}>
@@ -576,7 +606,7 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} onDescriptionChange={(desc) => {
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} ocpHealth={ws.ocpHealth} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} />}

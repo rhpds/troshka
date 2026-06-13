@@ -44,6 +44,28 @@ async def lifespan(app):
     finally:
         s.close()
 
+    # Resume OCP health monitors that were interrupted by restart
+    from app.models.host import Host
+    s2 = SessionLocal()
+    try:
+        monitoring = s2.query(Project).filter(Project.ocp_status == "monitoring").filter(Project.state.in_(("active", "stopped"))).all()
+        for p in monitoring:
+            host = s2.query(Host).filter_by(id=p.host_id).first()
+            if host and host.agent_status == "connected":
+                from app.services.deploy_service import _is_ocp_topology, _monitor_ocp_health
+                topo = p.deployed_topology or p.topology or {}
+                if _is_ocp_topology(topo):
+                    host_copy = type("H", (), {
+                        "ip_address": host.ip_address,
+                        "agent_token": host.agent_token,
+                        "agent_cert_fingerprint": host.agent_cert_fingerprint,
+                    })()
+                    logger.info("Startup: resuming OCP health monitor for %s", p.id[:8])
+                    import threading as _th
+                    _th.Thread(target=_monitor_ocp_health, args=(p.id, host_copy, topo), daemon=True).start()
+    finally:
+        s2.close()
+
     # Resume polling for storage pools stuck in "creating" (poller thread died on restart)
     from app.models.storage_pool import StoragePool
     from app.models.provider import Provider

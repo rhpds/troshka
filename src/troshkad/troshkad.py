@@ -547,6 +547,7 @@ def _handle_vm_create(job, params):
         "--os-variant", "generic",
         "--noautoconsole",
         "--noreboot",
+        "--check", "mac_in_use=off",
     ]
 
     # Build --boot flag: firmware + boot device order
@@ -3482,7 +3483,9 @@ def _check_and_restart_dnsmasq():
                 ["virsh", "list", "--all", "--name"],
                 capture_output=True, text=True, timeout=5)
             has_domains = any(f"troshka-{project_prefix}-" in line for line in domain_check.stdout.split("\n"))
-            if not has_domains:
+            ns_check = subprocess.run(["ip", "netns", "list"], capture_output=True, text=True, timeout=5)
+            has_namespace = f"troshka-{project_prefix}" in ns_check.stdout
+            if not has_domains and not has_namespace:
                 try:
                     os.remove(pidfile)
                     os.remove(conf_path)

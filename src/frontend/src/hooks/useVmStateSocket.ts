@@ -12,6 +12,12 @@ interface DeployProgress {
   detail: string;
 }
 
+interface OcpHealth {
+  phase: string;
+  detail: string;
+  items?: string[];
+}
+
 interface VmStateSocket {
   connected: boolean;
   vmStates: Record<string, string>;
@@ -20,6 +26,7 @@ interface VmStateSocket {
   projectState: string | null;
   deployError: string | null;
   deployProgress: DeployProgress | null;
+  ocpHealth: OcpHealth | null;
   deleted: boolean;
 }
 
@@ -34,6 +41,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [projectState, setProjectState] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
+  const [ocpHealth, setOcpHealth] = useState<OcpHealth | null>(null);
   const [deleted, setDeleted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -81,6 +89,9 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "deploy-progress":
             setDeployProgress(msg.progress || null);
             break;
+          case "ocp-health":
+            setOcpHealth({ phase: msg.phase, detail: msg.detail, items: msg.items });
+            break;
           case "project-deleted":
             setDeleted(true);
             break;
@@ -119,5 +130,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, deleted };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, deleted };
 }

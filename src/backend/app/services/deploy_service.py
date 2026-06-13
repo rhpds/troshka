@@ -16,8 +16,16 @@ from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
-# In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ...}
+# In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ..., "items": [...]}
 _deploy_progress: dict[str, dict] = {}
+
+
+def _update_deploy_progress(project_id: str, step: str, detail: str = "", items: list | None = None):
+    progress = {"step": step, "detail": detail}
+    if items is not None:
+        progress["items"] = items
+    _deploy_progress[project_id] = progress
+    notify_project(project_id, {"type": "deploy-progress", "progress": progress})
 
 # Serializes nftables-touching network setup across concurrent deploys
 _network_lock = threading.Lock()
@@ -576,27 +584,24 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
         if progress_callback:
             done_count = len(completed) + len(failed)
-            # Try to get byte-level progress from running jobs
-            in_progress = []
+            items = []
             for aj in active_jobs:
-                if aj["job_id"] not in completed and aj["job_id"] not in failed:
+                if aj["job_id"] in completed:
+                    items.append(f"{aj['name']}: done")
+                elif aj["job_id"] in failed:
+                    items.append(f"{aj['name']}: failed")
+                else:
+                    last_line = ""
                     try:
                         job = poll_job(host, aj["job_id"])
-                        output = job.get("output", [])
-                        for line in reversed(output):
-                            if "%" in line and ("/" in line or "MiB" in line or "GiB" in line):
-                                in_progress.append(line.strip().split("\r")[-1].strip())
+                        for line in reversed(job.get("output", [])):
+                            if "Download" in line or "GB" in line or "MiB" in line or "cached" in line:
+                                last_line = line.strip()
                                 break
                     except TroshkadError:
                         pass
-            detail = f"{done_count}/{len(active_jobs)}"
-            if in_progress:
-                line = in_progress[0]
-                if "AWSAccessKey" in line or "Signature" in line or "https://" in line:
-                    line = ""
-                if line:
-                    detail += f" | {line}"
-            progress_callback(detail, None)
+                    items.append(f"{aj['name']}: {last_line}" if last_line else f"{aj['name']}: downloading...")
+            progress_callback(f"{done_count}/{len(active_jobs)}", items)
 
         if len(completed) + len(failed) == last_completed_count:
             stale_polls += 1
@@ -1027,8 +1032,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         # Step 0: Allocate and associate EIPs (before networking so DNAT rules have private IPs)
         external_ips = topology.get("externalIps", [])
         if external_ips:
-            _deploy_progress[project_id] = {"step": "eips", "detail": "allocating elastic IPs"}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            _update_deploy_progress(project_id, "eips", "allocating elastic IPs")
             logger.info("Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips))
             from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
             from app.models.elastic_ip import ElasticIp
@@ -1064,11 +1068,9 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             s.commit()
 
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
-        _deploy_progress[project_id] = {"step": "networking", "detail": "waiting for lock"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        _update_deploy_progress(project_id, "networking", "waiting for lock")
         with _network_lock:
-            _deploy_progress[project_id] = {"step": "networking", "detail": "configuring VXLAN"}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            _update_deploy_progress(project_id, "networking", "configuring VXLAN")
             logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
 
             net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
@@ -1085,8 +1087,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         _net_config = _build_net_config(topology, vni_map, [])
         lb_config = _net_config.get("loadbalancer")
         if lb_config and lb_config.get("frontends"):
-            _deploy_progress[project_id] = {"step": "load balancer", "detail": "starting HAProxy"}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            _update_deploy_progress(project_id, "load balancer", "starting HAProxy")
             logger.info("Deploy %s: setting up load balancer", project_id[:8])
             ns = f"troshka-{project_id[:8]}"
             # Default LB IP to gateway+1 if not set
@@ -1152,14 +1153,12 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 2: Create cloud-init seed ISOs
-        _deploy_progress[project_id] = {"step": "cloud-init", "detail": "creating seed ISOs"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
         _create_seed_isos_via_troshkad(host, project_id, topology, pool)
 
         # Step 2b: Deploy metadata service
-        _deploy_progress[project_id] = {"step": "cloud-init", "detail": "deploying metadata service"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
         logger.info("Deploy %s: deploying metadata service", project_id[:8])
         _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
@@ -1169,13 +1168,10 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 3: Cache library images on host
-        _deploy_progress[project_id] = {"step": "downloading images", "detail": "0%"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        _update_deploy_progress(project_id, "downloading images", "0%")
         logger.info("Deploy %s: caching library images", project_id[:8])
-        def _deploy_dl_progress(detail, _total):
-            _deploy_progress[project_id] = {"step": "downloading images", "detail": str(detail)}
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        def _deploy_dl_progress(detail, items):
+            _update_deploy_progress(project_id, "downloading images", str(detail), items=items)
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
         # Step 3b: Set up PXE boot services (extract kernel/initrd, start HTTP server)
@@ -1224,8 +1220,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 4: Create VM disks and definitions (parallel)
-        _deploy_progress[project_id] = {"step": "creating", "detail": "VMs"}
-        notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+        _update_deploy_progress(project_id, "creating", "VMs")
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vms = _extract_vms(topology)
 
@@ -1237,23 +1232,40 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
         for jid in disk_jobs:
             try:
-                wait_for_job(host, jid, timeout=300)
+                job = wait_for_job(host, jid, timeout=300)
+                if job.get("status") == "failed":
+                    raise TroshkadError(f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}")
             except TroshkadError as e:
                 logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
+                raise
 
         # Create VM definitions sequentially (virt-install storage pool race condition)
-        for vm in vms:
+        for vi, vm in enumerate(vms):
+            vm_name = vm.get("name", vm["node_id"][:8])
+            items = []
+            for vj, v in enumerate(vms):
+                n = v.get("name", v["node_id"][:8])
+                if vj < vi:
+                    items.append(f"{n}: defined")
+                elif vj == vi:
+                    items.append(f"{n}: defining...")
+                else:
+                    items.append(f"{n}: pending")
+            _update_deploy_progress(project_id, "creating VMs", f"{vi}/{len(vms)}", items=items)
             job_id = _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
             if job_id:
                 try:
-                    wait_for_job(host, job_id, timeout=300)
+                    job = wait_for_job(host, job_id, timeout=300)
+                    if job.get("status") == "failed":
+                        raise TroshkadError(f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}")
                 except TroshkadError as e:
                     logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
+                    raise
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
-            _deploy_progress[project_id] = {"step": "bmc", "detail": "starting BMC endpoints"}
+            _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
             notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
             logger.info("Deploy %s: starting BMC endpoints for %d VMs", project_id[:8], len(bmc_config["vms"]))
             bmc_result = _setup_bmc_via_troshkad(host, project_id, bmc_config)
@@ -1267,7 +1279,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         # Step 5: Start VMs (unless auto_start is disabled)
         if auto_start:
-            _deploy_progress[project_id] = {"step": "starting", "detail": "VMs"}
+            _update_deploy_progress(project_id, "starting", "VMs")
             notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
             logger.info("Deploy %s: starting VMs", project_id[:8])
             start_failures = _start_vms_via_troshkad(host, project_id, topology)
@@ -1296,8 +1308,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
             dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
             if dns_provider and lb_config:
-                _deploy_progress[project_id] = {"step": "dns", "detail": f"creating records for {project.guid}.{project.domain}"}
-                notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+                _update_deploy_progress(project_id, "dns", f"creating records for {project.guid}.{project.domain}")
 
                 eip_address = None
                 for ext_ip in external_ips:
@@ -1342,20 +1353,231 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
-    except Exception:
+        if auto_start and _is_ocp_topology(topology):
+            project.ocp_status = "monitoring"
+            s.commit()
+            host_copy = type("H", (), {
+                "ip_address": host.ip_address,
+                "agent_token": host.agent_token,
+                "agent_cert_fingerprint": host.agent_cert_fingerprint,
+            })()
+            threading.Thread(
+                target=_monitor_ocp_health,
+                args=(project_id, host_copy, topology),
+                daemon=True, name=f"ocp-health-{project_id[:8]}",
+            ).start()
+
+    except Exception as e:
         logger.exception("Deploy %s failed unexpectedly", project_id[:8])
         _deploy_progress.pop(project_id, None)
         try:
             project = s.query(Project).filter_by(id=project_id).first()
             if project:
                 project.state = "error"
-                project.deploy_error = "Unexpected deploy error. Check server logs."
+                project.deploy_error = str(e)
                 s.commit()
                 notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
         except Exception:
             pass
     finally:
         s.close()
+
+
+def _is_ocp_topology(topology: dict) -> bool:
+    nodes = topology.get("nodes", [])
+    has_bastion = any(n.get("data", {}).get("label") == "bastion" for n in nodes if n.get("type") == "vmNode")
+    has_rhcos = any(n.get("data", {}).get("os") == "rhcos" for n in nodes if n.get("type") == "vmNode")
+    return has_bastion and has_rhcos
+
+
+def _exec_on_bastion(host, project_id: str, bastion_ip: str, password: str, command: str, timeout: int = 15):
+    import re as _re
+    try:
+        job_id = start_job(host, "/vm/ssh-exec", {
+            "project_id": project_id,
+            "vm_ip": bastion_ip,
+            "username": "cloud-user",
+            "password": password,
+            "command": command,
+            "timeout": timeout,
+        })
+        job = wait_for_job(host, job_id, timeout=timeout + 15)
+        if job["status"] == "completed":
+            result = job.get("result", {})
+            if result.get("output"):
+                output = _re.sub(r'\x1b\[[0-9;]*m', '', result["output"])
+                lines = [l for l in output.split("\n") if l.strip()
+                         and not l.strip().startswith("OpenShift Console:")
+                         and not l.strip().startswith("Username:")
+                         and not l.strip().startswith("Password:")]
+                result["output"] = "\n".join(lines)
+            if not result.get("error"):
+                return result.get("output", "")
+    except TroshkadError:
+        pass
+    return None
+
+
+def _monitor_ocp_health(project_id: str, host, topology: dict):
+    import time as _t
+    start = _t.time()
+
+    def _elapsed():
+        s = int(_t.time() - start)
+        return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+    def _push(phase, detail, items=None):
+        msg = {"type": "ocp-health", "phase": phase, "detail": f"{detail} ({_elapsed()})"}
+        if items:
+            msg["items"] = items
+        notify_project(project_id, msg)
+
+    nodes = topology.get("nodes", [])
+    bastion = next((n for n in nodes if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"), None)
+    if not bastion:
+        return
+
+    bastion_ip = ""
+    for nic in bastion.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            bastion_ip = nic["ip"]
+            break
+    if not bastion_ip:
+        bastion_ip = "10.0.0.50"
+    password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+
+    cp_nodes = [n for n in nodes if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"]
+    cp_names = [n.get("data", {}).get("label", n["id"][:8]) for n in cp_nodes]
+
+    dns_domain = "ocp.ocp.local"
+    for n in nodes:
+        if n.get("type") == "networkNode":
+            for rec in n.get("data", {}).get("dnsRecords", []):
+                name = rec.get("name", "")
+                if name.startswith("api."):
+                    dns_domain = name[4:]
+                    break
+
+    console_url = f"https://console-openshift-console.apps.{dns_domain}"
+    deadline = _t.time() + 600
+    logger.info("OCP health monitor started for %s (bastion=%s, domain=%s)", project_id[:8], bastion_ip, dns_domain)
+
+    # Phase 1: Wait for bastion SSH
+    _push("ssh", "waiting for bastion")
+    while _t.time() < deadline:
+        result = _exec_on_bastion(host, project_id, bastion_ip, password, "echo ok", timeout=5)
+        if result and "ok" in result:
+            break
+        _push("ssh", "waiting for bastion")
+        _t.sleep(5)
+    else:
+        _push("timeout", "bastion SSH not available")
+        return
+
+    # Phase 2: Ping CP nodes
+    _push("nodes", "pinging control plane nodes")
+    while _t.time() < deadline:
+        items = []
+        all_up = True
+        for name in cp_names:
+            ip_suffix = 10 + cp_names.index(name)
+            result = _exec_on_bastion(host, project_id, bastion_ip, password,
+                                       f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down", timeout=10)
+            if result and "up" in result:
+                items.append(f"{name}: reachable")
+            else:
+                items.append(f"{name}: waiting")
+                all_up = False
+        _push("nodes", f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable", items)
+        if all_up:
+            break
+        _t.sleep(5)
+
+    # Phase 3: Wait for nodes Ready
+    _push("nodes", "waiting for nodes to be Ready")
+    while _t.time() < deadline:
+        result = _exec_on_bastion(host, project_id, bastion_ip, password,
+                                   "oc get nodes --no-headers 2>/dev/null", timeout=10)
+        if result:
+            items = []
+            ready_count = 0
+            for line in result.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    name, status = parts[0], parts[1]
+                    items.append(f"{name}: {status}")
+                    if "Ready" in status and "Not" not in status:
+                        ready_count += 1
+            if items:
+                _push("nodes", f"{ready_count}/{len(cp_names)} ready", items)
+                if ready_count >= len(cp_names):
+                    break
+        else:
+            _push("nodes", "waiting for API server")
+        _t.sleep(5)
+
+    # Phase 4: Wait for cluster operators
+    _push("operators", "waiting for cluster operators")
+    while _t.time() < deadline:
+        result = _exec_on_bastion(host, project_id, bastion_ip, password,
+                                   "oc get co --no-headers 2>/dev/null", timeout=15)
+        if result:
+            items = []
+            available_count = 0
+            total = 0
+            for line in result.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 4:
+                    name = parts[0]
+                    avail = parts[2]
+                    degraded = parts[4] if len(parts) > 4 else "False"
+                    total += 1
+                    if avail == "True":
+                        available_count += 1
+                        items.append(f"{name}: available")
+                    elif degraded == "True":
+                        items.append(f"{name}: degraded")
+                    else:
+                        items.append(f"{name}: progressing")
+            if total > 0:
+                _push("operators", f"{available_count}/{total} available", items)
+                if available_count >= total:
+                    break
+        else:
+            _push("operators", "waiting for API server")
+        _t.sleep(10)
+
+    # Phase 5: Wait for console
+    _push("console", "waiting for OpenShift console")
+    while _t.time() < deadline:
+        result = _exec_on_bastion(host, project_id, bastion_ip, password,
+                                   f"curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null", timeout=10)
+        if result and result.strip() == "200":
+            _push("console", "console ready")
+            break
+        _push("console", "waiting for OpenShift console")
+        _t.sleep(5)
+
+    # Phase 6: Save kubeadmin to Firefox
+    _push("firefox", "saving credentials to Firefox")
+    _exec_on_bastion(host, project_id, bastion_ip, password,
+                      f"sudo -u cloud-user bash -c 'export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; "
+                      f"python3 /root/ocp-autologin.py {console_url} 2>/dev/null' || true",
+                      timeout=60)
+
+    _push("ready", f"cluster ready")
+    try:
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+        db = SessionLocal()
+        p = db.query(Project).filter_by(id=project_id).first()
+        if p:
+            p.ocp_status = "ready"
+            db.commit()
+        db.close()
+    except Exception:
+        pass
+    logger.info("OCP health monitor complete for %s (%s)", project_id[:8], _elapsed())
 
 
 def stop_project_async(project_id: str):

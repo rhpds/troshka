@@ -170,10 +170,12 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange, ocpHealth }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
+  const [showOcpStatus, setShowOcpStatus] = useState(true);
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const nodes = useCanvasStore((s) => s.nodes);
   const passwords = React.useMemo(() => {
@@ -253,7 +255,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
       {passwords.length > 0 && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
-            style={{ fontSize: 11, padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", color: "var(--pf-t--global--text--color--subtle)" }}
+            className="palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={() => setShowPasswords(!showPasswords)}
           >
             <span>PASSWORDS</span>
@@ -274,25 +277,73 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           )}
         </div>
       )}
+      {ocpHealth && (
+        <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+          <div
+            className="palette-section-title"
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0, color: ocpHealth.phase === "ready" ? "#4ade80" : undefined }}
+            onClick={() => setShowOcpStatus(!showOcpStatus)}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {ocpHealth.phase === "ready" ? "✓" : <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              OCP STATUS
+            </span>
+            <span style={{ fontSize: 9 }}>{showOcpStatus ? "▾" : "▸"}</span>
+          </div>
+          {showOcpStatus && (
+            <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
+              <div style={{ marginBottom: 4, color: "var(--pf-t--global--text--color--regular)" }}>{ocpHealth.detail}</div>
+              {ocpHealth.items && (
+                <div style={{ fontSize: 10, lineHeight: 1.6, color: "var(--pf-t--global--text--color--subtle)" }}>
+                  {ocpHealth.items.map((item, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span>{item.split(":")[0]}</span>
+                      <span style={{ color: item.includes("Ready") || item.includes("available") || item.includes("reachable") || item.includes("ready") ? "#4ade80" : item.includes("degraded") || item.includes("failed") ? "#f87171" : "#fbbf24" }}>
+                        {item.split(":").slice(1).join(":").trim()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {ocpHealth.phase === "ready" && (
+                <div style={{ marginTop: 6, fontSize: 10, display: "flex", gap: 8 }}>
+                  <span style={{ cursor: "pointer", color: "#4ade80" }} onClick={() => {
+                    const pw = passwords.find(p => p.label.includes("bastion"));
+                    if (pw) navigator.clipboard.writeText(pw.value);
+                  }}>Copy kubeadmin pw</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {sections.map((section, sIdx) => (
         <React.Fragment key={section.title}>
           {sIdx > 0 && <div className="palette-divider" />}
           <div className="palette-section">
-            <div className="palette-section-title">{section.title}</div>
-            {section.items.map((item) => (
-              <div
-                key={item.type}
-                className="palette-item"
-                draggable
-                onDragStart={(e) => onDragStart(e, item)}
-              >
-                <PaletteIcon icon={item.icon} iconClass={item.iconClass} />
-                <div>
-                  <div className="palette-item-label">{item.label}</div>
-                  <div className="palette-item-desc">{item.desc}</div>
+            <div
+              className="palette-section-title"
+              style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+              onClick={() => setCollapsedSections((prev) => { const s = new Set(prev); if (s.has(section.title)) s.delete(section.title); else s.add(section.title); return s; })}
+            >
+              <span>{section.title}</span>
+              <span style={{ fontSize: 9 }}>{collapsedSections.has(section.title) ? "▸" : "▾"}</span>
+            </div>
+            {!collapsedSections.has(section.title) && (<>
+              {section.items.map((item) => (
+                <div
+                  key={item.type}
+                  className="palette-item"
+                  draggable
+                  onDragStart={(e) => onDragStart(e, item)}
+                >
+                  <PaletteIcon icon={item.icon} iconClass={item.iconClass} />
+                  <div>
+                    <div className="palette-item-label">{item.label}</div>
+                    <div className="palette-item-desc">{item.desc}</div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
             {section.title === "Networking" && (
               <div className="palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer" }}>
                 <div className="palette-icon palette-icon-gateway">🌍</div>
@@ -347,19 +398,29 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 )}
               </>
             )}
+            </>)}
           </div>
         </React.Fragment>
       ))}
       <div className="palette-divider" />
       <div className="palette-section">
-        <div className="palette-section-title">Project</div>
-        <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
-          <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
-          <div>
-            <div className="palette-item-label">Start Order</div>
-            <div className="palette-item-desc">VM boot sequence</div>
-          </div>
+        <div
+          className="palette-section-title"
+          style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          onClick={() => setCollapsedSections((prev) => { const s = new Set(prev); if (s.has("Project")) s.delete("Project"); else s.add("Project"); return s; })}
+        >
+          <span>Project</span>
+          <span style={{ fontSize: 9 }}>{collapsedSections.has("Project") ? "▸" : "▾"}</span>
         </div>
+        {!collapsedSections.has("Project") && (
+          <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
+            <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
+            <div>
+              <div className="palette-item-label">Start Order</div>
+              <div className="palette-item-desc">VM boot sequence</div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
