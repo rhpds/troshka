@@ -123,6 +123,11 @@ def _poll_active_projects():
             if not project:
                 continue
 
+            # Start OCP health monitor on demand (only when someone is watching)
+            if project.ocp_status == "monitoring" and project.state == "active":
+                from app.services.deploy_service import maybe_start_ocp_health_monitor
+                maybe_start_ocp_health_monitor(project_id)
+
             # Always push project state changes
             last = _last_states.get(project_id, {})
             current_project_state = project.state

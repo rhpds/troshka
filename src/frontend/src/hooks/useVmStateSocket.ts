@@ -12,7 +12,7 @@ interface DeployProgress {
   detail: string;
 }
 
-interface OcpHealth {
+export interface OcpHealth {
   phase: string;
   detail: string;
   items?: string[];

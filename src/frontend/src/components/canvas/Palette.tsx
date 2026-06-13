@@ -170,14 +170,45 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange, ocpHealth }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange, ocpHealth, projectId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
   const [showOcpStatus, setShowOcpStatus] = useState(true);
+  const [ocpLogModal, setOcpLogModal] = useState(false);
+  const [ocpLog, setOcpLog] = useState("");
+  const ocpLogRef = React.useRef<HTMLPreElement>(null);
+
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const nodes = useCanvasStore((s) => s.nodes);
+
+  React.useEffect(() => {
+    if (!ocpLogModal || !projectId) return;
+    const bastionNode = nodes.find((n: any) => n.type === "vmNode" && n.data?.label === "bastion");
+    if (!bastionNode) return;
+    let active = true;
+    const poll = async () => {
+      while (active) {
+        try {
+          const r = await fetch(`/api/v1/projects/${projectId}/vms/${bastionNode.id}/exec`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null | tail -200", timeout: 10 }),
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (active) {
+              setOcpLog(d.output || "No log available");
+              setTimeout(() => { if (ocpLogRef.current) ocpLogRef.current.scrollTop = ocpLogRef.current.scrollHeight; }, 50);
+            }
+          }
+        } catch {}
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    };
+    poll();
+    return () => { active = false; };
+  }, [ocpLogModal, projectId, nodes]);
   const passwords = React.useMemo(() => {
     const result: { label: string; value: string }[] = [];
     for (const n of nodes) {
@@ -297,14 +328,19 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               </div>
               {ocpHealth.items && (
                 <div style={{ fontSize: 10, lineHeight: 1.6, color: "var(--pf-t--global--text--color--subtle)" }}>
-                  {ocpHealth.items.map((item, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <span>{item.split(":")[0]}</span>
-                      <span style={{ color: item.includes("Ready") || item.includes("available") || item.includes("reachable") || item.includes("ready") ? "#4ade80" : item.includes("degraded") || item.includes("failed") ? "#f87171" : "#fbbf24" }}>
-                        {item.split(":").slice(1).join(":").trim()}
-                      </span>
-                    </div>
-                  ))}
+                  {ocpHealth.items.map((item, i) => {
+                    const [name, status] = [item.split(":")[0].trim(), item.split(":").slice(1).join(":").trim()];
+                    const isGood = status.includes("✓") || status.includes("available") || status.includes("Ready") || status.includes("reachable") || status.includes("ready");
+                    const isBad = status.includes("✗") || status.includes("degraded") || status.includes("failed") || status.includes("not available");
+                    return (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 4 }}>
+                        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+                        <span style={{ color: isGood ? "#4ade80" : isBad ? "#f87171" : "#fbbf24", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          {isGood ? "✓" : isBad ? "✗" : status}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               {ocpHealth.phase === "ready" && (() => {
@@ -320,8 +356,36 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   </div>
                 );
               })()}
+              {ocpHealth.phase !== "ready" && projectId && (
+                <div style={{ marginTop: 4 }}>
+                  <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }} onClick={() => { setOcpLog(""); setOcpLogModal(true); }}>View Install Log</span>
+                </div>
+              )}
             </div>
           )}
+        </div>
+      )}
+      {ocpLogModal && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 10000,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.6)",
+        }} onClick={() => setOcpLogModal(false)}>
+          <div style={{
+            background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: "80vw", maxWidth: 800, maxHeight: "80vh",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)",
+            display: "flex", flexDirection: "column",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+              <h3 style={{ margin: 0 }}>OpenShift Install Log</h3>
+              <button onClick={() => setOcpLogModal(false)} style={{ background: "transparent", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 18 }}>✕</button>
+            </div>
+            <pre ref={ocpLogRef} style={{ fontSize: 11, fontFamily: "monospace", whiteSpace: "pre-wrap", overflowY: "auto", flex: 1, margin: 0, padding: 8, background: "rgba(0,0,0,0.2)", borderRadius: 6, lineHeight: 1.5 }}>
+              {ocpLog || <span style={{ opacity: 0.5 }}><span className="project-btn-spinner" style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />Loading install log...</span>}
+            </pre>
+          </div>
         </div>
       )}
       {sections.map((section, sIdx) => (

@@ -17,6 +17,7 @@ from app.services.ws_pubsub import notify_project
 logger = logging.getLogger(__name__)
 
 # In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ..., "items": [...]}
+_active_health_monitors: set = set()
 _deploy_progress: dict[str, dict] = {}
 
 
@@ -1005,7 +1006,6 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
     from app.models.host import Host
     from app.models.project import Project
 
-    deploy_start = _time.time()
     s = SessionLocal()
     try:
         project = s.query(Project).filter_by(id=project_id).first()
@@ -1367,16 +1367,6 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         if auto_start and _is_ocp_topology(topology):
             project.ocp_status = "monitoring"
             s.commit()
-            host_copy = type("H", (), {
-                "ip_address": host.ip_address,
-                "agent_token": host.agent_token,
-                "agent_cert_fingerprint": host.agent_cert_fingerprint,
-            })()
-            threading.Thread(
-                target=_monitor_ocp_health,
-                args=(project_id, host_copy, topology, deploy_start),
-                daemon=True, name=f"ocp-health-{project_id[:8]}",
-            ).start()
 
     except Exception as e:
         logger.exception("Deploy %s failed unexpectedly", project_id[:8])
@@ -1399,6 +1389,44 @@ def _is_ocp_topology(topology: dict) -> bool:
     has_bastion = any(n.get("data", {}).get("label") == "bastion" for n in nodes if n.get("type") == "vmNode")
     has_rhcos = any(n.get("data", {}).get("os") == "rhcos" for n in nodes if n.get("type") == "vmNode")
     return has_bastion and has_rhcos
+
+
+def _is_pattern_deploy(topology: dict) -> bool:
+    return any(n.get("data", {}).get("patternId") for n in topology.get("nodes", []) if n.get("type") == "storageNode")
+
+
+def maybe_start_ocp_health_monitor(project_id: str):
+    """Start OCP health monitor if project needs it and one isn't already running."""
+    if project_id in _active_health_monitors:
+        return
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.models.host import Host
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter_by(id=project_id).first()
+        if not project or project.ocp_status != "monitoring" or project.state != "active":
+            return
+        host = db.query(Host).filter_by(id=project.host_id).first()
+        if not host or host.agent_status != "connected":
+            return
+        topo = project.deployed_topology or project.topology or {}
+        if not _is_ocp_topology(topo):
+            return
+        host_copy = type("H", (), {
+            "ip_address": host.ip_address,
+            "agent_token": host.agent_token,
+            "agent_cert_fingerprint": host.agent_cert_fingerprint,
+        })()
+        _active_health_monitors.add(project_id)
+        threading.Thread(
+            target=_monitor_ocp_health,
+            args=(project_id, host_copy, topo),
+            daemon=True, name=f"ocp-health-{project_id[:8]}",
+        ).start()
+        logger.info("OCP health monitor started on demand for %s", project_id[:8])
+    finally:
+        db.close()
 
 
 def _exec_on_bastion(host, project_id: str, bastion_ip: str, password: str, command: str, timeout: int = 15):
@@ -1485,7 +1513,78 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         _push("timeout", "bastion SSH not available")
         return
 
-    # Phase 2: Ping CP nodes
+    # Detect mode: pattern deploy (cluster pre-installed) vs fresh install (install-ocp.sh running)
+    is_pattern = _is_pattern_deploy(topology)
+    if not is_pattern:
+        # Fresh install — monitor install.log progress
+        _push("installing", "waiting for OpenShift install")
+        install_deadline = _t.time() + 5400  # 90 min for fresh install
+        last_phase_change = _t.time()
+        last_detail = ""
+        while _t.time() < install_deadline:
+            result = _exec_on_bastion(host, project_id, bastion_ip, password,
+                                       "tail -20 /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=10)
+            if result:
+                noise = ("belongs-to-majority-group", "Sleeping for", "validation", "never initialized",
+                         "Agent Rest API", "Bootstrap Kube API", "Could not update",
+                         "New image status", "image pull", "sha256:", "quay.io", "registry.redhat")
+                lines = [l.strip() for l in result.strip().split("\n")
+                         if l.strip() and ("level=" in l or "Install complete" in l or "Install completed" in l or "waiting for install" in l)
+                         and not any(n in l for n in noise)]
+                if not lines:
+                    _push("installing", "waiting for install to start")
+                    _t.sleep(15)
+                    continue
+                last = lines[-1]
+                if "Install complete" in last or "Install completed" in last:
+                    _push("ready", "install complete")
+                    break
+                detail = last.split("msg=")[-1] if "msg=" in last else last
+                tracked_ops = ["authentication", "console", "image-registry", "ingress",
+                              "monitoring", "openshift-apiserver", "openshift-samples",
+                              "olm-packageserver"]
+                _op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
+                not_available = set()
+                for l in reversed(lines):
+                    msg = l.split("msg=")[-1] if "msg=" in l else l
+                    if ("are not available" in msg or "is not available" in msg) and "Cluster operator" in msg:
+                        for real_name, alias in _op_aliases.items():
+                            if real_name in msg:
+                                not_available.add(alias)
+                        for op in tracked_ops:
+                            if op in msg:
+                                not_available.add(op)
+                        break
+                items = None
+                if not_available:
+                    items = [f"{op}: {'✗' if op in not_available else '✓'}" for op in tracked_ops]
+                if len(detail) > 60:
+                    detail = detail[:57] + "..."
+                if detail != last_detail:
+                    last_phase_change = _t.time()
+                    last_detail = detail
+                phase_secs = int(_t.time() - last_phase_change)
+                phase_time = f"{phase_secs // 60}m {phase_secs % 60:02d}s" if phase_secs >= 60 else f"{phase_secs}s"
+                _push("installing", f"{detail} [{phase_time}]", items=items)
+            _t.sleep(15)
+        else:
+            _push("timeout", "install timed out")
+        _push("ready", "cluster ready")
+        try:
+            from app.core.database import SessionLocal
+            from app.models.project import Project
+            db = SessionLocal()
+            p = db.query(Project).filter_by(id=project_id).first()
+            if p:
+                p.ocp_status = "ready"
+                db.commit()
+            db.close()
+        except Exception:
+            pass
+        logger.info("OCP health monitor (install) complete for %s (%s)", project_id[:8], _elapsed())
+        return
+
+    # Phase 2: Ping CP nodes (pattern deploy path)
     _push("nodes", "pinging control plane nodes")
     while _t.time() < deadline:
         items = []
@@ -1569,67 +1668,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         _push("console", "waiting for OpenShift console")
         _t.sleep(5)
 
-    # Phase 6: Trust OCP CA cert
-    _push("firefox", "trusting OCP CA certificate")
-    _exec_on_bastion(host, project_id, bastion_ip, password,
-                      "sudo bash -c 'export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                      "oc get secret -n openshift-ingress router-certs-default -o jsonpath=\"{.data.tls\\\\.crt}\" 2>/dev/null | "
-                      "base64 -d > /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && update-ca-trust' 2>/dev/null || true",
-                      timeout=15)
-
-    # Phase 7: Save kubeadmin to Firefox
-    _push("firefox", "saving credentials to Firefox")
-    _exec_on_bastion(host, project_id, bastion_ip, password,
-                      "which geckodriver >/dev/null 2>&1 && python3 -c 'import selenium' 2>/dev/null && "
-                      "test -f ~/ocp-install/auth/kubeadmin-password && "
-                      "ls ~/.mozilla/firefox/*.default-default/ >/dev/null 2>&1 || exit 0; "
-                      f"pkill -u cloud-user firefox 2>/dev/null; sleep 2; "
-                      f"export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; "
-                      f"python3 -u - {console_url} << 'PYEOF'\n"
-                      "import time, glob, os, sys\n"
-                      "from selenium import webdriver\n"
-                      "from selenium.webdriver.common.by import By\n"
-                      "from selenium.webdriver.firefox.options import Options\n"
-                      "from selenium.webdriver.support.ui import WebDriverWait\n"
-                      "from selenium.webdriver.support import expected_conditions as EC\n"
-                      "console_url = sys.argv[1]\n"
-                      "pw = open(os.path.expanduser('~/ocp-install/auth/kubeadmin-password')).read().strip()\n"
-                      "profile = glob.glob(os.path.expanduser('~/.mozilla/firefox/*.default-default'))[0]\n"
-                      "opts = Options()\n"
-                      "opts.add_argument('-profile')\n"
-                      "opts.add_argument(profile)\n"
-                      "opts.add_argument('-remote-allow-system-access')\n"
-                      "opts.accept_insecure_certs = True\n"
-                      "opts.set_preference('signon.rememberSignons', True)\n"
-                      "opts.set_preference('signon.autofillForms', True)\n"
-                      "opts.set_preference('signon.storeWhenAutocompleteOff', True)\n"
-                      "opts.set_preference('browser.startup.page', 1)\n"
-                      "driver = webdriver.Firefox(options=opts)\n"
-                      "try:\n"
-                      "    driver.get(console_url)\n"
-                      "    wait = WebDriverWait(driver, 30)\n"
-                      "    u = wait.until(EC.presence_of_element_located((By.ID, 'inputUsername')))\n"
-                      "    p = driver.find_element(By.ID, 'inputPassword')\n"
-                      "    u.clear(); u.send_keys('kubeadmin')\n"
-                      "    p.clear(); p.send_keys(pw)\n"
-                      "    driver.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()\n"
-                      "    time.sleep(3)\n"
-                      "    driver.set_context('chrome')\n"
-                      "    for _ in range(15):\n"
-                      "        try:\n"
-                      "            driver.find_element(By.CSS_SELECTOR, 'popupnotification[id*=password] button.popup-notification-primary-button').click()\n"
-                      "            print('Password saved'); break\n"
-                      "        except Exception: pass\n"
-                      "        time.sleep(0.5)\n"
-                      "    driver.set_context('content')\n"
-                      "    time.sleep(1)\n"
-                      "finally:\n"
-                      "    driver.quit()\n"
-                      "PYEOF\n"
-                      "nohup firefox >/dev/null 2>&1 &",
-                      timeout=90)
-
-    _push("ready", f"cluster ready")
+    _push("ready", "cluster ready")
     try:
         from app.core.database import SessionLocal
         from app.models.project import Project
@@ -1641,6 +1680,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         db.close()
     except Exception:
         pass
+    _active_health_monitors.discard(project_id)
     logger.info("OCP health monitor complete for %s (%s)", project_id[:8], _elapsed())
 
 
