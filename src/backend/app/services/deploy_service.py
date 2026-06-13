@@ -995,6 +995,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
     from app.models.host import Host
     from app.models.project import Project
 
+    deploy_start = _time.time()
     s = SessionLocal()
     try:
         project = s.query(Project).filter_by(id=project_id).first()
@@ -1363,7 +1364,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             })()
             threading.Thread(
                 target=_monitor_ocp_health,
-                args=(project_id, host_copy, topology),
+                args=(project_id, host_copy, topology, deploy_start),
                 daemon=True, name=f"ocp-health-{project_id[:8]}",
             ).start()
 
@@ -1418,9 +1419,9 @@ def _exec_on_bastion(host, project_id: str, bastion_ip: str, password: str, comm
     return None
 
 
-def _monitor_ocp_health(project_id: str, host, topology: dict):
+def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: float = 0):
     import time as _t
-    start = _t.time()
+    start = deploy_start or _t.time()
 
     def _elapsed():
         s = int(_t.time() - start)
@@ -1561,9 +1562,54 @@ def _monitor_ocp_health(project_id: str, host, topology: dict):
     # Phase 6: Save kubeadmin to Firefox
     _push("firefox", "saving credentials to Firefox")
     _exec_on_bastion(host, project_id, bastion_ip, password,
-                      f"sudo -u cloud-user bash -c 'export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; "
-                      f"python3 /root/ocp-autologin.py {console_url} 2>/dev/null' || true",
-                      timeout=60)
+                      "which geckodriver >/dev/null 2>&1 && python3 -c 'import selenium' 2>/dev/null && "
+                      "test -f ~/ocp-install/auth/kubeadmin-password && "
+                      "ls ~/.mozilla/firefox/*.default-default/ >/dev/null 2>&1 || exit 0; "
+                      f"pkill -u cloud-user firefox 2>/dev/null; sleep 2; "
+                      f"export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; "
+                      f"python3 -u - {console_url} << 'PYEOF'\n"
+                      "import time, glob, os, sys\n"
+                      "from selenium import webdriver\n"
+                      "from selenium.webdriver.common.by import By\n"
+                      "from selenium.webdriver.firefox.options import Options\n"
+                      "from selenium.webdriver.support.ui import WebDriverWait\n"
+                      "from selenium.webdriver.support import expected_conditions as EC\n"
+                      "console_url = sys.argv[1]\n"
+                      "pw = open(os.path.expanduser('~/ocp-install/auth/kubeadmin-password')).read().strip()\n"
+                      "profile = glob.glob(os.path.expanduser('~/.mozilla/firefox/*.default-default'))[0]\n"
+                      "opts = Options()\n"
+                      "opts.add_argument('-profile')\n"
+                      "opts.add_argument(profile)\n"
+                      "opts.add_argument('-remote-allow-system-access')\n"
+                      "opts.accept_insecure_certs = True\n"
+                      "opts.set_preference('signon.rememberSignons', True)\n"
+                      "opts.set_preference('signon.autofillForms', True)\n"
+                      "opts.set_preference('signon.storeWhenAutocompleteOff', True)\n"
+                      "opts.set_preference('browser.startup.page', 1)\n"
+                      "driver = webdriver.Firefox(options=opts)\n"
+                      "try:\n"
+                      "    driver.get(console_url)\n"
+                      "    wait = WebDriverWait(driver, 30)\n"
+                      "    u = wait.until(EC.presence_of_element_located((By.ID, 'inputUsername')))\n"
+                      "    p = driver.find_element(By.ID, 'inputPassword')\n"
+                      "    u.clear(); u.send_keys('kubeadmin')\n"
+                      "    p.clear(); p.send_keys(pw)\n"
+                      "    driver.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()\n"
+                      "    time.sleep(3)\n"
+                      "    driver.set_context('chrome')\n"
+                      "    for _ in range(15):\n"
+                      "        try:\n"
+                      "            driver.find_element(By.CSS_SELECTOR, 'popupnotification[id*=password] button.popup-notification-primary-button').click()\n"
+                      "            print('Password saved'); break\n"
+                      "        except Exception: pass\n"
+                      "        time.sleep(0.5)\n"
+                      "    driver.set_context('content')\n"
+                      "    time.sleep(1)\n"
+                      "finally:\n"
+                      "    driver.quit()\n"
+                      "PYEOF\n"
+                      "nohup firefox >/dev/null 2>&1 &",
+                      timeout=90)
 
     _push("ready", f"cluster ready")
     try:

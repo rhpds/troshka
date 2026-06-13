@@ -66,6 +66,7 @@ export default function ProjectCanvasPage() {
         setProjectDesc(data.description || "");
         setProjectState(data.state);
         setDeployError(data.deploy_error || null);
+        if (data.ocp_status) setOcpStatus(data.ocp_status);
         prevStateRef.current = data.state;
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
         // topologyDirty is computed from deployedNodeData/deployedEdgeKey after they're set below
@@ -110,6 +111,7 @@ export default function ProjectCanvasPage() {
   }, []);
 
   const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string; items?: string[] } | null>(null);
+  const [ocpStatus, setOcpStatus] = useState<string | null>(null);
 
   // WebSocket → project state
   const prevStateRef = React.useRef(projectState);
@@ -143,6 +145,11 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     setDeployProgress(ws.deployProgress);
   }, [ws.deployProgress]);
+
+  useEffect(() => {
+    if (ws.ocpHealth?.phase === "ready") setOcpStatus("ready");
+    else if (ws.ocpHealth) setOcpStatus("monitoring");
+  }, [ws.ocpHealth]);
 
   const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
   const topologyDirty = useCanvasStore((s) => s.topologyDirty);
@@ -606,7 +613,7 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} ocpHealth={ws.ocpHealth} onDescriptionChange={(desc) => {
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: "cluster ready" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} />}

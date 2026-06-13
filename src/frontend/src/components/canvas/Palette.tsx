@@ -281,18 +281,20 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"
-            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0, color: ocpHealth.phase === "ready" ? "#4ade80" : undefined }}
+            style={{ padding: "6px 12px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 0 }}
             onClick={() => setShowOcpStatus(!showOcpStatus)}
           >
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {ocpHealth.phase === "ready" ? "✓" : <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              {ocpHealth.phase !== "ready" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
               OCP STATUS
             </span>
             <span style={{ fontSize: 9 }}>{showOcpStatus ? "▾" : "▸"}</span>
           </div>
           {showOcpStatus && (
             <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
-              <div style={{ marginBottom: 4, color: "var(--pf-t--global--text--color--regular)" }}>{ocpHealth.detail}</div>
+              <div style={{ marginBottom: 4, color: ocpHealth.phase === "ready" ? "#4ade80" : "var(--pf-t--global--text--color--regular)", display: "flex", alignItems: "center", gap: 6 }}>
+                {ocpHealth.phase === "ready" && "✓"} {ocpHealth.detail}
+              </div>
               {ocpHealth.items && (
                 <div style={{ fontSize: 10, lineHeight: 1.6, color: "var(--pf-t--global--text--color--subtle)" }}>
                   {ocpHealth.items.map((item, i) => (
@@ -305,14 +307,19 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   ))}
                 </div>
               )}
-              {ocpHealth.phase === "ready" && (
-                <div style={{ marginTop: 6, fontSize: 10, display: "flex", gap: 8 }}>
-                  <span style={{ cursor: "pointer", color: "#4ade80" }} onClick={() => {
-                    const pw = passwords.find(p => p.label.includes("bastion"));
-                    if (pw) navigator.clipboard.writeText(pw.value);
-                  }}>Copy kubeadmin pw</span>
-                </div>
-              )}
+              {ocpHealth.phase === "ready" && (() => {
+                const bastionPw = passwords.find(p => p.label.includes("bastion"));
+                const kubeadminPw = bastionPw?.value || "";
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>
+                    <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                      onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has("kubeadmin")) s.delete("kubeadmin"); else s.add("kubeadmin"); return s; })}
+                    >{revealedPasswords.has("kubeadmin") ? kubeadminPw : "••••••"}</code>
+                    <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(kubeadminPw)} title="Copy">Copy</span>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
