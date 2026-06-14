@@ -819,19 +819,19 @@ export default function AdminHostsPage() {
                         const cleaned = report.cleanup?.cleaned || 0;
                         const parts = [];
                         if (cap.changed) parts.push(`Capacity synced: ${cap.old?.used_vcpus}→${cap.new?.used_vcpus} vCPUs, ${cap.old?.used_ram_mb}→${cap.new?.used_ram_mb} MB RAM`);
-                        else parts.push("Capacity: already in sync");
                         if (orphans > 0) {
                           parts.push(`Orphans found: ${orphans}, cleaned: ${cleaned}`);
                           if (report.cleanup?.output) parts.push(report.cleanup.output);
                           if (orphans > cleaned) parts.push(`Warning: ${orphans - cleaned} orphan(s) could not be cleaned`);
-                        } else parts.push("No orphans found");
-                        const cacheOrphans = report.orphans?.orphaned_cache?.length || 0;
-                        const staleCache = report.orphans?.stale_cache?.length || 0;
-                        if (cacheOrphans > 0 || staleCache > 0) parts.push(`Cache cleaned: ${cacheOrphans} orphaned, ${staleCache} stale`);
+                        }
+                        const cacheCleaned = report.cleanup?.cache_cleaned || 0;
+                        if (cacheCleaned > 0) parts.push(`Cache cleaned: ${cacheCleaned} items`);
                         const repaired = report.network_repair?.repaired || 0;
                         if (repaired > 0) parts.push(`Network bridges repaired: ${repaired}`);
-                        else parts.push("Network bridges: OK");
-                        if (report.cleanup?.output) parts.push(report.cleanup.output);
+                        const s3 = report.s3_cleanup;
+                        if (s3?.deleted > 0) parts.push(`S3 cleaned: ${s3.deleted} objects (${s3.deleted_gb || 0} GB)`);
+                        if (report.shared_cache_entries_cleaned) parts.push(`Shared cache entries cleaned: ${report.shared_cache_entries_cleaned}`);
+                        if (parts.length === 0) parts.push("Nothing to do — host is clean");
                         const fullMsg = parts.join("\n");
                         const copy = window.confirm(fullMsg + "\n\nClick OK to copy to clipboard.");
                         if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
