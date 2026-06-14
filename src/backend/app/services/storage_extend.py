@@ -111,7 +111,13 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
 
     from app.services.storage_pool_service import update_fsx_storage
     old_size = pool.fsx_storage_gb or 0
-    update_fsx_storage(creds, provider.default_region, pool.fsx_filesystem_id, new_size)
+    try:
+        update_fsx_storage(creds, provider.default_region, pool.fsx_filesystem_id, new_size)
+    except Exception as e:
+        msg = str(e)
+        if "6 hours" in msg or "prior storage capacity" in msg:
+            raise ValueError("FSx storage can only be extended once every 6 hours. Try again later.")
+        raise ValueError(f"FSx extend failed: {msg}")
 
     pool.fsx_storage_gb = new_size
     db.commit()
