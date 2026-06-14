@@ -1970,10 +1970,29 @@ def _handle_network_full_setup(job, params):
     # Allow established/related + bridge→veth outbound
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
                     "ct", "state", "established,related", "accept"], timeout=10)
-    for net in networks:
-        bridge = net["bridge_name"]
-        _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
-                        "iifname", bridge, "oifname", veth_ns, "accept"], timeout=10)
+
+    outbound_policy = gateway.get("outbound_policy", "allow-all") if gateway else "allow-all"
+    outbound_ports = gateway.get("outbound_ports", "") if gateway else ""
+    if outbound_policy == "restrict" and outbound_ports:
+        allowed = [str(p).strip() for p in str(outbound_ports).split(",") if str(p).strip()]
+        _job_log(job, f"Outbound restricted to ports: {', '.join(allowed)}")
+        for net in networks:
+            bridge = net["bridge_name"]
+            for entry in allowed:
+                if "/" in entry:
+                    port, proto = entry.split("/", 1)
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                    "iifname", bridge, "oifname", veth_ns, proto, "dport", port, "accept"], timeout=10)
+                else:
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                    "iifname", bridge, "oifname", veth_ns, "tcp", "dport", entry, "accept"], timeout=10)
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                    "iifname", bridge, "oifname", veth_ns, "udp", "dport", entry, "accept"], timeout=10)
+    else:
+        for net in networks:
+            bridge = net["bridge_name"]
+            _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                            "iifname", bridge, "oifname", veth_ns, "accept"], timeout=10)
 
     # Port forward DNAT inside namespace
     pf_transit_ips = {}

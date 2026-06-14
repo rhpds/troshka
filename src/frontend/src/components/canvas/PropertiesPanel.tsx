@@ -1680,7 +1680,7 @@ export default function PropertiesPanel() {
                         style={{ fontFamily: "monospace" }}
                       />
                       <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                        Comma-separated. Append /udp for UDP, default is TCP.
+                        Comma-separated. Both TCP+UDP unless specified (e.g. 53/udp, 443/tcp).
                       </span>
                     </div>
                   )}

@@ -276,7 +276,7 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 ## Roadmap
 
 - [ ] OCP deployment automation
-- [ ] Outbound port restriction enforcement on gateway
+- [ ] OCP template auto-set gateway to restrict mode
 - [ ] Template mode (mode 3) end-to-end testing
 - [ ] Showroom integration testing with Troshka console
 - [ ] Multi-instance pattern portability

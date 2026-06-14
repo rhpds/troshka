@@ -70,6 +70,7 @@ def resolve_template(
     resolved["description"] = tmpl.get("description", "")
     resolved["bastion"] = base_for_versions.get("bastion", {})
     resolved["networks"] = base_for_versions.get("networks", {})
+    resolved["gateway"] = base_for_versions.get("gateway", {})
 
     return resolved
 
@@ -123,6 +124,34 @@ def generate_topology_from_template(resolved: dict) -> dict:
                 "networkType": "bmc",
                 "icon": "\U0001F310",
             },
+        }
+    )
+
+    # Gateway node with outbound port restrictions
+    gateway_cfg = resolved.get("gateway", {})
+    gateway_outbound_ports = gateway_cfg.get("outbound_ports", [])
+    gateway_id = f"net-{uuid.uuid4()}"
+    nodes.append(
+        {
+            "id": gateway_id,
+            "type": "networkNode",
+            "position": {"x": 200, "y": 100},
+            "data": {
+                "name": "gateway",
+                "label": "gateway",
+                "subtype": "gateway",
+                "gatewayMode": "nat-portforward",
+                "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
+                "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
+                "icon": "\U0001F310",
+            },
+        }
+    )
+    edges.append(
+        {
+            "id": f"e-{uuid.uuid4()}",
+            "source": gateway_id,
+            "target": cluster_net_id,
         }
     )
 
