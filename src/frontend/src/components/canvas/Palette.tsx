@@ -193,7 +193,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
         try {
           const r = await fetch(`/api/v1/projects/${projectId}/vms/${bastionNode.id}/exec`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null | tail -200", timeout: 10 }),
+            body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null", timeout: 10 }),
           });
           if (r.ok) {
             const d = await r.json();

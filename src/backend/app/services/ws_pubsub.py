@@ -43,7 +43,7 @@ def unsubscribe(project_id: str, ws: WebSocket):
 
 def get_active_project_ids() -> set[str]:
     with _lock:
-        return set(_subscribers.keys())
+        return {k for k in _subscribers.keys() if ":" not in k}
 
 
 async def _send_to_subscribers(project_id: str, message: dict):
@@ -112,17 +112,47 @@ def _poll_active_projects():
     from app.core.database import SessionLocal
     from app.models.project import Project
     from app.models.host import Host
-    from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
+    from app.services.troshkad_client import get_all_vm_states
     from app.api.projects import _domain_name, _redeploy_progress
     from app.services.deploy_service import _deploy_progress
 
     db = SessionLocal()
     try:
+        # Load all subscribed projects
+        projects = {}
         for project_id in project_ids:
             project = db.query(Project).filter_by(id=project_id).first()
-            if not project:
-                continue
+            if project:
+                projects[project_id] = project
 
+        # Check which hosts have active deploys
+        deploying_host_ids = set()
+        for pid in project_ids:
+            if pid in _deploy_progress:
+                p = projects.get(pid)
+                if p and p.host_id:
+                    deploying_host_ids.add(p.host_id)
+
+        # Batch-fetch VM states: one call per host instead of per-VM
+        host_batch_states = {}
+        hosts_polled = {}
+        for project in projects.values():
+            if not project.host_id or project.state not in ("active", "stopped"):
+                continue
+            if project.host_id in deploying_host_ids or project.host_id in host_batch_states:
+                continue
+            host = db.query(Host).filter_by(id=project.host_id).first()
+            if not host or not host.ip_address or host.agent_status != "connected":
+                continue
+            hosts_polled[project.host_id] = host
+            try:
+                batch = get_all_vm_states(host)
+                if batch is not None:
+                    host_batch_states[project.host_id] = batch
+            except Exception:
+                pass
+
+        for project_id, project in projects.items():
             # Start OCP health monitor on demand (only when someone is watching)
             if project.ocp_status == "monitoring" and project.state == "active":
                 from app.services.deploy_service import maybe_start_ocp_health_monitor
@@ -144,28 +174,24 @@ def _poll_active_projects():
             if dp and dp != last.get("deploy_progress"):
                 notify_project(project_id, {"type": "deploy-progress", "progress": dp})
 
-            # Poll VM states only if project has a host
+            # Map batch VM states to this project's nodes
             vm_states = {}
             vm_progress = {}
             vm_boot_devs = {}
-            if project.host_id:
-                host = db.query(Host).filter_by(id=project.host_id).first()
-                if host and host.ip_address:
-                    for node in (project.topology or {}).get("nodes", []):
-                        if node.get("type") != "vmNode":
-                            continue
-                        dom_name = _domain_name(project.id, node["id"])
-                        if dom_name in _redeploy_progress:
-                            vm_states[node["id"]] = "redeploying"
-                            vm_progress[node["id"]] = _redeploy_progress[dom_name]
-                        else:
-                            vm_info = troshkad_get_vm_state(host, dom_name)
-                            state = vm_info["state"]
-                            if state in ("shut_off", "shutting_down", "crashed", "suspended", "paused"):
-                                state = "stopped"
-                            vm_states[node["id"]] = state
-                            if vm_info.get("boot_devs"):
-                                vm_boot_devs[node["id"]] = vm_info["boot_devs"]
+            batch = host_batch_states.get(project.host_id) if project.host_id else None
+            if batch is not None and current_project_state in ("active", "stopped"):
+                for node in (project.topology or {}).get("nodes", []):
+                    if node.get("type") != "vmNode":
+                        continue
+                    dom_name = _domain_name(project.id, node["id"])
+                    if dom_name in _redeploy_progress:
+                        vm_states[node["id"]] = "redeploying"
+                        vm_progress[node["id"]] = _redeploy_progress[dom_name]
+                    else:
+                        state = batch.get(dom_name, "not_found")
+                        if state in ("shut_off", "shutting_down", "crashed", "suspended", "paused"):
+                            state = "stopped"
+                        vm_states[node["id"]] = state
 
             # Log VM state changes
             prev_vm_states = last.get("vm_states", {})

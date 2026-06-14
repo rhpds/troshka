@@ -513,9 +513,13 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         return
 
     # For shared pools: skip items already cached, coordinate downloads
+    # Only use SharedCacheEntry for items on shared storage (not local pattern cache)
     if pool and pool.mode.startswith("shared"):
         items_needing_download = []
         for ic in items_to_cache:
+            if ic["cache_path"].startswith("/var/lib/troshka/local/"):
+                items_needing_download.append(ic)
+                continue
             status, entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
             if status == "ready":
                 try:
@@ -543,12 +547,29 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             items_needing_download.append(ic)
         items_to_cache = items_needing_download
 
+    # Check which items already exist on host (local cache)
+    items_to_download = []
+    for ic in items_to_cache:
+        try:
+            jid = start_job(host, "/files/stat", {"path": ic["cache_path"]})
+            stat_job = wait_for_job(host, jid, timeout=10)
+            if stat_job.get("result", {}).get("exists"):
+                logger.info("  %s already cached locally, skipping", ic["name"])
+                continue
+        except TroshkadError:
+            pass
+        items_to_download.append(ic)
+
+    if not items_to_download:
+        logger.info("  all items cached, no downloads needed")
+        return
+
     # Start download jobs using aws s3 cp
     from app.services.s3_storage import _get_s3_config
     s3_creds = _get_s3_config()
     s3_bucket = s3_storage._bucket()
     active_jobs = []
-    for ic in items_to_cache:
+    for ic in items_to_download:
         s3_url = f"s3://{s3_bucket}/{ic['s3_key']}"
         try:
             job_id = start_job(host, "/images/cache", {
@@ -829,7 +850,7 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
         if backing:
             params["backing_file"] = backing
 
-        job_id = start_job(host, "/disks/create", params)
+        job_id = start_job(host, "/disks/create", params, request_timeout=60)
         job_ids.append(job_id)
     return job_ids
 
@@ -963,7 +984,7 @@ def _start_vms_via_troshkad(host, project_id, topology):
                 vm_name = _vm_domain_name(project_id, vm["node_id"])
                 try:
                     job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
-                    wait_for_job(host, job_id, timeout=60)
+                    wait_for_job(host, job_id, timeout=120)
                 except TroshkadError as e:
                     logger.warning("Failed to start VM %s: %s", vm_name, e)
                     failed.append((vm["name"], str(e)))
@@ -981,7 +1002,7 @@ def _start_vms_via_troshkad(host, project_id, topology):
                 failed.append((vm["name"], str(e)))
     for name, vm_name, job_id in unordered_jobs:
         try:
-            wait_for_job(host, job_id, timeout=60)
+            wait_for_job(host, job_id, timeout=120)
         except TroshkadError as e:
             logger.warning("Failed to start VM %s: %s", vm_name, e)
             failed.append((name, str(e)))
@@ -1245,7 +1266,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         for di, jid in enumerate(disk_jobs):
             try:
                 _update_deploy_progress(project_id, "creating disks", f"{di}/{len(disk_jobs)}")
-                job = wait_for_job(host, jid, timeout=300)
+                job = wait_for_job(host, jid, timeout=900)
                 if job.get("status") == "failed":
                     raise TroshkadError(f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}")
             except TroshkadError as e:
@@ -1420,10 +1441,11 @@ def maybe_start_ocp_health_monitor(project_id: str):
             "agent_token": host.agent_token,
             "agent_cert_fingerprint": host.agent_cert_fingerprint,
         })()
+        deploy_start = project.updated_at.timestamp() if project.updated_at else 0
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
-            args=(project_id, host_copy, topo),
+            args=(project_id, host_copy, topo, deploy_start),
             daemon=True, name=f"ocp-health-{project_id[:8]}",
         ).start()
         logger.info("OCP health monitor started on demand for %s", project_id[:8])
@@ -1529,12 +1551,30 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
 
         while _t.time() < install_deadline:
             result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                       "tail -50 /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=10)
+                                       "cat /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=15)
             if not result:
                 _t.sleep(15)
                 continue
 
             full_text = result
+            # Detect early phases from grep markers
+            if "Downloading openshift-install" in full_text:
+                phases_seen.add("downloading")
+            if "Downloaded openshift-install" in full_text:
+                phases_seen.add("downloaded")
+            if "Creating agent ISO" in full_text:
+                phases_seen.add("creating-iso")
+            if "Extracting base ISO" in full_text or "Base ISO obtained" in full_text:
+                phases_seen.add("extracting-iso")
+            if "Generated ISO at" in full_text or "Agent ISO created" in full_text:
+                phases_seen.add("iso-ready")
+            if "Booted" in full_text and "from ISO" in full_text:
+                phases_seen.add("nodes-booted")
+            if "Waiting for cluster install to initialize" in full_text:
+                phases_seen.add("waiting-init")
+            if "Agent Rest API Initialized" in full_text:
+                phases_seen.add("api-init")
+
             # Detect phases from log content
             if "Install complete" in full_text or "Install completed" in full_text or "All cluster operators have completed" in full_text:
                 phases_seen.update(["validation", "bootstrap", "control-plane", "operators"])
@@ -1580,12 +1620,22 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                             node_status[cp] = "done"
 
             items = []
+            # Early phases: download, ISO generation, node boot
+            if "downloading" in phases_seen:
+                items.append(f"Download OCP tools: {'✓' if 'downloaded' in phases_seen else '⏳'}")
+            if "creating-iso" in phases_seen or "downloaded" in phases_seen:
+                items.append(f"Build agent ISO: {'✓' if 'iso-ready' in phases_seen else '⏳'}")
+            if "iso-ready" in phases_seen:
+                items.append(f"Boot nodes from ISO: {'✓' if 'nodes-booted' in phases_seen else '⏳'}")
+            if "nodes-booted" in phases_seen:
+                items.append(f"Cluster init: {'✓' if 'api-init' in phases_seen or 'validation' in phases_seen else '⏳' if 'waiting-init' in phases_seen else '—'}")
+
             if "validation" in phases_seen:
-                items.append("Validation: ✓")
+                items.append("Host validation: ✓")
             elif "validating" in phases_seen:
-                items.append("Validation: ⏳")
-            else:
-                items.append("Validation: —")
+                items.append("Host validation: ⏳")
+            elif "api-init" in phases_seen:
+                items.append("Host validation: ⏳")
 
             if node_status:
                 all_done = all(s in ("done", "joined") for s in node_status.values())
@@ -1653,8 +1703,18 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             elif "control-plane" in phases_seen:
                 items.append("Cluster operators: ⏳")
 
-            # Extract progress percentage if available
+            # Build summary detail line
             detail = "installing"
+            if "downloading" in phases_seen and "downloaded" not in phases_seen:
+                detail = "downloading OCP tools"
+            elif "creating-iso" in phases_seen and "iso-ready" not in phases_seen:
+                detail = "building agent ISO"
+            elif "iso-ready" in phases_seen and "nodes-booted" not in phases_seen:
+                detail = "booting nodes from ISO"
+            elif "waiting-init" in phases_seen and "api-init" not in phases_seen:
+                detail = "waiting for cluster init"
+            elif "api-init" in phases_seen and "validation" not in phases_seen:
+                detail = "validating hosts"
             for l in reversed(full_text.split("\n")):
                 if "done (" in l:
                     msg = l.split("msg=")[-1] if "msg=" in l else l

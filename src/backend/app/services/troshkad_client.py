@@ -157,7 +157,9 @@ def start_job(host, path, params, request_timeout=30):
                 reason = "unreachable" if not e.status_code else (
                     "draining" if e.response and e.response.get("status") == "draining" else "busy (job queue full)"
                 )
-                logger.info("troshkad %s is %s, retrying in %ds...", host.ip_address, reason, _DRAIN_RETRY_INTERVAL)
+                remaining = int(deadline - time.time())
+                logger.info("troshkad %s %s is %s, retrying in %ds (%ds remaining)...",
+                            host.ip_address, path, reason, _DRAIN_RETRY_INTERVAL, remaining)
                 time.sleep(_DRAIN_RETRY_INTERVAL)
                 continue
             raise
@@ -177,14 +179,24 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
     deadline = time.time() + timeout
     last_output_len = 0
 
+    consecutive_failures = 0
+    max_consecutive_failures = 12
+
     while time.time() < deadline:
         try:
             job = poll_job(host, job_id)
+            consecutive_failures = 0
         except TroshkadError as e:
             if e.status_code == 404:
                 logger.warning("Job %s not found on %s (agent may have restarted), assuming completed", job_id[:8], host.ip_address)
                 return {"job_id": job_id, "status": "completed", "output": [], "result": {}}
-            raise
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                raise
+            logger.info("Job %s poll failed on %s (%d/%d), retrying: %s",
+                        job_id[:8], host.ip_address, consecutive_failures, max_consecutive_failures, e)
+            time.sleep(poll_interval)
+            continue
 
         # Log new output lines
         new_lines = job.get("output", [])[last_output_len:]
@@ -233,8 +245,9 @@ def push_update(host, script_bytes, version, force=False):
 def get_vm_state(host, domain_name, timeout=15):
     """Get VM state and boot config. Returns dict with 'state' and 'boot_devs'."""
     try:
-        conn_timeout = min(timeout, 5)
-        job_id = start_job(host, "/vms/state", {"domain_name": domain_name}, request_timeout=conn_timeout)
+        result = troshkad_request(host, "POST", "/commands/vms/state",
+                                  body={"domain_name": domain_name}, timeout=5, retries=1)
+        job_id = result["job_id"]
         job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         if job["status"] == "completed":
             result = job["result"]
@@ -245,6 +258,19 @@ def get_vm_state(host, domain_name, timeout=15):
         return {"state": "unknown", "boot_devs": []}
     except TroshkadError:
         return {"state": "not_found", "boot_devs": []}
+
+
+def get_all_vm_states(host, timeout=10):
+    """Get all troshka-* domain states in one batch call.
+
+    Returns dict mapping domain_name -> state string, or None if host
+    doesn't support the batch endpoint (old agent).
+    """
+    try:
+        result = troshkad_request(host, "GET", "/vms/states", timeout=timeout, retries=1)
+        return {name: info["state"] for name, info in result.get("domains", {}).items()}
+    except TroshkadError:
+        return None
 
 
 def get_vnc_port(host, domain_name, timeout=15):

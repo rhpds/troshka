@@ -21,7 +21,14 @@ _health_config = getattr(config, 'health', None)
 _INTERVAL_SECONDS = getattr(_health_config, 'interval_seconds', 30) if _health_config else 30
 _DISCONNECT_AFTER_SECONDS = getattr(_health_config, 'disconnect_after_seconds', 90) if _health_config else 90
 
-_last_known_ip = None
+def _get_initial_ip():
+    try:
+        from app.services.provisioner import get_public_ip
+        return get_public_ip()
+    except Exception:
+        return None
+
+_last_known_ip = _get_initial_ip()
 
 
 def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):

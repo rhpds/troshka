@@ -35,10 +35,6 @@ else
     echo "Prerequisites already installed, skipping dnf"
 fi
 
-# Disable QEMU disk locking — safe because Troshka manages unique disk paths per VM.
-# Without this, multiple VMs sharing the same backing image (library image) cause write lock conflicts on NFS.
-grep -q 'lock_manager' /etc/libvirt/qemu.conf 2>/dev/null || echo 'lock_manager = "none"' >> /etc/libvirt/qemu.conf
-
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then
     systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
@@ -467,6 +463,22 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 )
         else:
             logger.warning("troshkad.py not found at %s", troshkad_path)
+
+        # Copy utility scripts
+        tools_dir = os.path.dirname(troshkad_path)
+        infra_dir = os.path.join(os.path.dirname(os.path.dirname(tools_dir)), "infra")
+        troshka_files = os.path.join(infra_dir, "troshka-files.sh")
+        if os.path.exists(troshka_files):
+            subprocess.run(
+                ["scp", *ssh_opts, troshka_files, f"ec2-user@{host_ip}:/tmp/troshka-files.sh"],
+                capture_output=True, text=True, timeout=30,
+            )
+            subprocess.run(
+                ["ssh", *ssh_opts, f"ec2-user@{host_ip}",
+                 "sudo", "mv", "/tmp/troshka-files.sh", "/usr/local/bin/troshka-files",
+                 "&&", "sudo", "chmod", "+x", "/usr/local/bin/troshka-files"],
+                capture_output=True, timeout=10,
+            )
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
         result = subprocess.run(

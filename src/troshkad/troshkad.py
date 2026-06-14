@@ -21,6 +21,11 @@ import threading
 import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import socketserver
+
+
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
 
 VERSION = "dev"  # stamped by backend at push time; self-hashes if unstamped
 
@@ -48,6 +53,12 @@ _config = {}
 _jobs = {}       # job_id -> Job dict
 _jobs_lock = threading.Lock()
 _draining = False
+
+_vm_state_cache = {}
+_vm_state_cache_lock = threading.Lock()
+_vm_events = []
+_vm_events_lock = threading.Lock()
+_libvirt_events_available = False
 
 
 # ── Config ──
@@ -328,6 +339,10 @@ def handle_health(handler, params):
         "uptime_seconds": int(time.time() - _start_time),
         "running_jobs": _running_job_count(),
         "capacity": _get_capacity(),
+        "features": {
+            "batch_vm_states": True,
+            "libvirt_events": _libvirt_events_available,
+        },
     })
 
 
@@ -1136,12 +1151,7 @@ def _handle_disk_create(job, params):
     cmd = ["qemu-img", "create", "-f", fmt]
     if backing:
         backing = _validate_path(backing)
-        local_backing = os.path.join(os.path.dirname(path), os.path.basename(backing))
-        if not os.path.exists(local_backing):
-            _job_log(job, f"Copying backing image to project dir...")
-            shutil.copy2(backing, local_backing)
-            _chown_qemu(local_backing)
-        backing = local_backing
+        _job_log(job, f"Using backing image: {os.path.basename(backing)}")
         cmd.extend(["-b", backing, "-F", fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
@@ -2570,7 +2580,18 @@ def _handle_gc_discover(job, params):
             except Exception as e:
                 _job_log(job,f"Failed to scan {cache_dir}: {e}")
 
-    # 6. Discover orphaned BMC directories
+    # 6. Clean orphan dnsmasq lease files (stale files from deleted projects)
+    known_prefixes = {pid[:8] for pid in known_project_ids}
+    for lf in glob.glob("/var/lib/troshka/dnsmasq-*.leases"):
+        prefix = os.path.basename(lf).replace("dnsmasq-", "").split("-")[0]
+        if prefix not in known_prefixes:
+            try:
+                os.remove(lf)
+                _job_log(job, f"Cleaned orphan lease: {os.path.basename(lf)}")
+            except OSError:
+                pass
+
+    # 7. Discover orphaned BMC directories
     orphaned_bmc = []
     bmc_base = "/var/lib/troshka/bmc"
     known_bmc = set(params.get("known_bmc_project_ids", []))
@@ -3073,16 +3094,8 @@ def _handle_pattern_capture_direct(job, params):
         s3_url = disk_info["s3_url"]
         cache_path = _validate_path(disk_info["cache_path"])
 
-        if snapshotted:
-            backing = subprocess.run(
-                ["qemu-img", "info", "--output=json", disk_path],
-                capture_output=True, text=True, timeout=30)
-            if backing.returncode == 0:
-                import json as _json
-                info = _json.loads(backing.stdout)
-                bfn = info.get("full-backing-filename", "")
-                if bfn and os.path.exists(bfn):
-                    disk_path = bfn
+        # After snapshot, disk_path is now read-only (snapshot overlay sits on top).
+        # Flatten disk_path directly — qemu-img convert follows its backing chain.
 
         if not os.path.exists(disk_path):
             raise RuntimeError(f"Disk not found: {disk_path}")
@@ -3198,6 +3211,128 @@ def handle_disk_usage(handler, params):
         "total_bytes": total_bytes,
         "used_pct": used_pct,
     })
+
+
+@route("GET", "/vms/states")
+def handle_vm_states(handler, params):
+    """Return all troshka-* domain states in one call."""
+    global _libvirt_events_available
+    if _libvirt_events_available:
+        with _vm_state_cache_lock:
+            domains = {name: {"state": info["state"]} for name, info in _vm_state_cache.items()}
+        handler._send_json(200, {"domains": domains, "source": "events"})
+        return
+    domains = {}
+    try:
+        result = subprocess.run(["virsh", "list", "--all", "--name"],
+                                capture_output=True, text=True, timeout=10)
+        for name in result.stdout.strip().split("\n"):
+            name = name.strip()
+            if not name or not name.startswith("troshka-"):
+                continue
+            st = subprocess.run(["virsh", "domstate", name],
+                                capture_output=True, text=True, timeout=5)
+            if st.returncode == 0:
+                raw = st.stdout.strip().lower().replace(" ", "_")
+                state_map = {"running": "running", "shut_off": "shut_off", "paused": "paused",
+                             "in_shutdown": "shutting_down", "crashed": "crashed",
+                             "pmsuspended": "suspended", "idle": "unknown"}
+                domains[name] = {"state": state_map.get(raw, raw)}
+    except Exception as e:
+        logger.warning("Failed to list VM states: %s", e)
+    handler._send_json(200, {"domains": domains, "source": "virsh"})
+
+
+@route("GET", "/vms/events")
+def handle_vm_events(handler, params):
+    """Return queued VM state change events."""
+    import urllib.parse
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+    since = float(qs.get("since", [0])[0])
+    if not _libvirt_events_available:
+        handler._send_json(200, {"events": [], "available": False})
+        return
+    with _vm_events_lock:
+        filtered = [e for e in _vm_events if e["timestamp"] > since]
+    handler._send_json(200, {"events": filtered, "available": True})
+
+
+def _start_libvirt_event_loop():
+    """Start libvirt event loop for domain lifecycle events."""
+    global _libvirt_events_available
+    try:
+        import libvirt as _lv
+    except ImportError:
+        logger.info("python3-libvirt not available, VM state events disabled")
+        return
+
+    _EVENT_STATE_MAP = {
+        _lv.VIR_DOMAIN_EVENT_STARTED: "running",
+        _lv.VIR_DOMAIN_EVENT_STOPPED: "shut_off",
+        _lv.VIR_DOMAIN_EVENT_SHUTDOWN: "shutting_down",
+        _lv.VIR_DOMAIN_EVENT_SUSPENDED: "paused",
+        _lv.VIR_DOMAIN_EVENT_RESUMED: "running",
+        _lv.VIR_DOMAIN_EVENT_CRASHED: "crashed",
+        _lv.VIR_DOMAIN_EVENT_PMSUSPENDED: "suspended",
+    }
+
+    def _lifecycle_cb(conn, dom, event, detail, opaque):
+        name = dom.name()
+        if not name.startswith("troshka-"):
+            return
+        state = _EVENT_STATE_MAP.get(event)
+        if not state:
+            return
+        now = time.time()
+        with _vm_state_cache_lock:
+            _vm_state_cache[name] = {"state": state, "since": now}
+        with _vm_events_lock:
+            _vm_events.append({"domain": name, "state": state, "timestamp": now})
+            while len(_vm_events) > 500:
+                _vm_events.pop(0)
+
+    def _event_loop():
+        while True:
+            try:
+                _lv.virEventRunDefaultImpl()
+            except Exception:
+                time.sleep(1)
+
+    def _seed_cache(conn):
+        """Populate cache with current states on startup."""
+        try:
+            for dom in conn.listAllDomains():
+                name = dom.name()
+                if not name.startswith("troshka-"):
+                    continue
+                info = dom.info()
+                state_map = {
+                    _lv.VIR_DOMAIN_RUNNING: "running",
+                    _lv.VIR_DOMAIN_PAUSED: "paused",
+                    _lv.VIR_DOMAIN_SHUTDOWN: "shutting_down",
+                    _lv.VIR_DOMAIN_SHUTOFF: "shut_off",
+                    _lv.VIR_DOMAIN_CRASHED: "crashed",
+                    _lv.VIR_DOMAIN_PMSUSPENDED: "suspended",
+                }
+                with _vm_state_cache_lock:
+                    _vm_state_cache[name] = {"state": state_map.get(info[0], "unknown"), "since": time.time()}
+        except Exception as e:
+            logger.warning("Failed to seed VM state cache: %s", e)
+
+    try:
+        _lv.virEventRegisterDefaultImpl()
+        conn = _lv.open("qemu:///system")
+        if conn is None:
+            logger.warning("Failed to open libvirt connection for events")
+            return
+        conn.domainEventRegisterAny(None, _lv.VIR_DOMAIN_EVENT_ID_LIFECYCLE, _lifecycle_cb, None)
+        conn.setKeepAlive(5, 3)
+        _seed_cache(conn)
+        threading.Thread(target=_event_loop, daemon=True, name="libvirt-events").start()
+        _libvirt_events_available = True
+        logger.info("Libvirt event loop started (%d domains cached)", len(_vm_state_cache))
+    except Exception as e:
+        logger.warning("Failed to start libvirt event loop: %s", e)
 
 
 def _handle_resize_storage(job, params):
@@ -3420,7 +3555,7 @@ _start_time = time.time()
 
 def create_server(config):
     """Create and return an HTTPS server (does not start serving)."""
-    server = HTTPServer(("0.0.0.0", config["port"]), TroshkadHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", config["port"]), TroshkadHandler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(config["tls_cert"], config["tls_key"])
@@ -3446,6 +3581,8 @@ def main():
     # Watchdog: check dnsmasq every 30s, restart if dead
     dnsmasq_watchdog = threading.Thread(target=_dnsmasq_watchdog_loop, daemon=True)
     dnsmasq_watchdog.start()
+
+    _start_libvirt_event_loop()
 
     server = create_server(_config)
     logger.info("troshkad %s listening on port %d", VERSION, _config["port"])
@@ -3511,6 +3648,8 @@ def _check_and_restart_dnsmasq():
                 try:
                     os.remove(pidfile)
                     os.remove(conf_path)
+                    for lf in glob.glob(f"/var/lib/troshka/dnsmasq-{project_prefix}-*.leases"):
+                        os.remove(lf)
                     logger.info("Cleaned orphan dnsmasq files for deleted project %s", project_prefix)
                 except OSError:
                     pass
