@@ -269,7 +269,7 @@ export default function StoragePoolsPage() {
 
   const handleExtendNow = async (pool: StoragePool) => {
     const newSize = (pool.fsx_storage_gb || 0) + pool.auto_extend_increment_gb;
-    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${pool.fsx_storage_gb} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nThis may take a few minutes for the host to see the new capacity.`)) return;
+    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${pool.fsx_storage_gb} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nNote: FSx only allows one extend every 6 hours. The host may take a few minutes to see the new capacity.`)) return;
     setExtending({ ...extending, [pool.id]: true });
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
       method: "POST",
