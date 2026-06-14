@@ -14,6 +14,10 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 ```bash
 ./dev-services.sh start          # Start everything (PostgreSQL + backend + frontend)
 ./dev-services.sh restart backend # Restart backend only (frontend hot-reloads)
+./scripts/host-ssh.sh            # SSH into first connected host (credentials from DB)
+./scripts/host-ssh.sh -- <cmd>   # Run command on host
+./scripts/host-db.sh             # Interactive Python shell with DB session + models
+./scripts/host-db.sh "<code>"    # Run inline DB query
 ```
 
 - Backend: http://localhost:8200 (no auto-reload — restart required for Python changes)
@@ -60,7 +64,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Function-based modules (not classes)
 - Background threads get fresh DB sessions: `SessionLocal()`
 - Progress tracking: module-level dicts (e.g., `_deploy_progress`)
-- SSH to hosts: `run_ssh_script(host_ip, private_key, script, timeout)`
+- Host operations: `troshkad_client.start_job()` / `poll_job()` / `wait_for_job()` / `cancel_job()`
 
 ### Frontend Pages
 - `"use client"` directive on all pages
@@ -89,8 +93,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Always use `_ensure_user_library()` or `Library.filter_by(type="personal")`
 
 ### VNI Allocation
-- VNIs are globally unique across all projects (for future multi-host VXLAN peering)
-- Allocated by scanning all `Project.vni_map` JSONB fields
+- VNIs are globally unique across all projects (for multi-host VXLAN peering)
+- Monotonically increasing, never recycled — high-water mark persisted to `.vni_hwm` file
 - Never use the `Network.vni` column (it's unused)
 
 ### Topology Remapping (Patterns/Deploy)
@@ -122,8 +126,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### Troshkad (Host Agent Daemon)
 - Single-file Python daemon at `src/troshkad/troshkad.py` — stdlib only, no pip
-- Backend client: `src/backend/app/services/troshkad_client.py`
-- HTTPS on port 31337, bearer token auth, cert fingerprint pinning
+- Backend client: `src/backend/app/services/troshkad_client.py` — urllib3 connection pooling with cert fingerprint pinning
+- HTTPS on port 31337, bearer token auth
 - All host operations go through troshkad — SSH only for initial install + VNC console
 - **Qemu hook** (`/etc/libvirt/hooks/qemu`): lives ONLY in agent install script (`agent_deployer.py`), must NOT call `virsh` (deadlocks virtqemud), parses XML from stdin
 - **Python string escaping**: backslashes in install script heredocs must be doubled (`\\(`, `\\1`, `\\K`)
@@ -131,6 +135,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **File ownership**: chown to `qemu:qemu` after creating disks, seeds, and hard links
 - **Download locking**: `fcntl.flock()` prevents concurrent downloads of same file
 - **Wipe preserves cache**: never deletes `/var/lib/troshka/images/` or `/var/lib/troshka/cache/`
+- **Job cancellation**: `DELETE /jobs/{job_id}` sets `_cancelled` flag and kills active subprocess; handlers check `_cancelled` between steps
 - **Version**: `VERSION = "dev"` in source, stamped with SHA-256 content hash at push time
 - Agent install restarts `virtqemud` so hook changes take effect
 
@@ -157,12 +162,46 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 ### Garbage Collector
 - Runs on host agent connect, admin Clean button, or future cron
 - Steps: capacity sync → orphan cleanup → network repair → cache eviction
-- Cache eviction configurable per type in `config.yaml` (`gc.cache_stale_hours_*`)
+- Cache eviction: cross-references host cache dirs against DB records (patterns + library items), deletes orphaned entries
+- Also cleans stale temp dirs (abandoned flatten/upload operations older than 1 hour)
+- S3 orphan cleanup: `clean_s3_orphan_patterns()` deletes S3 prefixes with no matching Pattern record + aborts stale multipart uploads
 
 ### Pattern Save State
 - Backend `Pattern.state`: "creating" → "capturing" → "available" or "error"
 - Frontend patterns page shows read-only cards during save (buttons disabled, delete hidden)
-- Auto-polls every 3s while any pattern is in creating/capturing state
+- Auto-polls every 3s while any pattern is in creating/capturing state; 10s baseline poll + visibilitychange for tab-switch refresh
+- **Cancellation**: deleting a capturing pattern cancels troshkad jobs (kills S3 uploads/flattens), cleans up S3 prefix, and removes host cache
+
+### Deploy Pipeline
+- Parallel VM deployment: disk creation, VM definition, and start run concurrently per VM
+- Progress: byte-level download tracking with active transfer detail
+- External access toggle: `externalAccess` on gateway node — when off, no EIPs or port forwards are provisioned (gateway stays for outbound NAT)
+- Topology templates: predefined OCP templates with version dropdown, deploy time estimates, auto-sizing from install results
+
+### Health Poller & Storage Monitoring
+- `health_poller.py` runs periodic checks on all connected hosts
+- Reports all mounted partitions via troshkad `/health` endpoint (not just root)
+- Evaluates partition thresholds, stores `storage_warnings` JSONB on Host model
+- Frontend shows warning badges on hosts admin page when partitions exceed thresholds
+- Re-signs host TLS certs hourly, checks CA expiry (renews at 90 days)
+
+### Storage Auto-Extend
+- Auto-extend for EBS volumes and FSx file systems when usage exceeds threshold
+- Config columns on `storage_pools` and `hosts`: `auto_extend_enabled`, `auto_extend_threshold_pct`, `auto_extend_increment_gb`, `auto_extend_max_gb`
+- Manual extend via admin UI (pool page "Extend Now" button) with real-time capacity polling
+- FSx has a 6-hour cooldown between extends — backend catches this error and returns a clear message
+- `storage_extend.py` service handles both FSx and EBS extend logic
+- EBS: `ModifyVolume` API, requires `describe-volumes-modifications` polling
+- FSx: `UpdateFileSystem` API with `StorageCapacityReservationGiB`
+
+### Libvirt Events (troshkad)
+- Lifecycle events: `VIR_DOMAIN_EVENT_ID_LIFECYCLE` callback for start/stop/crash/reboot detection
+- Block threshold events: `VIR_DOMAIN_EVENT_ID_BLOCK_THRESHOLD` for disk usage alerts, auto-re-arms after trigger
+- Batch VM state polling: `POST /vms/states` returns all domain states in one call (replaces per-VM polling)
+
+### DNS Providers
+- `dns_providers` API + admin page for managing external DNS (Route53, etc.)
+- Projects can optionally attach a DNS provider + domain + GUID for automated DNS record management
 
 ### Duplicate Name Prevention
 - Projects, patterns, library items, and snapshots enforce unique names per user

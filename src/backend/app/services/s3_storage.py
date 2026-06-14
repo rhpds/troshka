@@ -90,6 +90,18 @@ def delete_file(key: str):
     logger.info("Deleted %s", key)
 
 
+def delete_prefix(prefix: str):
+    """Delete all objects under an S3 prefix."""
+    client = _get_s3_client()
+    bucket = _bucket()
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        if objects:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+            logger.info("Deleted %d objects under %s", len(objects), prefix)
+
+
 def generate_presigned_url(key: str, expires: int = 3600) -> str:
     """Generate a presigned download URL for a file in S3."""
     client = _get_s3_client()

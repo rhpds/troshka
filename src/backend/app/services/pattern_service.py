@@ -16,6 +16,29 @@ def get_capture_progress(pattern_id: str) -> dict | None:
     return _capture_progress.get(pattern_id)
 
 
+def cancel_capture(pattern_id: str, db) -> None:
+    """Cancel in-flight capture jobs on the host."""
+    from app.models.host import Host
+    from app.services.troshkad_client import cancel_job, TroshkadError
+
+    progress = _capture_progress.pop(pattern_id, None)
+    if not progress:
+        return
+    host_id = progress.get("_host_id")
+    job_ids = progress.get("_job_ids", [])
+    if not host_id or not job_ids:
+        return
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        return
+    for job_id in job_ids:
+        try:
+            cancel_job(host, job_id)
+            log.info("Cancelled capture job %s on host %s for pattern %s", job_id[:8], host.id[:8], pattern_id[:8])
+        except TroshkadError:
+            pass
+
+
 def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool = True) -> None:
     """Capture all disks from a project into a pattern.
 
@@ -138,9 +161,17 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
         import time as _time
         completed_jobs = set()
         deadline = _time.time() + 3600
-        _capture_progress[pattern_id] = {"step": "capturing", "detail": f"0/{len(all_jobs)} VMs done"}
+        _capture_progress[pattern_id] = {
+            "step": "capturing",
+            "detail": f"0/{len(all_jobs)} VMs done",
+            "_host_id": host.id,
+            "_job_ids": [j["job_id"] for j in all_jobs],
+        }
 
         while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
+            if pattern_id not in _capture_progress:
+                log.info("Pattern %s: capture cancelled, exiting poll loop", pattern_id[:8])
+                return
             lines = []
             for idx, jinfo in enumerate(all_jobs):
                 if jinfo["job_id"] in completed_jobs:
@@ -151,18 +182,18 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 except TroshkadError:
                     lines.append(f"{jinfo['vm_name']}: polling...")
                     continue
-                if job["status"] in ("completed", "failed"):
+                if job["status"] in ("completed", "failed", "cancelled"):
                     completed_jobs.add(jinfo["job_id"])
                     jinfo["_result"] = job
-                    if job["status"] == "failed":
-                        lines.append(f"{jinfo['vm_name']}: FAILED")
+                    if job["status"] in ("failed", "cancelled"):
+                        lines.append(f"{jinfo['vm_name']}: {job['status'].upper()}")
                     else:
                         lines.append(f"{jinfo['vm_name']}: done")
                 else:
                     output = job.get("output", [])
                     last = ""
                     for line in reversed(output):
-                        if "Flatten" in line or "Upload" in line or "Commit" in line or "Snapshot" in line or "Trim" in line:
+                        if "Flatten" in line or "Upload" in line or "Commit" in line or "Snapshot" in line or "Trim" in line or "Cach" in line:
                             last = line
                             break
                     lines.append(f"{jinfo['vm_name']}: {last}" if last else f"{jinfo['vm_name']}: working...")

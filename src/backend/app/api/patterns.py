@@ -340,13 +340,22 @@ def delete_pattern(
     if pattern.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # S3 cleanup for captured disks
+    # Cancel in-flight capture jobs if pattern is still being captured
+    if pattern.state in ("creating", "capturing"):
+        from app.services.pattern_service import cancel_capture
+        cancel_capture(pattern_id, db)
+
+    # S3 cleanup — captured disks + any partially-uploaded files
+    from app.services import s3_storage
     for disk in pattern.disks:
         try:
-            from app.services import s3_storage
             s3_storage.delete_file(disk.s3_key)
         except Exception:
             logger.warning("Failed to delete S3 object %s for pattern disk", disk.s3_key)
+    try:
+        s3_storage.delete_prefix(f"patterns/{pattern_id}/")
+    except Exception:
+        logger.warning("Failed to clean S3 prefix patterns/%s/", pattern_id[:8])
 
     db.delete(pattern)
     db.commit()

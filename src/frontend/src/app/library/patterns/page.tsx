@@ -162,9 +162,15 @@ export default function PatternsPage() {
       .catch(() => setLoading(false));
   };
 
-  useEffect(() => { loadPatterns(); }, []);
+  useEffect(() => {
+    loadPatterns();
+    const interval = setInterval(loadPatterns, 10000);
+    const onVisible = () => { if (document.visibilityState === "visible") loadPatterns(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
 
-  // Poll while any pattern is still saving
+  // Poll faster while any pattern is still saving
   useEffect(() => {
     const hasPending = patterns.some((p) => p.state === "creating" || p.state === "capturing");
     if (!hasPending) return;

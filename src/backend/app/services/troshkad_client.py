@@ -172,6 +172,11 @@ def poll_job(host, job_id):
     return troshkad_request(host, "GET", f"/jobs/{job_id}", timeout=15)
 
 
+def cancel_job(host, job_id):
+    """Cancel a running job on a host. Returns job dict."""
+    return troshkad_request(host, "DELETE", f"/jobs/{job_id}", timeout=15)
+
+
 def wait_for_job(host, job_id, timeout=600, poll_interval=5):
     """Poll until job completes or fails. Returns final job state.
 

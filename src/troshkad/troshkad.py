@@ -83,6 +83,7 @@ def _create_job(command, params):
         "_start_time": time.time(),
         "completed_at": None,
         "_process": None,
+        "_cancelled": False,
     }
     with _jobs_lock:
         _jobs[job_id] = job
@@ -93,6 +94,25 @@ def _complete_job(job, status, result=None):
     job["status"] = status
     job["result"] = result or {}
     job["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _cancel_job(job_id):
+    """Cancel a running job: set flag and kill subprocess."""
+    job = _get_job(job_id)
+    if not job:
+        return None
+    if job["status"] != "running":
+        return job
+    job["_cancelled"] = True
+    proc = job.get("_process")
+    if proc and proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    _complete_job(job, "cancelled", {"error": "cancelled by user"})
+    _job_log(job, "Job cancelled")
+    return job
 
 
 def _get_job(job_id):
@@ -369,6 +389,9 @@ class TroshkadHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._handle("POST")
 
+    def do_DELETE(self):
+        self._handle("DELETE")
+
 
 # ── Route handlers ──
 
@@ -403,6 +426,18 @@ def handle_get_job(handler, params):
         "result": job["result"],
         "started_at": job["started_at"],
         "completed_at": job["completed_at"],
+    })
+
+
+@route("DELETE", "/jobs/{job_id}")
+def handle_cancel_job(handler, params):
+    job = _cancel_job(params["job_id"])
+    if not job:
+        handler._send_json(404, {"error": "job not found"})
+        return
+    handler._send_json(200, {
+        "job_id": job["job_id"],
+        "status": job["status"],
     })
 
 
@@ -2908,21 +2943,84 @@ def _s3_upload(job, local_path, s3_url, aws_access_key="", aws_secret_key="", aw
         [aws_bin, "s3", "cp", local_path, s3_url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
     )
-    while proc.poll() is None:
-        try:
-            with open(f"/proc/{proc.pid}/io") as f:
-                for line in f:
-                    if line.startswith("read_bytes:"):
-                        read_bytes = int(line.split(":")[1].strip())
-                        cur_gb = round(read_bytes / (1024**3), 1)
-                        pct = min(100, int(read_bytes * 100 / total_bytes)) if total_bytes > 0 else 0
-                        _job_log(job, f"Uploading: {cur_gb} of {total_gb} GB ({pct}%)")
-                        break
-        except (OSError, FileNotFoundError):
-            pass
-        time.sleep(5)
-    if proc.returncode != 0:
-        raise RuntimeError(f"S3 upload failed (exit {proc.returncode})")
+    job["_process"] = proc
+    try:
+        while proc.poll() is None:
+            if job.get("_cancelled"):
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("S3 upload cancelled")
+            try:
+                with open(f"/proc/{proc.pid}/io") as f:
+                    for line in f:
+                        if line.startswith("read_bytes:"):
+                            read_bytes = int(line.split(":")[1].strip())
+                            cur_gb = round(read_bytes / (1024**3), 1)
+                            pct = min(100, int(read_bytes * 100 / total_bytes)) if total_bytes > 0 else 0
+                            _job_log(job, f"Uploading: {cur_gb} of {total_gb} GB ({pct}%)")
+                            break
+            except (OSError, FileNotFoundError):
+                pass
+            time.sleep(5)
+        if proc.returncode != 0:
+            raise RuntimeError(f"S3 upload failed (exit {proc.returncode})")
+    finally:
+        job["_process"] = None
+
+
+def _s3_upload_with_cache(job, local_path, total_bytes, s3_url, cache_path, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
+    """Upload to S3 while reporting combined upload + cache progress."""
+    total_gb = round(total_bytes / (1024**3), 1)
+    env = os.environ.copy()
+    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    os.makedirs(_s3_tmpdir, exist_ok=True)
+    env["TMPDIR"] = _s3_tmpdir
+    if aws_access_key:
+        env["AWS_ACCESS_KEY_ID"] = aws_access_key
+        env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
+        env["AWS_DEFAULT_REGION"] = aws_region
+    aws_bin = "/opt/troshka/venv/bin/aws"
+    if not os.path.exists(aws_bin):
+        aws_bin = "aws"
+    proc = subprocess.Popen(
+        [aws_bin, "s3", "cp", local_path, s3_url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+    )
+    job["_process"] = proc
+    try:
+        while proc.poll() is None:
+            if job.get("_cancelled"):
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("S3 upload cancelled")
+            parts = []
+            try:
+                with open(f"/proc/{proc.pid}/io") as f:
+                    for line in f:
+                        if line.startswith("read_bytes:"):
+                            read_bytes = int(line.split(":")[1].strip())
+                            cur_gb = round(read_bytes / (1024**3), 1)
+                            pct = min(100, int(read_bytes * 100 / total_bytes)) if total_bytes > 0 else 0
+                            parts.append(f"Uploading: {cur_gb} of {total_gb} GB ({pct}%)")
+                            break
+            except (OSError, FileNotFoundError):
+                pass
+            try:
+                if os.path.exists(cache_path):
+                    cached = os.path.getsize(cache_path)
+                    cache_pct = min(100, int(cached * 100 / total_bytes)) if total_bytes > 0 else 0
+                    if cache_pct < 100:
+                        cached_gb = round(cached / (1024**3), 1)
+                        parts.append(f"Caching: {cached_gb} of {total_gb} GB ({cache_pct}%)")
+            except OSError:
+                pass
+            if parts:
+                _job_log(job, " / ".join(parts))
+            time.sleep(5)
+        if proc.returncode != 0:
+            raise RuntimeError(f"S3 upload failed (exit {proc.returncode})")
+    finally:
+        job["_process"] = None
 
 
 def _s3_download(job, s3_url, local_path, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
@@ -3218,6 +3316,9 @@ def _handle_pattern_capture_direct(job, params):
             _run_cmd(job, cmd, timeout=3600)
             flatten_done.set()
 
+            if job.get("_cancelled"):
+                raise RuntimeError("Cancelled")
+
             flat_size = os.path.getsize(tmp_flat)
             flat_size_gb = round(flat_size / (1024**3), 1)
             _job_log(job, f"Flattened: {flat_size_gb} GB (compressed)")
@@ -3230,12 +3331,29 @@ def _handle_pattern_capture_direct(job, params):
                 commit_thread.start()
                 snapshotted = False
 
-            _job_log(job, f"Uploading {flat_size_gb} GB to S3...")
-            _s3_upload(job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region)
+            if job.get("_cancelled"):
+                raise RuntimeError("Cancelled")
 
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            _job_log(job, f"Caching to {cache_path}...")
-            shutil.copy(tmp_flat, cache_path)
+            cache_error = [None]
+            def _do_cache():
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    shutil.copy(tmp_flat, cache_path)
+                except Exception as e:
+                    cache_error[0] = e
+
+            cache_thread = threading.Thread(target=_do_cache, daemon=True)
+            cache_thread.start()
+
+            _job_log(job, f"Saving {flat_size_gb} GB...")
+            _s3_upload_with_cache(job, tmp_flat, flat_size, s3_url, cache_path, aws_access_key, aws_secret_key, aws_region)
+
+            cache_thread.join(timeout=600)
+            if cache_error[0]:
+                _job_log(job, f"Cache copy failed: {cache_error[0]}")
+
+            if job.get("_cancelled"):
+                raise RuntimeError("Cancelled")
 
             if commit_thread:
                 commit_thread.join(timeout=600)

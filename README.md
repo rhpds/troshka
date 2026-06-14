@@ -27,7 +27,11 @@ The name "troshka" evokes nesting — VMs inside VMs inside cloud infrastructure
 - **Patterns** — Save entire projects as reusable patterns, stamp out hundreds of identical environments for labs and demos
 - **VM snapshots** — Capture individual VMs (config + disks) to the library, drag-and-drop into any project with auto-connected networks
 - **Bulk deployment** — Deploy 1-500 projects from a pattern with naming templates
-- **Host garbage collector** — Auto-sync capacity counters, clean orphaned VMs/disks/bridges, repair missing networks, evict stale cache (configurable per type)
+- **Virtual BMC** — IPMI and Redfish endpoints per VM for bare-metal simulation (PXE + BMC workflows)
+- **Shared storage & live migration** — NFS/FSx storage pools with zero-downtime VM migration between hosts
+- **Storage auto-extend** — Automatic EBS/FSx capacity expansion with threshold monitoring and admin controls
+- **DNS integration** — Optional Route53 DNS provider for automated record management per project
+- **Host garbage collector** — Auto-sync capacity, clean orphaned VMs/disks/bridges, repair networks, evict stale cache
 - **API-first** — Full REST API with API key authentication, plus an Ansible collection for IaC
 - **Multi-provider** — Deploy to AWS EC2 (nested virtualization) or OCP Virtualization (KubeVirt)
 
@@ -41,19 +45,20 @@ Browser
   |       +-- /api/* proxy --> FastAPI API Server
   |                               |
   |                               +-- PostgreSQL (state)
-  |                               +-- Redis (queue + cache)
-  |                               +-- WebSocket --> Host Agents (EC2)
+  |                               +-- S3 (disk images, patterns)
+  |                               +-- troshkad agents (EC2 hosts)
   |                               +-- Kubernetes API --> OCP Virt
   |
-  +-- WSS (console) --> API Server --> Agent --> libvirt VNC/SPICE
+  +-- WSS (console) --> API Server --> troshkad --> libvirt VNC
 ```
 
 | Component | Tech | Purpose |
 |-----------|------|---------|
 | API Server | FastAPI + Uvicorn | REST API, WebSocket hub, RBAC |
 | Frontend | Next.js 15 + PatternFly 6 + React Flow | Canvas editor, project management |
-| Database | PostgreSQL 16 (SQLite for dev) | Projects, topology, users |
-| Host Agent | Python + libvirt | VM lifecycle, console proxy |
+| Database | PostgreSQL 16 | Projects, topology, users, hosts |
+| troshkad | Python daemon + libvirt | Host agent — VM lifecycle, storage, networking |
+| S3 | AWS S3 | Disk images, patterns, snapshots |
 | Deployment | Ansible + Jinja2 manifests | OpenShift deployment |
 
 ## Quick Start
@@ -62,7 +67,7 @@ Browser
 
 - Python 3.11+
 - Node.js 18+
-- Podman (for PostgreSQL, optional — SQLite used by default in dev)
+- Podman (for PostgreSQL in dev)
 
 ### Start Development
 
@@ -77,7 +82,7 @@ cd troshka
 # Or start components individually
 ./dev-services.sh backend start    # FastAPI on port 8200
 ./dev-services.sh frontend start   # Next.js on port 3100
-./dev-services.sh db start         # PostgreSQL on port 5432
+./dev-services.sh db start         # PostgreSQL on port 5433
 ```
 
 Open http://localhost:3100 — dev mode auto-authenticates as admin.
@@ -86,18 +91,28 @@ Open http://localhost:3100 — dev mode auto-authenticates as admin.
 
 | Service | URL | Notes |
 |---------|-----|-------|
-| Frontend | http://localhost:3100 | Next.js dev server |
-| Backend API | http://localhost:8200 | FastAPI |
+| Frontend | http://localhost:3100 | Next.js dev server (hot-reloads) |
+| Backend API | http://localhost:8200 | FastAPI (restart required for changes) |
 | API Docs | http://localhost:8200/docs | Swagger UI |
-| PostgreSQL | localhost:5432 | Podman container (optional) |
+| PostgreSQL | localhost:5433 | Podman container |
+
+### Utility Scripts
+
+```bash
+./scripts/host-ssh.sh              # SSH into first connected host
+./scripts/host-ssh.sh -- <cmd>     # Run command on host
+./scripts/host-db.sh               # Interactive Python shell with DB
+./scripts/host-db.sh "<code>"      # Run inline DB query
+```
 
 ### Run Tests
 
 ```bash
 cd src/backend
-source venv/bin/activate
-python3 -m pytest tests/ -v
+./venv/bin/python3 -m pytest tests/ -v
 ```
+
+Tests use SQLite with type compiler overrides for JSONB/UUID.
 
 ## Configuration
 
@@ -137,18 +152,21 @@ troshka/
 |   |   |   +-- core/         # Config, database, auth
 |   |   |   +-- models/       # SQLAlchemy ORM
 |   |   |   +-- schemas/      # Pydantic request/response
-|   |   |   +-- services/     # Business logic (deploy, GC, patterns, S3)
+|   |   |   +-- services/     # Business logic (deploy, GC, patterns, S3, migration)
 |   |   +-- config/           # Dynaconf YAML config
 |   |   +-- alembic/          # Database migrations
 |   |   +-- tests/            # pytest
 |   +-- frontend/             # Next.js 15 + PatternFly 6
 |   |   +-- src/
 |   |   |   +-- app/          # Pages (App Router)
-|   |   |   +-- components/   # Canvas editor, nodes
+|   |   |   +-- components/   # Canvas editor, nodes, modals
 |   |   |   +-- stores/       # Zustand state
-|   +-- agent/                # Host agent (Phase 5)
-+-- ansible/                  # OCP deployment (Phase 8)
-+-- collection/               # Ansible collection (Phase 8)
+|   +-- troshkad/             # Host agent daemon (single-file, stdlib only)
+|   +-- agent/                # Agent installer and deployer
++-- ansible/                  # OCP deployment
++-- collection/               # Ansible collection for IaC
++-- infra/                    # IAM policies, infrastructure config
++-- scripts/                  # Dev utilities (host-ssh.sh, host-db.sh)
 +-- docs/                     # Design specs and plans
 +-- dev-services.sh           # Local dev orchestration
 ```
@@ -179,18 +197,27 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 
 ## Roadmap
 
-- [x] Phase 1: Backend foundation (FastAPI, auth, models, CRUD APIs)
-- [x] Phase 2: Backend API sync (topology persistence)
-- [x] Phase 3: Frontend foundation (Next.js, PatternFly, auth)
-- [x] Phase 4: Canvas editor (React Flow, drag-and-drop, properties)
-- [x] Phase 5: Host agent (libvirt, VM lifecycle, deploy, reconfigure)
-- [x] Phase 6: Console & power management (noVNC/SPICE proxy)
-- [x] Phase 7: Library system (S3 image registry, templates, upload/import)
+- [x] Backend foundation (FastAPI, auth, models, CRUD APIs)
+- [x] Frontend + Canvas editor (Next.js, PatternFly, React Flow)
+- [x] Host agent — troshkad daemon (libvirt, HTTPS, job system)
+- [x] Console & power management (noVNC proxy, virtual keyboard)
+- [x] Library system (S3 image registry, upload/import)
 - [x] Patterns & VM snapshots (capture, deploy, bulk deploy, drag-import)
 - [x] Host garbage collector (capacity sync, orphan cleanup, network repair, cache eviction)
-- [x] Static IP reservations (NIC IP → dnsmasq dhcp-host, CIDR validation, conflict detection)
-- [x] Cloud-init improvements (unique instance-id per deploy, YAML validation, new chpasswd format)
-- [ ] Phase 8: Deployment & Ansible collection (OCP manifests, cron GC)
+- [x] Static IP reservations (MAC→IP, CIDR validation, conflict detection)
+- [x] Cloud-init (unique instance-id, YAML validation, packages, custom user-data)
+- [x] PXE network boot (managed + BYO, BIOS/UEFI, Secure Boot)
+- [x] Virtual BMC (IPMI + Redfish per VM, sushy-emulator, virtualbmc)
+- [x] Shared storage pools (FSx OpenZFS, BYO NFS, local mode)
+- [x] Live migration (shared storage, mutual TLS, pool-level PKI)
+- [x] External IPs (secondary ENI IPs, nftables DNAT/SNAT, per-project chains)
+- [x] Storage monitoring (partition thresholds, warning badges, health poller)
+- [x] Storage auto-extend (EBS + FSx, threshold-based, admin override)
+- [x] DNS providers (Route53 integration, per-project DNS records)
+- [x] Libvirt events (lifecycle callbacks, block threshold alerts, batch state polling)
+- [x] OCP topology templates (version dropdown, deploy estimates, auto-sizing)
+- [x] Parallel VM deployment (concurrent disk creation, definition, start)
+- [ ] OCP deployment & Ansible collection
 
 ## License
 

@@ -81,21 +81,36 @@ def discover_orphans(db: Session, host) -> dict:
     return job["result"]
 
 
-def clean_orphans(host, orphans: dict) -> dict:
+def _find_orphaned_cache(db: Session, cache_items: list[dict]) -> list[str]:
+    """Filter cache items to those with no matching DB record."""
+    from app.models.pattern import Pattern
+    from app.models.library import LibraryItem
+
+    active_pattern_ids = {p.id for p in db.query(Pattern).all()}
+    active_image_ids = {i.id for i in db.query(LibraryItem).all()}
+    active_ids = active_pattern_ids | active_image_ids
+
+    orphaned = []
+    for item in cache_items:
+        path = item.get("path", "") if isinstance(item, dict) else str(item)
+        entry_name = path.rstrip("/").rsplit("/", 1)[-1]
+        entry_id = entry_name.rsplit(".", 1)[0]
+        if entry_id not in active_ids:
+            orphaned.append(path)
+    return orphaned
+
+
+def clean_orphans(host, orphans: dict, db: Session = None) -> dict:
     """Clean orphaned resources on host via troshkad."""
     from app.services.troshkad_client import start_job, wait_for_job
 
     if not host.ip_address or host.agent_status != "connected":
         return {"error": "Host not reachable", "cleaned": 0}
 
-    # Convert cache items format if needed
     cache_items = []
-    for entry in orphans.get("stale_cache", []):
-        if isinstance(entry, dict) and "path" in entry:
-            cache_items.append(entry["path"])
-    for path in orphans.get("orphaned_cache", []):
-        if isinstance(path, str):
-            cache_items.append(path)
+    if db:
+        cache_items = _find_orphaned_cache(db, orphans.get("cache_items", []))
+    cache_items.extend(orphans.get("stale_temps", []))
 
     job_id = start_job(host, "/gc/clean", {
         "orphan_dirs": list(set(orphans.get("orphan_dirs", []))),
@@ -109,10 +124,11 @@ def clean_orphans(host, orphans: dict) -> dict:
 
     cleaned = (len(orphans.get("orphan_dirs", [])) + len(orphans.get("orphan_domains", []))
                + len(orphans.get("orphan_bridges", [])) + len(orphans.get("orphan_namespaces", []))
-               + len(orphans.get("orphaned_bmc_project_ids", [])))
+               + len(orphans.get("orphaned_bmc_project_ids", [])) + len(cache_items))
     return {
         "success": job["status"] == "completed",
         "cleaned": cleaned,
+        "cache_cleaned": len(cache_items),
         "output": "\n".join(job.get("output", [])),
     }
 
@@ -258,9 +274,9 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
 
         cache_count = len(orphans.get("cache_items", []))
         if (total_orphans > 0 or cache_count > 0) and not dry_run:
-            cleanup = clean_orphans(host, orphans)
+            cleanup = clean_orphans(host, orphans, db)
             report["cleanup"] = cleanup
-            log.info("Host %s GC: cleaned %d orphans, %d cache items", host_id[:8], cleanup["cleaned"], cache_count)
+            log.info("Host %s GC: cleaned %d orphans (%d cache)", host_id[:8], cleanup["cleaned"], cleanup.get("cache_cleaned", 0))
         elif total_orphans > 0 or cache_count > 0:
             report["cleanup"] = {"dry_run": True, "would_clean": total_orphans + cache_count}
         else:
@@ -412,7 +428,7 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
             report["orphans_found"] = total_orphans
 
             if total_orphans > 0 and not dry_run:
-                cleanup = clean_orphans(scan_host, orphans)
+                cleanup = clean_orphans(scan_host, orphans, db)
                 report["cleanup"] = cleanup
             elif total_orphans > 0:
                 report["cleanup"] = {"dry_run": True, "would_clean": total_orphans}
