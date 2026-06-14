@@ -26,6 +26,7 @@ COLLECTION_DIR="$HOME/troshka-ansible-collection"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 PATTERN_NAME="${1:-}"
 GUID="${2:-test-$(date +%s)}"
+CONFIG="${TROSHKA_CONFIG:-openshift-cluster-troshka}"
 
 if [[ -z "$PATTERN_NAME" ]]; then
     echo "Usage: $0 <pattern-name> [guid]"
@@ -67,7 +68,9 @@ ansible-galaxy collection install "$COLLECTION_DIR" -p "$COLLECTIONS_DIR" --forc
 echo "  Installed to $COLLECTIONS_DIR"
 
 # --- Create vars file ---
-VARS_FILE=$(mktemp /tmp/troshka-test-vars-XXXX.yml)
+VARS_FILE=$(mktemp /tmp/troshka-test-vars.XXXXXX)
+mv "$VARS_FILE" "${VARS_FILE}.yml"
+VARS_FILE="${VARS_FILE}.yml"
 cat > "$VARS_FILE" <<VARS
 ---
 cloud_provider: troshka
@@ -75,6 +78,8 @@ cloud_provider_repo: ${COLLECTION_DIR}
 
 troshka_api_url: "${TROSHKA_API_URL}"
 troshka_api_key: "${TROSHKA_API_KEY}"
+
+config: "${CONFIG}"
 
 troshka_deploy_mode: pattern
 troshka_pattern_name: "${PATTERN_NAME}"
@@ -91,11 +96,11 @@ echo ""
 echo "=== Running ansible-navigator ==="
 cd "$AGD_DIR"
 
+ANSIBLE_COLLECTIONS_PATH="${COLLECTIONS_DIR}:${HOME}/.ansible/collections" \
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
     --extra-vars "@${VARS_FILE}" \
-    --extra-vars "COLLECTIONS_PATHS=${COLLECTIONS_DIR}" \
     -v
 
 STATUS=$?
