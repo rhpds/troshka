@@ -275,28 +275,11 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 
 ## Roadmap
 
-- [x] Backend foundation (FastAPI, auth, models, CRUD APIs)
-- [x] Frontend + Canvas editor (Next.js, PatternFly, React Flow)
-- [x] Host agent — troshkad daemon (libvirt, HTTPS, job system)
-- [x] Console & power management (noVNC proxy, virtual keyboard)
-- [x] Library system (S3 image registry, upload/import)
-- [x] Patterns & VM snapshots (capture, deploy, bulk deploy, drag-import)
-- [x] Host garbage collector (capacity sync, orphan cleanup, network repair, cache eviction)
-- [x] Static IP reservations (MAC→IP, CIDR validation, conflict detection)
-- [x] Cloud-init (unique instance-id, YAML validation, packages, custom user-data)
-- [x] PXE network boot (managed + BYO, BIOS/UEFI, Secure Boot)
-- [x] Virtual BMC (IPMI + Redfish per VM, sushy-emulator, virtualbmc)
-- [x] Shared storage pools (FSx OpenZFS, BYO NFS, local mode)
-- [x] Live migration (shared storage, mutual TLS, pool-level PKI)
-- [x] External IPs (secondary ENI IPs, nftables DNAT/SNAT, per-project chains)
-- [x] Storage monitoring (partition thresholds, warning badges, health poller)
-- [x] Storage auto-extend (EBS + FSx, threshold-based, admin override)
-- [x] DNS providers (Route53 integration, per-project DNS records)
-- [x] Libvirt events (lifecycle callbacks, block threshold alerts, batch state polling)
-- [x] OCP topology templates (version dropdown, deploy estimates, auto-sizing)
-- [x] Parallel VM deployment (concurrent disk creation, definition, start)
-- [x] AgnosticD cloud provider integration (Ansible collection, student portal, template YAML)
 - [ ] OCP deployment automation
+- [ ] Outbound port restriction enforcement on gateway
+- [ ] Template mode (mode 3) end-to-end testing
+- [ ] Showroom integration testing with Troshka console
+- [ ] Multi-instance pattern portability
 
 ## License
 
