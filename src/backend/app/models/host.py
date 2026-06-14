@@ -39,6 +39,7 @@ class Host(Base):
     auto_extend_threshold_pct: Mapped[int] = mapped_column(Integer, default=80)
     auto_extend_increment_gb: Mapped[int] = mapped_column(Integer, default=100)
     auto_extend_max_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    console_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
