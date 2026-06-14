@@ -490,7 +490,7 @@ export default function AdminProvidersPage() {
                     {p.console_configured && p.console_nameservers && (
                       <details style={{ marginTop: 12 }}>
                         <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
-                          Console DNS: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
+                          Console DNS Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
                         </summary>
                         <Card style={{ marginTop: 6 }}>
                           <CardBody>
