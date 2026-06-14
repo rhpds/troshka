@@ -2645,6 +2645,24 @@ def _handle_gc_discover(job, params):
                 orphaned_bmc.append(entry)
                 _job_log(job,f"Orphaned BMC dir: {entry}")
 
+    # Scan S3 temp dir for stale files (older than 1 hour)
+    stale_temps = []
+    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    if os.path.exists(_s3_tmpdir):
+        now = time.time()
+        try:
+            for entry in os.listdir(_s3_tmpdir):
+                full_path = os.path.join(_s3_tmpdir, entry)
+                try:
+                    age = now - os.stat(full_path).st_mtime
+                    if age > 3600:
+                        stale_temps.append(full_path)
+                        _job_log(job, f"Stale temp file ({int(age)}s old): {full_path}")
+                except OSError:
+                    pass
+        except OSError as e:
+            _job_log(job, f"Failed to scan temp dir: {e}")
+
     return {
         "orphan_dirs": orphan_dirs,
         "orphan_domains": orphan_domains,
@@ -2652,6 +2670,7 @@ def _handle_gc_discover(job, params):
         "orphan_namespaces": orphan_namespaces,
         "cache_items": cache_items,
         "orphaned_bmc_project_ids": orphaned_bmc,
+        "stale_temps": stale_temps,
     }
 
 COMMAND_HANDLERS["gc/discover"] = _handle_gc_discover
@@ -2774,6 +2793,19 @@ def _handle_gc_clean(job, params):
         except RuntimeError:
             pass
 
+    # 7. Remove stale temp files
+    removed_temps = 0
+    for path in params.get("stale_temps", []):
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+            _job_log(job, f"Removed stale temp: {path}")
+            removed_temps += 1
+        except OSError as e:
+            _job_log(job, f"Failed to remove {path}: {e}")
+
     return {
         "removed_dirs": removed_dirs,
         "removed_domains": removed_domains,
@@ -2781,6 +2813,7 @@ def _handle_gc_clean(job, params):
         "removed_namespaces": removed_namespaces,
         "removed_cache": removed_cache,
         "removed_bmc": removed_bmc,
+        "removed_temps": removed_temps,
     }
 
 COMMAND_HANDLERS["gc/clean"] = _handle_gc_clean
@@ -2855,6 +2888,9 @@ def _s3_upload(job, local_path, s3_url, aws_access_key="", aws_secret_key="", aw
     total_bytes = os.path.getsize(local_path)
     total_gb = round(total_bytes / (1024**3), 1)
     env = os.environ.copy()
+    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    os.makedirs(_s3_tmpdir, exist_ok=True)
+    env["TMPDIR"] = _s3_tmpdir
     if aws_access_key:
         env["AWS_ACCESS_KEY_ID"] = aws_access_key
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
@@ -2886,6 +2922,9 @@ def _s3_upload(job, local_path, s3_url, aws_access_key="", aws_secret_key="", aw
 def _s3_download(job, s3_url, local_path, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
     """Download a file from S3 using aws cli with file-size progress monitoring."""
     env = os.environ.copy()
+    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    os.makedirs(_s3_tmpdir, exist_ok=True)
+    env["TMPDIR"] = _s3_tmpdir
     if aws_access_key:
         env["AWS_ACCESS_KEY_ID"] = aws_access_key
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
