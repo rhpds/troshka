@@ -2793,15 +2793,21 @@ def _handle_gc_clean(job, params):
         except RuntimeError:
             pass
 
-    # 7. Remove stale temp files
+    # 7. Remove stale temp files (containment check prevents path traversal)
     removed_temps = 0
+    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    real_tmpdir = os.path.realpath(_s3_tmpdir)
     for path in params.get("stale_temps", []):
         try:
-            if os.path.isdir(path):
-                shutil.rmtree(path)
+            real_path = os.path.realpath(path)
+            if not real_path.startswith(real_tmpdir + os.sep):
+                _job_log(job, f"Rejected path outside temp dir: {path}")
+                continue
+            if os.path.isdir(real_path):
+                shutil.rmtree(real_path)
             else:
-                os.remove(path)
-            _job_log(job, f"Removed stale temp: {path}")
+                os.remove(real_path)
+            _job_log(job, f"Removed stale temp: {real_path}")
             removed_temps += 1
         except OSError as e:
             _job_log(job, f"Failed to remove {path}: {e}")
