@@ -45,22 +45,20 @@ def _get_pool(host):
             "cannot verify identity. Re-install the agent to generate credentials."
         )
 
-    # Return cached pool if exists
-    if host.ip_address in _pools:
-        return _pools[host.ip_address]
-
-    # Create new pool with fingerprint pinning
-    # Format: "AA:BB:CC:..." -> "AABBCC..."
-    fingerprint_clean = fingerprint.replace(":", "").upper()
-    pool = urllib3.HTTPSConnectionPool(
-        host.ip_address,
-        port=TROSHKAD_PORT,
-        cert_reqs="CERT_NONE",  # Accept self-signed certs
-        assert_fingerprint=fingerprint_clean,  # urllib3 verifies SHA-256 fingerprint
-        maxsize=10,  # Max connections in pool
-        block=False,  # Don't block waiting for a connection
-    )
-    _pools[host.ip_address] = pool
+    fp_clean = fingerprint.replace(":", "").upper()
+    key = f"{host.ip_address}:{fp_clean}"
+    pool = _pools.get(key)
+    if pool is None:
+        pool = urllib3.HTTPSConnectionPool(
+            host.ip_address,
+            port=TROSHKAD_PORT,
+            maxsize=4,
+            cert_reqs="CERT_NONE",
+            assert_fingerprint=fp_clean,
+            retries=False,
+            timeout=urllib3.Timeout(connect=10, read=DEFAULT_TIMEOUT),
+        )
+        _pools[key] = pool
     return pool
 
 

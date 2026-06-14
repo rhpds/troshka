@@ -3,7 +3,7 @@
 import hashlib
 import json
 import unittest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 from app.services.troshkad_client import (
     troshkad_request, start_job, poll_job, check_disk_usage,
