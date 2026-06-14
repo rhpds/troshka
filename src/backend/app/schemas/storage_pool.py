@@ -18,6 +18,10 @@ class StoragePoolUpdate(BaseModel):
     fsx_throughput_mbps: int | None = None
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
+    auto_extend_enabled: bool | None = None
+    auto_extend_threshold_pct: int | None = None
+    auto_extend_increment_gb: int | None = None
+    auto_extend_max_gb: int | None = None
 
 
 class StoragePoolResponse(BaseModel):
@@ -36,6 +40,10 @@ class StoragePoolResponse(BaseModel):
     provider_id: str
     host_count: int = 0
     created_at: datetime.datetime
+    auto_extend_enabled: bool = False
+    auto_extend_threshold_pct: int = 80
+    auto_extend_increment_gb: int = 64
+    auto_extend_max_gb: int | None = None
 
     model_config = {"from_attributes": True}
 

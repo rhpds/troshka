@@ -675,6 +675,25 @@ def resize_storage(host_id: str, body: dict, user: User = Depends(require_role("
     return {"status": "resized", "old_size_gb": host.storage_size_gb, "new_size_gb": new_size, "volume_id": vol_id}
 
 
+@router.post("/{host_id}/extend-storage")
+def extend_storage(host_id: str, body: dict | None = None,
+                   user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Auto-extend the host's EBS data volume by the configured increment."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No EC2 instance associated")
+
+    increment_gb = (body or {}).get("increment_gb")
+    from app.services.storage_extend import extend_host_ebs
+    try:
+        result = extend_host_ebs(host, db, increment_gb=increment_gb)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
 @router.delete("/{host_id}", status_code=204)
 def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     """Terminate the EC2 instance and remove the host from the pool."""

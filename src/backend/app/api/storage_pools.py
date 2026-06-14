@@ -149,11 +149,39 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
         if body.nfs_endpoint is not None:
             pool.nfs_endpoint = body.nfs_endpoint
 
+    if body.auto_extend_enabled is not None:
+        pool.auto_extend_enabled = body.auto_extend_enabled
+    if body.auto_extend_threshold_pct is not None:
+        pool.auto_extend_threshold_pct = body.auto_extend_threshold_pct
+    if body.auto_extend_increment_gb is not None:
+        pool.auto_extend_increment_gb = body.auto_extend_increment_gb
+    if body.auto_extend_max_gb is not None:
+        pool.auto_extend_max_gb = body.auto_extend_max_gb
+
     db.commit()
     db.refresh(pool)
     resp = StoragePoolResponse.model_validate(pool)
     resp.host_count = db.query(Host).filter(Host.storage_pool_id == pool.id).count()
     return resp
+
+
+@router.post("/{pool_id}/extend")
+def extend_pool(pool_id: str, body: dict | None = None,
+                user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Extend the FSx filesystem by the configured increment."""
+    pool = db.query(StoragePool).get(pool_id)
+    if not pool:
+        raise HTTPException(404, "Storage pool not found")
+    if pool.mode != "shared-fsx":
+        raise HTTPException(400, "Only FSx pools can be extended")
+
+    increment_gb = (body or {}).get("increment_gb")
+    from app.services.storage_extend import extend_pool_fsx
+    try:
+        result = extend_pool_fsx(pool, db, increment_gb=increment_gb)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return result
 
 
 @router.delete("/{pool_id}", status_code=204)

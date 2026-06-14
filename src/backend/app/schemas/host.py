@@ -33,5 +33,9 @@ class HostResponse(BaseModel):
     created_at: datetime.datetime
     storage_pool_id: str | None = None
     storage_warnings: list | None = None
+    auto_extend_enabled: bool = False
+    auto_extend_threshold_pct: int = 80
+    auto_extend_increment_gb: int = 100
+    auto_extend_max_gb: int | None = None
 
     model_config = {"from_attributes": True}
