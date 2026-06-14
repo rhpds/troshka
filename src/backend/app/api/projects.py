@@ -317,13 +317,14 @@ def deploy_project(
     if host and host.ip_address:
         try:
             disk = check_disk_usage(host)
-            logger.info("Deploy %s: disk check — %s%% used, %.1f GB free",
-                        project.id[:8], disk["used_pct"], disk["free_bytes"] / (1024 ** 3))
-            if disk["used_pct"] >= 90:
-                free_gb = disk["free_bytes"] / (1024 ** 3)
-                project.state = "draft"
-                db.commit()
-                raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
+            if disk:
+                logger.info("Deploy %s: disk check — %s%% used, %.1f GB free",
+                            project.id[:8], disk["used_pct"], disk["free_bytes"] / (1024 ** 3))
+                if disk["used_pct"] >= 90:
+                    free_gb = disk["free_bytes"] / (1024 ** 3)
+                    project.state = "draft"
+                    db.commit()
+                    raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.")
         except HTTPException:
             raise
         except Exception as e:
@@ -440,7 +441,7 @@ def _get_project_and_host(project_id: str, user: User, db: Session, check_disk: 
     if check_disk:
         from app.services.troshkad_client import check_disk_usage
         disk = check_disk_usage(host)
-        if disk["used_pct"] >= 90:
+        if disk and disk["used_pct"] >= 90:
             free_gb = disk["free_bytes"] / (1024 ** 3)
             raise HTTPException(status_code=507, detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume.")
     return project, host
@@ -485,7 +486,7 @@ def get_all_vm_states(project_id: str, user: User = Depends(get_current_user), d
 
     states = {}
     progress = {}
-    for node in project.topology.get("nodes", []):
+    for node in (project.topology or {}).get("nodes", []):
         if node.get("type") != "vmNode":
             continue
         dom_name = _domain_name(project_id, node["id"])
@@ -993,6 +994,7 @@ def reconfigure_project(
                         dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
                         dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
 
+                from app.services.deploy_service import _image_cache_path
                 disk_list = []
                 cdrom_list = []
                 any_disk_changed = False
@@ -1003,7 +1005,6 @@ def reconfigure_project(
                 for d in vm_disks:
                     if d["format"] == "iso":
                         if d.get("library_item_id"):
-                            from app.services.deploy_service import _image_cache_path
                             cdrom_list.append(_image_cache_path(d['library_item_id'], "iso", pool=_pool))
                         continue
                     path = _disk_path(p_id, vm["node_id"], d["node_id"], d["format"], pool=_pool)
