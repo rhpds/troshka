@@ -8,7 +8,6 @@ import {
   Card,
   CardBody,
   Alert,
-  ExpandableSection,
   Switch,
 } from "@patternfly/react-core";
 
@@ -82,9 +81,12 @@ export default function StoragePoolsPage() {
   const [editThroughput, setEditThroughput] = useState(160);
   const [editStorageGb, setEditStorageGb] = useState(128);
   const [editNfsEndpoint, setEditNfsEndpoint] = useState("");
+  const [editAutoExtend, setEditAutoExtend] = useState(false);
+  const [editThresholdPct, setEditThresholdPct] = useState(80);
+  const [editIncrementGb, setEditIncrementGb] = useState(64);
+  const [editMaxGb, setEditMaxGb] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
   const [extending, setExtending] = useState<Record<string, boolean>>({});
   const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
@@ -202,6 +204,10 @@ export default function StoragePoolsPage() {
     setEditThroughput(pool.fsx_throughput_mbps || 160);
     setEditStorageGb(pool.fsx_storage_gb || 128);
     setEditNfsEndpoint(pool.nfs_endpoint || "");
+    setEditAutoExtend(pool.auto_extend_enabled);
+    setEditThresholdPct(pool.auto_extend_threshold_pct);
+    setEditIncrementGb(pool.auto_extend_increment_gb);
+    setEditMaxGb(pool.auto_extend_max_gb);
   };
 
   const cancelEdit = () => {
@@ -231,6 +237,10 @@ export default function StoragePoolsPage() {
     if (pool.mode === "shared-byo") {
       body.nfs_endpoint = editNfsEndpoint;
     }
+    body.auto_extend_enabled = editAutoExtend;
+    body.auto_extend_threshold_pct = editThresholdPct;
+    body.auto_extend_increment_gb = editIncrementGb;
+    body.auto_extend_max_gb = editMaxGb;
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -254,24 +264,6 @@ export default function StoragePoolsPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to delete pool");
-    }
-  };
-
-  const updateAutoExtend = async (
-    poolId: string,
-    field: string,
-    value: boolean | number | null
-  ) => {
-    const resp = await fetch(`/api/v1/storage-pools/${poolId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [field]: value }),
-    });
-    if (resp.ok) {
-      loadData();
-    } else {
-      const data = await resp.json();
-      setError(data.detail || "Failed to update auto-extend settings");
     }
   };
 
@@ -413,6 +405,36 @@ export default function StoragePoolsPage() {
                                  placeholder="10.0.1.50:/exports/troshka" />
                         </div>
                       )}
+                      {pool.mode === "shared-fsx" && (
+                        <>
+                          <div style={{ marginTop: 12, borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 10 }}>
+                            <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Auto-Extend</label>
+                          </div>
+                          <Switch
+                            label="Auto-extend enabled"
+                            isChecked={editAutoExtend}
+                            onChange={(_, checked) => setEditAutoExtend(checked)}
+                          />
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
+                            <input style={inputStyle} type="number" value={editThresholdPct}
+                                   onChange={(e) => setEditThresholdPct(parseInt(e.target.value) || 80)}
+                                   min={50} max={95} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
+                            <input style={inputStyle} type="number" value={editIncrementGb}
+                                   onChange={(e) => setEditIncrementGb(parseInt(e.target.value) || 64)}
+                                   min={64} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB, optional)</label>
+                            <input style={inputStyle} type="number" value={editMaxGb || ""}
+                                   onChange={(e) => setEditMaxGb(e.target.value ? parseInt(e.target.value) : null)}
+                                   placeholder="No limit" />
+                          </div>
+                        </>
+                      )}
                       <div style={{ display: "flex", gap: 8 }}>
                         <Button variant="primary" size="sm" onClick={() => saveEdit(pool)}
                                 isLoading={saving} isDisabled={saving}>Save</Button>
@@ -421,97 +443,24 @@ export default function StoragePoolsPage() {
                     </div>
                   ) : (
                     <>
-                      <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16 }}>
+                      <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16, flexWrap: "wrap" }}>
                         {pool.az && <span>AZ: {pool.az}</span>}
                         <span>Hosts: {pool.host_count}</span>
                         {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
                         {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
                         {pool.fsx_storage_gb && <span>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
                         {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
+                        {pool.auto_extend_enabled && <span>Auto-extend: on (≥{pool.auto_extend_threshold_pct}%, +{pool.auto_extend_increment_gb} GB{pool.auto_extend_max_gb ? `, max ${pool.auto_extend_max_gb} GB` : ""})</span>}
                       </div>
                       {pool.mode === "shared-fsx" && pool.status === "available" && (
-                        <ExpandableSection
-                          toggleText="Auto-Extend Settings"
-                          isExpanded={expandedAutoExtend[pool.id] || false}
-                          onToggle={() =>
-                            setExpandedAutoExtend({
-                              ...expandedAutoExtend,
-                              [pool.id]: !expandedAutoExtend[pool.id],
-                            })
-                          }
-                          style={{ marginTop: 12 }}
-                        >
-                          <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400, marginTop: 8 }}>
-                            <Switch
-                              label="Auto-extend enabled"
-                              isChecked={pool.auto_extend_enabled}
-                              onChange={(_, checked) => updateAutoExtend(pool.id, "auto_extend_enabled", checked)}
-                            />
-                            <div>
-                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                                Threshold (%)
-                              </label>
-                              <input
-                                style={inputStyle}
-                                type="number"
-                                value={pool.auto_extend_threshold_pct}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value) || 80;
-                                  if (val >= 50 && val <= 95) {
-                                    updateAutoExtend(pool.id, "auto_extend_threshold_pct", val);
-                                  }
-                                }}
-                                min={50}
-                                max={95}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                                Increment (GB)
-                              </label>
-                              <input
-                                style={inputStyle}
-                                type="number"
-                                value={pool.auto_extend_increment_gb}
-                                onChange={(e) =>
-                                  updateAutoExtend(
-                                    pool.id,
-                                    "auto_extend_increment_gb",
-                                    parseInt(e.target.value) || 64
-                                  )
-                                }
-                                min={64}
-                              />
-                            </div>
-                            <div>
-                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                                Max (GB, optional)
-                              </label>
-                              <input
-                                style={inputStyle}
-                                type="number"
-                                value={pool.auto_extend_max_gb || ""}
-                                onChange={(e) =>
-                                  updateAutoExtend(
-                                    pool.id,
-                                    "auto_extend_max_gb",
-                                    e.target.value ? parseInt(e.target.value) : null
-                                  )
-                                }
-                                placeholder="No limit"
-                              />
-                            </div>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => handleExtendNow(pool)}
-                              isLoading={extending[pool.id]}
-                              isDisabled={extending[pool.id]}
-                            >
-                              Extend Now
-                            </Button>
-                          </div>
-                        </ExpandableSection>
+                        <div style={{ marginTop: 8 }}>
+                          <Button variant="secondary" size="sm"
+                                  onClick={() => handleExtendNow(pool)}
+                                  isLoading={extending[pool.id]}
+                                  isDisabled={extending[pool.id]}>
+                            Extend Now
+                          </Button>
+                        </div>
                       )}
                     </>
                   )}
