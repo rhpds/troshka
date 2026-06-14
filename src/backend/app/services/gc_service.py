@@ -137,6 +137,7 @@ def repair_networks(db: Session, host) -> dict:
     """Ensure VXLAN bridges exist for all active/stopped projects on this host."""
     from app.models.project import Project
     from app.services.deploy_service import _setup_networks_via_troshkad
+    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
 
     if not host.ip_address or host.agent_status != "connected":
         return {"repaired": 0, "error": "Host not reachable"}
@@ -149,25 +150,29 @@ def repair_networks(db: Session, host) -> dict:
     if not projects:
         return {"repaired": 0}
 
-    needed_vnis = set()
-    for p in projects:
-        for vni in (p.vni_map or {}).values():
-            needed_vnis.add(str(vni))
+    # Check which bridges already exist on the host
+    existing_bridges = set()
+    try:
+        job_id = start_job(host, "/networks/list-bridges", {})
+        job = wait_for_job(host, job_id, timeout=15)
+        if job["status"] == "completed":
+            existing_bridges = set(job.get("result", {}).get("bridges", []))
+    except TroshkadError:
+        pass
 
-    if not needed_vnis:
-        return {"repaired": 0}
-
-    # Repair by re-running full network setup for each project with missing bridges
     repaired = 0
     for p in projects:
         project_vnis = set(str(v) for v in (p.vni_map or {}).values())
         if not project_vnis:
             continue
+        missing = [v for v in project_vnis if f"br-{v}" not in existing_bridges]
+        if not missing:
+            continue
         topo = p.deployed_topology or p.topology or {}
         result = _setup_networks_via_troshkad(host, topo, p.vni_map or {}, db, p.id)
         if result is True:
-            repaired += len(project_vnis)
-            log.info("Repaired bridges for project %s", p.id[:8])
+            repaired += len(missing)
+            log.info("Repaired %d bridges for project %s", len(missing), p.id[:8])
         else:
             log.warning("Failed to repair bridges for project %s: %s", p.id[:8], result)
 

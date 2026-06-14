@@ -1658,6 +1658,25 @@ def _handle_network_teardown(job, params):
 COMMAND_HANDLERS["networks/teardown"] = _handle_network_teardown
 
 
+def _handle_list_bridges(job, params):
+    """List all br-* bridges on the host."""
+    result = subprocess.run(
+        ["ip", "-o", "link", "show", "type", "bridge"],
+        capture_output=True, text=True, timeout=10,
+    )
+    bridges = []
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split(":", 2)
+            if len(parts) >= 2:
+                name = parts[1].strip().split("@")[0]
+                if name.startswith("br-"):
+                    bridges.append(name)
+    return {"bridges": bridges}
+
+COMMAND_HANDLERS["networks/list-bridges"] = _handle_list_bridges
+
+
 def _handle_network_full_setup(job, params):
     """Full VXLAN mesh network setup: namespace, veth, VXLAN, bridge, DHCP, nftables.
 
