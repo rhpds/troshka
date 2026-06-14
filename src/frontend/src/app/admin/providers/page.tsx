@@ -237,7 +237,7 @@ export default function AdminProvidersPage() {
   };
 
   const removeConsole = async (providerId: string) => {
-    if (!confirm("Remove console DNS configuration? This will delete the hosted zone and all DNS records.")) return;
+    if (!confirm("Remove console DNS? This will delete the hosted zone and all DNS records.")) return;
     try {
       const resp = await fetch(`/api/v1/providers/${providerId}/console`, { method: "DELETE" });
       if (resp.ok) loadProviders();
@@ -488,18 +488,22 @@ export default function AdminProvidersPage() {
                       </Card>
                     )}
                     {p.console_configured && p.console_nameservers && (
-                      <Card style={{ marginTop: 12 }}>
-                        <CardBody>
-                          <div style={{ fontWeight: 600, marginBottom: 4 }}>Console DNS: {p.console_base_domain}</div>
-                          <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
-                            Add NS records for <code>{p.console_base_domain}</code> in your parent zone pointing to:
-                          </div>
-                          <div style={{ fontSize: 12, fontFamily: "monospace", marginBottom: 8 }}>
-                            {p.console_nameservers.map((ns: string) => <div key={ns}>{ns}</div>)}
-                          </div>
-                          <Button variant="danger" onClick={() => removeConsole(p.id)}>Remove Console</Button>
-                        </CardBody>
-                      </Card>
+                      <details style={{ marginTop: 12 }}>
+                        <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
+                          Console DNS: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
+                        </summary>
+                        <Card style={{ marginTop: 6 }}>
+                          <CardBody>
+                            <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                              Add NS records for <code>{p.console_base_domain}</code> in your parent zone pointing to:
+                            </div>
+                            <div style={{ fontSize: 12, fontFamily: "monospace", marginBottom: 8 }}>
+                              {p.console_nameservers.map((ns: string) => <div key={ns}>{ns}</div>)}
+                            </div>
+                            <Button variant="danger" onClick={() => removeConsole(p.id)}>Remove Console DNS</Button>
+                          </CardBody>
+                        </Card>
+                      </details>
                     )}
                   </div>
                 </div>
