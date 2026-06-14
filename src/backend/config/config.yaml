@@ -47,7 +47,3 @@ gc:
 health:
   interval_seconds: 30
   disconnect_after_seconds: 90
-
-console:
-  hosted_zone_id: ""
-  base_domain: ""

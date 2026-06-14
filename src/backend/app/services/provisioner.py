@@ -360,7 +360,7 @@ def provision_host(
                     "AssociatePublicIpAddress": True,
                 }],
             )
-            if getattr(config.console, "hosted_zone_id", ""):
+            if kwargs.get("console_zone_id"):
                 launch_kwargs["IamInstanceProfile"] = {"Name": "troshka-certbot-profile"}
             response = client.run_instances(**launch_kwargs)
             break

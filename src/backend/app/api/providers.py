@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
-from app.core.config import config
 from app.core.database import get_db
 from app.models.provider import Provider
 from app.models.user import User
@@ -48,6 +47,9 @@ class ProviderResponse(BaseModel):
     vpc_id: str | None
     subnet_id: str | None
     security_group_id: str | None
+    console_base_domain: str | None = None
+    console_nameservers: list | None = None
+    console_configured: bool = False
     state: str
     has_credentials: bool
     host_count: int
@@ -69,6 +71,9 @@ def list_providers(user: User = Depends(require_role("admin")), db: Session = De
             vpc_id=p.vpc_id,
             subnet_id=p.subnet_id,
             security_group_id=p.security_group_id,
+            console_base_domain=p.console_base_domain,
+            console_nameservers=p.console_nameservers,
+            console_configured=p.console_zone_id is not None,
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -375,66 +380,6 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
         except Exception as e:
             logger.warning("S3 endpoint creation failed (non-fatal): %s", e)
 
-        # Create IAM instance profile for certbot DNS-01 challenges
-        console_zone_id = getattr(config.console, "hosted_zone_id", "")
-        if console_zone_id:
-            try:
-                iam = boto3.client(
-                    "iam",
-                    aws_access_key_id=creds.get("access_key_id"),
-                    aws_secret_access_key=creds.get("secret_access_key"),
-                )
-                role_name = "troshka-certbot-role"
-                profile_name = "troshka-certbot-profile"
-
-                try:
-                    iam.create_role(
-                        RoleName=role_name,
-                        AssumeRolePolicyDocument=json.dumps({
-                            "Version": "2012-10-17",
-                            "Statement": [{
-                                "Effect": "Allow",
-                                "Principal": {"Service": "ec2.amazonaws.com"},
-                                "Action": "sts:AssumeRole",
-                            }],
-                        }),
-                        Description="Allows EC2 hosts to manage Route53 for certbot DNS-01",
-                        Tags=[{"Key": "ManagedBy", "Value": "troshka"}],
-                    )
-                except iam.exceptions.EntityAlreadyExistsException:
-                    pass
-
-                iam.put_role_policy(
-                    RoleName=role_name,
-                    PolicyName="troshka-certbot-dns",
-                    PolicyDocument=json.dumps({
-                        "Version": "2012-10-17",
-                        "Statement": [{
-                            "Effect": "Allow",
-                            "Action": "route53:ChangeResourceRecordSets",
-                            "Resource": f"arn:aws:route53:::hostedzone/{console_zone_id}",
-                        }, {
-                            "Effect": "Allow",
-                            "Action": ["route53:GetChange", "route53:ListHostedZones"],
-                            "Resource": "*",
-                        }],
-                    }),
-                )
-
-                try:
-                    iam.create_instance_profile(InstanceProfileName=profile_name)
-                except iam.exceptions.EntityAlreadyExistsException:
-                    pass
-
-                try:
-                    iam.add_role_to_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
-                except iam.exceptions.LimitExceededException:
-                    pass
-
-                logger.info("Created IAM instance profile %s for certbot", profile_name)
-            except Exception as e:
-                logger.warning("Failed to create certbot instance profile: %s (console proxy will not work)", e)
-
         from app.services.provisioner import ensure_security_group
         sg_id = ensure_security_group(vpc_id, credentials=creds)
 
@@ -611,3 +556,169 @@ def list_availability_zones(provider_id: str, user: User = Depends(require_role(
     )
     azs = sorted(az["ZoneName"] for az in resp["AvailabilityZones"])
     return azs
+
+
+class ConsoleSetupRequest(BaseModel):
+    base_domain: str
+
+
+@router.post("/{provider_id}/setup-console")
+def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Create Route53 hosted zone and IAM resources for direct console proxy."""
+    import boto3
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    creds = provider.get_credentials()
+    base_domain = req.base_domain.strip().lower()
+    if not base_domain or "." not in base_domain:
+        raise HTTPException(status_code=400, detail="Invalid domain name")
+
+    try:
+        r53 = boto3.client(
+            "route53",
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+
+        # Check if zone already exists
+        existing = r53.list_hosted_zones_by_name(DNSName=base_domain, MaxItems="1")
+        zone_id = None
+        nameservers = []
+        for zone in existing.get("HostedZones", []):
+            if zone["Name"].rstrip(".") == base_domain:
+                zone_id = zone["Id"].split("/")[-1]
+                ns_resp = r53.get_hosted_zone(Id=zone_id)
+                nameservers = ns_resp["DelegationSet"]["NameServers"]
+                break
+
+        if not zone_id:
+            import time
+            resp = r53.create_hosted_zone(
+                Name=base_domain,
+                CallerReference=f"troshka-console-{int(time.time())}",
+                HostedZoneConfig={"Comment": "Troshka console proxy DNS"},
+            )
+            zone_id = resp["HostedZone"]["Id"].split("/")[-1]
+            nameservers = resp["DelegationSet"]["NameServers"]
+            logger.info("Created hosted zone %s for %s", zone_id, base_domain)
+
+        # Create IAM role + instance profile (idempotent)
+        iam = boto3.client(
+            "iam",
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+        role_name = "troshka-certbot-role"
+        profile_name = "troshka-certbot-profile"
+
+        try:
+            iam.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=json.dumps({
+                    "Version": "2012-10-17",
+                    "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}],
+                }),
+                Description="Allows EC2 hosts to manage Route53 for certbot DNS-01",
+                Tags=[{"Key": "ManagedBy", "Value": "troshka"}],
+            )
+        except iam.exceptions.EntityAlreadyExistsException:
+            pass
+
+        iam.put_role_policy(
+            RoleName=role_name,
+            PolicyName="troshka-certbot-dns",
+            PolicyDocument=json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Action": "route53:ChangeResourceRecordSets",
+                    "Resource": f"arn:aws:route53:::hostedzone/{zone_id}",
+                }, {
+                    "Effect": "Allow",
+                    "Action": ["route53:GetChange", "route53:ListHostedZones"],
+                    "Resource": "*",
+                }],
+            }),
+        )
+
+        try:
+            iam.create_instance_profile(InstanceProfileName=profile_name)
+        except iam.exceptions.EntityAlreadyExistsException:
+            pass
+
+        try:
+            iam.add_role_to_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
+        except iam.exceptions.LimitExceededException:
+            pass
+
+        # Store on provider
+        provider.console_zone_id = zone_id
+        provider.console_base_domain = base_domain
+        provider.console_nameservers = nameservers
+        db.commit()
+
+        return {
+            "zone_id": zone_id,
+            "base_domain": base_domain,
+            "nameservers": nameservers,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to setup console for provider %s", provider_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{provider_id}/console")
+def delete_console(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Remove console DNS configuration and hosted zone."""
+    import boto3
+    from app.models.host import Host
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if not provider.console_zone_id:
+        raise HTTPException(status_code=400, detail="Console not configured")
+
+    creds = provider.get_credentials()
+    zone_id = provider.console_zone_id
+
+    try:
+        r53 = boto3.client(
+            "route53",
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+
+        # Delete all A records in the zone
+        paginator = r53.get_paginator("list_resource_record_sets")
+        changes = []
+        for page in paginator.paginate(HostedZoneId=zone_id):
+            for rrs in page["ResourceRecordSets"]:
+                if rrs["Type"] in ("A", "CNAME"):
+                    changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
+        if changes:
+            for i in range(0, len(changes), 100):
+                r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes[i:i+100]})
+
+        r53.delete_hosted_zone(Id=zone_id)
+        logger.info("Deleted hosted zone %s", zone_id)
+
+    except Exception as e:
+        logger.warning("Failed to fully clean up hosted zone %s: %s", zone_id, e)
+
+    # Clear console_domain on all hosts under this provider
+    hosts = db.query(Host).filter_by(provider_id=provider_id).all()
+    for h in hosts:
+        h.console_domain = None
+    provider.console_zone_id = None
+    provider.console_base_domain = None
+    provider.console_nameservers = None
+    db.commit()
+
+    return {"status": "removed"}

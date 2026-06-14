@@ -26,6 +26,9 @@ interface ProviderInfo {
   has_credentials: boolean;
   host_count: number;
   created_at: string;
+  console_base_domain?: string;
+  console_nameservers?: string[];
+  console_configured?: boolean;
 }
 
 export default function AdminProvidersPage() {
@@ -36,6 +39,9 @@ export default function AdminProvidersPage() {
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [amiResult, setAmiResult] = useState<Record<string, string>>({});
   const [amiOptions, setAmiOptions] = useState<Record<string, Array<{type: string; label: string; ami_id: string; name: string; created: string}>>>({});
+  const [consoleDomain, setConsoleDomain] = useState<Record<string, string>>({});
+  const [consoleSetupResult, setConsoleSetupResult] = useState<Record<string, string>>({});
+  const [settingUpConsole, setSettingUpConsole] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [type, setType] = useState("ec2");
@@ -206,6 +212,38 @@ export default function AdminProvidersPage() {
     }
   };
 
+  const setupConsole = async (providerId: string) => {
+    const domain = consoleDomain[providerId]?.trim();
+    if (!domain) return;
+    setSettingUpConsole(providerId);
+    setConsoleSetupResult((prev) => ({ ...prev, [providerId]: "" }));
+    try {
+      const resp = await fetch(`/api/v1/providers/${providerId}/setup-console`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base_domain: domain }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setConsoleSetupResult((prev) => ({ ...prev, [providerId]: data.detail || "Setup failed" }));
+      } else {
+        setConsoleSetupResult((prev) => ({ ...prev, [providerId]: "Console configured" }));
+        loadProviders();
+      }
+    } catch {
+      setConsoleSetupResult((prev) => ({ ...prev, [providerId]: "Connection failed" }));
+    }
+    setSettingUpConsole(null);
+  };
+
+  const removeConsole = async (providerId: string) => {
+    if (!confirm("Remove console DNS configuration? This will delete the hosted zone and all DNS records.")) return;
+    try {
+      const resp = await fetch(`/api/v1/providers/${providerId}/console`, { method: "DELETE" });
+      if (resp.ok) loadProviders();
+    } catch { /* ignore */ }
+  };
+
   const deleteProvider = async (id: string) => {
     if (!window.confirm("Delete this provider?")) return;
     const resp = await fetch(`/api/v1/providers/${id}`, { method: "DELETE" });
@@ -358,6 +396,11 @@ export default function AdminProvidersPage() {
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
                       )}
+                      {p.type !== "s3" && (
+                        p.console_configured
+                          ? <span> · Console: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code></span>
+                          : null
+                      )}
                     </div>
                     {testResult[p.id] && (
                       <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
@@ -413,6 +456,51 @@ export default function AdminProvidersPage() {
                         ))}
                       </div>
                     )}
+                    {consoleDomain[p.id] !== undefined && !p.console_configured && (
+                      <Card style={{ marginTop: 12 }}>
+                        <CardBody>
+                          <div style={{ fontWeight: 600, marginBottom: 8 }}>Setup Console DNS</div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <input
+                              style={inputStyle}
+                              placeholder="e.g., troshka.dev.rhdp.net"
+                              value={consoleDomain[p.id] || ""}
+                              onChange={(e) => setConsoleDomain((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                            />
+                            <Button
+                              variant="primary"
+                              isLoading={settingUpConsole === p.id}
+                              isDisabled={!consoleDomain[p.id]?.trim() || settingUpConsole === p.id}
+                              onClick={() => setupConsole(p.id)}
+                            >
+                              Create
+                            </Button>
+                            <Button variant="plain" onClick={() => setConsoleDomain((prev) => { const n = { ...prev }; delete n[p.id]; return n; })}>
+                              Cancel
+                            </Button>
+                          </div>
+                          {consoleSetupResult[p.id] && (
+                            <div style={{ marginTop: 8, fontSize: 13, color: consoleSetupResult[p.id].includes("failed") ? "#ef4444" : "#22c55e" }}>
+                              {consoleSetupResult[p.id]}
+                            </div>
+                          )}
+                        </CardBody>
+                      </Card>
+                    )}
+                    {p.console_configured && p.console_nameservers && (
+                      <Card style={{ marginTop: 12 }}>
+                        <CardBody>
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>Console DNS: {p.console_base_domain}</div>
+                          <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                            Add NS records for <code>{p.console_base_domain}</code> in your parent zone pointing to:
+                          </div>
+                          <div style={{ fontSize: 12, fontFamily: "monospace", marginBottom: 8 }}>
+                            {p.console_nameservers.map((ns: string) => <div key={ns}>{ns}</div>)}
+                          </div>
+                          <Button variant="danger" onClick={() => removeConsole(p.id)}>Remove Console</Button>
+                        </CardBody>
+                      </Card>
+                    )}
                   </div>
                 </div>
               )}
@@ -449,6 +537,11 @@ export default function AdminProvidersPage() {
                     )}
                     {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
                     {p.type !== "s3" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
+                    {p.type !== "s3" && p.vpc_id && !p.console_configured && (
+                      <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>
+                        Setup Console
+                      </Button>
+                    )}
                     <Button variant="secondary" onClick={() => testProvider(p.id)}>Test</Button>
                     {p.type === "ec2" && p.state === "active" && (
                       <Button variant="secondary" onClick={async () => {

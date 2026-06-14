@@ -3,7 +3,7 @@ import json
 import uuid
 
 from sqlalchemy import DateTime, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -21,6 +21,9 @@ class Provider(Base):
     vpc_id: Mapped[str | None] = mapped_column(String(50))
     subnet_id: Mapped[str | None] = mapped_column(String(50))
     security_group_id: Mapped[str | None] = mapped_column(String(50))
+    console_zone_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    console_base_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    console_nameservers: Mapped[list | None] = mapped_column(JSONB, default=None)
     state: Mapped[str] = mapped_column(String(20), default="active")
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime.datetime] = mapped_column(

@@ -8,8 +8,6 @@ import time
 
 import boto3
 
-from app.core.config import config
-
 logger = logging.getLogger(__name__)
 
 JWT_EXPIRY_SECONDS = 300  # 5 minutes
@@ -55,17 +53,16 @@ def verify_console_jwt(token: str, secret: str) -> dict | None:
         return None
 
 
-def upsert_dns_record(fqdn: str, ip: str, credentials: dict | None = None) -> None:
-    hosted_zone_id = getattr(config.console, "hosted_zone_id", "")
+def upsert_dns_record(fqdn: str, ip: str, hosted_zone_id: str, credentials: dict | None = None) -> None:
     if not hosted_zone_id:
-        logger.warning("console.hosted_zone_id not configured, skipping DNS")
+        logger.warning("No hosted_zone_id provided, skipping DNS")
         return
 
     creds = credentials or {}
     client = boto3.client(
         "route53",
-        aws_access_key_id=creds.get("access_key_id") or getattr(config.aws, "access_key_id", None),
-        aws_secret_access_key=creds.get("secret_access_key") or getattr(config.aws, "secret_access_key", None),
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
     )
     client.change_resource_record_sets(
         HostedZoneId=hosted_zone_id,
@@ -84,16 +81,15 @@ def upsert_dns_record(fqdn: str, ip: str, credentials: dict | None = None) -> No
     logger.info("DNS: upserted %s -> %s", fqdn, ip)
 
 
-def delete_dns_record(fqdn: str, ip: str, credentials: dict | None = None) -> None:
-    hosted_zone_id = getattr(config.console, "hosted_zone_id", "")
+def delete_dns_record(fqdn: str, ip: str, hosted_zone_id: str, credentials: dict | None = None) -> None:
     if not hosted_zone_id:
         return
 
     creds = credentials or {}
     client = boto3.client(
         "route53",
-        aws_access_key_id=creds.get("access_key_id") or getattr(config.aws, "access_key_id", None),
-        aws_secret_access_key=creds.get("secret_access_key") or getattr(config.aws, "secret_access_key", None),
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
     )
     try:
         client.change_resource_record_sets(
