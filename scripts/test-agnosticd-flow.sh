@@ -78,6 +78,7 @@ run_lifecycle() {
     fi
 
     cd "$AGD_DIR"
+    ANSIBLE_COLLECTIONS_PATH="$HOME/.ansible/collections" \
     ansible-navigator run "$playbook" \
         --mode stdout --ee false \
         --extra-vars "cloud_provider=troshka config=${CONFIG} guid=${guid} ACTION=${action} troshka_api_url=${TROSHKA_API_URL} troshka_api_key=${api_key} troshka_project_id=${project_id}" \
@@ -191,6 +192,7 @@ echo "=== Deploying: guid=$GUID ==="
 # --- Run ansible-navigator ---
 cd "$AGD_DIR"
 
+ANSIBLE_COLLECTIONS_PATH="$HOME/.ansible/collections" \
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
