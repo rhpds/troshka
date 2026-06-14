@@ -207,14 +207,14 @@ def create_pattern(
     if existing:
         raise HTTPException(status_code=409, detail=f"You already have a pattern named \"{body.name}\"")
 
+    source_project: Project | None = None
     if body.source_project_id:
-        # Capture from an existing project
-        project = db.query(Project).filter_by(id=body.source_project_id, owner_id=user.id).first()
-        if not project:
+        source_project = db.query(Project).filter_by(id=body.source_project_id, owner_id=user.id).first()
+        if not source_project:
             raise HTTPException(status_code=404, detail="Source project not found")
-        if project.state not in ("active", "stopped"):
+        if source_project.state not in ("active", "stopped"):
             raise HTTPException(status_code=400, detail="Project must be deployed (active or stopped) to save as pattern")
-        topology = project.topology or {}
+        topology = source_project.topology or {}
         state = "capturing"
     elif body.topology:
         topology = body.topology
@@ -222,9 +222,13 @@ def create_pattern(
     else:
         raise HTTPException(status_code=400, detail="Provide source_project_id or topology")
 
+    pattern_description = body.description
+    if not pattern_description and source_project:
+        pattern_description = source_project.description
+
     pattern = Pattern(
         name=body.name,
-        description=body.description,
+        description=pattern_description,
         owner_id=user.id,
         visibility=body.visibility,
         source_project_id=body.source_project_id,

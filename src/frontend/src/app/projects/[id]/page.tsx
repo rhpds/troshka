@@ -29,6 +29,7 @@ export default function ProjectCanvasPage() {
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
+  const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("draft");
   const ws = useVmStateSocket(projectId);
 
@@ -64,6 +65,7 @@ export default function ProjectCanvasPage() {
         if (!data) return;
         setProjectName(data.name);
         setProjectDesc(data.description || "");
+        setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setDeployError(data.deploy_error || null);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
@@ -619,7 +621,7 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectId={projectId} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: "cluster ready" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: "cluster ready" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} />}

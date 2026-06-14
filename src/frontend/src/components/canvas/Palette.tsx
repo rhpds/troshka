@@ -170,7 +170,7 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, onDescriptionChange, ocpHealth, projectId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
@@ -272,7 +272,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
 
   return (
     <div className="canvas-palette">
-      {projectDescription && (
+      {(
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"
@@ -299,7 +299,13 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 onClick={() => setEditingDesc(true)}
                 title="Click to edit"
               >
-                {projectDescription.split(" | ").map((part, i) => <div key={i}>{part}</div>)}
+                {projectDescription ? projectDescription.split(" | ").map((part, i) => <div key={i}>{part}</div>) : <span style={{ opacity: 0.4, fontStyle: "italic" }}>Click to add description</span>}
+                {projectGuid && (
+                  <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ opacity: 0.4 }}>GUID:</span>
+                    <code style={{ fontSize: 11 }}>{projectGuid}</code>
+                  </div>
+                )}
               </div>
             )
           )}

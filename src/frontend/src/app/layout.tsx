@@ -60,6 +60,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       .catch(() => setUser(null));
   }, []);
 
+  useEffect(() => {
+    const titleMap: Record<string, string> = {
+      "/projects": "Projects",
+      "/library/images": "Images",
+      "/library/patterns": "Patterns",
+      "/settings": "Settings",
+      "/admin/users": "Users",
+      "/admin/providers": "Providers",
+      "/admin/hosts": "Hosts",
+      "/admin/storage-pools": "Storage Pools",
+      "/admin/dns-providers": "DNS Providers",
+    };
+    const pageTitle = titleMap[pathname || ""] || "";
+    if (pageTitle) document.title = `Troshka: ${pageTitle}`;
+  }, [pathname]);
+
   const toggleTheme = () => {
     setIsDark((prev) => {
       const next = !prev;

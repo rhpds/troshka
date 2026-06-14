@@ -198,6 +198,7 @@ def get_project(
         "provider_id": project.provider_id,
         "host_type": project.host_type,
         "host_id": project.host_id,
+        "guid": project.guid,
         "state": project.state,
         "topology": project.topology,
         "deployed_topology": project.deployed_topology,
