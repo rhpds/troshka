@@ -185,6 +185,48 @@ def _get_capacity():
     return capacity
 
 
+_PSEUDO_FSTYPES = frozenset({
+    "proc", "sysfs", "devtmpfs", "tmpfs", "cgroup", "cgroup2", "overlay",
+    "devpts", "mqueue", "hugetlbfs", "debugfs", "tracefs", "securityfs",
+    "pstore", "bpf", "fusectl", "configfs", "autofs", "nfsd",
+    "rpc_pipefs", "binfmt_misc", "efivarfs", "nsfs", "fuse.lxcfs",
+})
+
+
+def _get_partitions():
+    """Read all mounted partitions, filtering pseudo-filesystems and deduplicating by device."""
+    partitions = []
+    seen_devices = set()
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                device, mount, fstype = parts[0], parts[1], parts[2]
+                if fstype in _PSEUDO_FSTYPES:
+                    continue
+                if device in seen_devices:
+                    continue
+                seen_devices.add(device)
+                try:
+                    stat = shutil.disk_usage(mount)
+                    partitions.append({
+                        "mount": mount,
+                        "total_bytes": stat.total,
+                        "used_bytes": stat.used,
+                        "free_bytes": stat.free,
+                        "used_pct": round((stat.used / stat.total) * 100, 1) if stat.total > 0 else 0,
+                        "device": device,
+                        "fstype": fstype,
+                    })
+                except (OSError, PermissionError):
+                    pass
+    except (OSError, FileNotFoundError):
+        pass
+    return partitions
+
+
 # ── Job dispatch framework ──
 
 COMMAND_HANDLERS = {}  # command_path -> handler_func(job, params)
@@ -339,6 +381,7 @@ def handle_health(handler, params):
         "uptime_seconds": int(time.time() - _start_time),
         "running_jobs": _running_job_count(),
         "capacity": _get_capacity(),
+        "partitions": _get_partitions(),
         "features": {
             "batch_vm_states": True,
             "libvirt_events": _libvirt_events_available,
@@ -3195,22 +3238,8 @@ COMMAND_HANDLERS["patterns/export"] = _handle_pattern_export
 
 @route("GET", "/host/disk-usage")
 def handle_disk_usage(handler, params):
-    """Return disk usage stats for /var/lib/troshka."""
-    try:
-        stat = shutil.disk_usage("/var/lib/troshka")
-        free_bytes = stat.free
-        total_bytes = stat.total
-        used_pct = round((stat.used / stat.total) * 100, 2) if stat.total > 0 else 0
-    except Exception:
-        # If path doesn't exist or is inaccessible, return error fallback
-        free_bytes = 0
-        total_bytes = 0
-        used_pct = 100
-    handler._send_json(200, {
-        "free_bytes": free_bytes,
-        "total_bytes": total_bytes,
-        "used_pct": used_pct,
-    })
+    """Return disk usage stats for all mounted partitions."""
+    handler._send_json(200, {"partitions": _get_partitions()})
 
 
 @route("GET", "/vms/states")
