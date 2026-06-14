@@ -3365,6 +3365,35 @@ def _start_libvirt_event_loop():
             while len(_vm_events) > 500:
                 _vm_events.pop(0)
 
+    def _block_threshold_cb(conn, dom, dev, path, threshold, opaque):
+        name = dom.name()
+        if not name.startswith("troshka-"):
+            return
+        now = time.time()
+        event = {
+            "type": "block_threshold",
+            "domain": name,
+            "disk": dev,
+            "threshold_bytes": threshold,
+            "timestamp": now,
+        }
+        with _vm_events_lock:
+            _vm_events.append(event)
+            while len(_vm_events) > 500:
+                _vm_events.pop(0)
+        logger.warning("Block threshold exceeded: %s disk %s", name, dev)
+
+        # Re-arm at next increment (80% → 90%)
+        try:
+            info = dom.blockInfo(dev)
+            if info:
+                capacity = info[0]
+                new_threshold = int(capacity * 0.9)
+                if new_threshold > threshold:
+                    dom.setBlockThreshold(dev, new_threshold)
+        except Exception:
+            pass
+
     def _event_loop():
         while True:
             try:
@@ -3400,6 +3429,7 @@ def _start_libvirt_event_loop():
             logger.warning("Failed to open libvirt connection for events")
             return
         conn.domainEventRegisterAny(None, _lv.VIR_DOMAIN_EVENT_ID_LIFECYCLE, _lifecycle_cb, None)
+        conn.domainEventRegisterAny(None, _lv.VIR_DOMAIN_EVENT_ID_BLOCK_THRESHOLD, _block_threshold_cb, None)
         conn.setKeepAlive(5, 3)
         _seed_cache(conn)
         threading.Thread(target=_event_loop, daemon=True, name="libvirt-events").start()
