@@ -100,6 +100,7 @@ def _poll_hosts():
             Host.agent_token.isnot(None),
         ).all()
 
+        _checked_pools = set()
         for host in hosts:
             hosts_checked += 1
             try:
@@ -124,6 +125,29 @@ def _poll_hosts():
                         host.used_ram_mb = capacity["ram_used_mb"]
 
                     host.storage_warnings = _evaluate_partitions(health)
+                    if host.storage_warnings:
+                        try:
+                            from app.services.storage_extend import should_extend_host, extend_host_ebs
+                            if should_extend_host(host):
+                                logger.info("Auto-extending EBS for host %s", host.id[:8])
+                                extend_host_ebs(host, db)
+                        except Exception:
+                            logger.warning("Auto-extend failed for host %s", host.id[:8], exc_info=True)
+
+                    if host.storage_pool_id and host.storage_pool_id not in _checked_pools:
+                        _checked_pools.add(host.storage_pool_id)
+                        pool = host.storage_pool
+                        if pool and pool.mode == "shared-fsx":
+                            partitions = health.get("partitions", [])
+                            shared_mount = next((p for p in partitions if "shared" in p.get("mount", "")), None)
+                            if shared_mount:
+                                try:
+                                    from app.services.storage_extend import should_extend_pool, extend_pool_fsx
+                                    if should_extend_pool(pool, shared_mount["used_pct"]):
+                                        logger.info("Auto-extending FSx for pool %s", pool.name)
+                                        extend_pool_fsx(pool, db)
+                                except Exception:
+                                    logger.warning("Auto-extend failed for pool %s", pool.name, exc_info=True)
 
                     # Auto-reconnect if was disconnected
                     if host.agent_status == "disconnected":
