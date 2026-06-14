@@ -21,6 +21,25 @@ _health_config = getattr(config, 'health', None)
 _INTERVAL_SECONDS = getattr(_health_config, 'interval_seconds', 30) if _health_config else 30
 _DISCONNECT_AFTER_SECONDS = getattr(_health_config, 'disconnect_after_seconds', 90) if _health_config else 90
 
+_WARNING_PCT = 85
+_CRITICAL_PCT = 95
+
+
+def _evaluate_partitions(health):
+    """Check partition usage and return warnings list, or None if all healthy."""
+    partitions = health.get("partitions", [])
+    if not partitions:
+        return None
+    warnings = []
+    for p in partitions:
+        pct = p.get("used_pct", 0)
+        if pct >= _CRITICAL_PCT:
+            warnings.append({"mount": p["mount"], "used_pct": pct, "level": "critical"})
+        elif pct >= _WARNING_PCT:
+            warnings.append({"mount": p["mount"], "used_pct": pct, "level": "warning"})
+    return warnings if warnings else None
+
+
 def _get_initial_ip():
     try:
         from app.services.provisioner import get_public_ip
@@ -103,6 +122,8 @@ def _poll_hosts():
                         host.total_ram_mb = capacity["ram_total_mb"]
                     if "ram_used_mb" in capacity:
                         host.used_ram_mb = capacity["ram_used_mb"]
+
+                    host.storage_warnings = _evaluate_partitions(health)
 
                     # Auto-reconnect if was disconnected
                     if host.agent_status == "disconnected":
