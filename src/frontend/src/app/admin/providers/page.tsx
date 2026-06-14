@@ -396,11 +396,6 @@ export default function AdminProvidersPage() {
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
                       )}
-                      {p.type !== "s3" && (
-                        p.console_configured
-                          ? <span> · Console: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code></span>
-                          : null
-                      )}
                     </div>
                     {testResult[p.id] && (
                       <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
