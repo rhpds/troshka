@@ -41,3 +41,12 @@ networks:
     dhcp: true
   bmc:
     cidr: 192.168.100.0/24
+gateway:
+  # Only allow outbound ports required for OCP install and operation.
+  # No satellite or external repos needed — bastion serves packages
+  # from a locally mounted ISO or a local repo.
+  outbound_ports:
+    - 53    # DNS
+    - 80    # HTTP (redirects, some repos)
+    - 443   # HTTPS (registry pulls, API)
+    - 123   # NTP

@@ -45,6 +45,22 @@ Traditional labs provision dedicated cloud instances for every student — a 3-n
 
 No SSL certificates to provision. No DNS zones to manage. No cloud security groups or load balancers per environment. The nested VMs use internal `.local` domains and private networking — students access everything through the web portal and Showroom.
 
+### Elastic capacity
+
+Troshka hosts are regular EC2 instances with an agent installed. Spinning up a new host takes minutes — provision the instance, run the agent installer, and it connects to Troshka automatically. When demand drops, hosts can be torn down just as quickly. No long-lived infrastructure to babysit. Scale up for an event with 500 students, scale back down when it's over.
+
+Storage scales the same way. Shared storage pools (FSx or NFS) auto-extend when capacity runs low and can be torn down when no longer needed. EBS volumes on hosts grow automatically based on usage thresholds. No manual capacity planning, no pre-provisioned disks sitting idle.
+
+Shared storage pools also enable live migration of running environments between hosts, so you can drain a host before terminating it without disrupting students.
+
+### Cost efficiency
+
+- **No cross-AZ data transfer fees.** OCP nodes in a Troshka environment are nested VMs on the same host — all inter-node traffic is local. Traditional OCP labs spread nodes across availability zones, racking up data transfer charges for etcd replication, image pulls, and pod-to-pod communication.
+- **Cheap pattern storage.** Patterns are stored in S3. Data transfer into S3 is free — you only pay for cold storage of the disk images. A typical OCP lab pattern is 30-50 GB, costing pennies per month to keep on the shelf.
+- **No EIPs for clusters.** OCP clusters run on internal networks — no Elastic IPs to allocate, associate, or pay for per student. The only EIPs are on the Troshka hosts themselves.
+- **No Route53 costs per environment.** No hosted zones per sandbox, no per-domain fees, no DNS record churn. OCP clusters use internal `.local` domains. Route53 is only used for the Troshka infrastructure itself, which rarely changes. No more throttling from thousands of DNS record updates during large events.
+- **No idle infrastructure costs.** Hosts spin up and down with demand. When no labs are running, the only cost is S3 storage for patterns.
+
 No more failed destroys leaving orphaned cloud resources. A Troshka project is a single entity — deleting it cleans up everything: VMs, disks, networks, tokens. There are no CloudFormation stacks to get stuck, no dangling EIPs to leak, no security groups left behind. If something does go sideways, the host garbage collector catches it on the next pass.
 
 ### What stays the same
@@ -61,8 +77,23 @@ Troshka plugs into the existing ecosystem — it's a new cloud provider, not a r
 
 - **Students get their own cluster.** Each student is a full admin of their own OCP cluster — no shared tenancy, no namespace restrictions, no worrying about stepping on each other.
 - **No laptop issues.** Everything runs in the browser over standard HTTPS — no SSH clients, no VPN, no local tools to install. Students just need a web browser. The entire experience from lab guide to terminal to VM console is curated and consistent regardless of what OS or machine the student is using.
-- **No cloud credentials in agnosticv.** Each Troshka instance manages its own AWS credentials internally. Catalog items only need a Troshka API key.
 - **Patterns are portable.** A pattern built on one Troshka instance can be deployed on any other. The topology, disks, and configuration travel together.
+
+### Security
+
+Traditional lab environments hand students cloud credentials — AWS keys on the bastion, cloud provider secrets inside the OCP cluster, IAM roles that can provision resources. This is a constant source of risk: accidental resource sprawl, credential exfiltration, lateral movement between environments.
+
+Troshka eliminates this entire class of problems:
+
+- **No cloud credentials exist in the environment.** There are no AWS keys on the bastion, no cloud provider secrets in the OCP cluster, no IAM roles attached to the VMs. The nested VMs have no awareness of the underlying cloud — they're just VMs on a hypervisor.
+- **The environment is static.** Students can't provision additional resources even with full cluster admin. There's no cloud API to call, no capacity to request. What's in the pattern is what you get.
+- **Network isolation is physical, not policy-based.** Each project runs in its own network namespace with VXLAN isolation. There's no way to reach another student's environment or the host network — it's not a firewall rule that can be misconfigured, it's a separate network stack.
+- **No SSH access to the host.** Students interact through VNC console and Showroom over HTTPS. There's no path from the lab environment to the underlying EC2 instance.
+- **Access is token-scoped.** Student portal tokens are tied to a single project with configurable access levels (read-only, power, console). Deleting the project invalidates the token.
+- **No discoverable endpoints.** Today, anyone who guesses or scans for a lab URL can access a student's environment. With Troshka, access requires a cryptographic token — there's nothing to stumble across or brute-force.
+- **Controlled outbound access.** Outbound internet access from lab environments can be turned off entirely or restricted to specific ports. OCP templates only allow the ports needed for cluster operation (443, 80, 53, 123) — no general internet access. No more students using lab environments as jump boxes or downloading unauthorized software.
+- **No external dependencies at deploy time.** Once a pattern is captured, it has everything baked in — OS packages, container images, operator bundles, OCP itself. No pulling from Quay, no Satellite subscription, no CDN access, no package mirrors. The environment doesn't need the internet to function. External services can go down without affecting running or new lab deployments.
+- **No telemetry or registration.** OCP clusters deployed from patterns don't phone home or register in OpenShift Cluster Manager. A pull secret is needed once to build the pattern, but every subsequent deploy from that pattern is invisible — no subscription tracking, no cluster count inflation.
 
 ### Key Features
 
