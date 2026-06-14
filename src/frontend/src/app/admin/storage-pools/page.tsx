@@ -86,6 +86,7 @@ export default function StoragePoolsPage() {
 
   const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
   const [extending, setExtending] = useState<Record<string, boolean>>({});
+  const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
   const loadData = () => {
     Promise.all([
@@ -95,6 +96,28 @@ export default function StoragePoolsPage() {
       setPools(p);
       setProviders(prov);
     });
+    fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []).then((hosts: any[]) => {
+      fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((storage: any) => {
+        const usage: Record<string, { used_gb: number; total_gb: number; used_pct: number }> = {};
+        for (const h of hosts) {
+          if (!h.storage_pool_id || usage[h.storage_pool_id]) continue;
+          const info = storage[h.id];
+          if (!info) continue;
+          const parts = info.partitions;
+          if (parts) {
+            const shared = parts.find((p: any) => p.mount.includes("shared"));
+            if (shared) {
+              usage[h.storage_pool_id] = {
+                used_gb: Math.round(shared.used_bytes / (1024**3) * 10) / 10,
+                total_gb: Math.round(shared.total_bytes / (1024**3) * 10) / 10,
+                used_pct: shared.used_pct,
+              };
+            }
+          }
+        }
+        setPoolUsage(usage);
+      }).catch(() => {});
+    }).catch(() => {});
   };
 
   const pollUntilSettled = () => {
@@ -403,7 +426,7 @@ export default function StoragePoolsPage() {
                         <span>Hosts: {pool.host_count}</span>
                         {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
                         {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
-                        {pool.fsx_storage_gb && <span>Storage: {pool.fsx_storage_gb} GB</span>}
+                        {pool.fsx_storage_gb && <span>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
                         {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
                       </div>
                       {pool.mode === "shared-fsx" && pool.status === "available" && (
