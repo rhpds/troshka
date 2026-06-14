@@ -7,8 +7,10 @@ Uses urllib3 connection pooling for performance and reliability.
 import json
 import logging
 import time
+
 import urllib3
-from urllib3.exceptions import SSLError, MaxRetryError, TimeoutError as U3Timeout
+from urllib3.exceptions import MaxRetryError, SSLError
+from urllib3.exceptions import TimeoutError as U3Timeout
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -18,7 +20,9 @@ TROSHKAD_PORT = 31337
 DEFAULT_TIMEOUT = 30
 
 _DRAIN_RETRY_INTERVAL = 5  # seconds between retries during drain
-_DRAIN_RETRY_TIMEOUT = 330  # max seconds to wait (slightly > troshkad's 300s drain timeout)
+_DRAIN_RETRY_TIMEOUT = (
+    330  # max seconds to wait (slightly > troshkad's 300s drain timeout)
+)
 
 # Connection pool cache (one pool per host)
 _pools: dict[str, urllib3.HTTPSConnectionPool] = {}
@@ -26,6 +30,7 @@ _pools: dict[str, urllib3.HTTPSConnectionPool] = {}
 
 class TroshkadError(Exception):
     """Error communicating with troshkad."""
+
     def __init__(self, message, status_code=None, response=None):
         super().__init__(message)
         self.status_code = status_code
@@ -102,7 +107,12 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
                 )
                 if resp.status == 503 and attempt < retries - 1:
                     last_error = err
-                    logger.info("troshkad %s returned 503, retrying in 5s (%d/%d)...", host.ip_address, attempt + 1, retries)
+                    logger.info(
+                        "troshkad %s returned 503, retrying in 5s (%d/%d)...",
+                        host.ip_address,
+                        attempt + 1,
+                        retries,
+                    )
                     time.sleep(5)
                     continue
                 raise err
@@ -116,18 +126,29 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
             raise
         except SSLError as e:
             # Fingerprint mismatch or other SSL errors
-            raise TroshkadError(f"Certificate verification failed for {host.ip_address}: {e}")
+            raise TroshkadError(
+                f"Certificate verification failed for {host.ip_address}: {e}"
+            )
         except (MaxRetryError, U3Timeout) as e:
-            last_error = TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
+            last_error = TroshkadError(
+                f"Cannot connect to troshkad on {host.ip_address}: {e}"
+            )
             if attempt < retries - 1:
-                logger.info("troshkad %s connection failed, retrying in 5s (%d/%d)...", host.ip_address, attempt + 1, retries)
+                logger.info(
+                    "troshkad %s connection failed, retrying in 5s (%d/%d)...",
+                    host.ip_address,
+                    attempt + 1,
+                    retries,
+                )
                 time.sleep(5)
                 continue
             raise last_error
         except Exception as e:
             raise TroshkadError(f"troshkad request failed: {e}")
 
-    raise last_error or TroshkadError(f"troshkad request failed after {retries} retries")
+    raise last_error or TroshkadError(
+        f"troshkad request failed after {retries} retries"
+    )
 
 
 def start_job(host, path, params, request_timeout=30):
@@ -149,19 +170,37 @@ def start_job(host, path, params, request_timeout=30):
 
     while True:
         try:
-            result = troshkad_request(host, "POST", f"/commands{path}", body=params, timeout=request_timeout)
+            result = troshkad_request(
+                host, "POST", f"/commands{path}", body=params, timeout=request_timeout
+            )
             return result["job_id"]
         except TroshkadError as e:
-            retryable = e.status_code == 503 or "Cannot connect" in str(e) or "timed out" in str(e)
+            retryable = (
+                e.status_code == 503
+                or "Cannot connect" in str(e)
+                or "timed out" in str(e)
+            )
             if retryable:
                 if time.time() >= deadline:
                     raise
-                reason = "unreachable" if not e.status_code else (
-                    "draining" if e.response and e.response.get("status") == "draining" else "busy (job queue full)"
+                reason = (
+                    "unreachable"
+                    if not e.status_code
+                    else (
+                        "draining"
+                        if e.response and e.response.get("status") == "draining"
+                        else "busy (job queue full)"
+                    )
                 )
                 remaining = int(deadline - time.time())
-                logger.info("troshkad %s %s is %s, retrying in %ds (%ds remaining)...",
-                            host.ip_address, path, reason, _DRAIN_RETRY_INTERVAL, remaining)
+                logger.info(
+                    "troshkad %s %s is %s, retrying in %ds (%ds remaining)...",
+                    host.ip_address,
+                    path,
+                    reason,
+                    _DRAIN_RETRY_INTERVAL,
+                    remaining,
+                )
                 time.sleep(_DRAIN_RETRY_INTERVAL)
                 continue
             raise
@@ -195,13 +234,28 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
             consecutive_failures = 0
         except TroshkadError as e:
             if e.status_code == 404:
-                logger.warning("Job %s not found on %s (agent may have restarted), assuming completed", job_id[:8], host.ip_address)
-                return {"job_id": job_id, "status": "completed", "output": [], "result": {}}
+                logger.warning(
+                    "Job %s not found on %s (agent may have restarted), assuming completed",
+                    job_id[:8],
+                    host.ip_address,
+                )
+                return {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "output": [],
+                    "result": {},
+                }
             consecutive_failures += 1
             if consecutive_failures >= max_consecutive_failures:
                 raise
-            logger.info("Job %s poll failed on %s (%d/%d), retrying: %s",
-                        job_id[:8], host.ip_address, consecutive_failures, max_consecutive_failures, e)
+            logger.info(
+                "Job %s poll failed on %s (%d/%d), retrying: %s",
+                job_id[:8],
+                host.ip_address,
+                consecutive_failures,
+                max_consecutive_failures,
+                e,
+            )
             time.sleep(poll_interval)
             continue
 
@@ -240,28 +294,48 @@ def push_update(host, script_bytes, version, force=False):
         Response dict from troshkad
     """
     import base64
+
     path = "/admin/update"
     if force:
         path += "?force=true"
-    return troshkad_request(host, "POST", path, body={
-        "script": base64.b64encode(script_bytes).decode(),
-        "version": version,
-    }, timeout=30)
+    return troshkad_request(
+        host,
+        "POST",
+        path,
+        body={
+            "script": base64.b64encode(script_bytes).decode(),
+            "version": version,
+        },
+        timeout=30,
+    )
 
 
 def push_vncd_update(host, script_bytes: bytes):
     """Push a troshka-vncd update to a host."""
     import base64
-    troshkad_request(host, "POST", "/admin/update-vncd", body={
-        "script": base64.b64encode(script_bytes).decode(),
-    }, timeout=30)
+
+    troshkad_request(
+        host,
+        "POST",
+        "/admin/update-vncd",
+        body={
+            "script": base64.b64encode(script_bytes).decode(),
+        },
+        timeout=30,
+    )
 
 
 def get_vm_state(host, domain_name, timeout=15):
     """Get VM state and boot config. Returns dict with 'state' and 'boot_devs'."""
     try:
-        result = troshkad_request(host, "POST", "/commands/vms/state",
-                                  body={"domain_name": domain_name}, timeout=5, retries=1)
+        result = troshkad_request(
+            host,
+            "POST",
+            "/commands/vms/state",
+            body={"domain_name": domain_name},
+            timeout=5,
+            retries=1,
+        )
         job_id = result["job_id"]
         job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         if job["status"] == "completed":
@@ -282,7 +356,9 @@ def get_all_vm_states(host, timeout=10):
     doesn't support the batch endpoint (old agent).
     """
     try:
-        result = troshkad_request(host, "GET", "/vms/states", timeout=timeout, retries=1)
+        result = troshkad_request(
+            host, "GET", "/vms/states", timeout=timeout, retries=1
+        )
         return {name: info["state"] for name, info in result.get("domains", {}).items()}
     except TroshkadError:
         return None
@@ -324,7 +400,11 @@ def reconfigure_vm(host, domain_name, timeout=60, **kwargs):
 
 def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
     """Undefine a VM."""
-    job_id = start_job(host, "/vms/undefine", {"domain_name": domain_name, "remove_storage": remove_storage})
+    job_id = start_job(
+        host,
+        "/vms/undefine",
+        {"domain_name": domain_name, "remove_storage": remove_storage},
+    )
     job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
     return job["status"] == "completed"
 
@@ -332,6 +412,7 @@ def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
 def check_disk_usage(host, timeout=15, retries=3):
     """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct}. Raises on failure."""
     import time
+
     for attempt in range(retries):
         try:
             return troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)

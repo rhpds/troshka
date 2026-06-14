@@ -15,10 +15,8 @@ import ipaddress
 import re
 import uuid
 
-_MAC_RE = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
-_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$')
-
-
+_MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 
 
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
@@ -43,10 +41,21 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     _attach_bastion_image(topology, bastion_image)
     _attach_bastion_iso(topology, bastion_iso)
     _setup_bastion_cloud_init(
-        topology, bastion_password, ssh_pub_key, ssh_key_ids, ssh_keys,
-        bastion_iso, pull_secret_json, cluster_name, base_domain,
-        ocp_version, auto_install_ocp, template_id, api_vip,
-        ingress_vip, bastion_bmc_ip,
+        topology,
+        bastion_password,
+        ssh_pub_key,
+        ssh_key_ids,
+        ssh_keys,
+        bastion_iso,
+        pull_secret_json,
+        cluster_name,
+        base_domain,
+        ocp_version,
+        auto_install_ocp,
+        template_id,
+        api_vip,
+        ingress_vip,
+        bastion_bmc_ip,
     )
 
     return topology
@@ -54,9 +63,11 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
 
 def _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip):
     for node in topology.get("nodes", []):
-        if (node.get("type") == "networkNode"
-                and node.get("data", {}).get("subtype") == "network"
-                and node.get("data", {}).get("networkType") != "bmc"):
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("subtype") == "network"
+            and node.get("data", {}).get("networkType") != "bmc"
+        ):
             node["data"]["dns"] = True
             node["data"]["dnsDomain"] = base_domain
             node["data"]["dnsRecords"] = [
@@ -72,12 +83,17 @@ def _attach_bastion_image(topology, bastion_image):
     if not bastion_image:
         return
     for node in topology.get("nodes", []):
-        if node.get("type") == "storageNode" and node.get("data", {}).get("name") == "bastion-disk":
+        if (
+            node.get("type") == "storageNode"
+            and node.get("data", {}).get("name") == "bastion-disk"
+        ):
             node["data"]["source"] = "library"
             node["data"]["libraryItemId"] = bastion_image["id"]
             node["data"]["libraryItemName"] = bastion_image["name"]
             node["data"]["libraryItemSize"] = bastion_image["size_gb"]
-            node["data"]["size"] = max(bastion_image["size_gb"], node["data"].get("size", 0))
+            node["data"]["size"] = max(
+                bastion_image["size_gb"], node["data"].get("size", 0)
+            )
             break
 
 
@@ -87,7 +103,10 @@ def _attach_bastion_iso(topology, bastion_iso):
         return
     bastion_vm = None
     for node in topology.get("nodes", []):
-        if node.get("type") == "vmNode" and node.get("data", {}).get("name") == "bastion":
+        if (
+            node.get("type") == "vmNode"
+            and node.get("data", {}).get("name") == "bastion"
+        ):
             bastion_vm = node
             break
     if not bastion_vm:
@@ -106,7 +125,9 @@ def _attach_bastion_iso(topology, bastion_iso):
         "data": {
             "label": "rhel-dvd",
             "name": "rhel-dvd",
-            "size": bastion_iso["size_bytes"] // (1024 ** 3) if bastion_iso.get("size_bytes") else 10,
+            "size": bastion_iso["size_bytes"] // (1024**3)
+            if bastion_iso.get("size_bytes")
+            else 10,
             "format": "iso",
             "icon": "\U0001f4bf",
             "source": "library",
@@ -121,7 +142,11 @@ def _attach_bastion_iso(topology, bastion_iso):
         "sourceHandle": "right",
         "targetHandle": f"dp-{dc2['id']}-left",
         "type": "smoothstep",
-        "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        "style": {
+            "stroke": "rgba(251,191,36,0.6)",
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
         "animated": False,
         "className": "edge-storage-pulse",
     }
@@ -130,20 +155,43 @@ def _attach_bastion_iso(topology, bastion_iso):
 
 
 def _setup_bastion_cloud_init(
-    topology, password, ssh_pub_key, ssh_key_ids, ssh_keys,
-    bastion_iso, pull_secret_json, cluster_name, base_domain,
-    ocp_version, auto_install_ocp, template_id, api_vip,
-    ingress_vip, bastion_bmc_ip,
+    topology,
+    password,
+    ssh_pub_key,
+    ssh_key_ids,
+    ssh_keys,
+    bastion_iso,
+    pull_secret_json,
+    cluster_name,
+    base_domain,
+    ocp_version,
+    auto_install_ocp,
+    template_id,
+    api_vip,
+    ingress_vip,
+    bastion_bmc_ip,
 ):
     for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode" or node.get("data", {}).get("name") != "bastion":
+        if (
+            node.get("type") != "vmNode"
+            or node.get("data", {}).get("name") != "bastion"
+        ):
             continue
 
         node["data"]["cloudInit"] = True
         node["data"]["ciPackages"] = [
-            "git", "ansible-core", "python3-pip", "bind-utils", "nmstate",
-            "@Server with GUI", "firefox", "ptyxis", "gnome-shell-extension-dash-to-dock",
-            "google-noto-sans-fonts", "google-noto-sans-mono-fonts", "dejavu-sans-fonts",
+            "git",
+            "ansible-core",
+            "python3-pip",
+            "bind-utils",
+            "nmstate",
+            "@Server with GUI",
+            "firefox",
+            "ptyxis",
+            "gnome-shell-extension-dash-to-dock",
+            "google-noto-sans-fonts",
+            "google-noto-sans-mono-fonts",
+            "dejavu-sans-fonts",
             "desktop-backgrounds-gnome",
         ]
         if password:
@@ -157,7 +205,7 @@ def _setup_bastion_cloud_init(
         if bastion_iso:
             node["data"]["ciUserData"] = (
                 "mounts:\n"
-                "  - [/dev/sr0, /mnt/rhel-dvd, iso9660, \"ro,nofail\", \"0\", \"0\"]\n"
+                '  - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]\n'
                 "yum_repos:\n"
                 "  rhel-dvd-baseos:\n"
                 "    name: RHEL DVD BaseOS\n"
@@ -170,7 +218,7 @@ def _setup_bastion_cloud_init(
                 "    enabled: true\n"
                 "    gpgcheck: false\n"
                 "runcmd:\n"
-                "  - nmcli con up \"cloud-init ens3\" 2>/dev/null || true\n"
+                '  - nmcli con up "cloud-init ens3" 2>/dev/null || true\n'
             )
 
         # Guard: skip all remaining runcmd blocks if cluster already installed (pattern deploy)
@@ -180,8 +228,8 @@ def _setup_bastion_cloud_init(
         if pull_secret_json:
             node["data"]["ciUserData"] += (
                 "  - |\n"
-                + _guard +
-                "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
+                + _guard
+                + "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
                 f"    {pull_secret_json}\n"
                 "    PULLSECRETEOF\n"
                 "    chown cloud-user:cloud-user /home/cloud-user/pull-secret.json\n"
@@ -190,11 +238,22 @@ def _setup_bastion_cloud_init(
 
         # Build install-config.yaml and agent-config.yaml
         install_config = _build_install_config(
-            topology, template_id, cluster_name, base_domain,
-            api_vip, ingress_vip, password, pull_secret_json, ssh_pub_key,
+            topology,
+            template_id,
+            cluster_name,
+            base_domain,
+            api_vip,
+            ingress_vip,
+            password,
+            pull_secret_json,
+            ssh_pub_key,
         )
         agent_config = _build_agent_config(
-            topology, cluster_name, base_domain, api_vip, ingress_vip,
+            topology,
+            cluster_name,
+            base_domain,
+            api_vip,
+            ingress_vip,
         )
 
         # Install script
@@ -202,22 +261,31 @@ def _setup_bastion_cloud_init(
         bmc_ips = []
         for tnode in topology.get("nodes", []):
             td = tnode.get("data", {})
-            if tnode.get("type") == "vmNode" and td.get("bmcEnabled") and td.get("bmcIp"):
+            if (
+                tnode.get("type") == "vmNode"
+                and td.get("bmcEnabled")
+                and td.get("bmcIp")
+            ):
                 ip = str(ipaddress.IPv4Address(td["bmcIp"]))
                 bmc_ips.append(ip)
         bmc_ips_str = " ".join(bmc_ips)
 
         node["data"]["ciUserData"] += _build_install_script(
-            ocp_version, auto_install_ocp, password, bmc_ips_str,
-            cluster_name, base_domain)
+            ocp_version,
+            auto_install_ocp,
+            password,
+            bmc_ips_str,
+            cluster_name,
+            base_domain,
+        )
 
         # Write install-config.yaml
         if install_config:
-            indented_ic = "\n".join("    " + line for line in install_config.split("\n"))
+            indented_ic = "\n".join(
+                "    " + line for line in install_config.split("\n")
+            )
             node["data"]["ciUserData"] += (
-                "  - |\n"
-                + _guard +
-                "    mkdir -p /home/cloud-user/ocp-install\n"
+                "  - |\n" + _guard + "    mkdir -p /home/cloud-user/ocp-install\n"
                 "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
                 f"{indented_ic}\n"
                 "    ICEOF\n"
@@ -229,23 +297,21 @@ def _setup_bastion_cloud_init(
             indented_ac = "\n".join("    " + line for line in agent_config.split("\n"))
             node["data"]["ciUserData"] += (
                 "  - |\n"
-                + _guard +
-                "    cat > /home/cloud-user/ocp-install/agent-config.yaml << 'ACEOF'\n"
+                + _guard
+                + "    cat > /home/cloud-user/ocp-install/agent-config.yaml << 'ACEOF'\n"
                 f"{indented_ac}\n"
                 "    ACEOF\n"
                 "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
             )
 
         # Launch OCP installer in background
-        node["data"]["ciUserData"] += (
-            "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
-        )
+        node["data"][
+            "ciUserData"
+        ] += "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
 
         # Desktop setup script — written as a file to avoid nested quoting issues
         node["data"]["ciUserData"] += (
-            "  - |\n"
-            + _guard +
-            "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
+            "  - |\n" + _guard + "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
             "    #!/bin/bash\n"
             "    set -x\n"
             "    dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null\n"
@@ -268,7 +334,7 @@ def _setup_bastion_cloud_init(
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/favorite-apps \"['$TERM_APP', 'firefox.desktop']\"\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/overlay-scrolling false\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/screensaver/lock-enabled false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/session/idle-delay \"uint32 0\"\n"
+            '    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/session/idle-delay "uint32 0"\n'
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type \"'nothing'\"\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/idle-dim false\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/color-scheme \"'prefer-dark'\"\n"
@@ -286,11 +352,11 @@ def _setup_bastion_cloud_init(
             "    for u in root cloud-user; do\n"
             "      d=$(eval echo ~$u)\n"
             "      mkdir -p $d/.config\n"
-            "      echo \"$MONITORS_XML\" > $d/.config/monitors.xml\n"
+            '      echo "$MONITORS_XML" > $d/.config/monitors.xml\n'
             "      chown -R $u:$u $d/.config\n"
             "    done\n"
             "    mkdir -p /var/lib/gdm/.config\n"
-            "    echo \"$MONITORS_XML\" > /var/lib/gdm/.config/monitors.xml\n"
+            '    echo "$MONITORS_XML" > /var/lib/gdm/.config/monitors.xml\n'
             "    chown -R gdm:gdm /var/lib/gdm/.config\n"
             "    sed -i '/^\\[daemon\\]/a AutomaticLoginEnable=True' /etc/gdm/custom.conf\n"
             "    sed -i '/^AutomaticLoginEnable/a AutomaticLogin=cloud-user' /etc/gdm/custom.conf\n"
@@ -303,23 +369,23 @@ def _setup_bastion_cloud_init(
         )
 
         # Firefox enterprise policies
-        console_url = f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
+        console_url = (
+            f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
+        )
         node["data"]["ciUserData"] += (
-            "  - |\n"
-            + _guard +
-            "    mkdir -p /etc/firefox/policies\n"
+            "  - |\n" + _guard + "    mkdir -p /etc/firefox/policies\n"
             "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
             "    {\n"
-            "      \"policies\": {\n"
-            f"        \"Homepage\": {{\"URL\": \"{console_url}\", \"Locked\": true, \"StartPage\": \"homepage\"}},\n"
-            "        \"OverrideFirstRunPage\": \"\",\n"
-            "        \"OverridePostUpdatePage\": \"\",\n"
-            "        \"UserMessaging\": {\"WhatsNew\": false, \"ExtensionRecommendations\": false, \"FeatureRecommendations\": false, \"UrlbarInterventions\": false, \"SkipOnboarding\": true, \"MoreFromMozilla\": false},\n"
-            "        \"DisableTelemetry\": true,\n"
-            "        \"Certificates\": {\"ImportEnterpriseRoots\": true},\n"
-            "        \"NoDefaultBookmarks\": true,\n"
-            "        \"DontCheckDefaultBrowser\": true,\n"
-            "        \"DisableAppUpdate\": true\n"
+            '      "policies": {\n'
+            f'        "Homepage": {{"URL": "{console_url}", "Locked": true, "StartPage": "homepage"}},\n'
+            '        "OverrideFirstRunPage": "",\n'
+            '        "OverridePostUpdatePage": "",\n'
+            '        "UserMessaging": {"WhatsNew": false, "ExtensionRecommendations": false, "FeatureRecommendations": false, "UrlbarInterventions": false, "SkipOnboarding": true, "MoreFromMozilla": false},\n'
+            '        "DisableTelemetry": true,\n'
+            '        "Certificates": {"ImportEnterpriseRoots": true},\n'
+            '        "NoDefaultBookmarks": true,\n'
+            '        "DontCheckDefaultBrowser": true,\n'
+            '        "DisableAppUpdate": true\n'
             "      }\n"
             "    }\n"
             "    FPEOF\n"
@@ -327,17 +393,17 @@ def _setup_bastion_cloud_init(
         # Firefox default prefs (suppress crash recovery, update prompts)
         node["data"]["ciUserData"] += (
             "  - |\n"
-            + _guard +
-            "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
-            "    if [ -n \"$FIREFOX_DIR\" ]; then\n"
+            + _guard
+            + "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
+            '    if [ -n "$FIREFOX_DIR" ]; then\n'
             "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
             "      cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'\n"
-            "    pref(\"browser.sessionstore.resume_from_crash\", false);\n"
-            "    pref(\"browser.shell.checkDefaultBrowser\", false);\n"
-            "    pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\n"
-            "    pref(\"browser.disableResetPrompt\", true);\n"
-            "    pref(\"browser.slowStartup.notificationDisabled\", true);\n"
-            "    pref(\"browser.laterrun.enabled\", false);\n"
+            '    pref("browser.sessionstore.resume_from_crash", false);\n'
+            '    pref("browser.shell.checkDefaultBrowser", false);\n'
+            '    pref("browser.startup.homepage_override.mstone", "ignore");\n'
+            '    pref("browser.disableResetPrompt", true);\n'
+            '    pref("browser.slowStartup.notificationDisabled", true);\n'
+            '    pref("browser.laterrun.enabled", false);\n'
             "    ACEOF\n"
             "    fi\n"
         )
@@ -356,8 +422,17 @@ def _setup_bastion_cloud_init(
         break
 
 
-def _build_install_config(topology, template_id, cluster_name, base_domain,
-                          api_vip, ingress_vip, password, pull_secret_json, ssh_pub_key):
+def _build_install_config(
+    topology,
+    template_id,
+    cluster_name,
+    base_domain,
+    api_vip,
+    ingress_vip,
+    password,
+    pull_secret_json,
+    ssh_pub_key,
+):
     num_workers = 0 if template_id in ("ocp-compact", "ocp-sno") else 2
     num_masters = 1 if template_id == "ocp-sno" else 3
 
@@ -402,11 +477,13 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
         if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
             continue
         role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
-        ic_lines.extend([
-            f"      - name: {vm_name}",
-            f"        role: {role}",
-            f"        bootMACAddress: {boot_mac}",
-        ])
+        ic_lines.extend(
+            [
+                f"      - name: {vm_name}",
+                f"        role: {role}",
+                f"        bootMACAddress: {boot_mac}",
+            ]
+        )
     if pull_secret_json:
         ic_lines.append(f"pullSecret: '{pull_secret_json}'")
     if ssh_pub_key:
@@ -415,7 +492,9 @@ def _build_install_config(topology, template_id, cluster_name, base_domain,
     return "\n".join(ic_lines)
 
 
-def _build_agent_config(topology, cluster_name, base_domain, api_vip="10.0.0.2", ingress_vip="10.0.0.3"):
+def _build_agent_config(
+    topology, cluster_name, base_domain, api_vip="10.0.0.2", ingress_vip="10.0.0.3"
+):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
     hosts_yaml = ""
     for node in topology.get("nodes", []):
@@ -476,8 +555,14 @@ def _build_agent_config(topology, cluster_name, base_domain, api_vip="10.0.0.2",
     return "\n".join(ac_lines)
 
 
-def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_str="",
-                          cluster_name="ocp", base_domain="ocp.local"):
+def _build_install_script(
+    ocp_version,
+    auto_install,
+    bmc_password="",
+    bmc_ips_str="",
+    cluster_name="ocp",
+    base_domain="ocp.local",
+):
     return (
         "  - |\n"
         "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
@@ -507,14 +592,14 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "    \n"
         "    # Download openshift-install and oc if not present\n"
         "    if [ ! -f openshift-install ]; then\n"
-        "      echo \"Downloading openshift-install $OCP_VERSION...\"\n"
+        '      echo "Downloading openshift-install $OCP_VERSION..."\n'
         "      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz\n"
         "      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n"
-        "      echo \"Downloading oc client...\"\n"
+        '      echo "Downloading oc client..."\n'
         "      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
         "      sudo mv oc kubectl /usr/bin/\n"
-        "      echo \"Downloaded openshift-install and oc\"\n"
+        '      echo "Downloaded openshift-install and oc"\n'
         "    fi\n"
         "    \n"
         "    echo ''\n"
@@ -534,126 +619,129 @@ def _build_install_script(ocp_version, auto_install, bmc_password="", bmc_ips_st
         "    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'\n"
         "    echo ''\n"
         "    echo ''\n"
-        + ("    # Auto-run agent-based installer\n"
-           "    INSTALL_START=$(date +%s)\n"
-           "    echo \"Install started at $(date)\"\n"
-           f"    BMC_PASS='{bmc_password}'\n"
-           "    echo 'Creating agent ISO...'\n"
-           "    cd /home/cloud-user/ocp-install\n"
-           "    cp install-config.yaml install-config.yaml.bak\n"
-           "    cp agent-config.yaml agent-config.yaml.bak\n"
-           "    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | tee /home/cloud-user/create-image.log\n"
-           "    \n"
-           "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-           "    # Serve the ISO on port 8080\n"
-           "    cd /home/cloud-user/ocp-install\n"
-           "    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &\n"
-           "    HTTP_PID=$!\n"
-           "    echo \"HTTP server PID: $HTTP_PID\"\n"
-           "    \n"
-           "    # Boot each CP node via Redfish virtual media\n"
-           "    BASTION_IP=$(ip -4 addr show ens4 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}')\n"
-           "    ISO_URL=\"http://${BASTION_IP}:8080/agent.x86_64.iso\"\n"
-           "    echo \"ISO URL: $ISO_URL\"\n"
-           "    \n"
-           f"    for BMC_IP in {bmc_ips_str}; do\n"
-           "      echo \"Mounting ISO on BMC $BMC_IP...\"\n"
-           "      # Get system UUID from sushy\n"
-           "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
-           "      echo \"  System: $SYS_ID\"\n"
-           "      # Insert virtual media (Systems path, HTTP, with auth)\n"
-           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia\" \\\n"
-           "        -H 'Content-Type: application/json' \\\n"
-           "        -d \"{\\\"Image\\\": \\\"${ISO_URL}\\\", \\\"Inserted\\\": true, \\\"WriteProtected\\\": true}\" || true\n"
-           "      # Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO\n"
-           "      # After agent writes CoreOS to disk, next reboot boots from disk first\n"
-           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset\" \\\n"
-           "        -H 'Content-Type: application/json' \\\n"
-           "        -d '{\"ResetType\": \"ForceRestart\"}' || true\n"
-           "      echo \"Booted $BMC_IP from ISO\"\n"
-           "    done\n"
-           "    \n"
-           "    \n"
-           "    echo 'Waiting for cluster installation to complete...'\n"
-           "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1\n"
-           "    INSTALL_END=$(date +%s)\n"
-           "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
-           "    echo ''\n"
-           "    echo '================================================'\n"
-           "    echo \"Install completed at $(date)\"\n"
-           "    echo \"Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec\"\n"
-           "    echo '================================================'\n"
-           "    # Eject agent ISO via Redfish virtual media\n"
-           "    echo 'Ejecting agent ISO from nodes...'\n"
-           f"    for BMC_IP in {bmc_ips_str}; do\n"
-           "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
-           "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1\n"
-           "    done\n"
-           "    # Write static MOTD with cluster credentials\n"
-           "    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n"
-           f"    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n"
-           "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
-           "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
-           "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n"
-           "    # Save kubeadmin password into Firefox password manager via Selenium\n"
-           "    pip3 install -q selenium 2>/dev/null\n"
-           "    curl -sL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | sudo tar xz -C /usr/local/bin/\n"
-           "    # Create Firefox profile if it doesn't exist\n"
-           "    if ! ls /home/cloud-user/.mozilla/firefox/*.default-default/ >/dev/null 2>&1; then\n"
-           "      export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1\n"
-           "      timeout 10 firefox --headless >/dev/null 2>&1 || true\n"
-           "      sleep 2\n"
-           "    fi\n"
-           "    cat > /home/cloud-user/ocp-autologin.py << 'SELENEOF'\n"
-           "    import time, glob, os, sys\n"
-           "    from selenium import webdriver\n"
-           "    from selenium.webdriver.common.by import By\n"
-           "    from selenium.webdriver.firefox.options import Options\n"
-           "    from selenium.webdriver.support.ui import WebDriverWait\n"
-           "    from selenium.webdriver.support import expected_conditions as EC\n"
-           "    console_url = sys.argv[1]\n"
-           "    pw = open(os.path.expanduser('~cloud-user/ocp-install/auth/kubeadmin-password')).read().strip()\n"
-           "    profile = glob.glob('/home/cloud-user/.mozilla/firefox/*.default-default')[0]\n"
-           "    opts = Options()\n"
-           "    opts.add_argument('-profile')\n"
-           "    opts.add_argument(profile)\n"
-           "    opts.add_argument('-remote-allow-system-access')\n"
-           "    opts.accept_insecure_certs = True\n"
-           "    opts.set_preference('signon.rememberSignons', True)\n"
-           "    opts.set_preference('signon.autofillForms', True)\n"
-           "    opts.set_preference('signon.storeWhenAutocompleteOff', True)\n"
-           "    opts.set_preference('browser.startup.page', 1)\n"
-           "    driver = webdriver.Firefox(options=opts)\n"
-           "    try:\n"
-           "        driver.get(console_url)\n"
-           "        wait = WebDriverWait(driver, 30)\n"
-           "        u = wait.until(EC.presence_of_element_located((By.ID, 'inputUsername')))\n"
-           "        p = driver.find_element(By.ID, 'inputPassword')\n"
-           "        u.clear(); u.send_keys('kubeadmin')\n"
-           "        p.clear(); p.send_keys(pw)\n"
-           "        driver.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()\n"
-           "        time.sleep(3)\n"
-           "        driver.set_context('chrome')\n"
-           "        for _ in range(15):\n"
-           "            try:\n"
-           "                driver.find_element(By.CSS_SELECTOR, 'popupnotification[id*=password] button.popup-notification-primary-button').click()\n"
-           "                print('Password saved to Firefox'); break\n"
-           "            except Exception: pass\n"
-           "            time.sleep(0.5)\n"
-           "        driver.set_context('content')\n"
-           "        time.sleep(1)\n"
-           "    finally:\n"
-           "        driver.quit()\n"
-           "    SELENEOF\n"
-           f"    sudo -u cloud-user bash -c 'export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; python3 /home/cloud-user/ocp-autologin.py https://console-openshift-console.apps.{cluster_name}.{base_domain}' 2>&1 || true\n"
-           "    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n"
-           "    rm -f /home/cloud-user/pull-secret.json\n"
-           "    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n"
-           "    dnf clean all 2>/dev/null\n"
-           "    # Kill the HTTP server used to serve the agent ISO\n"
-           "    kill $HTTP_PID 2>/dev/null\n"
-           if auto_install else "") +
-        "    SCRIPTEOF\n"
+        + (
+            "    # Auto-run agent-based installer\n"
+            "    INSTALL_START=$(date +%s)\n"
+            '    echo "Install started at $(date)"\n'
+            f"    BMC_PASS='{bmc_password}'\n"
+            "    echo 'Creating agent ISO...'\n"
+            "    cd /home/cloud-user/ocp-install\n"
+            "    cp install-config.yaml install-config.yaml.bak\n"
+            "    cp agent-config.yaml agent-config.yaml.bak\n"
+            "    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | tee /home/cloud-user/create-image.log\n"
+            "    \n"
+            "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
+            "    # Serve the ISO on port 8080\n"
+            "    cd /home/cloud-user/ocp-install\n"
+            "    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &\n"
+            "    HTTP_PID=$!\n"
+            '    echo "HTTP server PID: $HTTP_PID"\n'
+            "    \n"
+            "    # Boot each CP node via Redfish virtual media\n"
+            "    BASTION_IP=$(ip -4 addr show ens4 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}')\n"
+            '    ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"\n'
+            '    echo "ISO URL: $ISO_URL"\n'
+            "    \n"
+            f"    for BMC_IP in {bmc_ips_str}; do\n"
+            '      echo "Mounting ISO on BMC $BMC_IP..."\n'
+            "      # Get system UUID from sushy\n"
+            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
+            '      echo "  System: $SYS_ID"\n'
+            "      # Insert virtual media (Systems path, HTTP, with auth)\n"
+            '      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
+            "        -H 'Content-Type: application/json' \\\n"
+            '        -d "{\\"Image\\": \\"${ISO_URL}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}" || true\n'
+            "      # Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO\n"
+            "      # After agent writes CoreOS to disk, next reboot boots from disk first\n"
+            '      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \\\n'
+            "        -H 'Content-Type: application/json' \\\n"
+            '        -d \'{"ResetType": "ForceRestart"}\' || true\n'
+            '      echo "Booted $BMC_IP from ISO"\n'
+            "    done\n"
+            "    \n"
+            "    \n"
+            "    echo 'Waiting for cluster installation to complete...'\n"
+            "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1\n"
+            "    INSTALL_END=$(date +%s)\n"
+            "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
+            "    echo ''\n"
+            "    echo '================================================'\n"
+            '    echo "Install completed at $(date)"\n'
+            '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
+            "    echo '================================================'\n"
+            "    # Eject agent ISO via Redfish virtual media\n"
+            "    echo 'Ejecting agent ISO from nodes...'\n"
+            f"    for BMC_IP in {bmc_ips_str}; do\n"
+            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
+            "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1\n"
+            "    done\n"
+            "    # Write static MOTD with cluster credentials\n"
+            "    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n"
+            f"    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n"
+            "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
+            "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
+            "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n"
+            "    # Save kubeadmin password into Firefox password manager via Selenium\n"
+            "    pip3 install -q selenium 2>/dev/null\n"
+            "    curl -sL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | sudo tar xz -C /usr/local/bin/\n"
+            "    # Create Firefox profile if it doesn't exist\n"
+            "    if ! ls /home/cloud-user/.mozilla/firefox/*.default-default/ >/dev/null 2>&1; then\n"
+            "      export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1\n"
+            "      timeout 10 firefox --headless >/dev/null 2>&1 || true\n"
+            "      sleep 2\n"
+            "    fi\n"
+            "    cat > /home/cloud-user/ocp-autologin.py << 'SELENEOF'\n"
+            "    import time, glob, os, sys\n"
+            "    from selenium import webdriver\n"
+            "    from selenium.webdriver.common.by import By\n"
+            "    from selenium.webdriver.firefox.options import Options\n"
+            "    from selenium.webdriver.support.ui import WebDriverWait\n"
+            "    from selenium.webdriver.support import expected_conditions as EC\n"
+            "    console_url = sys.argv[1]\n"
+            "    pw = open(os.path.expanduser('~cloud-user/ocp-install/auth/kubeadmin-password')).read().strip()\n"
+            "    profile = glob.glob('/home/cloud-user/.mozilla/firefox/*.default-default')[0]\n"
+            "    opts = Options()\n"
+            "    opts.add_argument('-profile')\n"
+            "    opts.add_argument(profile)\n"
+            "    opts.add_argument('-remote-allow-system-access')\n"
+            "    opts.accept_insecure_certs = True\n"
+            "    opts.set_preference('signon.rememberSignons', True)\n"
+            "    opts.set_preference('signon.autofillForms', True)\n"
+            "    opts.set_preference('signon.storeWhenAutocompleteOff', True)\n"
+            "    opts.set_preference('browser.startup.page', 1)\n"
+            "    driver = webdriver.Firefox(options=opts)\n"
+            "    try:\n"
+            "        driver.get(console_url)\n"
+            "        wait = WebDriverWait(driver, 30)\n"
+            "        u = wait.until(EC.presence_of_element_located((By.ID, 'inputUsername')))\n"
+            "        p = driver.find_element(By.ID, 'inputPassword')\n"
+            "        u.clear(); u.send_keys('kubeadmin')\n"
+            "        p.clear(); p.send_keys(pw)\n"
+            "        driver.find_element(By.CSS_SELECTOR, 'button[type=submit]').click()\n"
+            "        time.sleep(3)\n"
+            "        driver.set_context('chrome')\n"
+            "        for _ in range(15):\n"
+            "            try:\n"
+            "                driver.find_element(By.CSS_SELECTOR, 'popupnotification[id*=password] button.popup-notification-primary-button').click()\n"
+            "                print('Password saved to Firefox'); break\n"
+            "            except Exception: pass\n"
+            "            time.sleep(0.5)\n"
+            "        driver.set_context('content')\n"
+            "        time.sleep(1)\n"
+            "    finally:\n"
+            "        driver.quit()\n"
+            "    SELENEOF\n"
+            f"    sudo -u cloud-user bash -c 'export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 MOZ_ENABLE_WAYLAND=1; python3 /home/cloud-user/ocp-autologin.py https://console-openshift-console.apps.{cluster_name}.{base_domain}' 2>&1 || true\n"
+            "    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n"
+            "    rm -f /home/cloud-user/pull-secret.json\n"
+            "    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n"
+            "    dnf clean all 2>/dev/null\n"
+            "    # Kill the HTTP server used to serve the agent ISO\n"
+            "    kill $HTTP_PID 2>/dev/null\n"
+            if auto_install
+            else ""
+        )
+        + "    SCRIPTEOF\n"
         "    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n"
         "    chmod 755 /home/cloud-user/install-ocp.sh\n"
     )

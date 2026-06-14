@@ -34,17 +34,30 @@ class ApiKeyCreated(ApiKeyResponse):
 
 
 @router.get("/", response_model=list[ApiKeyResponse])
-def list_api_keys(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return db.query(ApiKey).filter_by(user_id=user.id).order_by(ApiKey.created_at.desc()).all()
+def list_api_keys(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    return (
+        db.query(ApiKey)
+        .filter_by(user_id=user.id)
+        .order_by(ApiKey.created_at.desc())
+        .all()
+    )
 
 
 @router.post("/", response_model=ApiKeyCreated, status_code=201)
-def create_api_key(body: ApiKeyCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_api_key(
+    body: ApiKeyCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     raw_key = generate_api_key()
 
     expires_at = None
     if body.expires_days:
-        expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=body.expires_days)
+        expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+            days=body.expires_days
+        )
 
     api_key = ApiKey(
         user_id=user.id,
@@ -70,7 +83,9 @@ def create_api_key(body: ApiKeyCreate, user: User = Depends(get_current_user), d
 
 
 @router.delete("/{key_id}", status_code=204)
-def revoke_api_key(key_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def revoke_api_key(
+    key_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     api_key = db.query(ApiKey).filter_by(id=key_id, user_id=user.id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")

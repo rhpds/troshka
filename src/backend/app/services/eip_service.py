@@ -1,8 +1,9 @@
 """EIP lifecycle management — allocate, associate, disassociate, release."""
 import logging
+
 import boto3
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from app.models.elastic_ip import ElasticIp
 from app.models.provider import Provider
@@ -195,6 +196,7 @@ def release_eip(db: Session, eip: ElasticIp) -> None:
     # Disassociate if needed
     if eip.state == "associated" and eip.host_id:
         from app.models.host import Host
+
         host = db.query(Host).filter_by(id=eip.host_id).first()
         if host:
             disassociate_eip(db, eip, host)
@@ -295,12 +297,17 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
         try:
             ec2.authorize_security_group_ingress(
                 GroupId=sg_id,
-                IpPermissions=[{
-                    "IpProtocol": r["protocol"],
-                    "FromPort": r["port"],
-                    "ToPort": r["port"],
-                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
-                } for r in to_add.values()],
+                IpPermissions=[
+                    {
+                        "IpProtocol": r["protocol"],
+                        "FromPort": r["port"],
+                        "ToPort": r["port"],
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": r["description"]}
+                        ],
+                    }
+                    for r in to_add.values()
+                ],
             )
         except Exception as e:
             if "InvalidPermission.Duplicate" not in str(e):
@@ -309,12 +316,17 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
     if to_remove:
         ec2.revoke_security_group_ingress(
             GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": r["protocol"],
-                "FromPort": r["port"],
-                "ToPort": r["port"],
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
-            } for r in to_remove.values()],
+            IpPermissions=[
+                {
+                    "IpProtocol": r["protocol"],
+                    "FromPort": r["port"],
+                    "ToPort": r["port"],
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": r["description"]}
+                    ],
+                }
+                for r in to_remove.values()
+            ],
         )
 
     added = len(to_add)

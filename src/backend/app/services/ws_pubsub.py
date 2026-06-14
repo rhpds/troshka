@@ -29,7 +29,11 @@ def subscribe(project_id: str, ws: WebSocket):
         if project_id not in _subscribers:
             _subscribers[project_id] = set()
         _subscribers[project_id].add(ws)
-    logger.debug("WS subscribe: project=%s (total=%d)", project_id[:8], len(_subscribers[project_id]))
+    logger.debug(
+        "WS subscribe: project=%s (total=%d)",
+        project_id[:8],
+        len(_subscribers[project_id]),
+    )
 
 
 def unsubscribe(project_id: str, ws: WebSocket):
@@ -96,6 +100,7 @@ _POLL_INTERVAL = 5
 def _poll_loop():
     logger.info("WS state poller started (interval=%ds)", _POLL_INTERVAL)
     import time
+
     while True:
         time.sleep(_POLL_INTERVAL)
         try:
@@ -109,12 +114,12 @@ def _poll_active_projects():
     if not project_ids:
         return
 
-    from app.core.database import SessionLocal
-    from app.models.project import Project
-    from app.models.host import Host
-    from app.services.troshkad_client import get_all_vm_states
     from app.api.projects import _domain_name, _redeploy_progress
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
     from app.services.deploy_service import _deploy_progress
+    from app.services.troshkad_client import get_all_vm_states
 
     db = SessionLocal()
     try:
@@ -139,7 +144,10 @@ def _poll_active_projects():
         for project in projects.values():
             if not project.host_id or project.state not in ("active", "stopped"):
                 continue
-            if project.host_id in deploying_host_ids or project.host_id in host_batch_states:
+            if (
+                project.host_id in deploying_host_ids
+                or project.host_id in host_batch_states
+            ):
                 continue
             host = db.query(Host).filter_by(id=project.host_id).first()
             if not host or not host.ip_address or host.agent_status != "connected":
@@ -156,18 +164,25 @@ def _poll_active_projects():
             # Start OCP health monitor on demand (only when someone is watching)
             if project.ocp_status == "monitoring" and project.state == "active":
                 from app.services.deploy_service import maybe_start_ocp_health_monitor
+
                 maybe_start_ocp_health_monitor(project_id)
 
             # Always push project state changes
             last = _last_states.get(project_id, {})
             current_project_state = project.state
             current_deploy_error = project.deploy_error
-            if last.get("project_state") != current_project_state or last.get("deploy_error") != current_deploy_error:
-                notify_project(project_id, {
-                    "type": "project-state",
-                    "state": current_project_state,
-                    "deploy_error": current_deploy_error,
-                })
+            if (
+                last.get("project_state") != current_project_state
+                or last.get("deploy_error") != current_deploy_error
+            ):
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": current_project_state,
+                        "deploy_error": current_deploy_error,
+                    },
+                )
 
             # Push deploy progress if active
             dp = _deploy_progress.get(project_id)
@@ -189,7 +204,13 @@ def _poll_active_projects():
                         vm_progress[node["id"]] = _redeploy_progress[dom_name]
                     else:
                         state = batch.get(dom_name, "not_found")
-                        if state in ("shut_off", "shutting_down", "crashed", "suspended", "paused"):
+                        if state in (
+                            "shut_off",
+                            "shutting_down",
+                            "crashed",
+                            "suspended",
+                            "paused",
+                        ):
                             state = "stopped"
                         vm_states[node["id"]] = state
 
@@ -203,15 +224,28 @@ def _poll_active_projects():
                         if node["id"] == vm_id:
                             vm_label = node.get("data", {}).get("label", vm_id[:8])
                             break
-                    logger.info("VM state change: %s/%s %s → %s", project.name[:30], vm_label, old_state, new_state)
+                    logger.info(
+                        "VM state change: %s/%s %s → %s",
+                        project.name[:30],
+                        vm_label,
+                        old_state,
+                        new_state,
+                    )
 
-            if vm_states != prev_vm_states or vm_progress != last.get("vm_progress") or vm_boot_devs != last.get("vm_boot_devs"):
-                notify_project(project_id, {
-                    "type": "vm-state",
-                    "states": vm_states,
-                    "progress": vm_progress,
-                    "boot_devs": vm_boot_devs,
-                })
+            if (
+                vm_states != prev_vm_states
+                or vm_progress != last.get("vm_progress")
+                or vm_boot_devs != last.get("vm_boot_devs")
+            ):
+                notify_project(
+                    project_id,
+                    {
+                        "type": "vm-state",
+                        "states": vm_states,
+                        "progress": vm_progress,
+                        "boot_devs": vm_boot_devs,
+                    },
+                )
 
             _last_states[project_id] = {
                 "project_state": current_project_state,

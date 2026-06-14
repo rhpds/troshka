@@ -1,7 +1,5 @@
 import time
 
-import pytest
-
 
 def test_sign_console_jwt_contains_required_claims():
     from app.services.console_dns import sign_console_jwt
@@ -14,7 +12,9 @@ def test_sign_console_jwt_contains_required_claims():
     assert isinstance(token, str)
     assert len(token) > 0
 
-    import hmac, hashlib, base64, json
+    import base64
+    import json
+
     parts = token.split(".")
     assert len(parts) == 3
     payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
@@ -53,15 +53,32 @@ def test_verify_console_jwt_wrong_secret():
 
 
 def test_verify_console_jwt_expired():
+    import base64
+    import hashlib
+    import hmac
+    import json
+
     from app.services.console_dns import verify_console_jwt
 
-    import hmac, hashlib, base64, json
-
-    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
     payload_data = {"domain_name": "dom", "host_id": "h", "exp": int(time.time()) - 10}
-    payload = base64.urlsafe_b64encode(json.dumps(payload_data).encode()).rstrip(b"=").decode()
+    payload = (
+        base64.urlsafe_b64encode(json.dumps(payload_data).encode())
+        .rstrip(b"=")
+        .decode()
+    )
     sig_input = f"{header}.{payload}".encode()
-    sig = base64.urlsafe_b64encode(hmac.new(b"secret", sig_input, hashlib.sha256).digest()).rstrip(b"=").decode()
+    sig = (
+        base64.urlsafe_b64encode(
+            hmac.new(b"secret", sig_input, hashlib.sha256).digest()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
     token = f"{header}.{payload}.{sig}"
 
     result = verify_console_jwt(token, "secret")

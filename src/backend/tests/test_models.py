@@ -1,21 +1,22 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects import sqlite
+from sqlalchemy.orm import sessionmaker
 
 sqlite.base.SQLiteTypeCompiler.visit_JSONB = lambda self, type_, **kw: "JSON"
 sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(36)"
 
 from app.core.database import Base
-from app.models.user import User
-from app.models.provider import Provider
 from app.models.host import Host
-from app.models.project import Project, ProjectShare
-from app.models.vm import VM, BootPrereq, VMInterface
-from app.models.network import Network, SecurityRule
-from app.models.disk import Disk
 from app.models.library import Library, LibraryItem, LibraryItemDisk
+from app.models.network import Network
+from app.models.project import Project
+from app.models.provider import Provider
+from app.models.user import User
+from app.models.vm import VM
 
-engine = create_engine("sqlite:///./test_models.db", connect_args={"check_same_thread": False})
+engine = create_engine(
+    "sqlite:///./test_models.db", connect_args={"check_same_thread": False}
+)
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 Session = sessionmaker(bind=engine)
@@ -23,7 +24,12 @@ Session = sessionmaker(bind=engine)
 
 def test_create_user():
     db = Session()
-    user = User(email="test@example.com", display_name="Test User", role="user", auth_source="local")
+    user = User(
+        email="test@example.com",
+        display_name="Test User",
+        role="user",
+        auth_source="local",
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -36,7 +42,12 @@ def test_create_user():
 def test_create_project_with_owner():
     db = Session()
     user = db.query(User).filter_by(email="test@example.com").first()
-    project = Project(name="Test Project", owner_id=user.id, state="draft", poweroff_mode="simultaneous")
+    project = Project(
+        name="Test Project",
+        owner_id=user.id,
+        state="draft",
+        poweroff_mode="simultaneous",
+    )
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -89,13 +100,26 @@ def test_create_network_in_project():
 def test_all_tables_created():
     table_names = Base.metadata.tables.keys()
     expected = [
-        "users", "providers", "hosts", "host_assignments",
-        "projects", "project_shares",
-        "vms", "boot_prereqs", "vm_interfaces",
-        "networks", "security_rules",
+        "users",
+        "providers",
+        "hosts",
+        "host_assignments",
+        "projects",
+        "project_shares",
+        "vms",
+        "boot_prereqs",
+        "vm_interfaces",
+        "networks",
+        "security_rules",
         "disks",
-        "libraries", "library_items", "library_item_disks", "library_shares", "image_caches",
-        "patterns", "pattern_disks", "pattern_shares",
+        "libraries",
+        "library_items",
+        "library_item_disks",
+        "library_shares",
+        "image_caches",
+        "patterns",
+        "pattern_disks",
+        "pattern_shares",
     ]
     for name in expected:
         assert name in table_names, f"Missing table: {name}"

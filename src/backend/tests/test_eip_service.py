@@ -2,13 +2,13 @@
 import uuid
 from unittest.mock import MagicMock, patch
 
-from tests.conftest import TestSession
 from app.core.auth import hash_password
-from app.models.user import User
-from app.models.provider import Provider
-from app.models.host import Host
 from app.models.elastic_ip import ElasticIp
+from app.models.host import Host
+from app.models.provider import Provider
+from app.models.user import User
 from app.services import eip_service
+from tests.conftest import TestSession
 
 # Test data setup
 _db = TestSession()
@@ -28,7 +28,9 @@ _provider = Provider(
     type="aws",
     default_region="us-east-1",
 )
-_provider.set_credentials({"access_key_id": "fake-key", "secret_access_key": "fake-secret"})
+_provider.set_credentials(
+    {"access_key_id": "fake-key", "secret_access_key": "fake-secret"}
+)
 _db.add(_provider)
 _db.commit()
 _db.refresh(_provider)
@@ -230,7 +232,9 @@ def test_disassociate_eip(mock_ec2_client):
     eip_service.disassociate_eip(db, eip, host)
 
     # Verify EC2 calls
-    mock_ec2.disassociate_address.assert_called_once_with(AssociationId="eipassoc-xyz789")
+    mock_ec2.disassociate_address.assert_called_once_with(
+        AssociationId="eipassoc-xyz789"
+    )
     mock_ec2.unassign_private_ip_addresses.assert_called_once()
     unassign_call = mock_ec2.unassign_private_ip_addresses.call_args
     assert unassign_call[1]["NetworkInterfaceId"] == "eni-primary123"
@@ -251,12 +255,29 @@ def test_sync_security_group_rules(mock_get_client):
     """Test SG rule reconciliation — adds missing, removes stale, leaves non-troshka rules alone."""
     mock_ec2 = MagicMock()
     mock_ec2.describe_security_groups.return_value = {
-        "SecurityGroups": [{"IpPermissions": [
-            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
-            {"IpProtocol": "tcp", "FromPort": 8080, "ToPort": 8080,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "troshka-pf:proj-old:8080"}]},
-        ]}]
+        "SecurityGroups": [
+            {
+                "IpPermissions": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 8080,
+                        "ToPort": 8080,
+                        "IpRanges": [
+                            {
+                                "CidrIp": "0.0.0.0/0",
+                                "Description": "troshka-pf:proj-old:8080",
+                            }
+                        ],
+                    },
+                ]
+            }
+        ]
     }
     mock_get_client.return_value = mock_ec2
 
@@ -268,6 +289,7 @@ def test_sync_security_group_rules(mock_get_client):
     desired = [{"project_id": "proj-new", "ext_port": 443, "protocol": "tcp"}]
 
     from app.services.eip_service import sync_security_group_rules
+
     result = sync_security_group_rules(db, provider, desired)
 
     assert result["added"] == 1

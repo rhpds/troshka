@@ -21,13 +21,22 @@ def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
 
 
 @router.get("/", response_model=list[NetworkResponse])
-def list_networks(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_networks(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     return db.query(Network).filter_by(project_id=project_id).all()
 
 
 @router.post("/", response_model=NetworkResponse, status_code=201)
-def create_network(project_id: str, body: NetworkCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_network(
+    project_id: str,
+    body: NetworkCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     network = Network(project_id=project_id, **body.model_dump())
     db.add(network)
@@ -37,7 +46,12 @@ def create_network(project_id: str, body: NetworkCreate, user: User = Depends(ge
 
 
 @router.get("/{network_id}", response_model=NetworkResponse)
-def get_network(project_id: str, network_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_network(
+    project_id: str,
+    network_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     network = db.query(Network).filter_by(id=network_id, project_id=project_id).first()
     if not network:
@@ -46,7 +60,13 @@ def get_network(project_id: str, network_id: str, user: User = Depends(get_curre
 
 
 @router.patch("/{network_id}", response_model=NetworkResponse)
-def update_network(project_id: str, network_id: str, body: NetworkUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_network(
+    project_id: str,
+    network_id: str,
+    body: NetworkUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     network = db.query(Network).filter_by(id=network_id, project_id=project_id).first()
     if not network:
@@ -59,7 +79,12 @@ def update_network(project_id: str, network_id: str, body: NetworkUpdate, user: 
 
 
 @router.delete("/{network_id}", status_code=204)
-def delete_network(project_id: str, network_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_network(
+    project_id: str,
+    network_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     network = db.query(Network).filter_by(id=network_id, project_id=project_id).first()
     if not network:

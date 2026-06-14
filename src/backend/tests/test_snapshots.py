@@ -51,7 +51,9 @@ def _create_project_with_vm():
                             "model": "virtio",
                         }
                     ],
-                    "diskControllers": [{"id": "dp-1", "name": "disk0", "bus": "virtio"}],
+                    "diskControllers": [
+                        {"id": "dp-1", "name": "disk0", "bus": "virtio"}
+                    ],
                 },
             },
             {
@@ -66,6 +68,7 @@ def _create_project_with_vm():
         ],
     }
     import uuid as _uuid
+
     resp = client.post(
         "/api/v1/projects",
         json={
@@ -74,7 +77,9 @@ def _create_project_with_vm():
         },
         headers=HEADERS,
     )
-    assert resp.status_code == 201, f"Project create failed: {resp.status_code} {resp.json()}"
+    assert (
+        resp.status_code == 201
+    ), f"Project create failed: {resp.status_code} {resp.json()}"
     project_id = resp.json()["id"]
     client.patch(
         f"/api/v1/projects/{project_id}",

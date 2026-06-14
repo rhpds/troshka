@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from app.core.database import Base, get_db, engine
+from app.core.database import Base, engine, get_db
 
 
 def test_base_class_exists():

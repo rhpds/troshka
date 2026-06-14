@@ -10,7 +10,9 @@ import time as _time
 
 from app.models.host import Host
 from app.services.troshkad_client import (
-    start_job, wait_for_job, TroshkadError,
+    TroshkadError,
+    start_job,
+    wait_for_job,
 )
 from app.services.ws_pubsub import notify_project
 
@@ -21,12 +23,15 @@ _active_health_monitors: set = set()
 _deploy_progress: dict[str, dict] = {}
 
 
-def _update_deploy_progress(project_id: str, step: str, detail: str = "", items: list | None = None):
+def _update_deploy_progress(
+    project_id: str, step: str, detail: str = "", items: list | None = None
+):
     progress = {"step": step, "detail": detail}
     if items is not None:
         progress["items"] = items
     _deploy_progress[project_id] = progress
     notify_project(project_id, {"type": "deploy-progress", "progress": progress})
+
 
 # Serializes nftables-touching network setup across concurrent deploys
 _network_lock = threading.Lock()
@@ -34,11 +39,13 @@ _network_lock = threading.Lock()
 
 # ── Shared storage pool helpers ──
 
+
 def _get_host_pool(host, db_session):
     """Get the storage pool for a host, if any."""
     if not host.storage_pool_id:
         return None
     from app.models.storage_pool import StoragePool
+
     return db_session.query(StoragePool).get(host.storage_pool_id)
 
 
@@ -47,11 +54,16 @@ def _check_shared_cache(db_session, pool, item_id, item_type):
     if not pool:
         return None, None
     from app.models.storage_pool import SharedCacheEntry
-    entry = db_session.query(SharedCacheEntry).filter(
-        SharedCacheEntry.storage_pool_id == pool.id,
-        SharedCacheEntry.item_id == item_id,
-        SharedCacheEntry.item_type == item_type,
-    ).first()
+
+    entry = (
+        db_session.query(SharedCacheEntry)
+        .filter(
+            SharedCacheEntry.storage_pool_id == pool.id,
+            SharedCacheEntry.item_id == item_id,
+            SharedCacheEntry.item_type == item_type,
+        )
+        .first()
+    )
     if entry:
         return entry.status, entry
     return None, None
@@ -60,6 +72,7 @@ def _check_shared_cache(db_session, pool, item_id, item_type):
 def _create_shared_cache_entry(db_session, pool, item_id, item_type, file_path):
     """Create a SharedCacheEntry with status='downloading'."""
     from app.models.storage_pool import SharedCacheEntry
+
     entry = SharedCacheEntry(
         storage_pool_id=pool.id,
         item_type=item_type,
@@ -75,11 +88,16 @@ def _create_shared_cache_entry(db_session, pool, item_id, item_type, file_path):
 def _mark_shared_cache_ready(db_session, pool_id, item_id, item_type, size_bytes=None):
     """Mark a shared cache entry as ready."""
     from app.models.storage_pool import SharedCacheEntry
-    entry = db_session.query(SharedCacheEntry).filter(
-        SharedCacheEntry.storage_pool_id == pool_id,
-        SharedCacheEntry.item_id == item_id,
-        SharedCacheEntry.item_type == item_type,
-    ).first()
+
+    entry = (
+        db_session.query(SharedCacheEntry)
+        .filter(
+            SharedCacheEntry.storage_pool_id == pool_id,
+            SharedCacheEntry.item_id == item_id,
+            SharedCacheEntry.item_type == item_type,
+        )
+        .first()
+    )
     if entry:
         entry.status = "ready"
         if size_bytes:
@@ -90,15 +108,21 @@ def _mark_shared_cache_ready(db_session, pool_id, item_id, item_type, size_bytes
 def _wait_for_shared_cache(db_session, pool_id, item_id, item_type, timeout=600):
     """Wait for another download to complete. Returns True if ready."""
     import time as _t
+
     from app.models.storage_pool import SharedCacheEntry
+
     deadline = _t.time() + timeout
     while _t.time() < deadline:
         db_session.expire_all()
-        entry = db_session.query(SharedCacheEntry).filter(
-            SharedCacheEntry.storage_pool_id == pool_id,
-            SharedCacheEntry.item_id == item_id,
-            SharedCacheEntry.item_type == item_type,
-        ).first()
+        entry = (
+            db_session.query(SharedCacheEntry)
+            .filter(
+                SharedCacheEntry.storage_pool_id == pool_id,
+                SharedCacheEntry.item_id == item_id,
+                SharedCacheEntry.item_type == item_type,
+            )
+            .first()
+        )
         if entry and entry.status == "ready":
             return True
         if entry and entry.status == "error":
@@ -109,6 +133,7 @@ def _wait_for_shared_cache(db_session, pool_id, item_id, item_type, timeout=600)
 
 # ── Topology parsing ──
 
+
 def _extract_vms(topology: dict) -> list[dict]:
     """Extract VM nodes with their properties."""
     vms = []
@@ -116,25 +141,29 @@ def _extract_vms(topology: dict) -> list[dict]:
         if node.get("type") != "vmNode":
             continue
         data = node.get("data", {})
-        vms.append({
-            "node_id": node["id"],
-            "name": data.get("name", "vm"),
-            "vcpus": data.get("vcpus", 2),
-            "ram_gb": data.get("ram", 4),
-            "os": data.get("os", ""),
-            "nics": data.get("nics", []),
-            "disk_controllers": data.get("diskControllers", []),
-            "boot_devices": data.get("bootDevices", ["hd"]),
-            "cloud_init": data.get("cloudInit", False),
-            "firmware": data.get("firmware", "bios"),
-            "secure_boot": data.get("secureBoot", False),
-            "video_model": data.get("videoModel", "virtio"),
-            "input_model": data.get("inputModel", "virtio"),
-        })
+        vms.append(
+            {
+                "node_id": node["id"],
+                "name": data.get("name", "vm"),
+                "vcpus": data.get("vcpus", 2),
+                "ram_gb": data.get("ram", 4),
+                "os": data.get("os", ""),
+                "nics": data.get("nics", []),
+                "disk_controllers": data.get("diskControllers", []),
+                "boot_devices": data.get("bootDevices", ["hd"]),
+                "cloud_init": data.get("cloudInit", False),
+                "firmware": data.get("firmware", "bios"),
+                "secure_boot": data.get("secureBoot", False),
+                "video_model": data.get("videoModel", "virtio"),
+                "input_model": data.get("inputModel", "virtio"),
+            }
+        )
     return vms
 
 
-def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict, project_id: str = "") -> list[dict]:
+def _find_vm_networks(
+    vm_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
+) -> list[dict]:
     """Find networks connected to a VM via NIC handles."""
     edges = topology.get("edges", [])
     nodes = topology.get("nodes", [])
@@ -178,23 +207,32 @@ def _find_vm_networks(vm_node_id: str, topology: dict, vni_map: dict, project_id
                         break
             if not bmc_mac:
                 import random
-                bmc_mac = "52:54:01:%02x:%02x:%02x" % (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            networks.append({
-                "bridge": f"br-bmc-{project_id[:8]}",
-                "mac": bmc_mac,
-                "nic_id": handle,
-            })
+
+                bmc_mac = "52:54:01:%02x:%02x:%02x" % (
+                    random.randint(0, 255),
+                    random.randint(0, 255),
+                    random.randint(0, 255),
+                )
+            networks.append(
+                {
+                    "bridge": f"br-bmc-{project_id[:8]}",
+                    "mac": bmc_mac,
+                    "nic_id": handle,
+                }
+            )
             continue
 
         if network_node_id not in vni_map:
             continue
 
         vni = vni_map[network_node_id]
-        networks.append({
-            "bridge": f"br-{vni}",
-            "mac": mac,
-            "nic_id": handle,
-        })
+        networks.append(
+            {
+                "bridge": f"br-{vni}",
+                "mac": mac,
+                "nic_id": handle,
+            }
+        )
 
     return networks
 
@@ -221,7 +259,14 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
         if not handle or not handle.startswith("dp-"):
             continue
 
-        storage_node = next((n for n in nodes if n["id"] == storage_node_id and n.get("type") == "storageNode"), None)
+        storage_node = next(
+            (
+                n
+                for n in nodes
+                if n["id"] == storage_node_id and n.get("type") == "storageNode"
+            ),
+            None,
+        )
         if not storage_node:
             continue
 
@@ -236,22 +281,25 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
                     bus = dc.get("bus", "virtio")
                     break
 
-        disks.append({
-            "node_id": storage_node_id,
-            "name": sdata.get("name", "disk"),
-            "size_gb": sdata.get("size", 10),
-            "format": sdata.get("format", "qcow2"),
-            "bus": bus,
-            "source": sdata.get("source", "blank"),
-            "library_item_id": sdata.get("libraryItemId"),
-            "patternId": sdata.get("patternId"),
-            "patternDiskId": sdata.get("patternDiskId"),
-        })
+        disks.append(
+            {
+                "node_id": storage_node_id,
+                "name": sdata.get("name", "disk"),
+                "size_gb": sdata.get("size", 10),
+                "format": sdata.get("format", "qcow2"),
+                "bus": bus,
+                "source": sdata.get("source", "blank"),
+                "library_item_id": sdata.get("libraryItemId"),
+                "patternId": sdata.get("patternId"),
+                "patternDiskId": sdata.get("patternDiskId"),
+            }
+        )
 
     return disks
 
 
 # ── Script generators ──
+
 
 def _vm_domain_name(project_id: str, node_id: str) -> str:
     return f"troshka-{project_id[:8]}-{node_id[:8]}"
@@ -261,7 +309,10 @@ def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:
     """Extract BMC configuration from topology if any VMs have BMC enabled."""
     bmc_network = None
     for node in topology.get("nodes", []):
-        if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "bmc":
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("networkType") == "bmc"
+        ):
             bmc_network = node
             break
 
@@ -273,11 +324,13 @@ def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:
         if node.get("type") == "vmNode" and node.get("data", {}).get("bmcEnabled"):
             bmc_ip = node["data"].get("bmcIp", "")
             if bmc_ip:
-                bmc_vms.append({
-                    "node_id": node["id"],
-                    "domain_name": _vm_domain_name(project_id, node["id"]),
-                    "bmc_ip": bmc_ip,
-                })
+                bmc_vms.append(
+                    {
+                        "node_id": node["id"],
+                        "domain_name": _vm_domain_name(project_id, node["id"]),
+                        "bmc_ip": bmc_ip,
+                    }
+                )
 
     if not bmc_vms:
         return None
@@ -300,7 +353,10 @@ def _setup_bmc_via_troshkad(host, project_id: str, bmc_config: dict):
         "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
         "bmc_username": net_data.get("bmcUsername", "admin"),
         "bmc_password": net_data.get("bmcPassword", "password"),
-        "vms": [{"domain_name": vm["domain_name"], "bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+        "vms": [
+            {"domain_name": vm["domain_name"], "bmc_ip": vm["bmc_ip"]}
+            for vm in bmc_config["vms"]
+        ],
     }
     job_id = start_job(host, "/bmc/setup", params)
     job = wait_for_job(host, job_id, timeout=120)
@@ -317,7 +373,9 @@ def _teardown_bmc_via_troshkad(host, project_id: str):
     job_id = start_job(host, "/bmc/teardown", {"project_id": project_id})
     job = wait_for_job(host, job_id, timeout=60)
     if job["status"] == "failed":
-        logger.warning("BMC teardown failed for %s: %s", project_id[:8], job.get("result"))
+        logger.warning(
+            "BMC teardown failed for %s: %s", project_id[:8], job.get("result")
+        )
 
 
 def _vm_dir(project_id: str, pool=None) -> str:
@@ -326,7 +384,9 @@ def _vm_dir(project_id: str, pool=None) -> str:
     return f"/var/lib/troshka/vms/{project_id}"
 
 
-def _disk_path(project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, pool=None) -> str:
+def _disk_path(
+    project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, pool=None
+) -> str:
     return f"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"
 
 
@@ -352,8 +412,10 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
     raw_boot_devs = vm.get("boot_devices") or None
     has_iso = any(d["format"] == "iso" for d in vm_disks)
     has_disk = any(d["format"] != "iso" for d in vm_disks)
-    has_cdrom_controller = any(dc.get("bus") == "sata" and "cdrom" in dc.get("name", "")
-                               for dc in vm.get("disk_controllers", []))
+    has_cdrom_controller = any(
+        dc.get("bus") == "sata" and "cdrom" in dc.get("name", "")
+        for dc in vm.get("disk_controllers", [])
+    )
     if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
         if has_iso and has_disk:
             return ["cdrom", "hd"]
@@ -369,7 +431,11 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
         if d in boot_type_map:
             dev = boot_type_map[d]
         elif d in storage_nodes:
-            dev = "cdrom" if storage_nodes[d].get("data", {}).get("format") == "iso" else "hd"
+            dev = (
+                "cdrom"
+                if storage_nodes[d].get("data", {}).get("format") == "iso"
+                else "hd"
+            )
         else:
             continue
         if dev not in seen:
@@ -410,9 +476,11 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
         if nid in dep_nodes and node.get("type") == "vmNode":
             cur_data = node.get("data", {})
             dep_data = dep_nodes[nid].get("data", {})
-            if (cur_data.get("vcpus") != dep_data.get("vcpus") or
-                cur_data.get("ram") != dep_data.get("ram") or
-                cur_data.get("bootDevices") != dep_data.get("bootDevices")):
+            if (
+                cur_data.get("vcpus") != dep_data.get("vcpus")
+                or cur_data.get("ram") != dep_data.get("ram")
+                or cur_data.get("bootDevices") != dep_data.get("bootDevices")
+            ):
                 changed_vms.append(node)
 
     return {
@@ -421,7 +489,13 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
         "changed_vms": changed_vms,
         "added_networks": added_networks,
         "removed_networks": removed_networks,
-        "has_changes": bool(added_vms or removed_vms or changed_vms or added_networks or removed_networks),
+        "has_changes": bool(
+            added_vms
+            or removed_vms
+            or changed_vms
+            or added_networks
+            or removed_networks
+        ),
     }
 
 
@@ -456,13 +530,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             if item and item.s3_key:
                 fmt = node.get("data", {}).get("format", "qcow2")
                 cache_path = _image_cache_path(item_id, fmt, pool)
-                items_to_cache.append({
-                    "item_id": item_id,
-                    "name": item.name,
-                    "s3_key": item.s3_key,
-                    "cache_path": cache_path,
-                    "expected_size": item.size_bytes,
-                })
+                items_to_cache.append(
+                    {
+                        "item_id": item_id,
+                        "name": item.name,
+                        "s3_key": item.s3_key,
+                        "cache_path": cache_path,
+                        "expected_size": item.size_bytes,
+                    }
+                )
 
     # Collect PXE boot ISOs from VM nodes
     for node in nodes:
@@ -473,13 +549,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             item = db_session.query(LibraryItem).filter_by(id=item_id).first()
             if item and item.s3_key:
                 cache_path = _image_cache_path(item_id, "iso", pool)
-                items_to_cache.append({
-                    "item_id": item_id,
-                    "name": item.name,
-                    "s3_key": item.s3_key,
-                    "cache_path": cache_path,
-                    "expected_size": item.size_bytes,
-                })
+                items_to_cache.append(
+                    {
+                        "item_id": item_id,
+                        "name": item.name,
+                        "s3_key": item.s3_key,
+                        "cache_path": cache_path,
+                        "expected_size": item.size_bytes,
+                    }
+                )
 
     # Collect pattern disks
     for node in nodes:
@@ -489,16 +567,24 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         pattern_id = data.get("patternId")
         pattern_disk_id = data.get("patternDiskId")
         if pattern_id and pattern_disk_id:
-            pd = db_session.query(PatternDisk).filter_by(id=pattern_disk_id, pattern_id=pattern_id).first()
+            pd = (
+                db_session.query(PatternDisk)
+                .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
+                .first()
+            )
             if pd and pd.s3_key:
-                cache_path = _pattern_cache_path(pattern_id, pd.source_disk_id, pd.format, pool)
-                items_to_cache.append({
-                    "item_id": pattern_disk_id,
-                    "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
-                    "s3_key": pd.s3_key,
-                    "cache_path": cache_path,
-                    "expected_size": pd.size_bytes,
-                })
+                cache_path = _pattern_cache_path(
+                    pattern_id, pd.source_disk_id, pd.format, pool
+                )
+                items_to_cache.append(
+                    {
+                        "item_id": pattern_disk_id,
+                        "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
+                        "s3_key": pd.s3_key,
+                        "cache_path": cache_path,
+                        "expected_size": pd.size_bytes,
+                    }
+                )
 
     seen_ids = set()
     deduped = []
@@ -520,22 +606,31 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             if ic["cache_path"].startswith("/var/lib/troshka/local/"):
                 items_needing_download.append(ic)
                 continue
-            status, entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
+            status, entry = _check_shared_cache(
+                db_session, pool, ic["item_id"], "image"
+            )
             if status == "ready":
                 try:
                     jid = start_job(host, "/files/stat", {"path": ic["cache_path"]})
                     stat_job = wait_for_job(host, jid, timeout=10)
                     if stat_job.get("result", {}).get("exists"):
-                        logger.info("  %s already on shared storage, skipping", ic["name"])
+                        logger.info(
+                            "  %s already on shared storage, skipping", ic["name"]
+                        )
                         continue
                 except TroshkadError:
                     pass
-                logger.warning("  %s cache entry says ready but file missing, re-downloading", ic["name"])
+                logger.warning(
+                    "  %s cache entry says ready but file missing, re-downloading",
+                    ic["name"],
+                )
                 if entry:
                     db_session.delete(entry)
                     db_session.commit()
             elif status == "downloading":
-                logger.info("  %s being downloaded by another host, waiting...", ic["name"])
+                logger.info(
+                    "  %s being downloaded by another host, waiting...", ic["name"]
+                )
                 if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
                     logger.info("  %s now available on shared storage", ic["name"])
                     continue
@@ -543,7 +638,9 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     logger.warning("  %s download timed out, will retry", ic["name"])
             # Need to download — create/update cache entry
             rel_path = ic["cache_path"].replace("/var/lib/troshka/shared/", "")
-            _create_shared_cache_entry(db_session, pool, ic["item_id"], "image", rel_path)
+            _create_shared_cache_entry(
+                db_session, pool, ic["item_id"], "image", rel_path
+            )
             items_needing_download.append(ic)
         items_to_cache = items_needing_download
 
@@ -566,23 +663,37 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
     # Start download jobs using aws s3 cp
     from app.services.s3_storage import _get_s3_config
+
     s3_creds = _get_s3_config()
     s3_bucket = s3_storage._bucket()
     active_jobs = []
     for ic in items_to_download:
         s3_url = f"s3://{s3_bucket}/{ic['s3_key']}"
         try:
-            job_id = start_job(host, "/images/cache", {
-                "s3_url": s3_url,
-                "dest_path": ic["cache_path"],
-                "expected_size": ic.get("expected_size", 0),
-                "expected_format": "qcow2" if ic["cache_path"].endswith(".qcow2") else None,
-                "aws_access_key_id": s3_creds.get("access_key_id", ""),
-                "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
-                "aws_region": s3_creds.get("region", "us-east-1"),
-            })
-            active_jobs.append({"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]})
-            logger.info("  cache job started: %s (%s) -> %s", ic["name"], ic["item_id"][:8], ic["cache_path"])
+            job_id = start_job(
+                host,
+                "/images/cache",
+                {
+                    "s3_url": s3_url,
+                    "dest_path": ic["cache_path"],
+                    "expected_size": ic.get("expected_size", 0),
+                    "expected_format": "qcow2"
+                    if ic["cache_path"].endswith(".qcow2")
+                    else None,
+                    "aws_access_key_id": s3_creds.get("access_key_id", ""),
+                    "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
+                    "aws_region": s3_creds.get("region", "us-east-1"),
+                },
+            )
+            active_jobs.append(
+                {"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]}
+            )
+            logger.info(
+                "  cache job started: %s (%s) -> %s",
+                ic["name"],
+                ic["item_id"][:8],
+                ic["cache_path"],
+            )
         except TroshkadError as e:
             logger.error("Failed to start cache job for %s: %s", ic["name"], e)
 
@@ -607,10 +718,16 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     completed.add(aj["job_id"])
                     logger.info("cache: %s downloaded", aj["name"])
                     if pool and pool.mode.startswith("shared"):
-                        _mark_shared_cache_ready(db_session, pool.id, aj["item_id"], "image")
+                        _mark_shared_cache_ready(
+                            db_session, pool.id, aj["item_id"], "image"
+                        )
                 elif job["status"] == "failed":
                     failed.add(aj["job_id"])
-                    logger.error("cache: %s failed: %s", aj["name"], job.get("result", {}).get("error", ""))
+                    logger.error(
+                        "cache: %s failed: %s",
+                        aj["name"],
+                        job.get("result", {}).get("error", ""),
+                    )
             except TroshkadError:
                 pass  # Transient connection error, retry next poll
 
@@ -627,12 +744,21 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     try:
                         job = poll_job(host, aj["job_id"])
                         for line in reversed(job.get("output", [])):
-                            if "Download" in line or "GB" in line or "MiB" in line or "cached" in line:
+                            if (
+                                "Download" in line
+                                or "GB" in line
+                                or "MiB" in line
+                                or "cached" in line
+                            ):
                                 last_line = line.strip()
                                 break
                     except TroshkadError:
                         pass
-                    items.append(f"{aj['name']}: {last_line}" if last_line else f"{aj['name']}: downloading...")
+                    items.append(
+                        f"{aj['name']}: {last_line}"
+                        if last_line
+                        else f"{aj['name']}: downloading..."
+                    )
             progress_callback(f"{done_count}/{len(active_jobs)}", items)
 
         if len(completed) + len(failed) == last_completed_count:
@@ -646,10 +772,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             return
 
     if failed:
-        logger.error("cache_library_images: %d/%d downloads failed", len(failed), len(active_jobs))
+        logger.error(
+            "cache_library_images: %d/%d downloads failed",
+            len(failed),
+            len(active_jobs),
+        )
 
 
 # ── Async orchestrators ──
+
 
 def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id):
     """Set up full VXLAN mesh networking via troshkad.
@@ -672,6 +803,7 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
             first_vni = next(iter(vni_map.values()), None)
             if first_vni:
                 from app.services.vxlan import _transit_subnet
+
                 transit = _transit_subnet(first_vni)
                 network_config["gateway"] = {
                     "name": "lb-gateway",
@@ -700,12 +832,14 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
                 eip_priv_ips = gw.get("eip_private_ips", [])
                 lb_eip_priv = eip_priv_ips[0] if eip_priv_ips else ""
             for fe in lb["frontends"]:
-                pf_list.append({
-                    "extPort": fe["bindPort"],
-                    "intIp": gw.get("transit_ns_ip", ""),
-                    "intPort": fe["bindPort"],
-                    "_private_ip": lb_eip_priv,
-                })
+                pf_list.append(
+                    {
+                        "extPort": fe["bindPort"],
+                        "intIp": gw.get("transit_ns_ip", ""),
+                        "intPort": fe["bindPort"],
+                        "_private_ip": lb_eip_priv,
+                    }
+                )
             gw["port_forwards"] = pf_list
 
     # Build params for troshkad
@@ -732,10 +866,14 @@ def _teardown_networks_via_troshkad(host, project_id, vni_map):
     """Tear down project networking via troshkad."""
     vni_list = list(vni_map.values()) if vni_map else []
     try:
-        job_id = start_job(host, "/networks/full-teardown", {
-            "project_id": project_id,
-            "vni_list": vni_list,
-        })
+        job_id = start_job(
+            host,
+            "/networks/full-teardown",
+            {
+                "project_id": project_id,
+                "vni_list": vni_list,
+            },
+        )
         wait_for_job(host, job_id, timeout=60)
     except TroshkadError as e:
         logger.warning("Network teardown error for %s: %s", project_id[:8], e)
@@ -765,25 +903,32 @@ def _setup_pxe_via_troshkad(host, topology, vni_map, project_id=""):
             gateway_ip = dhcp_config.get("gateway", "")
 
         try:
-            job_id = start_job(host, "/pxe/setup", {
-                "project_id": project_id,
-                "vni": net["vni"],
-                "iso_path": iso_path,
-                "gateway_ip": gateway_ip,
-                "http_port": pxe.get("http_port", 8080),
-                "tftp_root": pxe.get("tftp_root", ""),
-            })
+            job_id = start_job(
+                host,
+                "/pxe/setup",
+                {
+                    "project_id": project_id,
+                    "vni": net["vni"],
+                    "iso_path": iso_path,
+                    "gateway_ip": gateway_ip,
+                    "http_port": pxe.get("http_port", 8080),
+                    "tftp_root": pxe.get("tftp_root", ""),
+                },
+            )
             job = wait_for_job(host, job_id, timeout=120)
             if job["status"] == "failed":
-                logger.error("PXE setup failed for VNI %s: %s",
-                             net["vni"], job.get("result", {}).get("error", ""))
+                logger.error(
+                    "PXE setup failed for VNI %s: %s",
+                    net["vni"],
+                    job.get("result", {}).get("error", ""),
+                )
         except TroshkadError as e:
             logger.error("PXE setup failed for VNI %s: %s", net["vni"], e)
 
 
 def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
     """Create cloud-init seed ISOs via troshkad seeds/create-batch."""
-    from app.services.cloud_init import generate_userdata, generate_metadata
+    from app.services.cloud_init import generate_metadata, generate_userdata
 
     nodes = topology.get("nodes", [])
     seeds = []
@@ -817,7 +962,9 @@ def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
         job_id = start_job(host, "/seeds/create-batch", {"seeds": seeds})
         job = wait_for_job(host, job_id, timeout=60)
         if job["status"] == "failed":
-            logger.error("Seed ISO creation failed: %s", job.get("result", {}).get("error", ""))
+            logger.error(
+                "Seed ISO creation failed: %s", job.get("result", {}).get("error", "")
+            )
     except TroshkadError as e:
         logger.error("Seed ISO creation failed: %s", e)
 
@@ -828,17 +975,26 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
     for disk in vm_disks:
         if disk["format"] == "iso":
             continue
-        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"], pool)
+        dp = _disk_path(
+            project_id, vm["node_id"], disk["node_id"], disk["format"], pool
+        )
 
         backing = None
-        if disk.get("source") == "pattern" and disk.get("patternId") and disk.get("patternDiskId"):
+        if (
+            disk.get("source") == "pattern"
+            and disk.get("patternId")
+            and disk.get("patternDiskId")
+        ):
             from app.core.database import SessionLocal as _SL
             from app.models.pattern import PatternDisk as _PD
+
             _s = _SL()
             _pd = _s.query(_PD).filter_by(id=disk["patternDiskId"]).first()
             _cache_disk_id = _pd.source_disk_id if _pd else disk["patternDiskId"]
             _s.close()
-            backing = _pattern_cache_path(disk["patternId"], _cache_disk_id, disk["format"], pool)
+            backing = _pattern_cache_path(
+                disk["patternId"], _cache_disk_id, disk["format"], pool
+            )
         elif disk.get("source") == "library" and disk.get("library_item_id"):
             backing = _image_cache_path(disk["library_item_id"], disk["format"], pool)
 
@@ -855,7 +1011,9 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
     return job_ids
 
 
-def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, disk_cache=None):
+def _create_vm_via_troshkad(
+    host, project_id, vm, topology, vni_map, pool=None, disk_cache=None
+):
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], topology)
@@ -868,15 +1026,32 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, 
         if disk["format"] == "iso":
             if disk.get("library_item_id"):
                 cache_path = _image_cache_path(disk["library_item_id"], "iso", pool)
-                link_path = f"{vm_dir}/{vm['node_id'][:8]}-{disk['library_item_id'][:8]}.iso"
-                disks.append({"path": link_path, "bus": "sata", "device": "cdrom", "symlink_from": cache_path})
+                link_path = (
+                    f"{vm_dir}/{vm['node_id'][:8]}-{disk['library_item_id'][:8]}.iso"
+                )
+                disks.append(
+                    {
+                        "path": link_path,
+                        "bus": "sata",
+                        "device": "cdrom",
+                        "symlink_from": cache_path,
+                    }
+                )
             continue
-        dp = _disk_path(project_id, vm["node_id"], disk["node_id"], disk["format"], pool)
+        dp = _disk_path(
+            project_id, vm["node_id"], disk["node_id"], disk["format"], pool
+        )
         disks.append({"path": dp, "bus": disk["bus"]})
 
     # Seed ISO as cdrom
     if vm.get("cloud_init"):
-        disks.append({"path": _seed_path(project_id, vm["node_id"], pool), "bus": "sata", "device": "cdrom"})
+        disks.append(
+            {
+                "path": _seed_path(project_id, vm["node_id"], pool),
+                "bus": "sata",
+                "device": "cdrom",
+            }
+        )
 
     # Build network list
     networks = []
@@ -924,7 +1099,7 @@ def _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool=None, 
 
 def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
     """Deploy the cloud-init metadata service via troshkad metadata/deploy."""
-    from app.services.cloud_init import generate_userdata, generate_metadata
+    from app.services.cloud_init import generate_metadata, generate_userdata
 
     nodes = topology.get("nodes", [])
     vm_configs = {}
@@ -940,7 +1115,11 @@ def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
         for nic in data.get("nics", []):
             mac = nic.get("mac", "").lower()
             if mac:
-                vm_configs[mac] = {"vm_name": vm_label, "userdata": userdata, "metadata": metadata}
+                vm_configs[mac] = {
+                    "vm_name": vm_label,
+                    "userdata": userdata,
+                    "metadata": metadata,
+                }
 
     if not vm_configs:
         return
@@ -949,16 +1128,22 @@ def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
     ns = f"troshka-{project_id[:8]}"
 
     try:
-        job_id = start_job(host, "/metadata/deploy", {
-            "project_id": project_id,
-            "bridges": bridges,
-            "vm_configs": vm_configs,
-            "namespace": ns,
-        })
+        job_id = start_job(
+            host,
+            "/metadata/deploy",
+            {
+                "project_id": project_id,
+                "bridges": bridges,
+                "vm_configs": vm_configs,
+                "namespace": ns,
+            },
+        )
         wait_for_job(host, job_id, timeout=30)
         logger.info("Metadata service deployed for %s", project_id[:8])
     except TroshkadError as e:
-        logger.warning("Metadata service deployment failed for %s: %s", project_id[:8], e)
+        logger.warning(
+            "Metadata service deployment failed for %s: %s", project_id[:8], e
+        )
 
 
 def _start_vms_via_troshkad(host, project_id, topology):
@@ -976,7 +1161,11 @@ def _start_vms_via_troshkad(host, project_id, topology):
             if vm:
                 ordered_vm_ids.add(vm_id)
                 if entry.get("autoStart", True) is False:
-                    logger.info("Deploy %s: skipping %s (auto-start disabled)", project_id[:8], vm["name"])
+                    logger.info(
+                        "Deploy %s: skipping %s (auto-start disabled)",
+                        project_id[:8],
+                        vm["name"],
+                    )
                     continue
                 delay = entry.get("delaySeconds", 0)
                 if delay > 0:
@@ -1014,6 +1203,7 @@ def _project_deleted(project_id: str) -> bool:
     """Check if a project was deleted mid-deploy."""
     from app.core.database import SessionLocal
     from app.models.project import Project
+
     check_s = SessionLocal()
     try:
         return check_s.query(Project).filter_by(id=project_id).first() is None
@@ -1033,26 +1223,44 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         if not project or project.state != "deploying":
             return
 
-        host = s.query(Host).filter_by(id=project.host_id).first() if project.host_id else None
+        host = (
+            s.query(Host).filter_by(id=project.host_id).first()
+            if project.host_id
+            else None
+        )
         if not host:
-            from app.services.placement import find_available_host, calculate_project_requirements
+            from app.services.placement import (
+                calculate_project_requirements,
+                find_available_host,
+            )
+
             reqs = calculate_project_requirements(project.topology or {})
             host = find_available_host(s, reqs["total_vcpus"], reqs["total_ram_mb"])
             if host:
                 project.host_id = host.id
                 s.commit()
-                logger.info("Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8])
+                logger.info(
+                    "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
+                )
         if not host or not host.ip_address:
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
-            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": "Host not available",
+                },
+            )
             return
 
         topology = project.topology or {}
         vni_map = project.vni_map or {}
         if not vni_map:
             from app.services.vxlan import allocate_vnis_for_project
+
             vni_map = allocate_vnis_for_project(s, topology)
             project.vni_map = vni_map
             s.commit()
@@ -1065,12 +1273,22 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         external_ips = topology.get("externalIps", [])
         if external_ips:
             _update_deploy_progress(project_id, "eips", "allocating elastic IPs")
-            logger.info("Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips))
-            from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
+            logger.info(
+                "Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips)
+            )
             from app.models.elastic_ip import ElasticIp
             from app.models.provider import Provider
+            from app.services.eip_service import (
+                allocate_eip,
+                associate_eip,
+                sync_security_group_rules,
+            )
 
-            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+            provider = (
+                s.query(Provider).filter_by(id=project.provider_id).first()
+                if project.provider_id
+                else None
+            )
             if not provider and host.provider_id:
                 provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if not provider:
@@ -1082,9 +1300,11 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
             for ext_ip in external_ips:
                 canvas_id = ext_ip.get("id", "")
-                existing = s.query(ElasticIp).filter_by(
-                    project_id=project_id, canvas_eip_id=canvas_id
-                ).first()
+                existing = (
+                    s.query(ElasticIp)
+                    .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+                    .first()
+                )
                 if existing:
                     eip = existing
                 else:
@@ -1103,9 +1323,13 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         _update_deploy_progress(project_id, "networking", "waiting for lock")
         with _network_lock:
             _update_deploy_progress(project_id, "networking", "configuring VXLAN")
-            logger.info("Deploy %s: setting up networks on %s", project_id[:8], host.ip_address)
+            logger.info(
+                "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
+            )
 
-            net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+            net_result = _setup_networks_via_troshkad(
+                host, topology, vni_map, s, project_id
+            )
         if net_result is not True:
             logger.error("Deploy %s: %s", project_id[:8], net_result)
             project.state = "error"
@@ -1116,6 +1340,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         # Step 1a: Set up load balancer (HAProxy) if present
         from app.services.vxlan import build_host_network_config as _build_net_config
+
         _net_config = _build_net_config(topology, vni_map, [])
         lb_config = _net_config.get("loadbalancer")
         if lb_config and lb_config.get("frontends"):
@@ -1128,6 +1353,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 net_list = _net_config.get("networks", [])
                 if net_list:
                     import ipaddress as _ipa
+
                     first_cidr = net_list[0].get("dhcp_config", {}).get("gateway", "")
                     if first_cidr:
                         try:
@@ -1149,38 +1375,61 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         # Step 1b: Sync SG rules for port forwards (gateway + LB)
         if external_ips:
-            from app.services.eip_service import sync_security_group_rules
             from app.models.provider import Provider as _Prov
-            _provider = s.query(_Prov).filter_by(id=project.provider_id).first() if project.provider_id else None
+            from app.services.eip_service import sync_security_group_rules
+
+            _provider = (
+                s.query(_Prov).filter_by(id=project.provider_id).first()
+                if project.provider_id
+                else None
+            )
             if not _provider and host.provider_id:
                 _provider = s.query(_Prov).filter_by(id=host.provider_id).first()
             if _provider:
                 desired_sg = []
                 gateway_node = next(
-                    (n for n in topology.get("nodes", [])
-                     if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"),
+                    (
+                        n
+                        for n in topology.get("nodes", [])
+                        if n.get("type") == "networkNode"
+                        and n.get("data", {}).get("subtype") == "gateway"
+                    ),
                     None,
                 )
-                if gateway_node and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward":
+                if (
+                    gateway_node
+                    and gateway_node.get("data", {}).get("gatewayMode")
+                    == "nat-portforward"
+                ):
                     for pf in gateway_node.get("data", {}).get("portForwards", []):
                         if pf.get("extPort"):
-                            desired_sg.append({
-                                "project_id": project_id,
-                                "ext_port": int(pf["extPort"]),
-                                "protocol": "tcp",
-                            })
-                if lb_config and lb_config.get("frontends") and lb_config.get("external", True):
+                            desired_sg.append(
+                                {
+                                    "project_id": project_id,
+                                    "ext_port": int(pf["extPort"]),
+                                    "protocol": "tcp",
+                                }
+                            )
+                if (
+                    lb_config
+                    and lb_config.get("frontends")
+                    and lb_config.get("external", True)
+                ):
                     for fe in lb_config["frontends"]:
-                        desired_sg.append({
-                            "project_id": project_id,
-                            "ext_port": int(fe["bindPort"]),
-                            "protocol": "tcp",
-                        })
+                        desired_sg.append(
+                            {
+                                "project_id": project_id,
+                                "ext_port": int(fe["bindPort"]),
+                                "protocol": "tcp",
+                            }
+                        )
                 if desired_sg:
                     sync_security_group_rules(s, _provider, desired_sg)
 
         if _project_deleted(project_id):
-            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            logger.info(
+                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            )
             _deploy_progress.pop(project_id, None)
             return
 
@@ -1195,15 +1444,21 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
         if _project_deleted(project_id):
-            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            logger.info(
+                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            )
             _deploy_progress.pop(project_id, None)
             return
 
         # Step 3: Cache library images on host
         _update_deploy_progress(project_id, "downloading images", "0%")
         logger.info("Deploy %s: caching library images", project_id[:8])
+
         def _deploy_dl_progress(detail, items):
-            _update_deploy_progress(project_id, "downloading images", str(detail), items=items)
+            _update_deploy_progress(
+                project_id, "downloading images", str(detail), items=items
+            )
+
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
         # Step 3b: Set up PXE boot services (extract kernel/initrd, start HTTP server)
@@ -1212,42 +1467,66 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         # Step 3c: Validate BMC configuration
         bmc_network_exists = any(
-            n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
+            n.get("type") == "networkNode"
+            and n.get("data", {}).get("networkType") == "bmc"
             for n in topology.get("nodes", [])
         )
         if bmc_network_exists:
             missing_bmc_ips = [
                 n["data"].get("name", n["id"][:8])
                 for n in topology.get("nodes", [])
-                if n.get("type") == "vmNode" and n.get("data", {}).get("bmcEnabled") and not n.get("data", {}).get("bmcIp")
+                if n.get("type") == "vmNode"
+                and n.get("data", {}).get("bmcEnabled")
+                and not n.get("data", {}).get("bmcIp")
             ]
             if missing_bmc_ips:
-                error_msg = f"BMC-enabled VMs missing BMC IP: {', '.join(missing_bmc_ips)}"
+                error_msg = (
+                    f"BMC-enabled VMs missing BMC IP: {', '.join(missing_bmc_ips)}"
+                )
                 logger.error("Deploy %s: %s", project_id[:8], error_msg)
                 project.state = "error"
                 project.deploy_error = error_msg
                 s.commit()
-                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": error_msg,
+                    },
+                )
                 _deploy_progress.pop(project_id, None)
                 return
 
         # Create BMC bridge (before VMs so libvirt can validate the bridge name)
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
-            from app.services.troshkad_client import start_job as _sj, wait_for_job as _wj
+            from app.services.troshkad_client import (
+                start_job as _sj,
+            )
+            from app.services.troshkad_client import (
+                wait_for_job as _wj,
+            )
+
             net_data = bmc_config["bmc_network"]
             cidr = net_data.get("cidr", "192.168.100.0/24")
-            _bj = _sj(host, "/bmc/create-bridge", {
-                "project_id": project_id,
-                "bmc_cidr": cidr,
-                "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
-                "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
-            })
+            _bj = _sj(
+                host,
+                "/bmc/create-bridge",
+                {
+                    "project_id": project_id,
+                    "bmc_cidr": cidr,
+                    "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+                    "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+                },
+            )
             _wj(host, _bj, timeout=30)
             logger.info("Deploy %s: BMC bridge created", project_id[:8])
 
         if _project_deleted(project_id):
-            logger.info("Deploy %s: project deleted mid-deploy, aborting", project_id[:8])
+            logger.info(
+                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            )
             _deploy_progress.pop(project_id, None)
             return
 
@@ -1261,14 +1540,20 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         disk_jobs = []
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
-            job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+            job_ids = _create_vm_disks_via_troshkad(
+                host, project_id, vm, vm_disks, pool
+            )
             disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
         for di, jid in enumerate(disk_jobs):
             try:
-                _update_deploy_progress(project_id, "creating disks", f"{di}/{len(disk_jobs)}")
+                _update_deploy_progress(
+                    project_id, "creating disks", f"{di}/{len(disk_jobs)}"
+                )
                 job = wait_for_job(host, jid, timeout=900)
                 if job.get("status") == "failed":
-                    raise TroshkadError(f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}")
+                    raise TroshkadError(
+                        f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}"
+                    )
             except TroshkadError as e:
                 logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
                 raise
@@ -1285,13 +1570,19 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                     items.append(f"{n}: defining...")
                 else:
                     items.append(f"{n}: pending")
-            _update_deploy_progress(project_id, "creating VMs", f"{vi}/{len(vms)}", items=items)
-            job_id = _create_vm_via_troshkad(host, project_id, vm, topology, vni_map, pool, disk_cache)
+            _update_deploy_progress(
+                project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
+            )
+            job_id = _create_vm_via_troshkad(
+                host, project_id, vm, topology, vni_map, pool, disk_cache
+            )
             if job_id:
                 try:
                     job = wait_for_job(host, job_id, timeout=300)
                     if job.get("status") == "failed":
-                        raise TroshkadError(f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}")
+                        raise TroshkadError(
+                            f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
+                        )
                 except TroshkadError as e:
                     logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
                     raise
@@ -1300,11 +1591,20 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
             _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
-            logger.info("Deploy %s: starting BMC endpoints for %d VMs", project_id[:8], len(bmc_config["vms"]))
+            notify_project(
+                project_id,
+                {"type": "deploy-progress", "progress": _deploy_progress[project_id]},
+            )
+            logger.info(
+                "Deploy %s: starting BMC endpoints for %d VMs",
+                project_id[:8],
+                len(bmc_config["vms"]),
+            )
             bmc_result = _setup_bmc_via_troshkad(host, project_id, bmc_config)
             if bmc_result is not True:
-                logger.error("Deploy %s: BMC setup failed: %s", project_id[:8], bmc_result)
+                logger.error(
+                    "Deploy %s: BMC setup failed: %s", project_id[:8], bmc_result
+                )
                 project.state = "error"
                 project.deploy_error = f"BMC setup failed: {bmc_result}"
                 s.commit()
@@ -1314,7 +1614,10 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         # Step 5: Start VMs (unless auto_start is disabled)
         if auto_start:
             _update_deploy_progress(project_id, "starting", "VMs")
-            notify_project(project_id, {"type": "deploy-progress", "progress": _deploy_progress[project_id]})
+            notify_project(
+                project_id,
+                {"type": "deploy-progress", "progress": _deploy_progress[project_id]},
+            )
             logger.info("Deploy %s: starting VMs", project_id[:8])
             start_failures = _start_vms_via_troshkad(host, project_id, topology)
 
@@ -1325,9 +1628,17 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 project.state = "error"
                 project.deploy_error = error_msg
                 from app.services.placement import sync_host_capacity
+
                 sync_host_capacity(s, host)
                 s.commit()
-                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": error_msg,
+                    },
+                )
                 _deploy_progress.pop(project_id, None)
                 return
 
@@ -1338,11 +1649,17 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         # Create DNS records if DNS provider configured
         if project.dns_provider_id and project.guid and project.domain:
             from app.models.dns_provider import DnsProvider
-            from app.services.dns_service import resolve_dns_records, create_dns_records
+            from app.services.dns_service import create_dns_records, resolve_dns_records
 
-            dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+            dns_provider = (
+                s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+            )
             if dns_provider and lb_config:
-                _update_deploy_progress(project_id, "dns", f"creating records for {project.guid}.{project.domain}")
+                _update_deploy_progress(
+                    project_id,
+                    "dns",
+                    f"creating records for {project.guid}.{project.domain}",
+                )
 
                 eip_address = None
                 for ext_ip in external_ips:
@@ -1353,15 +1670,31 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
                 dns_templates = lb_config.get("dns_records", [])
                 if dns_templates:
-                    records = resolve_dns_records(dns_templates, guid=project.guid, domain=project.domain, eip=eip_address)
-                    errors = create_dns_records(dns_provider.type, dns_provider.config, records, ttl=lb_config.get("dns_ttl", 30))
+                    records = resolve_dns_records(
+                        dns_templates,
+                        guid=project.guid,
+                        domain=project.domain,
+                        eip=eip_address,
+                    )
+                    errors = create_dns_records(
+                        dns_provider.type,
+                        dns_provider.config,
+                        records,
+                        ttl=lb_config.get("dns_ttl", 30),
+                    )
 
                     deployed_topo = project.deployed_topology or {}
-                    deployed_topo["_dns_records"] = [r for r in records if r.get("value")]
+                    deployed_topo["_dns_records"] = [
+                        r for r in records if r.get("value")
+                    ]
                     project.deployed_topology = deployed_topo
 
                     if errors:
-                        logger.warning("Deploy %s: DNS record creation had errors: %s", project_id[:8], errors)
+                        logger.warning(
+                            "Deploy %s: DNS record creation had errors: %s",
+                            project_id[:8],
+                            errors,
+                        )
 
         # Store BMC addresses in deployed topology for UI display
         if bmc_config:
@@ -1381,9 +1714,14 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             project.deployed_topology = deployed_topo
 
         s.commit()
-        notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
+        notify_project(
+            project_id,
+            {"type": "project-state", "state": "active", "deploy_error": None},
+        )
         vm_states = {vm["node_id"]: "running" for vm in vms}
-        notify_project(project_id, {"type": "vm-state", "states": vm_states, "progress": {}})
+        notify_project(
+            project_id, {"type": "vm-state", "states": vm_states, "progress": {}}
+        )
         _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
@@ -1400,7 +1738,14 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 project.state = "error"
                 project.deploy_error = str(e)
                 s.commit()
-                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": project.deploy_error,
+                    },
+                )
         except Exception:
             pass
     finally:
@@ -1409,13 +1754,25 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
 def _is_ocp_topology(topology: dict) -> bool:
     nodes = topology.get("nodes", [])
-    has_bastion = any(n.get("data", {}).get("label") == "bastion" for n in nodes if n.get("type") == "vmNode")
-    has_rhcos = any(n.get("data", {}).get("os") == "rhcos" for n in nodes if n.get("type") == "vmNode")
+    has_bastion = any(
+        n.get("data", {}).get("label") == "bastion"
+        for n in nodes
+        if n.get("type") == "vmNode"
+    )
+    has_rhcos = any(
+        n.get("data", {}).get("os") == "rhcos"
+        for n in nodes
+        if n.get("type") == "vmNode"
+    )
     return has_bastion and has_rhcos
 
 
 def _is_pattern_deploy(topology: dict) -> bool:
-    return any(n.get("data", {}).get("patternId") for n in topology.get("nodes", []) if n.get("type") == "storageNode")
+    return any(
+        n.get("data", {}).get("patternId")
+        for n in topology.get("nodes", [])
+        if n.get("type") == "storageNode"
+    )
 
 
 def maybe_start_ocp_health_monitor(project_id: str):
@@ -1423,12 +1780,17 @@ def maybe_start_ocp_health_monitor(project_id: str):
     if project_id in _active_health_monitors:
         return
     from app.core.database import SessionLocal
-    from app.models.project import Project
     from app.models.host import Host
+    from app.models.project import Project
+
     db = SessionLocal()
     try:
         project = db.query(Project).filter_by(id=project_id).first()
-        if not project or project.ocp_status != "monitoring" or project.state != "active":
+        if (
+            not project
+            or project.ocp_status != "monitoring"
+            or project.state != "active"
+        ):
             return
         host = db.query(Host).filter_by(id=project.host_id).first()
         if not host or host.agent_status != "connected":
@@ -1436,43 +1798,64 @@ def maybe_start_ocp_health_monitor(project_id: str):
         topo = project.deployed_topology or project.topology or {}
         if not _is_ocp_topology(topo):
             return
-        host_copy = type("H", (), {
-            "ip_address": host.ip_address,
-            "agent_token": host.agent_token,
-            "agent_cert_fingerprint": host.agent_cert_fingerprint,
-        })()
+        host_copy = type(
+            "H",
+            (),
+            {
+                "ip_address": host.ip_address,
+                "agent_token": host.agent_token,
+                "agent_cert_fingerprint": host.agent_cert_fingerprint,
+            },
+        )()
         deploy_start = project.updated_at.timestamp() if project.updated_at else 0
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
             args=(project_id, host_copy, topo, deploy_start),
-            daemon=True, name=f"ocp-health-{project_id[:8]}",
+            daemon=True,
+            name=f"ocp-health-{project_id[:8]}",
         ).start()
         logger.info("OCP health monitor started on demand for %s", project_id[:8])
     finally:
         db.close()
 
 
-def _exec_on_bastion(host, project_id: str, bastion_ip: str, password: str, command: str, timeout: int = 15):
+def _exec_on_bastion(
+    host,
+    project_id: str,
+    bastion_ip: str,
+    password: str,
+    command: str,
+    timeout: int = 15,
+):
     import re as _re
+
     try:
-        job_id = start_job(host, "/vm/ssh-exec", {
-            "project_id": project_id,
-            "vm_ip": bastion_ip,
-            "username": "cloud-user",
-            "password": password,
-            "command": command,
-            "timeout": timeout,
-        })
+        job_id = start_job(
+            host,
+            "/vm/ssh-exec",
+            {
+                "project_id": project_id,
+                "vm_ip": bastion_ip,
+                "username": "cloud-user",
+                "password": password,
+                "command": command,
+                "timeout": timeout,
+            },
+        )
         job = wait_for_job(host, job_id, timeout=timeout + 15)
         if job["status"] == "completed":
             result = job.get("result", {})
             if result.get("output"):
-                output = _re.sub(r'\x1b\[[0-9;]*m', '', result["output"])
-                lines = [l for l in output.split("\n") if l.strip()
-                         and not l.strip().startswith("OpenShift Console:")
-                         and not l.strip().startswith("Username:")
-                         and not l.strip().startswith("Password:")]
+                output = _re.sub(r"\x1b\[[0-9;]*m", "", result["output"])
+                lines = [
+                    l
+                    for l in output.split("\n")
+                    if l.strip()
+                    and not l.strip().startswith("OpenShift Console:")
+                    and not l.strip().startswith("Username:")
+                    and not l.strip().startswith("Password:")
+                ]
                 result["output"] = "\n".join(lines)
             if not result.get("error"):
                 return result.get("output", "")
@@ -1483,6 +1866,7 @@ def _exec_on_bastion(host, project_id: str, bastion_ip: str, password: str, comm
 
 def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: float = 0):
     import time as _t
+
     start = deploy_start or _t.time()
 
     def _elapsed():
@@ -1490,13 +1874,24 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
 
     def _push(phase, detail, items=None):
-        msg = {"type": "ocp-health", "phase": phase, "detail": f"{detail} ({_elapsed()})"}
+        msg = {
+            "type": "ocp-health",
+            "phase": phase,
+            "detail": f"{detail} ({_elapsed()})",
+        }
         if items:
             msg["items"] = items
         notify_project(project_id, msg)
 
     nodes = topology.get("nodes", [])
-    bastion = next((n for n in nodes if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"), None)
+    bastion = next(
+        (
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
     if not bastion:
         return
 
@@ -1509,7 +1904,11 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         bastion_ip = "10.0.0.50"
     password = bastion.get("data", {}).get("ciCloudUserPassword", "")
 
-    cp_nodes = [n for n in nodes if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"]
+    cp_nodes = [
+        n
+        for n in nodes
+        if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
+    ]
     cp_names = [n.get("data", {}).get("label", n["id"][:8]) for n in cp_nodes]
 
     dns_domain = "ocp.ocp.local"
@@ -1523,12 +1922,19 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
 
     console_url = f"https://console-openshift-console.apps.{dns_domain}"
     deadline = _t.time() + 600
-    logger.info("OCP health monitor started for %s (bastion=%s, domain=%s)", project_id[:8], bastion_ip, dns_domain)
+    logger.info(
+        "OCP health monitor started for %s (bastion=%s, domain=%s)",
+        project_id[:8],
+        bastion_ip,
+        dns_domain,
+    )
 
     # Phase 1: Wait for bastion SSH
     _push("ssh", "waiting for bastion")
     while _t.time() < deadline:
-        result = _exec_on_bastion(host, project_id, bastion_ip, password, "echo ok", timeout=5)
+        result = _exec_on_bastion(
+            host, project_id, bastion_ip, password, "echo ok", timeout=5
+        )
         if result and "ok" in result:
             break
         _push("ssh", "waiting for bastion")
@@ -1543,15 +1949,28 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         # Fresh install — monitor install.log progress with structured phases
         _push("installing", "waiting for OpenShift install")
         install_deadline = _t.time() + 5400
-        tracked_ops = ["authentication", "console", "image-registry", "ingress",
-                       "monitoring", "openshift-apiserver", "openshift-samples",
-                       "olm-packageserver"]
+        tracked_ops = [
+            "authentication",
+            "console",
+            "image-registry",
+            "ingress",
+            "monitoring",
+            "openshift-apiserver",
+            "openshift-samples",
+            "olm-packageserver",
+        ]
         _op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
         phases_seen = set()
 
         while _t.time() < install_deadline:
-            result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                       "cat /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'", timeout=15)
+            result = _exec_on_bastion(
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                "cat /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'",
+                timeout=15,
+            )
             if not result:
                 _t.sleep(15)
                 continue
@@ -1576,9 +1995,20 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                 phases_seen.add("api-init")
 
             # Detect phases from log content
-            if "Install complete" in full_text or "Install completed" in full_text or "All cluster operators have completed" in full_text:
-                phases_seen.update(["validation", "bootstrap", "control-plane", "operators"])
-                items = [f"Validation: ✓", f"Bootstrap: ✓", f"Control plane: ✓", f"Cluster operators: ✓"]
+            if (
+                "Install complete" in full_text
+                or "Install completed" in full_text
+                or "All cluster operators have completed" in full_text
+            ):
+                phases_seen.update(
+                    ["validation", "bootstrap", "control-plane", "operators"]
+                )
+                items = [
+                    "Validation: ✓",
+                    "Bootstrap: ✓",
+                    "Control plane: ✓",
+                    "Cluster operators: ✓",
+                ]
                 _push("ready", "install complete", items=items)
                 break
 
@@ -1588,7 +2018,10 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                 phases_seen.add("validation")
             if "Bootstrap Kube API Initialized" in full_text:
                 phases_seen.add("bootstrap-api")
-            if "Bootstrap is complete" in full_text or "cluster bootstrap is complete" in full_text:
+            if (
+                "Bootstrap is complete" in full_text
+                or "cluster bootstrap is complete" in full_text
+            ):
                 phases_seen.add("bootstrap")
             if "Waiting up to" in full_text and "to initialize" in full_text:
                 phases_seen.add("bootstrap")
@@ -1606,7 +2039,13 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                         if "Writing image to disk: 100%" in msg:
                             node_status[cp] = "written"
                         elif "Writing image to disk" in msg:
-                            pct = msg.split("Writing image to disk:")[-1].strip().rstrip("%") if ":" in msg else ""
+                            pct = (
+                                msg.split("Writing image to disk:")[-1]
+                                .strip()
+                                .rstrip("%")
+                                if ":" in msg
+                                else ""
+                            )
                             node_status.setdefault(cp, f"writing {pct}%")
                         elif "Rebooting" in msg:
                             node_status[cp] = "rebooting"
@@ -1622,13 +2061,21 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             items = []
             # Early phases: download, ISO generation, node boot
             if "downloading" in phases_seen:
-                items.append(f"Download OCP tools: {'✓' if 'downloaded' in phases_seen else '⏳'}")
+                items.append(
+                    f"Download OCP tools: {'✓' if 'downloaded' in phases_seen else '⏳'}"
+                )
             if "creating-iso" in phases_seen or "downloaded" in phases_seen:
-                items.append(f"Build agent ISO: {'✓' if 'iso-ready' in phases_seen else '⏳'}")
+                items.append(
+                    f"Build agent ISO: {'✓' if 'iso-ready' in phases_seen else '⏳'}"
+                )
             if "iso-ready" in phases_seen:
-                items.append(f"Boot nodes from ISO: {'✓' if 'nodes-booted' in phases_seen else '⏳'}")
+                items.append(
+                    f"Boot nodes from ISO: {'✓' if 'nodes-booted' in phases_seen else '⏳'}"
+                )
             if "nodes-booted" in phases_seen:
-                items.append(f"Cluster init: {'✓' if 'api-init' in phases_seen or 'validation' in phases_seen else '⏳' if 'waiting-init' in phases_seen else '—'}")
+                items.append(
+                    f"Cluster init: {'✓' if 'api-init' in phases_seen or 'validation' in phases_seen else '⏳' if 'waiting-init' in phases_seen else '—'}"
+                )
 
             if "validation" in phases_seen:
                 items.append("Host validation: ✓")
@@ -1645,10 +2092,14 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                     items.append(f"  {cp}: {s}")
 
             has_bootkube = any(s == "bootkube" for s in node_status.values())
-            has_configuring = any(s in ("configuring", "joined", "done") for s in node_status.values())
+            has_configuring = any(
+                s in ("configuring", "joined", "done") for s in node_status.values()
+            )
 
             if has_bootkube or has_configuring or "bootstrap-api" in phases_seen:
-                items.append(f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}")
+                items.append(
+                    f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}"
+                )
 
             if "bootstrap" in phases_seen:
                 items.append("Bootstrap: ✓")
@@ -1669,7 +2120,8 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                     if "Working towards" in l:
                         msg = l.split("msg=")[-1] if "msg=" in l else l
                         import re as _re
-                        m = _re.search(r'([\d.]+)', msg)
+
+                        m = _re.search(r"([\d.]+)", msg)
                         if m:
                             cp_detail = f"OCP {m.group(1)} ⏳"
                         break
@@ -1682,7 +2134,9 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             # Parse operator status from latest "not available" line
             not_available = set()
             for l in reversed(full_text.split("\n")):
-                if ("are not available" in l or "is not available" in l) and "Cluster operator" in l:
+                if (
+                    "are not available" in l or "is not available" in l
+                ) and "Cluster operator" in l:
                     msg = l.split("msg=")[-1] if "msg=" in l else l
                     for real_name, alias in _op_aliases.items():
                         if real_name in msg:
@@ -1731,6 +2185,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         try:
             from app.core.database import SessionLocal
             from app.models.project import Project
+
             db = SessionLocal()
             p = db.query(Project).filter_by(id=project_id).first()
             if p:
@@ -1739,7 +2194,11 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             db.close()
         except Exception:
             pass
-        logger.info("OCP health monitor (install) complete for %s (%s)", project_id[:8], _elapsed())
+        logger.info(
+            "OCP health monitor (install) complete for %s (%s)",
+            project_id[:8],
+            _elapsed(),
+        )
         return
 
     # Phase 2: Ping CP nodes (pattern deploy path)
@@ -1749,14 +2208,24 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         all_up = True
         for name in cp_names:
             ip_suffix = 10 + cp_names.index(name)
-            result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                       f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down", timeout=10)
+            result = _exec_on_bastion(
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down",
+                timeout=10,
+            )
             if result and "up" in result:
                 items.append(f"{name}: reachable")
             else:
                 items.append(f"{name}: waiting")
                 all_up = False
-        _push("nodes", f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable", items)
+        _push(
+            "nodes",
+            f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable",
+            items,
+        )
         if all_up:
             break
         _t.sleep(5)
@@ -1764,8 +2233,14 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     # Phase 3: Wait for nodes Ready
     _push("nodes", "waiting for nodes to be Ready")
     while _t.time() < deadline:
-        result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                   "oc get nodes --no-headers 2>/dev/null", timeout=10)
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get nodes --no-headers 2>/dev/null",
+            timeout=10,
+        )
         if result:
             items = []
             ready_count = 0
@@ -1787,8 +2262,14 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     # Phase 4: Wait for cluster operators
     _push("operators", "waiting for cluster operators")
     while _t.time() < deadline:
-        result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                   "oc get co --no-headers 2>/dev/null", timeout=15)
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get co --no-headers 2>/dev/null",
+            timeout=15,
+        )
         if result:
             items = []
             available_count = 0
@@ -1818,8 +2299,14 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     # Phase 5: Wait for console
     _push("console", "waiting for OpenShift console")
     while _t.time() < deadline:
-        result = _exec_on_bastion(host, project_id, bastion_ip, password,
-                                   f"curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null", timeout=10)
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null",
+            timeout=10,
+        )
         if result and result.strip() == "200":
             _push("console", "console ready")
             break
@@ -1830,6 +2317,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     try:
         from app.core.database import SessionLocal
         from app.models.project import Project
+
         db = SessionLocal()
         p = db.query(Project).filter_by(id=project_id).first()
         if p:
@@ -1859,7 +2347,14 @@ def stop_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
-            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": "Host not available",
+                },
+            )
             return
 
         # Stop VMs via troshkad
@@ -1871,13 +2366,18 @@ def stop_project_async(project_id: str):
                 job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
                 wait_for_job(host, job_id, timeout=90)
             except TroshkadError as e:
-                logger.warning("Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e)
+                logger.warning(
+                    "Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e
+                )
 
         # BMC, networks, and EIPs stay intact on stop — only torn down on delete
         project.state = "stopped"
         project.deploy_error = None
         s.commit()
-        notify_project(project_id, {"type": "project-state", "state": "stopped", "deploy_error": None})
+        notify_project(
+            project_id,
+            {"type": "project-state", "state": "stopped", "deploy_error": None},
+        )
         logger.info("Stop %s: complete", project_id[:8])
 
     except Exception:
@@ -1888,7 +2388,14 @@ def stop_project_async(project_id: str):
                 project.state = "error"
                 project.deploy_error = "Stop failed unexpectedly. Check server logs."
                 s.commit()
-                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": project.deploy_error,
+                    },
+                )
         except Exception:
             pass
     finally:
@@ -1912,7 +2419,14 @@ def start_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = "Host not available"
             s.commit()
-            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": "Host not available"})
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": "Host not available",
+                },
+            )
             return
 
         topology = project.topology or {}
@@ -1921,7 +2435,10 @@ def start_project_async(project_id: str):
         # Re-associate EIPs first so topology has _private_ip for DNAT rules
         from app.models.elastic_ip import ElasticIp
         from app.services.eip_service import associate_eip
-        project_eips = s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+
+        project_eips = (
+            s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+        )
         for eip in project_eips:
             try:
                 associate_eip(s, eip, host)
@@ -1934,28 +2451,45 @@ def start_project_async(project_id: str):
 
         if project_eips:
             import json
+
             from sqlalchemy import text
-            s.execute(text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                      {"topo": json.dumps(topology), "pid": project_id})
+
+            s.execute(
+                text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+                {"topo": json.dumps(topology), "pid": project_id},
+            )
             s.commit()
             s.refresh(project)
             topology = project.topology or {}
 
             from app.models.provider import Provider
             from app.services.eip_service import sync_security_group_rules
-            provider = s.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+
+            provider = (
+                s.query(Provider).filter_by(id=project.provider_id).first()
+                if project.provider_id
+                else None
+            )
             if not provider and host.provider_id:
                 provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider:
                 gw_node = next(
-                    (n for n in (topology or {}).get("nodes", [])
-                     if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
-                     and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
+                    (
+                        n
+                        for n in (topology or {}).get("nodes", [])
+                        if n.get("type") == "networkNode"
+                        and n.get("data", {}).get("subtype") == "gateway"
+                        and n.get("data", {}).get("gatewayMode") == "nat-portforward"
+                    ),
                     None,
                 )
                 if gw_node:
                     desired_sg = [
-                        {"project_id": project_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
+                        {
+                            "project_id": project_id,
+                            "ext_port": int(pf["extPort"]),
+                            "protocol": "tcp",
+                        }
                         for pf in gw_node.get("data", {}).get("portForwards", [])
                         if pf.get("extPort")
                     ]
@@ -1964,7 +2498,9 @@ def start_project_async(project_id: str):
         # Recreate networks via troshkad (serialized to avoid nftables contention)
         if vni_map:
             with _network_lock:
-                net_result = _setup_networks_via_troshkad(host, topology, vni_map, s, project_id)
+                net_result = _setup_networks_via_troshkad(
+                    host, topology, vni_map, s, project_id
+                )
             if net_result is not True:
                 project.state = "error"
                 project.deploy_error = f"Network setup failed on restart: {net_result}"
@@ -1987,7 +2523,10 @@ def start_project_async(project_id: str):
             project.state = "error"
             project.deploy_error = error_msg
             s.commit()
-            notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": error_msg})
+            notify_project(
+                project_id,
+                {"type": "project-state", "state": "error", "deploy_error": error_msg},
+            )
             return
 
         # Re-start BMC endpoints
@@ -2002,7 +2541,10 @@ def start_project_async(project_id: str):
         project.state = "active"
         project.deploy_error = None
         s.commit()
-        notify_project(project_id, {"type": "project-state", "state": "active", "deploy_error": None})
+        notify_project(
+            project_id,
+            {"type": "project-state", "state": "active", "deploy_error": None},
+        )
         logger.info("Start %s: complete", project_id[:8])
 
     except Exception:
@@ -2013,7 +2555,14 @@ def start_project_async(project_id: str):
                 project.state = "error"
                 project.deploy_error = "Start failed unexpectedly. Check server logs."
                 s.commit()
-                notify_project(project_id, {"type": "project-state", "state": "error", "deploy_error": project.deploy_error})
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": project.deploy_error,
+                    },
+                )
         except Exception:
             pass
     finally:
@@ -2022,7 +2571,8 @@ def start_project_async(project_id: str):
 
 def destroy_project_sync(ctx: dict):
     """Synchronously destroy a project's VMs and networks.
-    ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain)."""
+    ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
+    """
     from app.core.database import SessionLocal
     from app.models.host import Host
 
@@ -2044,7 +2594,9 @@ def destroy_project_sync(ctx: dict):
                 job_id = start_job(host, "/vms/destroy", {"domain_name": vm_name})
                 wait_for_job(host, job_id, timeout=60)
             except TroshkadError as e:
-                logger.warning("Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e)
+                logger.warning(
+                    "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
+                )
 
         # Remove project VM directory
         pool = _get_host_pool(host, s)
@@ -2062,13 +2614,16 @@ def destroy_project_sync(ctx: dict):
         try:
             _teardown_bmc_via_troshkad(host, project_id)
         except Exception as e:
-            logger.warning("Destroy %s: BMC teardown failed (non-fatal): %s", project_id[:8], e)
+            logger.warning(
+                "Destroy %s: BMC teardown failed (non-fatal): %s", project_id[:8], e
+            )
 
         # Tear down networks via troshkad (serialized to avoid nftables contention)
         with _network_lock:
             _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         from app.services.placement import sync_host_capacity
+
         sync_host_capacity(s, host)
         s.commit()
 
@@ -2077,7 +2632,9 @@ def destroy_project_sync(ctx: dict):
             from app.models.dns_provider import DnsProvider
             from app.services.dns_service import delete_dns_records
 
-            dns_provider = s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
+            dns_provider = (
+                s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
+            )
             dns_records = topo.get("_dns_records", [])
             if dns_provider and dns_records:
                 logger.info("Teardown %s: deleting DNS records", project_id[:8])
@@ -2087,7 +2644,12 @@ def destroy_project_sync(ctx: dict):
         try:
             from app.models.provider import Provider
             from app.services.eip_service import _get_ec2_client
-            provider = s.query(Provider).filter_by(id=host.provider_id).first() if host.provider_id else None
+
+            provider = (
+                s.query(Provider).filter_by(id=host.provider_id).first()
+                if host.provider_id
+                else None
+            )
             if not provider and host.provider_id:
                 provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider and provider.security_group_id:
@@ -2100,21 +2662,31 @@ def destroy_project_sync(ctx: dict):
                             try:
                                 ec2.revoke_security_group_ingress(
                                     GroupId=provider.security_group_id,
-                                    IpPermissions=[{
-                                        "IpProtocol": perm["IpProtocol"],
-                                        "FromPort": perm["FromPort"],
-                                        "ToPort": perm["ToPort"],
-                                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": desc}],
-                                    }],
+                                    IpPermissions=[
+                                        {
+                                            "IpProtocol": perm["IpProtocol"],
+                                            "FromPort": perm["FromPort"],
+                                            "ToPort": perm["ToPort"],
+                                            "IpRanges": [
+                                                {
+                                                    "CidrIp": "0.0.0.0/0",
+                                                    "Description": desc,
+                                                }
+                                            ],
+                                        }
+                                    ],
                                 )
                             except Exception:
                                 pass
         except Exception as e:
-            logger.warning("Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e)
+            logger.warning(
+                "Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e
+            )
 
         # Release all EIPs for this project
         from app.models.elastic_ip import ElasticIp
         from app.services.eip_service import release_eip
+
         project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
         for eip in project_eips:
             try:

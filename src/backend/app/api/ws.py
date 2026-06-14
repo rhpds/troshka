@@ -21,12 +21,14 @@ HEARTBEAT_INTERVAL = 30
 def _authenticate_ws(token: str | None, db) -> User | None:
     if not config.auth.oauth_enabled and not token:
         from app.core.auth import _get_or_create_dev_user
+
         return _get_or_create_dev_user(db)
 
     if not token:
         return None
 
     from app.core.auth import decode_jwt
+
     payload = decode_jwt(token)
     if not payload:
         return None
@@ -38,10 +40,10 @@ def _authenticate_ws(token: str | None, db) -> User | None:
 
 def _build_snapshot(project: Project, db) -> dict:
     """Build initial WS snapshot. DB session is used then closed before troshkad calls."""
-    from app.services.deploy_service import _deploy_progress
-    from app.api.projects import _redeploy_progress, _domain_name
-    from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
+    from app.api.projects import _domain_name, _redeploy_progress
     from app.models.host import Host
+    from app.services.deploy_service import _deploy_progress
+    from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
 
     snapshot = {
         "type": "snapshot",
@@ -62,11 +64,15 @@ def _build_snapshot(project: Project, db) -> dict:
     # Collect all data we need from DB objects before closing the session
     project_id = project.id
     topology_nodes = (project.topology or {}).get("nodes", [])
-    host_copy = type("H", (), {
-        "ip_address": host.ip_address,
-        "agent_token": host.agent_token,
-        "agent_cert_fingerprint": host.agent_cert_fingerprint,
-    })()
+    host_copy = type(
+        "H",
+        (),
+        {
+            "ip_address": host.ip_address,
+            "agent_token": host.agent_token,
+            "agent_cert_fingerprint": host.agent_cert_fingerprint,
+        },
+    )()
 
     # Close DB session before making network calls to troshkad
     db.close()
@@ -120,7 +126,9 @@ async def project_websocket(websocket: WebSocket, project_id: str):
         # Keep alive: listen for client messages, send heartbeat pings
         while True:
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=HEARTBEAT_INTERVAL)
+                await asyncio.wait_for(
+                    websocket.receive_text(), timeout=HEARTBEAT_INTERVAL
+                )
             except asyncio.TimeoutError:
                 if websocket.client_state == WebSocketState.CONNECTED:
                     await websocket.send_json({"type": "ping"})
@@ -145,6 +153,7 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
             await websocket.close(code=4001, reason="Unauthorized")
             return
         from app.models.pattern import Pattern
+
         pattern = db.query(Pattern).filter_by(id=pattern_id).first()
         if not pattern or (pattern.owner_id != user.id and user.role != "admin"):
             await websocket.close(code=4004, reason="Pattern not found")
@@ -154,11 +163,14 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
 
         await websocket.accept()
         from app.services.ws_pubsub import subscribe_pattern, unsubscribe_pattern
+
         subscribe_pattern(pattern_id, websocket)
         try:
             while True:
                 try:
-                    await asyncio.wait_for(websocket.receive_text(), timeout=HEARTBEAT_INTERVAL)
+                    await asyncio.wait_for(
+                        websocket.receive_text(), timeout=HEARTBEAT_INTERVAL
+                    )
                 except asyncio.TimeoutError:
                     if websocket.client_state == WebSocketState.CONNECTED:
                         await websocket.send_json({"type": "ping"})
@@ -171,5 +183,3 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
     finally:
         if db:
             db.close()
-
-

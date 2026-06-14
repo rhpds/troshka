@@ -34,7 +34,9 @@ def deploy_template(
     db: Session = Depends(get_db),
 ):
     try:
-        resolved = resolve_template(body.template, overrides=body.overrides, version=body.version)
+        resolved = resolve_template(
+            body.template, overrides=body.overrides, version=body.version
+        )
     except FileNotFoundError:
         raise HTTPException(400, f"Unknown template: {body.template}")
     except ValueError as e:

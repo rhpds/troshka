@@ -12,7 +12,9 @@ from app.core.database import Base
 class Provider(Base):
     __tablename__ = "providers"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(255), unique=True)
     type: Mapped[str] = mapped_column(String(20))
     credentials: Mapped[str | None] = mapped_column(Text)

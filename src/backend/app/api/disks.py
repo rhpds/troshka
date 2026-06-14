@@ -21,13 +21,22 @@ def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
 
 
 @router.get("/", response_model=list[DiskResponse])
-def list_disks(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_disks(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     return db.query(Disk).filter_by(project_id=project_id).all()
 
 
 @router.post("/", response_model=DiskResponse, status_code=201)
-def create_disk(project_id: str, body: DiskCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_disk(
+    project_id: str,
+    body: DiskCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = Disk(project_id=project_id, **body.model_dump())
     db.add(disk)
@@ -37,7 +46,12 @@ def create_disk(project_id: str, body: DiskCreate, user: User = Depends(get_curr
 
 
 @router.get("/{disk_id}", response_model=DiskResponse)
-def get_disk(project_id: str, disk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_disk(
+    project_id: str,
+    disk_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
@@ -46,7 +60,13 @@ def get_disk(project_id: str, disk_id: str, user: User = Depends(get_current_use
 
 
 @router.patch("/{disk_id}", response_model=DiskResponse)
-def update_disk(project_id: str, disk_id: str, body: DiskUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_disk(
+    project_id: str,
+    disk_id: str,
+    body: DiskUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
@@ -59,7 +79,12 @@ def update_disk(project_id: str, disk_id: str, body: DiskUpdate, user: User = De
 
 
 @router.delete("/{disk_id}", status_code=204)
-def delete_disk(project_id: str, disk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_disk(
+    project_id: str,
+    disk_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
@@ -69,7 +94,13 @@ def delete_disk(project_id: str, disk_id: str, user: User = Depends(get_current_
 
 
 @router.post("/{disk_id}/attach/{vm_id}", response_model=DiskResponse)
-def attach_disk(project_id: str, disk_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def attach_disk(
+    project_id: str,
+    disk_id: str,
+    vm_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
@@ -82,7 +113,12 @@ def attach_disk(project_id: str, disk_id: str, vm_id: str, user: User = Depends(
 
 
 @router.post("/{disk_id}/detach", response_model=DiskResponse)
-def detach_disk(project_id: str, disk_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def detach_disk(
+    project_id: str,
+    disk_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:

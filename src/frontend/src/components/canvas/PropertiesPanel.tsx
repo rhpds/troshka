@@ -806,16 +806,16 @@ export default function PropertiesPanel() {
                         };
                         const ipValid = !nicIp || ipInCidr(nicIp, netCidr);
                         const ipConflict = nicIp && netNode ? (() => {
-                          const nd = netNode.data as Record<string, any>;
-                          const gwIp = (nd.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
+                          const and = netNode.data as Record<string, any>;
+                          const gwIp = (and.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
                           if (gwIp && gwIp === nicIp) return "gateway IP";
-                          if (nd.dnsServerIp === nicIp) return "DNS server IP";
+                          if (and.dnsServerIp === nicIp) return "DNS server IP";
                           const ipToNum = (ip: string) => {
                             const p = ip.split(".").map(Number);
                             return p.length === 4 ? ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0 : 0;
                           };
-                          const dhcpStart = (nd.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".100") : "");
-                          const dhcpEnd = (nd.dhcpRangeEnd as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".200") : "");
+                          const dhcpStart = (and.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".100") : "");
+                          const dhcpEnd = (and.dhcpRangeEnd as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".200") : "");
                           if (dhcpStart && dhcpEnd) {
                             const ipN = ipToNum(nicIp);
                             const startN = ipToNum(dhcpStart);
@@ -1098,8 +1098,8 @@ export default function PropertiesPanel() {
 
       {/* Network Properties */}
       {nodeType === "networkNode" && (() => {
-        const nd = data as unknown as NetworkNodeData;
-        const subtype = nd.subtype || "network";
+        const and = data as unknown as NetworkNodeData;
+        const subtype = and.subtype || "network";
         const portForwards = (data as Record<string, any>).portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string}> || [];
 
         return (
@@ -1121,7 +1121,7 @@ export default function PropertiesPanel() {
                   <div className="props-field">
                     <label className="props-label">CIDR</label>
                     {(() => {
-                      const currentCidr = nd.cidr;
+                      const currentCidr = and.cidr;
                       const conflict = nodes.some(
                         (n) => n.type === "networkNode" && n.id !== selectedNodeId &&
                           cidrsOverlap(currentCidr, (n.data as unknown as NetworkNodeData).cidr)
@@ -1155,11 +1155,11 @@ export default function PropertiesPanel() {
                   <div className="props-section-title">Services</div>
                   <div className="props-field">
                     <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={nd.dhcp ?? false} onChange={(e) => update("dhcp", e.target.checked)} />
+                      <input type="checkbox" checked={and.dhcp ?? false} onChange={(e) => update("dhcp", e.target.checked)} />
                       DHCP
                     </label>
                   </div>
-                  {nd.dhcp && (
+                  {and.dhcp && (
                     <>
                       <div className="props-row">
                         <div className="props-field">
@@ -1168,7 +1168,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeStart as string || ""}
                             onChange={(e) => update("dhcpRangeStart", e.target.value)}
-                            placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
+                            placeholder={and.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -1178,7 +1178,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeEnd as string || ""}
                             onChange={(e) => update("dhcpRangeEnd", e.target.value)}
-                            placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
+                            placeholder={and.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -1189,13 +1189,13 @@ export default function PropertiesPanel() {
                           className="props-input"
                           value={(data as Record<string, any>).dhcpGateway as string || ""}
                           onChange={(e) => update("dhcpGateway", e.target.value)}
-                          placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "x.x.x.1"}
+                          placeholder={and.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "x.x.x.1"}
                           style={{ fontFamily: "monospace" }}
                         />
                       </div>
                       {(() => {
                         const dhcpErrors = validateDhcpRangeFull(
-                          nd.cidr,
+                          and.cidr,
                           (data as Record<string, any>).dhcpRangeStart as string || "",
                           (data as Record<string, any>).dhcpRangeEnd as string || "",
                           (data as Record<string, any>).dhcpGateway as string || "",
@@ -1258,11 +1258,11 @@ export default function PropertiesPanel() {
                   <div className="props-divider" />
                   <div className="props-field">
                     <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={nd.dns ?? false} onChange={(e) => update("dns", e.target.checked)} />
+                      <input type="checkbox" checked={and.dns ?? false} onChange={(e) => update("dns", e.target.checked)} />
                       DNS
                     </label>
                   </div>
-                  {nd.dns && (
+                  {and.dns && (
                     <>
                       <div className="props-field">
                         <label className="props-label">DNS Server IP</label>
@@ -1270,7 +1270,7 @@ export default function PropertiesPanel() {
                           className="props-input"
                           value={(data as Record<string, any>).dnsServerIp as string || ""}
                           onChange={(e) => update("dnsServerIp", e.target.value)}
-                          placeholder={nd.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
+                          placeholder={and.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
                           style={{ fontFamily: "monospace" }}
                         />
                         <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
@@ -1279,7 +1279,7 @@ export default function PropertiesPanel() {
                       </div>
                       <div className="props-field">
                         <label className="props-label">DNS Domain</label>
-                        <input className="props-input" value={nd.dnsDomain || ""} onChange={(e) => update("dnsDomain", e.target.value)} placeholder="lab.local" style={{ fontFamily: "monospace" }} />
+                        <input className="props-input" value={and.dnsDomain || ""} onChange={(e) => update("dnsDomain", e.target.value)} placeholder="lab.local" style={{ fontFamily: "monospace" }} />
                       </div>
                       <div className="props-field">
                         <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>

@@ -43,6 +43,7 @@ def calculate_project_requirements(topology: dict) -> dict:
 
 def _get_overcommit_ratios():
     from app.core.config import config
+
     cpu = getattr(getattr(config, "overcommit", None), "cpu_ratio", 4.0) or 4.0
     ram = getattr(getattr(config, "overcommit", None), "ram_ratio", 1.5) or 1.5
     return float(cpu), float(ram)
@@ -57,10 +58,24 @@ def get_allocatable(host: Host) -> tuple[int, int]:
 def sync_host_capacity(db: Session, host: Host):
     """Recalculate host capacity from all assigned projects."""
     from app.models.project import Project
-    projects = db.query(Project).filter(
-        Project.host_id == host.id,
-        Project.state.in_(("active", "stopped", "deploying", "reconfiguring", "starting", "stopping")),
-    ).all()
+
+    projects = (
+        db.query(Project)
+        .filter(
+            Project.host_id == host.id,
+            Project.state.in_(
+                (
+                    "active",
+                    "stopped",
+                    "deploying",
+                    "reconfiguring",
+                    "starting",
+                    "stopping",
+                )
+            ),
+        )
+        .all()
+    )
     total_vcpus = 0
     total_ram_mb = 0
     for p in projects:
@@ -71,8 +86,13 @@ def sync_host_capacity(db: Session, host: Host):
     host.used_ram_mb = total_ram_mb
 
 
-def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int,
-                        required_eips: int = 0, storage_pool_id: str | None = None) -> Host | None:
+def find_available_host(
+    db: Session,
+    required_vcpus: int,
+    required_ram_mb: int,
+    required_eips: int = 0,
+    storage_pool_id: str | None = None,
+) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
     Syncs capacity from DB first to handle concurrent deployments."""
     query = db.query(Host).filter(
@@ -97,6 +117,7 @@ def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int,
         if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
             if required_eips > 0:
                 from app.services.eip_service import get_host_eip_usage
+
                 eip_used = get_host_eip_usage(db, host.id)
                 if host.max_eips - eip_used < required_eips:
                     continue
@@ -113,6 +134,7 @@ def find_available_host(db: Session, required_vcpus: int, required_ram_mb: int,
 def _auto_select_pool(db: Session) -> str | None:
     """Auto-select the best storage pool — the one with the most free RAM across its hosts."""
     from app.models.storage_pool import StoragePool
+
     pools = db.query(StoragePool).filter(StoragePool.status == "available").all()
     if not pools:
         return None
@@ -122,11 +144,15 @@ def _auto_select_pool(db: Session) -> str | None:
     best_pool = None
     best_free = -1
     for pool in pools:
-        hosts = db.query(Host).filter(
-            Host.storage_pool_id == pool.id,
-            Host.state == "active",
-            Host.agent_status == "connected",
-        ).all()
+        hosts = (
+            db.query(Host)
+            .filter(
+                Host.storage_pool_id == pool.id,
+                Host.state == "active",
+                Host.agent_status == "connected",
+            )
+            .all()
+        )
         total_free = 0
         for h in hosts:
             alloc_vcpus, alloc_ram = get_allocatable(h)
@@ -137,7 +163,9 @@ def _auto_select_pool(db: Session) -> str | None:
     return best_pool
 
 
-def place_project(db: Session, project: Project, storage_pool_id: str | None = None) -> dict:
+def place_project(
+    db: Session, project: Project, storage_pool_id: str | None = None
+) -> dict:
     """Assign a project to a host. Returns placement result."""
     if not project.topology:
         return {"error": "Project has no topology"}
@@ -150,8 +178,13 @@ def place_project(db: Session, project: Project, storage_pool_id: str | None = N
     if not storage_pool_id:
         storage_pool_id = _auto_select_pool(db)
 
-    host = find_available_host(db, reqs["total_vcpus"], reqs["total_ram_mb"],
-                               reqs["requested_eips"], storage_pool_id=storage_pool_id)
+    host = find_available_host(
+        db,
+        reqs["total_vcpus"],
+        reqs["total_ram_mb"],
+        reqs["requested_eips"],
+        storage_pool_id=storage_pool_id,
+    )
     if not host:
         logger.info("No host with capacity — auto-provisioning a new one")
         try:
@@ -197,7 +230,11 @@ def place_project(db: Session, project: Project, storage_pool_id: str | None = N
 
     logger.info(
         "Placed project %s on host %s (%d vCPUs, %d MB RAM, %d VNIs)",
-        project.id, host.id, reqs["total_vcpus"], reqs["total_ram_mb"], len(vni_map),
+        project.id,
+        host.id,
+        reqs["total_vcpus"],
+        reqs["total_ram_mb"],
+        len(vni_map),
     )
 
     return {

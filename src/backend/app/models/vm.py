@@ -11,8 +11,12 @@ from app.core.database import Base
 class VM(Base):
     __tablename__ = "vms"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
     host_id: Mapped[str | None] = mapped_column(ForeignKey("hosts.id"))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(String(1000))
@@ -34,9 +38,13 @@ class VM(Base):
 
     project: Mapped["Project"] = relationship(back_populates="vms")
     host: Mapped["Host | None"] = relationship(back_populates="vms")
-    interfaces: Mapped[list["VMInterface"]] = relationship(back_populates="vm", cascade="all, delete-orphan")
+    interfaces: Mapped[list["VMInterface"]] = relationship(
+        back_populates="vm", cascade="all, delete-orphan"
+    )
     prereqs: Mapped[list["BootPrereq"]] = relationship(
-        back_populates="vm", foreign_keys="BootPrereq.vm_id", cascade="all, delete-orphan"
+        back_populates="vm",
+        foreign_keys="BootPrereq.vm_id",
+        cascade="all, delete-orphan",
     )
 
 

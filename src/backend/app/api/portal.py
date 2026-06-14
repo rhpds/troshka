@@ -75,7 +75,8 @@ def get_portal(
             **topology,
             "nodes": [n for n in topology.get("nodes", []) if n["id"] not in hidden],
             "edges": [
-                e for e in topology.get("edges", [])
+                e
+                for e in topology.get("edges", [])
                 if e.get("source") not in hidden and e.get("target") not in hidden
             ],
         }
@@ -104,6 +105,7 @@ def portal_vm_states(
 
     from app.models.host import Host
     from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
+
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
         return {"states": {}}
@@ -114,7 +116,11 @@ def portal_vm_states(
             continue
         dom_name = f"troshka-{project.id[:8]}-{node['id'][:8]}"
         state_info = troshkad_get_vm_state(host, dom_name)
-        raw = state_info.get("state", "unknown") if isinstance(state_info, dict) else "unknown"
+        raw = (
+            state_info.get("state", "unknown")
+            if isinstance(state_info, dict)
+            else "unknown"
+        )
         if raw == "running":
             states[node["id"]] = "running"
         elif raw == "shut_off":
@@ -124,12 +130,19 @@ def portal_vm_states(
     return {"states": states}
 
 
-def _get_portal_token(token: str, db: Session, min_level: str = "readonly") -> tuple[ProjectPortalToken, Project]:
+def _get_portal_token(
+    token: str, db: Session, min_level: str = "readonly"
+) -> tuple[ProjectPortalToken, Project]:
     portal_token = db.query(ProjectPortalToken).filter_by(token=token).first()
     if not portal_token:
         raise HTTPException(404, "Invalid or expired portal token")
-    if ACCESS_LEVELS.get(portal_token.access_level, 0) < ACCESS_LEVELS.get(min_level, 0):
-        raise HTTPException(403, f"Access level '{portal_token.access_level}' insufficient, requires '{min_level}'")
+    if ACCESS_LEVELS.get(portal_token.access_level, 0) < ACCESS_LEVELS.get(
+        min_level, 0
+    ):
+        raise HTTPException(
+            403,
+            f"Access level '{portal_token.access_level}' insufficient, requires '{min_level}'",
+        )
     project = db.query(Project).filter_by(id=portal_token.project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
@@ -156,12 +169,14 @@ def portal_vm_action(
         raise HTTPException(400, f"Unknown action: {action}")
     _, project = _get_portal_token(token, db, min_level="power")
     if project.state not in ("active", "stopped"):
-        raise HTTPException(400, f"Project is {project.state}, cannot perform VM actions")
+        raise HTTPException(
+            400, f"Project is {project.state}, cannot perform VM actions"
+        )
     if not project.host_id:
         raise HTTPException(400, "Project is not deployed")
 
     from app.models.host import Host
-    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:

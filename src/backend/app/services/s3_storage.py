@@ -18,6 +18,7 @@ def _get_s3_config() -> dict:
     try:
         from app.core.database import SessionLocal
         from app.models.provider import Provider
+
         s = SessionLocal()
         provider = s.query(Provider).filter_by(type="s3", state="active").first()
         if provider:
@@ -43,7 +44,9 @@ def _get_s3_config() -> dict:
             "endpoint_url": getattr(config.s3, "endpoint_url", ""),
         }
     except AttributeError:
-        raise ValueError("No S3 provider configured. Add an S3 provider in Admin > Providers.")
+        raise ValueError(
+            "No S3 provider configured. Add an S3 provider in Admin > Providers."
+        )
 
 
 def _get_s3_client():
@@ -62,7 +65,9 @@ def _bucket():
     return _get_s3_config()["bucket"]
 
 
-def upload_file(key: str, file_obj, content_type: str = "application/octet-stream") -> dict:
+def upload_file(
+    key: str, file_obj, content_type: str = "application/octet-stream"
+) -> dict:
     """Upload a file to S3."""
     client = _get_s3_client()
     client.upload_fileobj(

@@ -1,16 +1,18 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects import sqlite
+from sqlalchemy.orm import sessionmaker
 
 sqlite.base.SQLiteTypeCompiler.visit_JSONB = lambda self, type_, **kw: "JSON"
 sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(36)"
 
 from app.core.database import Base
-from app.models.storage_pool import StoragePool, SharedCacheEntry
-from app.models.provider import Provider
 from app.models.host import Host
+from app.models.provider import Provider
+from app.models.storage_pool import SharedCacheEntry, StoragePool
 
-engine = create_engine("sqlite:///./test_storage_pools.db", connect_args={"check_same_thread": False})
+engine = create_engine(
+    "sqlite:///./test_storage_pools.db", connect_args={"check_same_thread": False}
+)
 Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
 Session = sessionmaker(bind=engine)

@@ -11,7 +11,9 @@ from app.core.database import Base
 class Project(Base):
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(String(1000))
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
@@ -23,17 +25,25 @@ class Project(Base):
     guest_permission: Mapped[str] = mapped_column(String(20), default="console_only")
     run_timer_hours: Mapped[int | None] = mapped_column(Integer)
     run_timer_max_ext_hours: Mapped[int | None] = mapped_column(Integer)
-    run_timer_started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
-    lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    run_timer_started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     poweroff_mode: Mapped[str] = mapped_column(String(20), default="simultaneous")
-    topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=lambda: {"nodes": [], "edges": []})
+    topology: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, default=lambda: {"nodes": [], "edges": []}
+    )
     vni_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deployed_topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deploy_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     guid: Mapped[str | None] = mapped_column(String(50), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    dns_provider_id: Mapped[str | None] = mapped_column(ForeignKey("dns_providers.id"), nullable=True)
+    dns_provider_id: Mapped[str | None] = mapped_column(
+        ForeignKey("dns_providers.id"), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -42,17 +52,27 @@ class Project(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="projects")
-    vms: Mapped[list["VM"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-    networks: Mapped[list["Network"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-    disks: Mapped[list["Disk"]] = relationship(back_populates="project", cascade="all, delete-orphan")
-    shares: Mapped[list["ProjectShare"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    vms: Mapped[list["VM"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    networks: Mapped[list["Network"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    disks: Mapped[list["Disk"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    shares: Mapped[list["ProjectShare"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class ProjectShare(Base):
     __tablename__ = "project_shares"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     permission: Mapped[str] = mapped_column(String(20), default="view")
 

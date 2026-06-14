@@ -22,9 +22,11 @@ def _get_ec2_client(provider):
 
 def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
     """Find and release Troshka-tagged EIPs whose project no longer exists."""
-    result = ec2.describe_addresses(Filters=[
-        {"Name": "tag:ManagedBy", "Values": ["troshka"]},
-    ])
+    result = ec2.describe_addresses(
+        Filters=[
+            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
+        ]
+    )
 
     orphans = []
     for addr in result.get("Addresses", []):
@@ -41,7 +43,11 @@ def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
     for addr in orphans:
         alloc_id = addr["AllocationId"]
         if dry_run:
-            logger.info("GC dry-run: would release orphan EIP %s (%s)", alloc_id, addr.get("PublicIp"))
+            logger.info(
+                "GC dry-run: would release orphan EIP %s (%s)",
+                alloc_id,
+                addr.get("PublicIp"),
+            )
             continue
 
         if addr.get("AssociationId"):
@@ -63,14 +69,22 @@ def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
     all_aws_alloc_ids = {a["AllocationId"] for a in result.get("Addresses", [])}
     stale_deleted = 0
     if all_aws_alloc_ids:
-        stale_rows = db.query(ElasticIp).filter(
-            ElasticIp.provider_id == provider.id,
-            ~ElasticIp.allocation_id.in_(all_aws_alloc_ids),
-        ).all()
+        stale_rows = (
+            db.query(ElasticIp)
+            .filter(
+                ElasticIp.provider_id == provider.id,
+                ~ElasticIp.allocation_id.in_(all_aws_alloc_ids),
+            )
+            .all()
+        )
     else:
-        stale_rows = db.query(ElasticIp).filter(
-            ElasticIp.provider_id == provider.id,
-        ).all()
+        stale_rows = (
+            db.query(ElasticIp)
+            .filter(
+                ElasticIp.provider_id == provider.id,
+            )
+            .all()
+        )
     for row in stale_rows:
         if not dry_run:
             db.delete(row)
@@ -105,22 +119,29 @@ def _gc_stale_sg_rules(db: Session, provider, ec2, dry_run: bool) -> dict:
                 project_id = parts[1]
                 project = db.query(Project).filter_by(id=project_id).first()
                 if not project or project.state not in ("active", "deploying"):
-                    stale_rules.append({
-                        "protocol": perm["IpProtocol"],
-                        "port": perm["FromPort"],
-                        "description": desc,
-                    })
+                    stale_rules.append(
+                        {
+                            "protocol": perm["IpProtocol"],
+                            "port": perm["FromPort"],
+                            "description": desc,
+                        }
+                    )
 
     removed = 0
     if stale_rules and not dry_run:
         ec2.revoke_security_group_ingress(
             GroupId=provider.security_group_id,
-            IpPermissions=[{
-                "IpProtocol": r["protocol"],
-                "FromPort": r["port"],
-                "ToPort": r["port"],
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": r["description"]}],
-            } for r in stale_rules],
+            IpPermissions=[
+                {
+                    "IpProtocol": r["protocol"],
+                    "FromPort": r["port"],
+                    "ToPort": r["port"],
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": r["description"]}
+                    ],
+                }
+                for r in stale_rules
+            ],
         )
         removed = len(stale_rules)
         logger.info("GC: removed %d stale SG rules", removed)

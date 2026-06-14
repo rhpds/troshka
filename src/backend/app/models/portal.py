@@ -17,7 +17,10 @@ class ProjectPortalToken(Base):
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
     token: Mapped[str] = mapped_column(
-        String(64), unique=True, index=True, nullable=False,
+        String(64),
+        unique=True,
+        index=True,
+        nullable=False,
         default=lambda: secrets.token_urlsafe(32),
     )
     access_level: Mapped[str] = mapped_column(

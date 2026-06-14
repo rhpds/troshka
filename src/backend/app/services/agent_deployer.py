@@ -4,9 +4,9 @@ Agent deployer — installs the troshka agent on a remote host via SSH.
 Uses the host's stored private key to connect and deploy.
 """
 import logging
+import os
 import subprocess
 import tempfile
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -431,20 +431,32 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
         start = time.time()
         while time.time() - start < timeout:
             result = subprocess.run(
-                ["ssh",
-                 "-o", "StrictHostKeyChecking=no",
-                 "-o", "UserKnownHostsFile=/dev/null",
-                 "-o", "ConnectTimeout=5",
-                 "-o", "BatchMode=yes",
-                 "-o", "IdentitiesOnly=yes",
-                 "-i", key_path,
-                 f"ec2-user@{host_ip}", "echo", "ssh-ready"],
+                [
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "IdentitiesOnly=yes",
+                    "-i",
+                    key_path,
+                    f"ec2-user@{host_ip}",
+                    "echo",
+                    "ssh-ready",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             if result.returncode == 0 and "ssh-ready" in result.stdout:
-                logger.info("SSH ready on %s after %ds", host_ip, int(time.time() - start))
+                logger.info(
+                    "SSH ready on %s after %ds", host_ip, int(time.time() - start)
+                )
                 return True
             time.sleep(5)
         logger.warning("SSH timeout on %s after %ds", host_ip, timeout)
@@ -453,27 +465,49 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
         os.unlink(key_path)
 
 
-def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "",
-                 storage_mode: str = "local", nfs_server: str = "", nfs_path: str = "",
-                 ca_cert: str = "", host_cert: str = "", host_key: str = "",
-                 console_domain: str = "") -> dict:
+def deploy_agent(
+    host_ip: str,
+    private_key: str,
+    host_id: str,
+    api_url: str = "",
+    storage_mode: str = "local",
+    nfs_server: str = "",
+    nfs_path: str = "",
+    ca_cert: str = "",
+    host_cert: str = "",
+    host_key: str = "",
+    console_domain: str = "",
+) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
 
     from app.core.config import config
+
     actual_api_url = api_url or getattr(config.app, "external_url", "")
     if not actual_api_url:
-        logger.warning("No external_url configured — agent will not be able to call back to the API")
-    script = (AGENT_INSTALL_SCRIPT
-              .replace("{host_id}", host_id)
-              .replace("{api_url}", actual_api_url)
-              .replace("{storage_mode}", storage_mode)
-              .replace("{nfs_server}", nfs_server)
-              .replace("{nfs_path}", nfs_path)
-              .replace("{ca_cert_b64}", base64.b64encode(ca_cert.encode()).decode() if ca_cert else "")
-              .replace("{host_cert_b64}", base64.b64encode(host_cert.encode()).decode() if host_cert else "")
-              .replace("{host_key_b64}", base64.b64encode(host_key.encode()).decode() if host_key else "")
-              .replace("{console_domain}", console_domain))
+        logger.warning(
+            "No external_url configured — agent will not be able to call back to the API"
+        )
+    script = (
+        AGENT_INSTALL_SCRIPT.replace("{host_id}", host_id)
+        .replace("{api_url}", actual_api_url)
+        .replace("{storage_mode}", storage_mode)
+        .replace("{nfs_server}", nfs_server)
+        .replace("{nfs_path}", nfs_path)
+        .replace(
+            "{ca_cert_b64}",
+            base64.b64encode(ca_cert.encode()).decode() if ca_cert else "",
+        )
+        .replace(
+            "{host_cert_b64}",
+            base64.b64encode(host_cert.encode()).decode() if host_cert else "",
+        )
+        .replace(
+            "{host_key_b64}",
+            base64.b64encode(host_key.encode()).decode() if host_key else "",
+        )
+        .replace("{console_domain}", console_domain)
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)
@@ -482,25 +516,39 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
 
     try:
         ssh_opts = [
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=30",
-            "-o", "IdentitiesOnly=yes",
-            "-i", key_path,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ConnectTimeout=30",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-i",
+            key_path,
         ]
 
         logger.info("Deploying agent to %s", host_ip)
 
         # SCP troshkad.py to host
         troshkad_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+            ),
             "troshkad",
-            "troshkad.py"
+            "troshkad.py",
         )
         if os.path.exists(troshkad_path):
             logger.info("Copying troshkad.py to %s", host_ip)
             scp_result = subprocess.run(
-                ["scp", *ssh_opts, troshkad_path, f"ec2-user@{host_ip}:/tmp/troshkad.py"],
+                [
+                    "scp",
+                    *ssh_opts,
+                    troshkad_path,
+                    f"ec2-user@{host_ip}:/tmp/troshkad.py",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -509,26 +557,53 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 logger.warning("SCP troshkad.py failed: %s", scp_result.stderr)
             else:
                 subprocess.run(
-                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mkdir", "-p", "/opt/troshka"],
-                    capture_output=True, timeout=10,
+                    [
+                        "ssh",
+                        *ssh_opts,
+                        f"ec2-user@{host_ip}",
+                        "sudo",
+                        "mkdir",
+                        "-p",
+                        "/opt/troshka",
+                    ],
+                    capture_output=True,
+                    timeout=10,
                 )
                 subprocess.run(
-                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mv", "/tmp/troshkad.py", "/opt/troshka/troshkad.py"],
-                    capture_output=True, timeout=30,
+                    [
+                        "ssh",
+                        *ssh_opts,
+                        f"ec2-user@{host_ip}",
+                        "sudo",
+                        "mv",
+                        "/tmp/troshkad.py",
+                        "/opt/troshka/troshkad.py",
+                    ],
+                    capture_output=True,
+                    timeout=30,
                 )
         else:
             logger.warning("troshkad.py not found at %s", troshkad_path)
 
         # SCP vncd.py to host
         vncd_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+            ),
             "troshka-vncd",
-            "troshka-vncd.py"
+            "troshka-vncd.py",
         )
         if os.path.exists(vncd_path):
             logger.info("Copying troshka-vncd.py to %s", host_ip)
             scp_result = subprocess.run(
-                ["scp", *ssh_opts, vncd_path, f"ec2-user@{host_ip}:/tmp/troshka-vncd.py"],
+                [
+                    "scp",
+                    *ssh_opts,
+                    vncd_path,
+                    f"ec2-user@{host_ip}:/tmp/troshka-vncd.py",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -537,8 +612,17 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 logger.warning("SCP troshka-vncd.py failed: %s", scp_result.stderr)
             else:
                 subprocess.run(
-                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mv", "/tmp/troshka-vncd.py", "/opt/troshka/troshka-vncd.py"],
-                    capture_output=True, timeout=30,
+                    [
+                        "ssh",
+                        *ssh_opts,
+                        f"ec2-user@{host_ip}",
+                        "sudo",
+                        "mv",
+                        "/tmp/troshka-vncd.py",
+                        "/opt/troshka/troshka-vncd.py",
+                    ],
+                    capture_output=True,
+                    timeout=30,
                 )
         else:
             logger.warning("troshka-vncd.py not found at %s", vncd_path)
@@ -549,14 +633,33 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
         troshka_files = os.path.join(infra_dir, "troshka-files.sh")
         if os.path.exists(troshka_files):
             subprocess.run(
-                ["scp", *ssh_opts, troshka_files, f"ec2-user@{host_ip}:/tmp/troshka-files.sh"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "scp",
+                    *ssh_opts,
+                    troshka_files,
+                    f"ec2-user@{host_ip}:/tmp/troshka-files.sh",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             subprocess.run(
-                ["ssh", *ssh_opts, f"ec2-user@{host_ip}",
-                 "sudo", "mv", "/tmp/troshka-files.sh", "/usr/local/bin/troshka-files",
-                 "&&", "sudo", "chmod", "+x", "/usr/local/bin/troshka-files"],
-                capture_output=True, timeout=10,
+                [
+                    "ssh",
+                    *ssh_opts,
+                    f"ec2-user@{host_ip}",
+                    "sudo",
+                    "mv",
+                    "/tmp/troshka-files.sh",
+                    "/usr/local/bin/troshka-files",
+                    "&&",
+                    "sudo",
+                    "chmod",
+                    "+x",
+                    "/usr/local/bin/troshka-files",
+                ],
+                capture_output=True,
+                timeout=10,
             )
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
@@ -580,7 +683,12 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
             elif line.startswith("TROSHKAD_FINGERPRINT="):
                 troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
 
-        logger.info("Agent deploy %s on %s (exit %d)", "succeeded" if success else "failed", host_ip, result.returncode)
+        logger.info(
+            "Agent deploy %s on %s (exit %d)",
+            "succeeded" if success else "failed",
+            host_ip,
+            result.returncode,
+        )
 
         return {
             "success": success,

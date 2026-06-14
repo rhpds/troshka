@@ -51,14 +51,19 @@ def create_jwt(user_id: str, email: str, role: str) -> str:
         "sub": user_id,
         "email": email,
         "role": role,
-        "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=config.auth.jwt_expiry_hours),
+        "exp": datetime.datetime.now(datetime.UTC)
+        + datetime.timedelta(hours=config.auth.jwt_expiry_hours),
     }
-    return jwt.encode(payload, config.auth.jwt_secret, algorithm=config.auth.jwt_algorithm)
+    return jwt.encode(
+        payload, config.auth.jwt_secret, algorithm=config.auth.jwt_algorithm
+    )
 
 
 def decode_jwt(token: str) -> dict | None:
     try:
-        return jwt.decode(token, config.auth.jwt_secret, algorithms=[config.auth.jwt_algorithm])
+        return jwt.decode(
+            token, config.auth.jwt_secret, algorithms=[config.auth.jwt_algorithm]
+        )
     except jwt.PyJWTError:
         return None
 

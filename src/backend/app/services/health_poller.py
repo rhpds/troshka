@@ -10,16 +10,20 @@ Periodically calls GET /health on each connected host to:
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.config import config
 
 logger = logging.getLogger(__name__)
 
 # Read intervals from config with sensible defaults
-_health_config = getattr(config, 'health', None)
-_INTERVAL_SECONDS = getattr(_health_config, 'interval_seconds', 30) if _health_config else 30
-_DISCONNECT_AFTER_SECONDS = getattr(_health_config, 'disconnect_after_seconds', 90) if _health_config else 90
+_health_config = getattr(config, "health", None)
+_INTERVAL_SECONDS = (
+    getattr(_health_config, "interval_seconds", 30) if _health_config else 30
+)
+_DISCONNECT_AFTER_SECONDS = (
+    getattr(_health_config, "disconnect_after_seconds", 90) if _health_config else 90
+)
 
 _WARNING_PCT = 85
 _CRITICAL_PCT = 95
@@ -43,9 +47,11 @@ def _evaluate_partitions(health):
 def _get_initial_ip():
     try:
         from app.services.provisioner import get_public_ip
+
         return get_public_ip()
     except Exception:
         return None
+
 
 _last_known_ip = _get_initial_ip()
 
@@ -57,25 +63,35 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
         return  # Some hosts are reachable, not an IP issue
 
     from app.services.provisioner import get_public_ip, update_sg_troshkad_ip
+
     current_ip = get_public_ip()
     if not current_ip:
         return
     if current_ip == _last_known_ip:
         return
 
-    logger.warning("Public IP changed from %s to %s — updating security groups", _last_known_ip, current_ip)
+    logger.warning(
+        "Public IP changed from %s to %s — updating security groups",
+        _last_known_ip,
+        current_ip,
+    )
     _last_known_ip = current_ip
 
     # Update all provider SGs
     from app.core.database import SessionLocal
     from app.models.provider import Provider
+
     db = SessionLocal()
     try:
-        providers = db.query(Provider).filter(Provider.security_group_id.isnot(None)).all()
+        providers = (
+            db.query(Provider).filter(Provider.security_group_id.isnot(None)).all()
+        )
         for provider in providers:
             try:
                 creds = provider.get_credentials()
-                update_sg_troshkad_ip(provider.security_group_id, current_ip, credentials=creds)
+                update_sg_troshkad_ip(
+                    provider.security_group_id, current_ip, credentials=creds
+                )
             except Exception:
                 logger.warning("Failed to update SG for provider %s", provider.id[:8])
     finally:
@@ -95,17 +111,21 @@ def _poll_hosts():
         # Query hosts that should be polled:
         # - state="active" (not stopped/terminated)
         # - have agent_token (troshkad is installed)
-        hosts = db.query(Host).filter(
-            Host.state == "active",
-            Host.agent_token.isnot(None),
-        ).all()
+        hosts = (
+            db.query(Host)
+            .filter(
+                Host.state == "active",
+                Host.agent_token.isnot(None),
+            )
+            .all()
+        )
 
         _checked_pools = set()
         for host in hosts:
             hosts_checked += 1
             try:
                 health = check_health(host)
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
 
                 if health:
                     # Success — update health data
@@ -127,32 +147,68 @@ def _poll_hosts():
                     host.storage_warnings = _evaluate_partitions(health)
                     if host.storage_warnings:
                         try:
-                            from app.services.storage_extend import should_extend_host, extend_host_ebs
+                            from app.services.storage_extend import (
+                                extend_host_ebs,
+                                should_extend_host,
+                            )
+
                             if should_extend_host(host):
-                                logger.info("Auto-extending EBS for host %s", host.id[:8])
+                                logger.info(
+                                    "Auto-extending EBS for host %s", host.id[:8]
+                                )
                                 extend_host_ebs(host, db)
                         except Exception:
-                            logger.warning("Auto-extend failed for host %s", host.id[:8], exc_info=True)
+                            logger.warning(
+                                "Auto-extend failed for host %s",
+                                host.id[:8],
+                                exc_info=True,
+                            )
 
-                    if host.storage_pool_id and host.storage_pool_id not in _checked_pools:
+                    if (
+                        host.storage_pool_id
+                        and host.storage_pool_id not in _checked_pools
+                    ):
                         _checked_pools.add(host.storage_pool_id)
                         pool = host.storage_pool
                         if pool and pool.mode == "shared-fsx":
                             partitions = health.get("partitions", [])
-                            shared_mount = next((p for p in partitions if "shared" in p.get("mount", "")), None)
+                            shared_mount = next(
+                                (
+                                    p
+                                    for p in partitions
+                                    if "shared" in p.get("mount", "")
+                                ),
+                                None,
+                            )
                             if shared_mount:
                                 try:
-                                    from app.services.storage_extend import should_extend_pool, extend_pool_fsx
-                                    if should_extend_pool(pool, shared_mount["used_pct"]):
-                                        logger.info("Auto-extending FSx for pool %s", pool.name)
+                                    from app.services.storage_extend import (
+                                        extend_pool_fsx,
+                                        should_extend_pool,
+                                    )
+
+                                    if should_extend_pool(
+                                        pool, shared_mount["used_pct"]
+                                    ):
+                                        logger.info(
+                                            "Auto-extending FSx for pool %s", pool.name
+                                        )
                                         extend_pool_fsx(pool, db)
                                 except Exception:
-                                    logger.warning("Auto-extend failed for pool %s", pool.name, exc_info=True)
+                                    logger.warning(
+                                        "Auto-extend failed for pool %s",
+                                        pool.name,
+                                        exc_info=True,
+                                    )
 
                     # Auto-reconnect if was disconnected
                     if host.agent_status == "disconnected":
                         host.agent_status = "connected"
-                        logger.info("Host %s reconnected (troshkad %s)", host.id[:8], health.get("version"))
+                        logger.info(
+                            "Host %s reconnected (troshkad %s)",
+                            host.id[:8],
+                            health.get("version"),
+                        )
                 else:
                     hosts_failed += 1
                     # Failed — check if we should mark as disconnected
@@ -160,10 +216,16 @@ def _poll_hosts():
                         elapsed = (now - host.last_health_at).total_seconds()
                         if elapsed > _DISCONNECT_AFTER_SECONDS:
                             host.agent_status = "disconnected"
-                            logger.warning("Host %s marked disconnected (no health for %ds)", host.id[:8], int(elapsed))
+                            logger.warning(
+                                "Host %s marked disconnected (no health for %ds)",
+                                host.id[:8],
+                                int(elapsed),
+                            )
             except Exception:
                 hosts_failed += 1
-                logger.debug("Health check failed for host %s", host.id[:8], exc_info=True)
+                logger.debug(
+                    "Health check failed for host %s", host.id[:8], exc_info=True
+                )
 
         db.commit()
 
@@ -187,54 +249,87 @@ def _check_cert_renewal():
         return
     _last_cert_check = now
 
+    import base64
+
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.storage_pool import StoragePool
-    from app.services.storage_pool_service import sign_host_cert, generate_pool_ca
+    from app.services.storage_pool_service import generate_pool_ca, sign_host_cert
     from app.services.troshkad_client import start_job, wait_for_job
-    import base64
 
     db = SessionLocal()
     try:
-        pools = db.query(StoragePool).filter(
-            StoragePool.mode.in_(["shared-fsx", "shared-byo"]),
-            StoragePool.ca_cert.isnot(None),
-        ).all()
+        pools = (
+            db.query(StoragePool)
+            .filter(
+                StoragePool.mode.in_(["shared-fsx", "shared-byo"]),
+                StoragePool.ca_cert.isnot(None),
+            )
+            .all()
+        )
 
         for pool in pools:
             # Check CA expiry — renew if within 90 days
             try:
                 from cryptography import x509
+
                 ca = x509.load_pem_x509_certificate(pool.ca_cert.encode())
-                days_left = (ca.not_valid_after_utc - datetime.now(timezone.utc)).days
+                days_left = (ca.not_valid_after_utc - datetime.now(UTC)).days
                 if days_left < 90:
-                    logger.info("Pool %s CA expires in %d days, regenerating", pool.name, days_left)
+                    logger.info(
+                        "Pool %s CA expires in %d days, regenerating",
+                        pool.name,
+                        days_left,
+                    )
                     new_cert, new_key = generate_pool_ca(pool.name)
                     pool.ca_cert = new_cert
                     pool.ca_key = new_key
                     db.commit()
             except Exception:
-                logger.debug("CA expiry check failed for pool %s", pool.name, exc_info=True)
-            hosts = db.query(Host).filter(
-                Host.storage_pool_id == pool.id,
-                Host.state == "active",
-                Host.agent_status == "connected",
-            ).all()
+                logger.debug(
+                    "CA expiry check failed for pool %s", pool.name, exc_info=True
+                )
+            hosts = (
+                db.query(Host)
+                .filter(
+                    Host.storage_pool_id == pool.id,
+                    Host.state == "active",
+                    Host.agent_status == "connected",
+                )
+                .all()
+            )
 
             for host in hosts:
                 if not host.ip_address:
                     continue
                 try:
-                    host_cert, host_key = sign_host_cert(pool.ca_cert, pool.ca_key, host.ip_address, host.private_ip or "")
-                    job_id = start_job(host, "/tls/update-certs", {
-                        "ca_cert_b64": base64.b64encode(pool.ca_cert.encode()).decode(),
-                        "host_cert_b64": base64.b64encode(host_cert.encode()).decode(),
-                        "host_key_b64": base64.b64encode(host_key.encode()).decode(),
-                    })
+                    host_cert, host_key = sign_host_cert(
+                        pool.ca_cert,
+                        pool.ca_key,
+                        host.ip_address,
+                        host.private_ip or "",
+                    )
+                    job_id = start_job(
+                        host,
+                        "/tls/update-certs",
+                        {
+                            "ca_cert_b64": base64.b64encode(
+                                pool.ca_cert.encode()
+                            ).decode(),
+                            "host_cert_b64": base64.b64encode(
+                                host_cert.encode()
+                            ).decode(),
+                            "host_key_b64": base64.b64encode(
+                                host_key.encode()
+                            ).decode(),
+                        },
+                    )
                     wait_for_job(host, job_id, timeout=30)
                     logger.debug("Renewed TLS cert for host %s", host.id[:8])
                 except Exception:
-                    logger.debug("Cert renewal failed for host %s", host.id[:8], exc_info=True)
+                    logger.debug(
+                        "Cert renewal failed for host %s", host.id[:8], exc_info=True
+                    )
     except Exception:
         logger.debug("Cert renewal check failed", exc_info=True)
     finally:
@@ -243,7 +338,11 @@ def _check_cert_renewal():
 
 def _poller_loop():
     """Background loop — polls forever."""
-    logger.info("Health poller started (interval=%ds, disconnect_after=%ds)", _INTERVAL_SECONDS, _DISCONNECT_AFTER_SECONDS)
+    logger.info(
+        "Health poller started (interval=%ds, disconnect_after=%ds)",
+        _INTERVAL_SECONDS,
+        _DISCONNECT_AFTER_SECONDS,
+    )
     while True:
         time.sleep(_INTERVAL_SECONDS)
         try:

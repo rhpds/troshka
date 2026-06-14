@@ -1,7 +1,13 @@
 import asyncio
 import json
 from unittest.mock import AsyncMock
-from app.services.ws_pubsub import subscribe, unsubscribe, get_active_project_ids, _subscribers
+
+from app.services.ws_pubsub import (
+    _subscribers,
+    get_active_project_ids,
+    subscribe,
+    unsubscribe,
+)
 
 
 def _make_ws():
@@ -34,7 +40,8 @@ def test_notify_project():
     _subscribers.clear()
     loop = asyncio.new_event_loop()
 
-    from app.services.ws_pubsub import set_event_loop, notify_project
+    from app.services.ws_pubsub import notify_project, set_event_loop
+
     set_event_loop(loop)
 
     ws = _make_ws()
@@ -56,7 +63,8 @@ def test_notify_dead_connection_removed():
     _subscribers.clear()
     loop = asyncio.new_event_loop()
 
-    from app.services.ws_pubsub import set_event_loop, notify_project
+    from app.services.ws_pubsub import notify_project, set_event_loop
+
     set_event_loop(loop)
 
     ws = _make_ws()

@@ -1,5 +1,10 @@
 from unittest.mock import patch
-from app.services.dns_service import resolve_dns_records, create_dns_records, delete_dns_records
+
+from app.services.dns_service import (
+    create_dns_records,
+    delete_dns_records,
+    resolve_dns_records,
+)
 
 
 def test_resolve_dns_records_replaces_tokens():
@@ -7,7 +12,9 @@ def test_resolve_dns_records_replaces_tokens():
         {"name": "api.{guid}.{domain}", "type": "A", "target": "eip"},
         {"name": "*.apps.{guid}.{domain}", "type": "A", "target": "eip"},
     ]
-    records = resolve_dns_records(templates, guid="abc123", domain="lab.example.com", eip="1.2.3.4")
+    records = resolve_dns_records(
+        templates, guid="abc123", domain="lab.example.com", eip="1.2.3.4"
+    )
     assert records[0]["name"] == "api.abc123.lab.example.com"
     assert records[0]["value"] == "1.2.3.4"
     assert records[1]["name"] == "*.apps.abc123.lab.example.com"
@@ -24,7 +31,11 @@ def test_resolve_dns_records_handles_missing_eip():
 
 def test_resolve_dns_records_non_eip_target():
     templates = [
-        {"name": "cname.{guid}.{domain}", "type": "CNAME", "target": "other.example.com"},
+        {
+            "name": "cname.{guid}.{domain}",
+            "type": "CNAME",
+            "target": "other.example.com",
+        },
     ]
     records = resolve_dns_records(templates, guid="abc", domain="ex.com", eip="1.2.3.4")
     assert records[0]["value"] == "other.example.com"

@@ -25,7 +25,9 @@ router = APIRouter(prefix="/storage-pools", tags=["storage-pools"])
 
 
 @router.get("/", response_model=list[StoragePoolResponse])
-def list_pools(user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def list_pools(
+    user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
+):
     pools = db.query(StoragePool).order_by(StoragePool.created_at).all()
     results = []
     for pool in pools:
@@ -36,7 +38,11 @@ def list_pools(user: User = Depends(require_role("admin")), db: Session = Depend
 
 
 @router.get("/{pool_id}", response_model=StoragePoolResponse)
-def get_pool(pool_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def get_pool(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
@@ -46,7 +52,11 @@ def get_pool(pool_id: str, user: User = Depends(require_role("admin")), db: Sess
 
 
 @router.post("/", response_model=StoragePoolResponse, status_code=201)
-def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def create_pool(
+    body: StoragePoolCreate,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     if body.mode not in ("local", "shared-fsx", "shared-byo"):
         raise HTTPException(400, f"Invalid mode: {body.mode}")
 
@@ -62,7 +72,9 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
         if not body.az:
             raise HTTPException(400, "AZ is required for shared-fsx pools")
         if not body.fsx_throughput_mbps or not body.fsx_storage_gb:
-            raise HTTPException(400, "fsx_throughput_mbps and fsx_storage_gb are required")
+            raise HTTPException(
+                400, "fsx_throughput_mbps and fsx_storage_gb are required"
+            )
 
     if body.mode == "shared-byo":
         if not body.nfs_endpoint:
@@ -104,8 +116,15 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
 
         t = threading.Thread(
             target=storage_pool_service.provision_fsx_pool,
-            args=(pool.id, credentials, region, subnet_id,
-                  provider.security_group_id, body.fsx_storage_gb, body.fsx_throughput_mbps),
+            args=(
+                pool.id,
+                credentials,
+                region,
+                subnet_id,
+                provider.security_group_id,
+                body.fsx_storage_gb,
+                body.fsx_throughput_mbps,
+            ),
             daemon=True,
         )
         t.start()
@@ -119,8 +138,12 @@ def create_pool(body: StoragePoolCreate, user: User = Depends(require_role("admi
 
 
 @router.patch("/{pool_id}", response_model=StoragePoolResponse)
-def update_pool(pool_id: str, body: StoragePoolUpdate,
-                user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def update_pool(
+    pool_id: str,
+    body: StoragePoolUpdate,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
@@ -129,19 +152,32 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
         provider = db.query(Provider).get(pool.provider_id)
         credentials = provider.get_credentials()
 
-        if body.fsx_throughput_mbps and body.fsx_throughput_mbps != pool.fsx_throughput_mbps:
+        if (
+            body.fsx_throughput_mbps
+            and body.fsx_throughput_mbps != pool.fsx_throughput_mbps
+        ):
             storage_pool_service.update_fsx_throughput(
-                credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_throughput_mbps
+                credentials,
+                provider.default_region,
+                pool.fsx_filesystem_id,
+                body.fsx_throughput_mbps,
             )
             pool.fsx_throughput_mbps = body.fsx_throughput_mbps
 
         if body.fsx_storage_gb and body.fsx_storage_gb > (pool.fsx_storage_gb or 0):
             import math
+
             min_grow = math.ceil((pool.fsx_storage_gb or 64) * 1.1)
             if body.fsx_storage_gb < min_grow:
-                raise HTTPException(400, f"Storage increase must be at least 10% (minimum {min_grow} GB)")
+                raise HTTPException(
+                    400,
+                    f"Storage increase must be at least 10% (minimum {min_grow} GB)",
+                )
             storage_pool_service.update_fsx_storage(
-                credentials, provider.default_region, pool.fsx_filesystem_id, body.fsx_storage_gb
+                credentials,
+                provider.default_region,
+                pool.fsx_filesystem_id,
+                body.fsx_storage_gb,
             )
             pool.fsx_storage_gb = body.fsx_storage_gb
 
@@ -166,8 +202,12 @@ def update_pool(pool_id: str, body: StoragePoolUpdate,
 
 
 @router.post("/{pool_id}/extend")
-def extend_pool(pool_id: str, body: dict | None = None,
-                user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def extend_pool(
+    pool_id: str,
+    body: dict | None = None,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Extend the FSx filesystem by the configured increment."""
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
@@ -177,6 +217,7 @@ def extend_pool(pool_id: str, body: dict | None = None,
 
     increment_gb = (body or {}).get("increment_gb")
     from app.services.storage_extend import extend_pool_fsx
+
     try:
         result = extend_pool_fsx(pool, db, increment_gb=increment_gb)
     except ValueError as e:
@@ -185,7 +226,11 @@ def extend_pool(pool_id: str, body: dict | None = None,
 
 
 @router.delete("/{pool_id}", status_code=204)
-def delete_pool(pool_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def delete_pool(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
@@ -206,23 +251,38 @@ def delete_pool(pool_id: str, user: User = Depends(require_role("admin")), db: S
 
 
 @router.get("/{pool_id}/cache", response_model=list[SharedCacheEntryResponse])
-def list_cache(pool_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def list_cache(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
-    entries = db.query(SharedCacheEntry).filter(
-        SharedCacheEntry.storage_pool_id == pool_id
-    ).order_by(SharedCacheEntry.created_at.desc()).all()
+    entries = (
+        db.query(SharedCacheEntry)
+        .filter(SharedCacheEntry.storage_pool_id == pool_id)
+        .order_by(SharedCacheEntry.created_at.desc())
+        .all()
+    )
     return [SharedCacheEntryResponse.model_validate(e) for e in entries]
 
 
 @router.delete("/{pool_id}/cache/{entry_id}", status_code=204)
-def evict_cache_entry(pool_id: str, entry_id: str,
-                      user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
-    entry = db.query(SharedCacheEntry).filter(
-        SharedCacheEntry.id == entry_id,
-        SharedCacheEntry.storage_pool_id == pool_id,
-    ).first()
+def evict_cache_entry(
+    pool_id: str,
+    entry_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    entry = (
+        db.query(SharedCacheEntry)
+        .filter(
+            SharedCacheEntry.id == entry_id,
+            SharedCacheEntry.storage_pool_id == pool_id,
+        )
+        .first()
+    )
     if not entry:
         raise HTTPException(404, "Cache entry not found")
     db.delete(entry)
@@ -230,8 +290,12 @@ def evict_cache_entry(pool_id: str, entry_id: str,
 
 
 @router.post("/{pool_id}/probe-azs", response_model=AzProbeResponse)
-def probe_azs(pool_id: str, instance_types: list[str],
-              user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def probe_azs(
+    pool_id: str,
+    instance_types: list[str],
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if pool:
         provider = db.query(Provider).get(pool.provider_id)
@@ -245,19 +309,25 @@ def probe_azs(pool_id: str, instance_types: list[str],
 
     results = []
     for az, data in sorted(az_results.items()):
-        results.append(AzProbeResult(
-            az=az,
-            supported_types=data["supported"],
-            unsupported_types=data["unsupported"],
-        ))
+        results.append(
+            AzProbeResult(
+                az=az,
+                supported_types=data["supported"],
+                unsupported_types=data["unsupported"],
+            )
+        )
 
     recommended = storage_pool_service.find_best_az(az_results, instance_types)
     return AzProbeResponse(results=results, recommended_az=recommended)
 
 
 @router.post("/{pool_id}/gc")
-def run_pool_gc(pool_id: str, dry_run: bool = False,
-                user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def run_pool_gc(
+    pool_id: str,
+    dry_run: bool = False,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
@@ -265,5 +335,6 @@ def run_pool_gc(pool_id: str, dry_run: bool = False,
         raise HTTPException(400, "GC only applies to shared storage pools")
 
     from app.services.gc_service import reconcile_pool
+
     result = reconcile_pool(pool_id, dry_run=dry_run)
     return result

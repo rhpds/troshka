@@ -1,5 +1,5 @@
-import uuid
 import random
+import uuid
 
 
 def _id():
@@ -7,13 +7,17 @@ def _id():
 
 
 def _mac():
-    return "52:54:00:{:02x}:{:02x}:{:02x}".format(
-        random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)
-    )
+    return f"52:54:00:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"
 
 
 def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip=""):
-    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
+    nic = {
+        "id": f"nic-{_id()}",
+        "name": "eth0",
+        "mac": _mac(),
+        "model": "virtio",
+        "ip": cluster_ip,
+    }
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
     dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
     disk_id = _id()
@@ -60,7 +64,11 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip=""):
         "sourceHandle": "right",
         "targetHandle": f"dp-{dc['id']}-left",
         "type": "smoothstep",
-        "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        "style": {
+            "stroke": "rgba(251,191,36,0.6)",
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
         "animated": False,
         "className": "edge-storage-pulse",
     }
@@ -69,7 +77,13 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip=""):
 
 def _bastion_node(x, y, disk_gb=20, cluster_ip="10.0.0.50"):
     """Bastion/provisioner VM with two NICs (cluster + BMC)."""
-    nic_cluster = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio", "ip": cluster_ip}
+    nic_cluster = {
+        "id": f"nic-{_id()}",
+        "name": "eth0",
+        "mac": _mac(),
+        "model": "virtio",
+        "ip": cluster_ip,
+    }
     nic_bmc = {"id": f"nic-{_id()}", "name": "eth1", "mac": _mac(), "model": "virtio"}
     dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
     disk_id = _id()
@@ -113,7 +127,11 @@ def _bastion_node(x, y, disk_gb=20, cluster_ip="10.0.0.50"):
         "sourceHandle": "right",
         "targetHandle": f"dp-{dc['id']}-left",
         "type": "smoothstep",
-        "style": {"stroke": "rgba(251,191,36,0.6)", "strokeWidth": 2, "strokeDasharray": "4 4"},
+        "style": {
+            "stroke": "rgba(251,191,36,0.6)",
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
         "animated": False,
         "className": "edge-storage-pulse",
     }
@@ -169,7 +187,7 @@ def _net_node(name, cidr, x, y):
     }
 
 
-def _bmc_node(x, y, bmc_password="password"):
+def _bmc_node(x, y, bmc_password="password"):  # pragma: allowlist secret
     return {
         "id": _id(),
         "type": "networkNode",
@@ -212,9 +230,21 @@ def _net_edge(src_node, tgt_vm, style_type="network", nic_index=0, vm_handle="to
     """
     nic_id = tgt_vm["data"]["nics"][nic_index]["id"]
     styles = {
-        "network": {"stroke": "rgba(34,211,238,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
-        "lb": {"stroke": "rgba(59,130,246,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
-        "gateway": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
+        "network": {
+            "stroke": "rgba(34,211,238,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "6 4",
+        },
+        "lb": {
+            "stroke": "rgba(59,130,246,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "6 4",
+        },
+        "gateway": {
+            "stroke": "rgba(74,222,128,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "8 4",
+        },
     }
     return {
         "id": _id(),
@@ -238,7 +268,11 @@ def _lb_vm_edge(lb_node, tgt_vm, nic_index=0):
         "sourceHandle": "top",
         "targetHandle": f"nic-{nic_id}-bottom",
         "type": "smoothstep",
-        "style": {"stroke": "rgba(59,130,246,0.5)", "strokeWidth": 2, "strokeDasharray": "6 4"},
+        "style": {
+            "stroke": "rgba(59,130,246,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "6 4",
+        },
         "animated": True,
     }
 
@@ -252,7 +286,11 @@ def _gw_net_edge(gw_node, net_node):
         "sourceHandle": "left",
         "targetHandle": "left",
         "type": "smoothstep",
-        "style": {"stroke": "rgba(74,222,128,0.5)", "strokeWidth": 2, "strokeDasharray": "8 4"},
+        "style": {
+            "stroke": "rgba(74,222,128,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "8 4",
+        },
         "animated": True,
     }
 
@@ -282,7 +320,9 @@ TEMPLATES = {
 }
 
 
-def generate_topology(template_id: str, bmc_password: str = "password", external_access: bool = True) -> dict:
+def generate_topology(
+    template_id: str, bmc_password: str = "password", external_access: bool = True
+) -> dict:
     nodes = []
     edges = []
     external_ips = []
@@ -295,17 +335,41 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         eip_id = _id()
         external_ips = [{"id": eip_id, "label": "OCP"}]
         ocp_port_forwards = [
-            {"extIpId": eip_id, "extPort": "22", "intIp": "10.0.0.50", "intPort": "22", "proto": "tcp"},
-            {"extIpId": eip_id, "extPort": "6443", "intIp": api_vip, "intPort": "6443", "proto": "tcp"},
-            {"extIpId": eip_id, "extPort": "443", "intIp": ingress_vip, "intPort": "443", "proto": "tcp"},
-            {"extIpId": eip_id, "extPort": "80", "intIp": ingress_vip, "intPort": "80", "proto": "tcp"},
+            {
+                "extIpId": eip_id,
+                "extPort": "22",
+                "intIp": "10.0.0.50",
+                "intPort": "22",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "6443",
+                "intIp": api_vip,
+                "intPort": "6443",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "443",
+                "intIp": ingress_vip,
+                "intPort": "443",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "80",
+                "intIp": ingress_vip,
+                "intPort": "80",
+                "proto": "tcp",
+            },
         ]
 
     # Layout constants
-    VM_SPACING = 400        # horizontal gap between VM columns (room for disk to the left)
-    GW_Y = 0                # gateway row (top)
-    NET_ROW_Y = 150         # network/BMC row
-    VM_ROW_Y = 350          # VM row
+    VM_SPACING = 400  # horizontal gap between VM columns (room for disk to the left)
+    GW_Y = 0  # gateway row (top)
+    NET_ROW_Y = 150  # network/BMC row
+    VM_ROW_Y = 350  # VM row
     LB_ROW_Y = VM_ROW_Y + 300  # LB row (below VMs)
     WORKER_ROW_Y = VM_ROW_Y + 370  # worker row (standard layout only)
 
@@ -318,14 +382,26 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         net = _net_node("cluster-network", "10.0.0.0/24", net_x, NET_ROW_Y)
         bmc = _bmc_node(vm_x_start + VM_SPACING, NET_ROW_Y, bmc_password)
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
-        sno_vm, sno_disk, sno_disk_edge = _vm_node("sno-0", 8, 32, vm_x_start, VM_ROW_Y, disk_gb=120, bmc_ip="192.168.100.10", cluster_ip="10.0.0.10")
+        sno_vm, sno_disk, sno_disk_edge = _vm_node(
+            "sno-0",
+            8,
+            32,
+            vm_x_start,
+            VM_ROW_Y,
+            disk_gb=120,
+            bmc_ip="192.168.100.10",
+            cluster_ip="10.0.0.10",
+        )
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(
-            vm_x_start + VM_SPACING, VM_ROW_Y)
+            vm_x_start + VM_SPACING, VM_ROW_Y
+        )
         nodes = [net, bmc, gw, sno_vm, sno_disk, bast_vm, bast_disk]
         edges = [sno_disk_edge, bast_disk_edge, _gw_net_edge(gw, net)]
         edges.append(_net_edge(net, sno_vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
+        edges.append(
+            _net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom")
+        )
 
     elif template_id == "ocp-compact":
         vm_x_start = 150
@@ -336,7 +412,16 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         vm_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
+            vm, disk, disk_edge = _vm_node(
+                f"cp-{i}",
+                4,
+                16,
+                vm_x_start + i * VM_SPACING,
+                VM_ROW_Y,
+                disk_gb=120,
+                bmc_ip=f"192.168.100.{10 + i}",
+                cluster_ip=f"10.0.0.{10 + i}",
+            )
             vm_data.append((vm, disk, disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
         nodes = [net, bmc, gw, bast_vm, bast_disk]
@@ -348,7 +433,9 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         for vm, _, _ in vm_data:
             edges.append(_net_edge(net, vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
+        edges.append(
+            _net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom")
+        )
 
     elif template_id == "ocp-standard":
         vm_x_start = 150
@@ -359,11 +446,29 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         gw = _gateway_node(net_x, GW_Y, port_forwards=ocp_port_forwards)
         cp_data = []
         for i in range(3):
-            vm, disk, disk_edge = _vm_node(f"cp-{i}", 4, 16, vm_x_start + i * VM_SPACING, VM_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{10 + i}", cluster_ip=f"10.0.0.{10 + i}")
+            vm, disk, disk_edge = _vm_node(
+                f"cp-{i}",
+                4,
+                16,
+                vm_x_start + i * VM_SPACING,
+                VM_ROW_Y,
+                disk_gb=120,
+                bmc_ip=f"192.168.100.{10 + i}",
+                cluster_ip=f"10.0.0.{10 + i}",
+            )
             cp_data.append((vm, disk, disk_edge))
         w_data = []
         for i in range(2):
-            vm, disk, disk_edge = _vm_node(f"worker-{i}", 4, 16, vm_x_start + i * VM_SPACING, WORKER_ROW_Y, disk_gb=120, bmc_ip=f"192.168.100.{20 + i}", cluster_ip=f"10.0.0.{20 + i}")
+            vm, disk, disk_edge = _vm_node(
+                f"worker-{i}",
+                4,
+                16,
+                vm_x_start + i * VM_SPACING,
+                WORKER_ROW_Y,
+                disk_gb=120,
+                bmc_ip=f"192.168.100.{20 + i}",
+                cluster_ip=f"10.0.0.{20 + i}",
+            )
             w_data.append((vm, disk, disk_edge))
         bast_vm, bast_disk, bast_disk_edge, _, _ = _bastion_node(bast_x, VM_ROW_Y)
         nodes = [net, bmc, gw, bast_vm, bast_disk]
@@ -375,7 +480,9 @@ def generate_topology(template_id: str, bmc_password: str = "password", external
         for vm, _, _ in cp_data + w_data:
             edges.append(_net_edge(net, vm, "network"))
         edges.append(_net_edge(net, bast_vm, "network", nic_index=0))
-        edges.append(_net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom"))
+        edges.append(
+            _net_edge(bmc, bast_vm, "network", nic_index=1, vm_handle="bottom")
+        )
 
     else:
         raise ValueError(f"Unknown template: {template_id}")

@@ -23,4 +23,5 @@ def get_db() -> Generator[Session, None, None]:
 
 def init_db():
     import app.models  # noqa: F401
+
     Base.metadata.create_all(bind=engine)

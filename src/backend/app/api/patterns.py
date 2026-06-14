@@ -83,8 +83,7 @@ def _remap_topology(topology: dict) -> dict:
         data = node.get("data", {})
         if "bootDevices" in data:
             data["bootDevices"] = [
-                id_map.get(d, d) if d != "network" else d
-                for d in data["bootDevices"]
+                id_map.get(d, d) if d != "network" else d for d in data["bootDevices"]
             ]
 
     def _remap_handle(handle: str) -> str:
@@ -112,8 +111,13 @@ def _remap_topology(topology: dict) -> dict:
             edge["id"] = f"xy-edge__{src}{sh}-{tgt}{th}"
 
     topo["startOrder"] = [
-        {**entry, "vmId": id_map.get(entry["vmId"], entry["vmId"]),
-         "waitForVm": id_map.get(entry["waitForVm"], entry["waitForVm"]) if entry.get("waitForVm") else None}
+        {
+            **entry,
+            "vmId": id_map.get(entry["vmId"], entry["vmId"]),
+            "waitForVm": id_map.get(entry["waitForVm"], entry["waitForVm"])
+            if entry.get("waitForVm")
+            else None,
+        }
         for entry in topo.get("startOrder", [])
     ]
 
@@ -148,7 +152,9 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "owner_id": p.owner_id,
         "visibility": p.visibility,
         "state": p.state,
-        "capture_progress": get_capture_progress(p.id) if p.state == "capturing" else None,
+        "capture_progress": get_capture_progress(p.id)
+        if p.state == "capturing"
+        else None,
         "total_size_bytes": p.total_size_bytes,
         "tags": p.tags,
         "created_at": p.created_at,
@@ -168,7 +174,9 @@ def _pattern_to_detail_dict(p: Pattern) -> dict:
         "source_project_id": p.source_project_id,
         "topology": p.topology,
         "state": p.state,
-        "capture_progress": get_capture_progress(p.id) if p.state == "capturing" else None,
+        "capture_progress": get_capture_progress(p.id)
+        if p.state == "capturing"
+        else None,
         "total_size_bytes": p.total_size_bytes,
         "tags": p.tags,
         "created_at": p.created_at,
@@ -205,22 +213,33 @@ def create_pattern(
 
     existing = db.query(Pattern).filter_by(owner_id=user.id, name=body.name).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"You already have a pattern named \"{body.name}\"")
+        raise HTTPException(
+            status_code=409, detail=f'You already have a pattern named "{body.name}"'
+        )
 
     source_project: Project | None = None
     if body.source_project_id:
-        source_project = db.query(Project).filter_by(id=body.source_project_id, owner_id=user.id).first()
+        source_project = (
+            db.query(Project)
+            .filter_by(id=body.source_project_id, owner_id=user.id)
+            .first()
+        )
         if not source_project:
             raise HTTPException(status_code=404, detail="Source project not found")
         if source_project.state not in ("active", "stopped"):
-            raise HTTPException(status_code=400, detail="Project must be deployed (active or stopped) to save as pattern")
+            raise HTTPException(
+                status_code=400,
+                detail="Project must be deployed (active or stopped) to save as pattern",
+            )
         topology = source_project.topology or {}
         state = "capturing"
     elif body.topology:
         topology = body.topology
         state = "available"
     else:
-        raise HTTPException(status_code=400, detail="Provide source_project_id or topology")
+        raise HTTPException(
+            status_code=400, detail="Provide source_project_id or topology"
+        )
 
     pattern_description = body.description
     if not pattern_description and source_project:
@@ -243,6 +262,7 @@ def create_pattern(
     # If capturing from project, kick off async disk capture
     if body.source_project_id:
         from app.services.pattern_service import capture_pattern_disks
+
         threading.Thread(
             target=capture_pattern_disks,
             args=(pattern.id, body.source_project_id, body.restart_after),
@@ -301,8 +321,16 @@ def get_pattern(
         raise HTTPException(status_code=404, detail="Pattern not found")
 
     # Access check: owner, admin, shared, or public
-    if pattern.owner_id != user.id and user.role != "admin" and pattern.visibility != "public":
-        shared = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
         if not shared:
             raise HTTPException(status_code=404, detail="Pattern not found")
 
@@ -351,15 +379,19 @@ def delete_pattern(
     # Cancel in-flight capture jobs if pattern is still being captured
     if pattern.state in ("creating", "capturing"):
         from app.services.pattern_service import cancel_capture
+
         cancel_capture(pattern_id, db)
 
     # S3 cleanup — captured disks + any partially-uploaded files
     from app.services import s3_storage
+
     for disk in pattern.disks:
         try:
             s3_storage.delete_file(disk.s3_key)
         except Exception:
-            logger.warning("Failed to delete S3 object %s for pattern disk", disk.s3_key)
+            logger.warning(
+                "Failed to delete S3 object %s for pattern disk", disk.s3_key
+            )
     try:
         s3_storage.delete_prefix(f"patterns/{pattern_id}/")
     except Exception:
@@ -370,10 +402,12 @@ def delete_pattern(
 
     # Clean pattern cache on all hosts in background
     import threading
+
     def _clean_pattern_cache(pid: str):
         from app.core.database import SessionLocal
         from app.models.host import Host
-        from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+        from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
         s = SessionLocal()
         try:
             for host in s.query(Host).filter(Host.agent_status == "connected").all():
@@ -389,7 +423,10 @@ def delete_pattern(
                     pass
         finally:
             s.close()
-    threading.Thread(target=_clean_pattern_cache, args=(pattern_id,), daemon=True).start()
+
+    threading.Thread(
+        target=_clean_pattern_cache, args=(pattern_id,), daemon=True
+    ).start()
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +453,11 @@ def share_pattern(
     if target_user.id == user.id:
         raise HTTPException(status_code=400, detail="Cannot share with yourself")
 
-    existing = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=target_user.id).first()
+    existing = (
+        db.query(PatternShare)
+        .filter_by(pattern_id=pattern_id, user_id=target_user.id)
+        .first()
+    )
     if not existing:
         db.add(PatternShare(pattern_id=pattern_id, user_id=target_user.id))
         db.commit()
@@ -441,7 +482,11 @@ def revoke_share(
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    share = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=target_user.id).first()
+    share = (
+        db.query(PatternShare)
+        .filter_by(pattern_id=pattern_id, user_id=target_user.id)
+        .first()
+    )
     if share:
         db.delete(share)
         db.commit()
@@ -463,8 +508,16 @@ def pattern_progress(
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
         raise HTTPException(status_code=404, detail="Pattern not found")
-    if pattern.owner_id != user.id and user.role != "admin" and pattern.visibility != "public":
-        shared = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
         if not shared:
             raise HTTPException(status_code=404, detail="Pattern not found")
 
@@ -497,15 +550,25 @@ def deploy_pattern(
         raise HTTPException(status_code=404, detail="Pattern not found")
 
     # Access check
-    if pattern.owner_id != user.id and user.role != "admin" and pattern.visibility != "public":
-        shared = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
         if not shared:
             raise HTTPException(status_code=404, detail="Pattern not found")
 
     project_name = body.name or f"{pattern.name} (deploy)"
     existing = db.query(Project).filter_by(owner_id=user.id, name=project_name).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"You already have a project named \"{project_name}\"")
+        raise HTTPException(
+            status_code=409, detail=f'You already have a project named "{project_name}"'
+        )
 
     new_topology = _remap_topology(pattern.topology)
 
@@ -546,9 +609,15 @@ def deploy_pattern(
 
     if body.auto_deploy:
         from app.services.deploy_service import deploy_project_async
+
         project.state = "deploying"
         db.commit()
-        threading.Thread(target=deploy_project_async, args=(project.id, body.auto_start), daemon=True, name=f"deploy-{project.id[:8]}").start()
+        threading.Thread(
+            target=deploy_project_async,
+            args=(project.id, body.auto_start),
+            daemon=True,
+            name=f"deploy-{project.id[:8]}",
+        ).start()
 
     return {
         "id": project.id,
@@ -565,8 +634,8 @@ def deploy_pattern(
 
 def _bulk_deploy_projects(project_ids: list[str]):
     from app.core.database import SessionLocal
-    from app.services.placement import place_project, calculate_project_requirements
     from app.services.deploy_service import deploy_project_async
+    from app.services.placement import calculate_project_requirements, place_project
 
     ready_ids = []
     s = SessionLocal()
@@ -580,7 +649,11 @@ def _bulk_deploy_projects(project_ids: list[str]):
                 continue
             result = place_project(s, project)
             if "error" in result:
-                logger.warning("Bulk deploy: placement failed for %s: %s", project_id[:8], result["error"])
+                logger.warning(
+                    "Bulk deploy: placement failed for %s: %s",
+                    project_id[:8],
+                    result["error"],
+                )
                 project.state = "error"
                 project.deploy_error = result["error"]
                 continue
@@ -619,8 +692,16 @@ def bulk_deploy_pattern(
         raise HTTPException(status_code=404, detail="Pattern not found")
 
     # Access check
-    if pattern.owner_id != user.id and user.role != "admin" and pattern.visibility != "public":
-        shared = db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
         if not shared:
             raise HTTPException(status_code=404, detail="Pattern not found")
 
@@ -651,7 +732,10 @@ def bulk_deploy_pattern(
     if body.auto_deploy:
         project_ids = [p.id for p in projects]
         import threading
-        threading.Thread(target=_bulk_deploy_projects, args=(project_ids,), daemon=True).start()
+
+        threading.Thread(
+            target=_bulk_deploy_projects, args=(project_ids,), daemon=True
+        ).start()
 
     return {
         "pattern_id": pattern_id,

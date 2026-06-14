@@ -21,14 +21,20 @@ def hash_key(key: str) -> str:
 class ApiKey(Base):
     __tablename__ = "api_keys"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255))
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     key_prefix: Mapped[str] = mapped_column(String(10))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -1,0 +1,3 @@
+[default.extend-words]
+# "Cach" is used as a substring match for cache progress messages
+Cach = "Cach"

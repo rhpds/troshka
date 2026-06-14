@@ -37,6 +37,7 @@ def _transit_subnet(vni: int) -> dict:
 def _get_all_used_vnis(db: Session) -> set[int]:
     """Collect all VNIs currently in use across all projects."""
     from app.models.project import Project
+
     used = set()
     for project in db.query(Project).filter(Project.vni_map.isnot(None)).all():
         for vni in (project.vni_map or {}).values():
@@ -52,7 +53,8 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
     """
     nodes = topology.get("nodes", [])
     network_nodes = [
-        n for n in nodes
+        n
+        for n in nodes
         if n.get("type") == "networkNode"
         and n.get("data", {}).get("subtype") == "network"
         and n.get("data", {}).get("networkType") != "bmc"
@@ -62,7 +64,10 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
     db_max = max(used_vnis, default=VNI_MIN - 1)
 
     # Read high-water mark from host file (survives DB wipes)
-    hwm_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".vni_hwm")
+    hwm_file = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        ".vni_hwm",
+    )
     file_hwm = VNI_MIN - 1
     try:
         with open(hwm_file) as f:
@@ -78,7 +83,9 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
             raise ValueError("VNI pool exhausted")
         vni_map[node["id"]] = next_vni
         used_vnis.add(next_vni)
-        logger.info("Allocated VNI %d for network %s", next_vni, node["data"].get("name"))
+        logger.info(
+            "Allocated VNI %d for network %s", next_vni, node["data"].get("name")
+        )
         next_vni += 1
 
     # Persist high-water mark
@@ -93,7 +100,9 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
     return vni_map
 
 
-def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips: list[str]) -> dict:
+def build_host_network_config(
+    topology: dict, vni_map: dict[str, int], peer_ips: list[str]
+) -> dict:
     """Build the network configuration a host agent needs to set up VXLAN.
 
     Returns a structure the agent can use to create bridges, VXLAN interfaces,
@@ -132,15 +141,23 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
         for vm_node in nodes:
             if vm_node["id"] in connected_vm_ids and vm_node.get("type") == "vmNode":
                 vm_data = vm_node.get("data", {})
-                connected_vms.append({
-                    "vm_id": vm_node["id"],
-                    "name": vm_data.get("name"),
-                })
+                connected_vms.append(
+                    {
+                        "vm_id": vm_node["id"],
+                        "name": vm_data.get("name"),
+                    }
+                )
                 pxe_iso_id = vm_data.get("pxeBootIsoId")
                 if pxe_iso_id:
                     pxe_boot_iso_ids.add(pxe_iso_id)
                 if not pxe_vm_boot_config:
-                    for field in ("pxeMethod", "pxeNextServer", "pxeBootFile", "ipxeScriptUrl", "uefiBootUrl"):
+                    for field in (
+                        "pxeMethod",
+                        "pxeNextServer",
+                        "pxeBootFile",
+                        "ipxeScriptUrl",
+                        "uefiBootUrl",
+                    ):
                         if vm_data.get(field):
                             pxe_vm_boot_config[field] = vm_data[field]
                 for vm_nic in vm_data.get("nics", []):
@@ -148,18 +165,34 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                         nic_handle_top = f"nic-{vm_nic['id']}-top"
                         nic_handle_bottom = f"nic-{vm_nic['id']}-bottom"
                         on_this_net = any(
-                            ((e.get("source") == vm_node["id"] and e.get("target") == node_id and
-                              (e.get("sourceHandle") == nic_handle_top or e.get("sourceHandle") == nic_handle_bottom)) or
-                             (e.get("target") == vm_node["id"] and e.get("source") == node_id and
-                              (e.get("targetHandle") == nic_handle_top or e.get("targetHandle") == nic_handle_bottom)))
+                            (
+                                (
+                                    e.get("source") == vm_node["id"]
+                                    and e.get("target") == node_id
+                                    and (
+                                        e.get("sourceHandle") == nic_handle_top
+                                        or e.get("sourceHandle") == nic_handle_bottom
+                                    )
+                                )
+                                or (
+                                    e.get("target") == vm_node["id"]
+                                    and e.get("source") == node_id
+                                    and (
+                                        e.get("targetHandle") == nic_handle_top
+                                        or e.get("targetHandle") == nic_handle_bottom
+                                    )
+                                )
+                            )
                             for e in edges
                         )
                         if on_this_net:
-                            dhcp_hosts.append({
-                                "mac": vm_nic["mac"],
-                                "ip": vm_nic["ip"],
-                                "name": vm_data.get("name", ""),
-                            })
+                            dhcp_hosts.append(
+                                {
+                                    "mac": vm_nic["mac"],
+                                    "ip": vm_nic["ip"],
+                                    "name": vm_data.get("name", ""),
+                                }
+                            )
 
         net_config = {
             "node_id": node_id,
@@ -186,6 +219,7 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
             net_cidr = data.get("cidr", "")
             if net_cidr and (not range_start or not range_end or not gateway):
                 import ipaddress
+
                 try:
                     network = ipaddress.ip_network(net_cidr, strict=False)
                     hosts = list(network.hosts())
@@ -228,7 +262,10 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
     # Build gateway config if present
     gateway_config = None
     for node in nodes:
-        if node.get("type") == "networkNode" and node.get("data", {}).get("subtype") == "gateway":
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("subtype") == "gateway"
+        ):
             data = node.get("data", {})
             external_ips = topology.get("externalIps", [])
             eip_map = {eip["id"]: eip for eip in external_ips}
@@ -246,7 +283,11 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
                 "outbound_policy": data.get("outboundPolicy", "allow-all"),
                 "outbound_ports": data.get("outboundPorts", ""),
                 "port_forwards": port_forwards,
-                "eip_private_ips": [eip.get("_private_ip", "") for eip in external_ips if eip.get("_private_ip")],
+                "eip_private_ips": [
+                    eip.get("_private_ip", "")
+                    for eip in external_ips
+                    if eip.get("_private_ip")
+                ],
             }
             # Add transit subnet info for host-side EIP DNAT
             first_vni = networks[0]["vni"] if networks else None
@@ -258,34 +299,56 @@ def build_host_network_config(topology: dict, vni_map: dict[str, int], peer_ips:
     # Build router configs
     router_configs = []
     for node in nodes:
-        if node.get("type") == "networkNode" and node.get("data", {}).get("subtype") == "router":
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("subtype") == "router"
+        ):
             data = node.get("data", {})
 
             # Find which networks this router connects to
             connected_net_ids = set()
             for edge in edges:
-                other_id = edge["target"] if edge["source"] == node["id"] else edge["source"] if edge["target"] == node["id"] else None
+                other_id = (
+                    edge["target"]
+                    if edge["source"] == node["id"]
+                    else edge["source"]
+                    if edge["target"] == node["id"]
+                    else None
+                )
                 if other_id:
                     connected_net_ids.add(other_id)
 
-            connected_vnis = [vni_map[nid] for nid in connected_net_ids if nid in vni_map]
+            connected_vnis = [
+                vni_map[nid] for nid in connected_net_ids if nid in vni_map
+            ]
 
-            router_configs.append({
-                "name": data.get("name"),
-                "connected_vnis": connected_vnis,
-                "static_routes": data.get("staticRoutes", []),
-            })
+            router_configs.append(
+                {
+                    "name": data.get("name"),
+                    "connected_vnis": connected_vnis,
+                    "static_routes": data.get("staticRoutes", []),
+                }
+            )
 
     # Build load balancer config if present
     lb_config = None
     for node in nodes:
-        if node.get("type") == "networkNode" and node.get("data", {}).get("networkType") == "loadbalancer":
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("networkType") == "loadbalancer"
+        ):
             data = node.get("data", {})
             node_id = node["id"]
 
             connected_vm_ids = set()
             for edge in edges:
-                other_id = edge["target"] if edge["source"] == node_id else edge["source"] if edge["target"] == node_id else None
+                other_id = (
+                    edge["target"]
+                    if edge["source"] == node_id
+                    else edge["source"]
+                    if edge["target"] == node_id
+                    else None
+                )
                 if other_id:
                     other_node = next((n for n in nodes if n["id"] == other_id), None)
                     if other_node and other_node.get("type") == "vmNode":

@@ -1,4 +1,5 @@
 import os
+
 from dynaconf import Dynaconf
 
 _config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")

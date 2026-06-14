@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.core.database import Base, get_db
 from app.main import app
-from tests.conftest import TestSession, get_test_db, test_engine
+from tests.conftest import get_test_db, test_engine
 
 Base.metadata.drop_all(bind=test_engine)
 Base.metadata.create_all(bind=test_engine)

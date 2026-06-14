@@ -14,11 +14,13 @@ def resolve_dns_records(
     for tmpl in templates:
         name = tmpl["name"].replace("{guid}", guid).replace("{domain}", domain)
         value = eip if tmpl.get("target") == "eip" else tmpl.get("target")
-        records.append({
-            "name": name,
-            "type": tmpl.get("type", "A"),
-            "value": value,
-        })
+        records.append(
+            {
+                "name": name,
+                "type": tmpl.get("type", "A"),
+                "value": value,
+            }
+        )
     return records
 
 
@@ -130,6 +132,7 @@ def _nsupdate_delete(config: dict, records: list[dict], errors: list[str]):
 def _route53_create(config: dict, records: list[dict], ttl: int, errors: list[str]):
     try:
         import boto3
+
         client = boto3.client(
             "route53",
             aws_access_key_id=config["access_key_id"],
@@ -139,15 +142,17 @@ def _route53_create(config: dict, records: list[dict], ttl: int, errors: list[st
         for rec in records:
             if not rec.get("value"):
                 continue
-            changes.append({
-                "Action": "UPSERT",
-                "ResourceRecordSet": {
-                    "Name": rec["name"],
-                    "Type": rec["type"],
-                    "TTL": ttl,
-                    "ResourceRecords": [{"Value": rec["value"]}],
-                },
-            })
+            changes.append(
+                {
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                        "Name": rec["name"],
+                        "Type": rec["type"],
+                        "TTL": ttl,
+                        "ResourceRecords": [{"Value": rec["value"]}],
+                    },
+                }
+            )
         if changes:
             client.change_resource_record_sets(
                 HostedZoneId=config["hosted_zone_id"],
@@ -163,6 +168,7 @@ def _route53_create(config: dict, records: list[dict], ttl: int, errors: list[st
 def _route53_delete(config: dict, records: list[dict], errors: list[str]):
     try:
         import boto3
+
         client = boto3.client(
             "route53",
             aws_access_key_id=config["access_key_id"],
@@ -172,15 +178,17 @@ def _route53_delete(config: dict, records: list[dict], errors: list[str]):
         for rec in records:
             if not rec.get("value"):
                 continue
-            changes.append({
-                "Action": "DELETE",
-                "ResourceRecordSet": {
-                    "Name": rec["name"],
-                    "Type": rec["type"],
-                    "TTL": 30,
-                    "ResourceRecords": [{"Value": rec["value"]}],
-                },
-            })
+            changes.append(
+                {
+                    "Action": "DELETE",
+                    "ResourceRecordSet": {
+                        "Name": rec["name"],
+                        "Type": rec["type"],
+                        "TTL": 30,
+                        "ResourceRecords": [{"Value": rec["value"]}],
+                    },
+                }
+            )
         if changes:
             client.change_resource_record_sets(
                 HostedZoneId=config["hosted_zone_id"],

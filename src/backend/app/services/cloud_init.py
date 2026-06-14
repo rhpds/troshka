@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 def _sha512_crypt(password: str, rounds: int = 5000) -> str:
     """SHA-512 crypt hash compatible with /etc/shadow."""
     from passlib.hash import sha512_crypt
+
     return sha512_crypt.using(rounds=rounds).hash(password)
 
 
@@ -27,7 +28,11 @@ def generate_userdata(vm_data: dict) -> str:
     # SSH keys — injected for all users
     ssh_keys = vm_data.get("ciSshKeys", [])
     ssh_key = vm_data.get("ciSshKey", "").strip()
-    all_keys = [k.strip() for k in ssh_keys if k.strip()] if ssh_keys else ([ssh_key] if ssh_key else [])
+    all_keys = (
+        [k.strip() for k in ssh_keys if k.strip()]
+        if ssh_keys
+        else ([ssh_key] if ssh_key else [])
+    )
     if all_keys:
         lines.append("ssh_authorized_keys:")
         for key in all_keys:
@@ -45,13 +50,13 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append("  expire: false")
         lines.append("  users:")
         if cloud_user_hash:
-            lines.append(f"    - name: cloud-user")
+            lines.append("    - name: cloud-user")
             lines.append(f"      password: {cloud_user_hash}")
-            lines.append(f"      type: hash")
+            lines.append("      type: hash")
         if root_hash:
-            lines.append(f"    - name: root")
+            lines.append("    - name: root")
             lines.append(f"      password: {root_hash}")
-            lines.append(f"      type: hash")
+            lines.append("      type: hash")
 
     # Users — no 'default' entry (it locks passwords on RHEL 10)
     lines.append("disable_root: false")
@@ -74,9 +79,14 @@ def generate_userdata(vm_data: dict) -> str:
 
     # Packages
     import re
-    _pkg_re = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+\-._]*$')
-    ci_packages = [p for p in vm_data.get("ciPackages", []) if _pkg_re.fullmatch(str(p))]
-    all_packages = ["qemu-guest-agent"] + [p for p in ci_packages if p != "qemu-guest-agent"]
+
+    _pkg_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+\-._]*$")
+    ci_packages = [
+        p for p in vm_data.get("ciPackages", []) if _pkg_re.fullmatch(str(p))
+    ]
+    all_packages = ["qemu-guest-agent"] + [
+        p for p in ci_packages if p != "qemu-guest-agent"
+    ]
     if all_packages:
         lines.append("packages:")
         for pkg in all_packages:
@@ -104,15 +114,20 @@ def generate_userdata(vm_data: dict) -> str:
     # runcmd — merged from base + custom
     lines.append("runcmd:")
     if root_hash or cloud_user_hash:
-        lines.append("  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true")
-    lines.append("  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true")
+        lines.append(
+            "  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
+        )
+    lines.append(
+        "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"
+    )
     lines.extend(custom_runcmd_lines)
 
     result = "\n".join(lines)
 
     # Validate the generated cloud-config is valid YAML with no duplicate keys
-    import yaml
     import re
+
+    import yaml
 
     try:
         parsed = yaml.safe_load(result)
@@ -121,11 +136,15 @@ def generate_userdata(vm_data: dict) -> str:
         elif "runcmd" in parsed and not isinstance(parsed["runcmd"], list):
             raise ValueError("Generated cloud-config runcmd is not a list")
     except (yaml.YAMLError, ValueError) as e:
-        logger.error("Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---", e, result)
+        logger.error(
+            "Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---",
+            e,
+            result,
+        )
         raise ValueError(f"Cloud-init user-data is invalid YAML: {e}")
 
     # Check for duplicate top-level keys (safe_load silently takes the last one)
-    top_keys = re.findall(r'^([a-zA-Z_][a-zA-Z0-9_-]*):', result, re.MULTILINE)
+    top_keys = re.findall(r"^([a-zA-Z_][a-zA-Z0-9_-]*):", result, re.MULTILINE)
     seen = set()
     for k in top_keys:
         if k in seen:
@@ -138,10 +157,13 @@ def generate_userdata(vm_data: dict) -> str:
 def generate_metadata(vm_name: str, mac: str = "") -> str:
     """Generate cloud-init meta-data JSON for a VM."""
     import uuid
-    return json.dumps({
-        "instance-id": f"{vm_name}-{uuid.uuid4().hex[:8]}",
-        "local-hostname": vm_name,
-    })
+
+    return json.dumps(
+        {
+            "instance-id": f"{vm_name}-{uuid.uuid4().hex[:8]}",
+            "local-hostname": vm_name,
+        }
+    )
 
 
 def generate_seed_iso_script(project_id: str, topology: dict) -> str:
@@ -160,6 +182,7 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
         node_id = node["id"]
         vm_label = data.get("name", "vm")
         from app.services.deploy_service import _vm_domain_name
+
         vm_name = _vm_domain_name(project_id, node_id)
         userdata = generate_userdata(data)
         metadata = generate_metadata(vm_label)
@@ -174,7 +197,9 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
         lines.append(f"cat > {seed_dir}/meta-data << 'METADATA'")
         lines.append(metadata)
         lines.append("METADATA")
-        lines.append(f"genisoimage -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data 2>/dev/null || mkisofs -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data")
+        lines.append(
+            f"genisoimage -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data 2>/dev/null || mkisofs -output {seed_iso} -volid cidata -joliet -rock {seed_dir}/user-data {seed_dir}/meta-data"
+        )
         lines.append(f"rm -rf {seed_dir}")
         lines.append(f'echo "Seed ISO created for {vm_name}"')
         lines.append("")
@@ -184,7 +209,9 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
     return "\n".join(lines)
 
 
-def generate_metadata_service_script(project_id: str, topology: dict, vni_map: dict) -> str:
+def generate_metadata_service_script(
+    project_id: str, topology: dict, vni_map: dict
+) -> str:
     """Generate a Python HTTP metadata service that runs on the host bridge.
 
     The service listens on 169.254.169.254:80 and serves per-VM

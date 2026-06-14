@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 def get_public_ip() -> str | None:
     """Discover this backend's public IP via AWS checkip service."""
     import urllib.request
+
     try:
         with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=5) as resp:
             return resp.read().decode().strip()
@@ -31,8 +32,12 @@ def _get_ec2_client(region: str | None = None, credentials: dict | None = None):
     return boto3.client(
         "ec2",
         region_name=region or config.aws.default_region,
-        aws_access_key_id=creds.get("access_key_id") or config.aws.access_key_id or None,
-        aws_secret_access_key=creds.get("secret_access_key") or config.aws.secret_access_key or None,
+        aws_access_key_id=creds.get("access_key_id")
+        or config.aws.access_key_id
+        or None,
+        aws_secret_access_key=creds.get("secret_access_key")
+        or config.aws.secret_access_key
+        or None,
     )
 
 
@@ -64,10 +69,16 @@ def _ensure_troshkad_rule(client, sg_id: str):
         try:
             client.authorize_security_group_ingress(
                 GroupId=sg_id,
-                IpPermissions=[{
-                    "IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337,
-                    "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}],
-                }],
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 31337,
+                        "ToPort": 31337,
+                        "IpRanges": [
+                            {"CidrIp": troshkad_cidr, "Description": "Troshkad API"}
+                        ],
+                    }
+                ],
             )
             logger.info("Added troshkad rule (port 31337) to SG %s", sg_id)
         except Exception:
@@ -83,17 +94,25 @@ def _ensure_console_rule(client, sg_id: str):
     try:
         client.authorize_security_group_ingress(
             GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}],
-            }],
+            IpPermissions=[
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}
+                    ],
+                }
+            ],
         )
         logger.info("Added port 443 rule to existing SG %s", sg_id)
     except Exception:
         pass
 
 
-def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None) -> str:
+def ensure_security_group(
+    vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None
+) -> str:
     client = _get_ec2_client(credentials=credentials)
     existing = client.describe_security_groups(
         Filters=[
@@ -119,13 +138,41 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
     client.authorize_security_group_ingress(
         GroupId=sg_id,
         IpPermissions=[
-            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
-            {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}]},
-            {"IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337, "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}]},
-            {"IpProtocol": "udp", "FromPort": 4789, "ToPort": 4789, "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}]},
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+            },
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 443,
+                "ToPort": 443,
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}
+                ],
+            },
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 31337,
+                "ToPort": 31337,
+                "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}],
+            },
+            {
+                "IpProtocol": "udp",
+                "FromPort": 4789,
+                "ToPort": 4789,
+                "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}],
+            },
         ],
     )
-    client.create_tags(Resources=[sg_id], Tags=[{"Key": "Project", "Value": "troshka"}, {"Key": "ManagedBy", "Value": "troshka"}])
+    client.create_tags(
+        Resources=[sg_id],
+        Tags=[
+            {"Key": "Project", "Value": "troshka"},
+            {"Key": "ManagedBy", "Value": "troshka"},
+        ],
+    )
     logger.info("Created security group %s (%s)", name, sg_id)
     return sg_id
 
@@ -153,7 +200,9 @@ def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = No
     for perm in sg.get("IpPermissions", []):
         if perm.get("FromPort") == 31337 and perm.get("ToPort") == 31337:
             try:
-                client.revoke_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+                client.revoke_security_group_ingress(
+                    GroupId=sg_id, IpPermissions=[perm]
+                )
             except Exception:
                 pass
             break
@@ -161,10 +210,14 @@ def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = No
     # Add new rule with updated IP
     client.authorize_security_group_ingress(
         GroupId=sg_id,
-        IpPermissions=[{
-            "IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337,
-            "IpRanges": [{"CidrIp": f"{new_ip}/32", "Description": "Troshkad API"}],
-        }],
+        IpPermissions=[
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 31337,
+                "ToPort": 31337,
+                "IpRanges": [{"CidrIp": f"{new_ip}/32", "Description": "Troshkad API"}],
+            }
+        ],
     )
     logger.info("Updated SG %s troshkad rule to %s/32", sg_id, new_ip)
 
@@ -275,9 +328,13 @@ def provision_host(
     vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
     subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
     if not vpc_id or not subnet_id:
-        raise ValueError("VPC and subnet must be configured on the provider — run Setup VPC first")
+        raise ValueError(
+            "VPC and subnet must be configured on the provider — run Setup VPC first"
+        )
 
-    sg_id = kwargs.get("security_group_id") or getattr(config.aws, "security_group_id", None)
+    sg_id = kwargs.get("security_group_id") or getattr(
+        config.aws, "security_group_id", None
+    )
     if not sg_id:
         sg_id = ensure_security_group(vpc_id, credentials=credentials)
 
@@ -286,8 +343,12 @@ def provision_host(
     if subnet_override:
         subnet_ids = [subnet_override]
     else:
-        all_subnets = client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
-        subnet_ids = [subnet_id] + [s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id]
+        all_subnets = client.describe_subnets(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        )
+        subnet_ids = [subnet_id] + [
+            s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id
+        ]
 
     key_name = f"troshka-{host_id[:8]}"
     key_result = client.create_key_pair(KeyName=key_name)
@@ -302,12 +363,14 @@ def provision_host(
             f"  - |\n"
             f"    mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds\n"
             f"    mount -t nfs -o nfsvers=4.1,nconnect=16,hard,_netdev {nfs_server}:{nfs_path} /var/lib/troshka/shared\n"
-            f"    echo \"{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs4 nfsvers=4.1,nconnect=16,hard,_netdev 0 0\" >> /etc/fstab\n"
+            f'    echo "{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs4 nfsvers=4.1,nconnect=16,hard,_netdev 0 0" >> /etc/fstab\n'
             f"    setsebool -P virt_use_nfs 1\n"
         )
     else:
         storage_setup = ""
-    user_data = CLOUD_INIT.format(hostname=hostname, host_id=host_id, storage_setup=storage_setup)
+    user_data = CLOUD_INIT.format(
+        hostname=hostname, host_id=host_id, storage_setup=storage_setup
+    )
 
     # Look up instance specs before launch (need RAM size for swap volume)
     types = client.describe_instance_types(InstanceTypes=[instance_type])
@@ -315,7 +378,13 @@ def provision_host(
     total_ram_mb = type_info.get("MemoryInfo", {}).get("SizeInMiB", 0)
     swap_size_gb = max(math.ceil(total_ram_mb / 1024), 1)
 
-    logger.info("Provisioning host %s (%s, %s, swap=%dGB)", hostname, instance_type, ami_id, swap_size_gb)
+    logger.info(
+        "Provisioning host %s (%s, %s, swap=%dGB)",
+        hostname,
+        instance_type,
+        ami_id,
+        swap_size_gb,
+    )
 
     # Try each subnet (AZ) until one supports the instance type
     response = None
@@ -333,45 +402,69 @@ def provision_host(
                 BlockDeviceMappings=[
                     {
                         "DeviceName": "/dev/sda1",
-                        "Ebs": {"VolumeSize": 50, "VolumeType": "gp3", "DeleteOnTermination": True},
+                        "Ebs": {
+                            "VolumeSize": 50,
+                            "VolumeType": "gp3",
+                            "DeleteOnTermination": True,
+                        },
                     },
                     {
                         "DeviceName": "/dev/sdf",
-                        "Ebs": {"VolumeSize": storage_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
+                        "Ebs": {
+                            "VolumeSize": storage_size_gb,
+                            "VolumeType": "gp3",
+                            "DeleteOnTermination": True,
+                        },
                     },
                     {
                         "DeviceName": "/dev/sdg",
-                        "Ebs": {"VolumeSize": swap_size_gb, "VolumeType": "gp3", "DeleteOnTermination": True},
+                        "Ebs": {
+                            "VolumeSize": swap_size_gb,
+                            "VolumeType": "gp3",
+                            "DeleteOnTermination": True,
+                        },
                     },
                 ],
-                TagSpecifications=[{
-                    "ResourceType": "instance",
-                    "Tags": [
-                        {"Key": "Name", "Value": hostname},
-                        {"Key": "Project", "Value": "troshka"},
-                        {"Key": "ManagedBy", "Value": "troshka"},
-                        {"Key": "troshka-host-id", "Value": host_id},
-                    ],
-                }],
-                NetworkInterfaces=[{
-                    "DeviceIndex": 0,
-                    "SubnetId": try_subnet,
-                    "Groups": [sg_id],
-                    "AssociatePublicIpAddress": True,
-                }],
+                TagSpecifications=[
+                    {
+                        "ResourceType": "instance",
+                        "Tags": [
+                            {"Key": "Name", "Value": hostname},
+                            {"Key": "Project", "Value": "troshka"},
+                            {"Key": "ManagedBy", "Value": "troshka"},
+                            {"Key": "troshka-host-id", "Value": host_id},
+                        ],
+                    }
+                ],
+                NetworkInterfaces=[
+                    {
+                        "DeviceIndex": 0,
+                        "SubnetId": try_subnet,
+                        "Groups": [sg_id],
+                        "AssociatePublicIpAddress": True,
+                    }
+                ],
             )
             if kwargs.get("console_zone_id"):
-                launch_kwargs["IamInstanceProfile"] = {"Name": "troshka-certbot-profile"}
+                launch_kwargs["IamInstanceProfile"] = {
+                    "Name": "troshka-certbot-profile"
+                }
             response = client.run_instances(**launch_kwargs)
             break
         except client.exceptions.ClientError as e:
             if "Unsupported" in str(e):
-                logger.warning("Instance type %s not supported in subnet %s, trying next AZ", instance_type, try_subnet)
+                logger.warning(
+                    "Instance type %s not supported in subnet %s, trying next AZ",
+                    instance_type,
+                    try_subnet,
+                )
                 last_error = e
                 continue
             raise
     if not response:
-        raise last_error or ValueError(f"Instance type {instance_type} not supported in any AZ")
+        raise last_error or ValueError(
+            f"Instance type {instance_type} not supported in any AZ"
+        )
 
     instance_id = response["Instances"][0]["InstanceId"]
     logger.info("Launched %s, waiting for running state", instance_id)
@@ -392,14 +485,17 @@ def provision_host(
         "state": "active",
         "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
         "total_ram_mb": type_info.get("MemoryInfo", {}).get("SizeInMiB", 0),
-        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1) - 1,
+        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1)
+        - 1,
         "key_pair_name": key_name,
         "private_key": private_key,
         "storage_size_gb": storage_size_gb,
     }
 
 
-def resize_instance(instance_id: str, new_instance_type: str, credentials: dict | None = None) -> dict:
+def resize_instance(
+    instance_id: str, new_instance_type: str, credentials: dict | None = None
+) -> dict:
     """Change instance type of a stopped EC2 instance, resize swap volume, and return new specs."""
     client = _get_ec2_client(credentials=credentials)
     client.modify_instance_attribute(
@@ -420,16 +516,19 @@ def resize_instance(instance_id: str, new_instance_type: str, credentials: dict 
         "instance_type": new_instance_type,
         "total_vcpus": type_info.get("VCpuInfo", {}).get("DefaultVCpus", 0),
         "total_ram_mb": new_ram_mb,
-        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1) - 1,
+        "max_eips": type_info.get("NetworkInfo", {}).get("Ipv4AddressesPerInterface", 1)
+        - 1,
     }
 
 
 def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
     """Delete and recreate the swap volume (/dev/sdg) at the new size."""
-    volumes = client.describe_volumes(Filters=[
-        {"Name": "attachment.instance-id", "Values": [instance_id]},
-        {"Name": "attachment.device", "Values": ["/dev/sdg"]},
-    ])
+    volumes = client.describe_volumes(
+        Filters=[
+            {"Name": "attachment.instance-id", "Values": [instance_id]},
+            {"Name": "attachment.device", "Values": ["/dev/sdg"]},
+        ]
+    )
     if not volumes["Volumes"]:
         logger.info("No swap volume found on %s — skipping resize", instance_id)
         return
@@ -440,7 +539,9 @@ def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
     az = old_vol["AvailabilityZone"]
 
     if old_size == new_size_gb:
-        logger.info("Swap volume %s already %d GB — no resize needed", old_vol_id, new_size_gb)
+        logger.info(
+            "Swap volume %s already %d GB — no resize needed", old_vol_id, new_size_gb
+        )
         return
 
     # Detach, delete, create, attach
@@ -454,20 +555,27 @@ def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
         Size=new_size_gb,
         VolumeType="gp3",
         AvailabilityZone=az,
-        TagSpecifications=[{
-            "ResourceType": "volume",
-            "Tags": [
-                {"Key": "Name", "Value": f"troshka-swap-{instance_id}"},
-                {"Key": "Project", "Value": "troshka"},
-                {"Key": "ManagedBy", "Value": "troshka"},
-                {"Key": "troshka-role", "Value": "swap"},
-            ],
-        }],
+        TagSpecifications=[
+            {
+                "ResourceType": "volume",
+                "Tags": [
+                    {"Key": "Name", "Value": f"troshka-swap-{instance_id}"},
+                    {"Key": "Project", "Value": "troshka"},
+                    {"Key": "ManagedBy", "Value": "troshka"},
+                    {"Key": "troshka-role", "Value": "swap"},
+                ],
+            }
+        ],
     )
     new_vol_id = new_vol["VolumeId"]
     waiter.wait(VolumeIds=[new_vol_id])
     client.attach_volume(VolumeId=new_vol_id, InstanceId=instance_id, Device="/dev/sdg")
-    logger.info("Created new swap volume %s (%d GB) for %s", new_vol_id, new_size_gb, instance_id)
+    logger.info(
+        "Created new swap volume %s (%d GB) for %s",
+        new_vol_id,
+        new_size_gb,
+        instance_id,
+    )
 
 
 def terminate_host(instance_id: str, credentials: dict | None = None):

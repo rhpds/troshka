@@ -10,14 +10,18 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
     from app.models.library import LibraryItem, LibraryItemDisk
     from app.models.project import Project
     from app.services import s3_storage
-    from app.services.troshkad_client import start_job, wait_for_job, TroshkadError
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
     db = SessionLocal()
     try:
         item = db.query(LibraryItem).filter_by(id=library_item_id).first()
         project = db.query(Project).filter_by(id=project_id).first()
         if not item or not project:
-            log.error("Snapshot item or project not found: %s / %s", library_item_id, project_id)
+            log.error(
+                "Snapshot item or project not found: %s / %s",
+                library_item_id,
+                project_id,
+            )
             return
 
         host = db.query(Host).filter_by(id=project.host_id).first()
@@ -44,7 +48,9 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
         if not disk_nodes:
             item.state = "available"
             db.commit()
-            log.info("Snapshot %s: VM has no disks, marking available", library_item_id[:8])
+            log.info(
+                "Snapshot %s: VM has no disks, marking available", library_item_id[:8]
+            )
             return
 
         # Build domain name for the VM
@@ -60,26 +66,40 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
             s3_key = f"snapshots/{library_item_id}/{disk_id}.{fmt}"
             bucket = s3_storage._bucket()
             s3_url = f"s3://{bucket}/{s3_key}"
-            cache_path = f"/var/lib/troshka/cache/snapshots/{library_item_id}/{disk_id}.{fmt}"
+            cache_path = (
+                f"/var/lib/troshka/cache/snapshots/{library_item_id}/{disk_id}.{fmt}"
+            )
 
             from app.services.s3_storage import _get_s3_config
+
             creds = _get_s3_config()
 
             try:
-                job_id = start_job(host, "/snapshots/capture", {
-                    "domain_name": domain_name,
-                    "disk_index": idx,
-                    "s3_url": s3_url,
-                    "cache_path": cache_path,
-                    "aws_access_key_id": creds.get("access_key_id", ""),
-                    "aws_secret_access_key": creds.get("secret_access_key", ""),
-                    "aws_region": creds.get("region", "us-east-1"),
-                })
+                job_id = start_job(
+                    host,
+                    "/snapshots/capture",
+                    {
+                        "domain_name": domain_name,
+                        "disk_index": idx,
+                        "s3_url": s3_url,
+                        "cache_path": cache_path,
+                        "aws_access_key_id": creds.get("access_key_id", ""),
+                        "aws_secret_access_key": creds.get("secret_access_key", ""),
+                        "aws_region": creds.get("region", "us-east-1"),
+                    },
+                )
                 job = wait_for_job(host, job_id, timeout=3600)
 
                 if job["status"] == "failed":
-                    error_msg = job.get("result", {}).get("error", "Snapshot capture failed")
-                    log.error("Snapshot %s: failed to upload disk %s: %s", library_item_id[:8], disk_id[:8], error_msg)
+                    error_msg = job.get("result", {}).get(
+                        "error", "Snapshot capture failed"
+                    )
+                    log.error(
+                        "Snapshot %s: failed to upload disk %s: %s",
+                        library_item_id[:8],
+                        disk_id[:8],
+                        error_msg,
+                    )
                     item.state = "error"
                     db.commit()
                     return
@@ -91,7 +111,8 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                     s3_key=s3_key,
                     format=fmt,
                     size_bytes=size_bytes,
-                    virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
+                    virtual_size_bytes=int(disk_node.get("data", {}).get("size", 0))
+                    * 1073741824,
                     boot_order=idx,
                     state="available",
                 )
@@ -99,7 +120,12 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                 db.commit()
 
             except TroshkadError as e:
-                log.error("Snapshot %s: troshkad error uploading disk %s: %s", library_item_id[:8], disk_id[:8], str(e))
+                log.error(
+                    "Snapshot %s: troshkad error uploading disk %s: %s",
+                    library_item_id[:8],
+                    disk_id[:8],
+                    str(e),
+                )
                 item.state = "error"
                 db.commit()
                 return
@@ -110,6 +136,7 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
 
         # Save metadata to S3 for recovery after DB loss
         import json
+
         metadata = {
             "type": "snapshot",
             "name": item.name,
@@ -120,8 +147,13 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
             "vm_config": item.vm_config,
             "tags": item.tags,
             "disks": [
-                {"s3_key": d.s3_key, "format": d.format, "size_bytes": d.size_bytes,
-                 "virtual_size_bytes": d.virtual_size_bytes, "boot_order": d.boot_order}
+                {
+                    "s3_key": d.s3_key,
+                    "format": d.format,
+                    "size_bytes": d.size_bytes,
+                    "virtual_size_bytes": d.virtual_size_bytes,
+                    "boot_order": d.boot_order,
+                }
                 for d in item.item_disks
             ],
         }
@@ -133,9 +165,15 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                 ContentType="application/json",
             )
         except Exception:
-            log.warning("Failed to save snapshot metadata to S3 for %s", library_item_id[:8])
+            log.warning(
+                "Failed to save snapshot metadata to S3 for %s", library_item_id[:8]
+            )
 
-        log.info("Snapshot %s: capture complete (%d disks)", library_item_id[:8], len(disk_nodes))
+        log.info(
+            "Snapshot %s: capture complete (%d disks)",
+            library_item_id[:8],
+            len(disk_nodes),
+        )
 
     except Exception as e:
         log.exception("Snapshot capture failed for %s: %s", library_item_id[:8], e)

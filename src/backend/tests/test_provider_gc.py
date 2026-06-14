@@ -1,12 +1,12 @@
 from unittest.mock import MagicMock, patch
 
-from app.models.elastic_ip import ElasticIp
 from app.models.provider import Provider
 from tests.conftest import TestSession
 
-
 _db = TestSession()
-_provider = Provider(name="gc-test-provider", type="ec2", default_region="us-east-1", state="active")
+_provider = Provider(
+    name="gc-test-provider", type="ec2", default_region="us-east-1", state="active"
+)
 _provider.set_credentials({"access_key_id": "fake", "secret_access_key": "fake"})
 _provider.security_group_id = "sg-gctest"
 _db.add(_provider)
@@ -40,6 +40,7 @@ def test_gc_releases_orphan_eips(mock_get_client):
     provider = db.query(Provider).filter_by(id=GC_PROVIDER_ID).first()
 
     from app.services.provider_gc_service import reconcile_provider
+
     result = reconcile_provider(db, provider, dry_run=False)
 
     assert result["eips_released"] == 1
@@ -71,6 +72,7 @@ def test_gc_dry_run_does_not_release(mock_get_client):
     provider = db.query(Provider).filter_by(id=GC_PROVIDER_ID).first()
 
     from app.services.provider_gc_service import reconcile_provider
+
     result = reconcile_provider(db, provider, dry_run=True)
 
     assert result["eips_released"] == 0
@@ -84,12 +86,29 @@ def test_gc_removes_stale_sg_rules(mock_get_client):
     mock_ec2 = MagicMock()
     mock_ec2.describe_addresses.return_value = {"Addresses": []}
     mock_ec2.describe_security_groups.return_value = {
-        "SecurityGroups": [{"IpPermissions": [
-            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
-            {"IpProtocol": "tcp", "FromPort": 9090, "ToPort": 9090,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "troshka-pf:dead-project:9090"}]},
-        ]}],
+        "SecurityGroups": [
+            {
+                "IpPermissions": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 9090,
+                        "ToPort": 9090,
+                        "IpRanges": [
+                            {
+                                "CidrIp": "0.0.0.0/0",
+                                "Description": "troshka-pf:dead-project:9090",
+                            }
+                        ],
+                    },
+                ]
+            }
+        ],
     }
     mock_get_client.return_value = mock_ec2
 
@@ -97,6 +116,7 @@ def test_gc_removes_stale_sg_rules(mock_get_client):
     provider = db.query(Provider).filter_by(id=GC_PROVIDER_ID).first()
 
     from app.services.provider_gc_service import reconcile_provider
+
     result = reconcile_provider(db, provider, dry_run=False)
 
     assert result["sg_rules_removed"] == 1

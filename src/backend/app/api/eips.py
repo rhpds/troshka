@@ -22,19 +22,23 @@ def release_project_eip(
 ):
     """Release a specific EIP from a project (when user removes it from canvas)."""
     from app.models.project import Project
+
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    eip = db.query(ElasticIp).filter_by(
-        project_id=project_id, canvas_eip_id=canvas_eip_id
-    ).first()
+    eip = (
+        db.query(ElasticIp)
+        .filter_by(project_id=project_id, canvas_eip_id=canvas_eip_id)
+        .first()
+    )
     if not eip:
         return {"status": "not_allocated"}
 
     from app.services.eip_service import release_eip
+
     release_eip(db, eip)
     return {"status": "released", "public_ip": eip.public_ip}
 
@@ -47,6 +51,7 @@ def list_project_eips(
 ):
     """List all EIPs allocated for a project."""
     from app.models.project import Project
+
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -73,10 +78,14 @@ def sync_project_eips(
     db: Session = Depends(get_db),
 ):
     """Allocate/associate EIPs for a running project without redeploying VMs."""
-    from app.models.project import Project
     from app.models.host import Host
-    from app.services.eip_service import allocate_eip, associate_eip, sync_security_group_rules
+    from app.models.project import Project
     from app.services.deploy_service import _setup_networks_via_troshkad
+    from app.services.eip_service import (
+        allocate_eip,
+        associate_eip,
+        sync_security_group_rules,
+    )
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
@@ -84,7 +93,10 @@ def sync_project_eips(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
     if project.state != "active":
-        raise HTTPException(status_code=409, detail=f"Project must be active (currently {project.state})")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project must be active (currently {project.state})",
+        )
     if not project.host_id:
         raise HTTPException(status_code=409, detail="Project has no host assigned")
 
@@ -92,11 +104,17 @@ def sync_project_eips(
     if not host or not host.ip_address:
         raise HTTPException(status_code=503, detail="Host not reachable")
 
-    provider = db.query(Provider).filter_by(id=project.provider_id).first() if project.provider_id else None
+    provider = (
+        db.query(Provider).filter_by(id=project.provider_id).first()
+        if project.provider_id
+        else None
+    )
     if not provider and host.provider_id:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
-        raise HTTPException(status_code=409, detail="No provider configured for EIP allocation")
+        raise HTTPException(
+            status_code=409, detail="No provider configured for EIP allocation"
+        )
 
     topology = project.topology or {}
     external_ips = topology.get("externalIps", [])
@@ -106,9 +124,11 @@ def sync_project_eips(
     allocated = []
     for ext_ip in external_ips:
         canvas_id = ext_ip.get("id", "")
-        existing = db.query(ElasticIp).filter_by(
-            project_id=project_id, canvas_eip_id=canvas_id
-        ).first()
+        existing = (
+            db.query(ElasticIp)
+            .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+            .first()
+        )
         if existing:
             eip = existing
         else:
@@ -132,14 +152,22 @@ def sync_project_eips(
 
     # Sync SG rules
     gateway_node = next(
-        (n for n in topology.get("nodes", [])
-         if n.get("type") == "networkNode" and n.get("data", {}).get("subtype") == "gateway"
-         and n.get("data", {}).get("gatewayMode") == "nat-portforward"),
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+            and n.get("data", {}).get("gatewayMode") == "nat-portforward"
+        ),
         None,
     )
     if gateway_node:
         desired_sg = [
-            {"project_id": project_id, "ext_port": int(pf["extPort"]), "protocol": "tcp"}
+            {
+                "project_id": project_id,
+                "ext_port": int(pf["extPort"]),
+                "protocol": "tcp",
+            }
             for pf in gateway_node.get("data", {}).get("portForwards", [])
             if pf.get("extPort")
         ]
@@ -160,7 +188,10 @@ def provider_gc(
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.type not in ("ec2",):
-        raise HTTPException(status_code=400, detail="GC only supported for EC2 providers")
+        raise HTTPException(
+            status_code=400, detail="GC only supported for EC2 providers"
+        )
 
     from app.services.provider_gc_service import reconcile_provider
+
     return reconcile_provider(db, provider, dry_run=dry_run)

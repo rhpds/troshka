@@ -1,0 +1,74 @@
+repos:
+  # Security: Secret scanning
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        exclude: |
+          (?x)(
+            \.secrets\.baseline|
+            ^src/backend/tests/.*|
+            ^src/backend/config/.*|
+            ^src/backend/alembic/.*|
+            ^src/frontend/.*|
+            ^docs/.*|
+            ^dev-services\.sh$
+          )
+
+  # Security: Alternative secret detection
+  - repo: https://github.com/zricethezav/gitleaks
+    rev: v8.18.0
+    hooks:
+      - id: gitleaks
+
+  # Standard file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+        exclude: \.md$
+      - id: check-yaml
+        args: ["--unsafe"]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: debug-statements
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+  # Python formatting
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3
+        files: ^src/backend/
+
+  # Python linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.9
+    hooks:
+      - id: ruff
+        args: ["--fix", "--select", "F,E9,W6", "--ignore", "F811,F821,F841"]
+        files: ^src/backend/app/
+
+  # Dead code detection (run manually: vulture src/backend/app/ --min-confidence 90)
+  # Disabled in pre-commit — too many false positives with FastAPI/SQLAlchemy patterns
+
+  # Spell checking
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.17.2
+    hooks:
+      - id: typos
+        exclude: |
+          (?x)(
+            \.git/|
+            \.secrets\.baseline|
+            package-lock\.json
+          )
+
+fail_fast: false
+minimum_pre_commit_version: "2.20.0"

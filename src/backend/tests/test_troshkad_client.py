@@ -3,13 +3,16 @@
 import hashlib
 import json
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.services.troshkad_client import (
-    troshkad_request, start_job, poll_job, check_disk_usage,
-    TroshkadError, _get_pool,
+    TroshkadError,
+    _get_pool,
+    check_disk_usage,
+    poll_job,
+    start_job,
+    troshkad_request,
 )
-
 
 FAKE_CERT_DER = b"fake-cert-der-bytes-for-testing"
 FAKE_FINGERPRINT = hashlib.sha256(FAKE_CERT_DER).hexdigest().upper()
@@ -36,7 +39,6 @@ def _mock_response(body, status=200):
 
 
 class TestTroshkadClient(unittest.TestCase):
-
     @patch("app.services.troshkad_client._get_pool")
     def test_troshkad_request_sends_auth(self, mock_get_pool):
         pool = MagicMock()
@@ -46,13 +48,21 @@ class TestTroshkadClient(unittest.TestCase):
         result = troshkad_request(FakeHost(), "GET", "/health")
         self.assertEqual(result["status"], "ok")
         call_kwargs = pool.urlopen.call_args
-        headers = call_kwargs[1].get("headers", {}) if call_kwargs[1] else call_kwargs[0][2] if len(call_kwargs[0]) > 2 else {}
+        headers = (
+            call_kwargs[1].get("headers", {})
+            if call_kwargs[1]
+            else call_kwargs[0][2]
+            if len(call_kwargs[0]) > 2
+            else {}
+        )
         self.assertIn("Authorization", headers)
 
     @patch("app.services.troshkad_client._get_pool")
     def test_start_job_returns_job_id(self, mock_get_pool):
         pool = MagicMock()
-        pool.urlopen.return_value = _mock_response({"job_id": "test-123", "status": "running"})
+        pool.urlopen.return_value = _mock_response(
+            {"job_id": "test-123", "status": "running"}
+        )
         mock_get_pool.return_value = pool
 
         job_id = start_job(FakeHost(), "/vms/create", {"domain_name": "test"})
@@ -61,10 +71,14 @@ class TestTroshkadClient(unittest.TestCase):
     @patch("app.services.troshkad_client._get_pool")
     def test_poll_job_returns_status(self, mock_get_pool):
         pool = MagicMock()
-        pool.urlopen.return_value = _mock_response({
-            "job_id": "test-123", "status": "completed",
-            "result": {"domain": "test"}, "output": [],
-        })
+        pool.urlopen.return_value = _mock_response(
+            {
+                "job_id": "test-123",
+                "status": "completed",
+                "result": {"domain": "test"},
+                "output": [],
+            }
+        )
         mock_get_pool.return_value = pool
 
         job = poll_job(FakeHost(), "test-123")
@@ -92,9 +106,12 @@ class TestTroshkadClient(unittest.TestCase):
     @patch("app.services.troshkad_client._get_pool")
     def test_connection_error_retries(self, mock_get_pool):
         from urllib3.exceptions import MaxRetryError, NewConnectionError
+
         pool = MagicMock()
         pool.urlopen.side_effect = [
-            MaxRetryError(pool, "/health", reason=NewConnectionError(pool, "Connection refused")),
+            MaxRetryError(
+                pool, "/health", reason=NewConnectionError(pool, "Connection refused")
+            ),
             _mock_response({"status": "ok"}),
         ]
         mock_get_pool.return_value = pool
@@ -106,6 +123,7 @@ class TestTroshkadClient(unittest.TestCase):
     @patch("app.services.troshkad_client._get_pool")
     def test_ssl_error_on_fingerprint_mismatch(self, mock_get_pool):
         from urllib3.exceptions import SSLError
+
         pool = MagicMock()
         pool.urlopen.side_effect = SSLError("fingerprint mismatch")
         mock_get_pool.return_value = pool
@@ -117,7 +135,13 @@ class TestTroshkadClient(unittest.TestCase):
     @patch("app.services.troshkad_client._get_pool")
     def test_check_disk_usage(self, mock_get_pool):
         pool = MagicMock()
-        pool.urlopen.return_value = _mock_response({"free_bytes": 380*1024**3, "total_bytes": 500*1024**3, "used_pct": 24})
+        pool.urlopen.return_value = _mock_response(
+            {
+                "free_bytes": 380 * 1024**3,
+                "total_bytes": 500 * 1024**3,
+                "used_pct": 24,
+            }
+        )
         mock_get_pool.return_value = pool
         result = check_disk_usage(FakeHost())
         self.assertEqual(result["used_pct"], 24)
@@ -126,12 +150,16 @@ class TestTroshkadClient(unittest.TestCase):
     def test_start_job_retries_during_drain(self, mock_get_pool):
         pool = MagicMock()
         call_count = 0
+
         def side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                return _mock_response({"status": "draining", "error": "draining for update"}, status=503)
+                return _mock_response(
+                    {"status": "draining", "error": "draining for update"}, status=503
+                )
             return _mock_response({"job_id": "new-job-123", "status": "running"})
+
         pool.urlopen.side_effect = side_effect
         mock_get_pool.return_value = pool
 

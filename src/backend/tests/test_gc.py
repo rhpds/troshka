@@ -1,4 +1,4 @@
-from app.core.auth import create_jwt, hash_password
+from app.core.auth import hash_password
 from app.core.database import get_db
 from app.main import app
 from app.models.host import Host
@@ -10,8 +10,13 @@ from tests.conftest import TestSession, get_test_db
 app.dependency_overrides[get_db] = get_test_db
 
 _db = TestSession()
-_user = User(email="gc-test@example.com", display_name="GC Tester", role="admin",
-             auth_source="local", password_hash=hash_password("pass"))
+_user = User(
+    email="gc-test@example.com",
+    display_name="GC Tester",
+    role="admin",
+    auth_source="local",
+    password_hash=hash_password("pass"),
+)
 _db.add(_user)
 _db.commit()
 _db.refresh(_user)
@@ -39,10 +44,21 @@ _project = Project(
     owner_id=USER_ID,
     host_id=HOST_ID,
     state="active",
-    topology={"nodes": [
-        {"id": "vm-1", "type": "vmNode", "data": {"name": "vm1", "vcpus": 4, "ram": 8}},
-        {"id": "vm-2", "type": "vmNode", "data": {"name": "vm2", "vcpus": 2, "ram": 4}},
-    ], "edges": []},
+    topology={
+        "nodes": [
+            {
+                "id": "vm-1",
+                "type": "vmNode",
+                "data": {"name": "vm1", "vcpus": 4, "ram": 8},
+            },
+            {
+                "id": "vm-2",
+                "type": "vmNode",
+                "data": {"name": "vm2", "vcpus": 2, "ram": 4},
+            },
+        ],
+        "edges": [],
+    },
 )
 _db.add(_project)
 _db.commit()

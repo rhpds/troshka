@@ -11,8 +11,12 @@ from app.core.database import Base
 class Network(Base):
     __tablename__ = "networks"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE")
+    )
     name: Mapped[str] = mapped_column(String(255))
     cidr: Mapped[str] = mapped_column(String(18))
     dhcp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -36,7 +40,9 @@ class SecurityRule(Base):
     __tablename__ = "security_rules"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    network_id: Mapped[str] = mapped_column(ForeignKey("networks.id", ondelete="CASCADE"))
+    network_id: Mapped[str] = mapped_column(
+        ForeignKey("networks.id", ondelete="CASCADE")
+    )
     direction: Mapped[str] = mapped_column(String(10))
     protocol: Mapped[str] = mapped_column(String(10), default="all")
     port_range_start: Mapped[int | None] = mapped_column(Integer)

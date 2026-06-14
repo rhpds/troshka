@@ -23,13 +23,22 @@ def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
 
 
 @router.get("/", response_model=list[VMResponse])
-def list_vms(project_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_vms(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     return db.query(VM).filter_by(project_id=project_id).all()
 
 
 @router.post("/", response_model=VMResponse, status_code=201)
-def create_vm(project_id: str, body: VMCreate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_vm(
+    project_id: str,
+    body: VMCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     vm = VM(project_id=project_id, **body.model_dump())
     db.add(vm)
@@ -39,7 +48,12 @@ def create_vm(project_id: str, body: VMCreate, user: User = Depends(get_current_
 
 
 @router.get("/{vm_id}", response_model=VMResponse)
-def get_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_vm(
+    project_id: str,
+    vm_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
@@ -48,7 +62,13 @@ def get_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), 
 
 
 @router.patch("/{vm_id}", response_model=VMResponse)
-def update_vm(project_id: str, vm_id: str, body: VMUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_vm(
+    project_id: str,
+    vm_id: str,
+    body: VMUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
@@ -61,7 +81,12 @@ def update_vm(project_id: str, vm_id: str, body: VMUpdate, user: User = Depends(
 
 
 @router.delete("/{vm_id}", status_code=204)
-def delete_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_vm(
+    project_id: str,
+    vm_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
@@ -107,14 +132,16 @@ def snapshot_vm(
         )
         if connected:
             d = node.get("data", {})
-            connected_disks.append({
-                "name": d.get("name", "disk"),
-                "size": d.get("size", 20),
-                "format": d.get("format", "qcow2"),
-                "source": d.get("source"),
-                "libraryItemId": d.get("libraryItemId"),
-                "libraryItemName": d.get("libraryItemName"),
-            })
+            connected_disks.append(
+                {
+                    "name": d.get("name", "disk"),
+                    "size": d.get("size", 20),
+                    "format": d.get("format", "qcow2"),
+                    "source": d.get("source"),
+                    "libraryItemId": d.get("libraryItemId"),
+                    "libraryItemName": d.get("libraryItemName"),
+                }
+            )
 
     connected_networks = []
     for node in topology.get("nodes", []):
@@ -122,18 +149,25 @@ def snapshot_vm(
             continue
         connected_edge = None
         for e in edges:
-            if (e.get("source") == vm_id and e.get("target") == node["id"]) or \
-               (e.get("target") == vm_id and e.get("source") == node["id"]):
+            if (e.get("source") == vm_id and e.get("target") == node["id"]) or (
+                e.get("target") == vm_id and e.get("source") == node["id"]
+            ):
                 connected_edge = e
                 break
         if connected_edge:
             d = node.get("data", {})
-            nic_handle = connected_edge.get("sourceHandle") if connected_edge.get("source") == vm_id else connected_edge.get("targetHandle")
-            connected_networks.append({
-                "name": d.get("name", "network"),
-                "cidr": d.get("cidr", ""),
-                "nicHandle": nic_handle,
-            })
+            nic_handle = (
+                connected_edge.get("sourceHandle")
+                if connected_edge.get("source") == vm_id
+                else connected_edge.get("targetHandle")
+            )
+            connected_networks.append(
+                {
+                    "name": d.get("name", "network"),
+                    "cidr": d.get("cidr", ""),
+                    "nicHandle": nic_handle,
+                }
+            )
 
     vm_config = {
         "vcpus": vm_data.get("vcpus"),
@@ -156,9 +190,13 @@ def snapshot_vm(
         db.commit()
         db.refresh(lib)
 
-    existing = db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    existing = (
+        db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    )
     if existing:
-        raise HTTPException(status_code=409, detail=f"You already have a snapshot named \"{body.name}\"")
+        raise HTTPException(
+            status_code=409, detail=f'You already have a snapshot named "{body.name}"'
+        )
 
     item = LibraryItem(
         library_id=lib.id,
@@ -176,6 +214,7 @@ def snapshot_vm(
 
     if project.state in ("active", "stopped"):
         import threading
+
         from app.services.snapshot_service import capture_vm_disks
 
         threading.Thread(

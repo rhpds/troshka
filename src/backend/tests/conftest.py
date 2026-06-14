@@ -12,7 +12,9 @@ sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(3
 from app.core.database import Base
 from app.models import *  # noqa: F403 — ensure all models register with Base
 
-test_engine = create_engine("sqlite:///./test.db", connect_args={"check_same_thread": False})
+test_engine = create_engine(
+    "sqlite:///./test.db", connect_args={"check_same_thread": False}
+)
 Base.metadata.drop_all(bind=test_engine)
 Base.metadata.create_all(bind=test_engine)
 TestSession = sessionmaker(bind=test_engine)

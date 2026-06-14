@@ -11,7 +11,9 @@ from app.core.database import Base
 class Host(Base):
     __tablename__ = "hosts"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     provider_id: Mapped[str | None] = mapped_column(ForeignKey("providers.id"))
     instance_id: Mapped[str | None] = mapped_column(String(100))
     instance_type: Mapped[str | None] = mapped_column(String(50))
@@ -29,7 +31,9 @@ class Host(Base):
     private_key: Mapped[str | None] = mapped_column(Text)
     storage_size_gb: Mapped[int] = mapped_column(Integer, default=500)
     max_eips: Mapped[int] = mapped_column(Integer, default=0)
-    last_health_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_health_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     agent_token: Mapped[str | None] = mapped_column(Text)
     agent_cert_fingerprint: Mapped[str | None] = mapped_column(String(100))
     agent_version: Mapped[str | None] = mapped_column(String(50))

@@ -11,7 +11,9 @@ from app.core.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     display_name: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="user")
@@ -25,7 +27,9 @@ class User(Base):
 
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")
     libraries: Mapped[list["Library"]] = relationship(back_populates="owner")
-    ssh_keys: Mapped[list["UserSshKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    ssh_keys: Mapped[list["UserSshKey"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class UserSshKey(Base):

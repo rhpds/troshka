@@ -59,7 +59,9 @@ class ProviderResponse(BaseModel):
 
 
 @router.get("/", response_model=list[ProviderResponse])
-def list_providers(user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def list_providers(
+    user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
+):
     providers = db.query(Provider).order_by(Provider.name).all()
     return [
         ProviderResponse(
@@ -84,7 +86,11 @@ def list_providers(user: User = Depends(require_role("admin")), db: Session = De
 
 
 @router.post("/", response_model=ProviderResponse, status_code=201)
-def create_provider(body: ProviderCreate, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def create_provider(
+    body: ProviderCreate,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     existing = db.query(Provider).filter_by(name=body.name).first()
     if existing:
         raise HTTPException(status_code=409, detail="Provider name already exists")
@@ -126,7 +132,12 @@ def create_provider(body: ProviderCreate, user: User = Depends(require_role("adm
 
 
 @router.patch("/{provider_id}", response_model=ProviderResponse)
-def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def update_provider(
+    provider_id: str,
+    body: ProviderUpdate,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -174,20 +185,31 @@ def update_provider(provider_id: str, body: ProviderUpdate, user: User = Depends
 
 
 @router.delete("/{provider_id}", status_code=204)
-def delete_provider(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def delete_provider(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.hosts:
-        raise HTTPException(status_code=409, detail="Provider has hosts — remove them first")
+        raise HTTPException(
+            status_code=409, detail="Provider has hosts — remove them first"
+        )
     db.delete(provider)
     db.commit()
 
 
 @router.get("/{provider_id}/discover-ami")
-def list_available_amis(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def list_available_amis(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """List available RHEL 9 and 10 AMIs (both Access2/Gold and Hourly/Marketplace)."""
     import re
+
     import boto3
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -204,10 +226,22 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
         )
 
         ami_types = {
-            "rhel10-access2": {"pattern": "RHEL-10*x86_64*Access2-GP3", "label": "RHEL 10 Access2 (Gold Image / BYOS)"},
-            "rhel10-hourly":  {"pattern": "RHEL-10*x86_64*Hourly2-GP3", "label": "RHEL 10 Marketplace (Hourly)"},
-            "rhel9-access2":  {"pattern": "RHEL-9*x86_64*Access2-GP3",  "label": "RHEL 9 Access2 (Gold Image / BYOS)"},
-            "rhel9-hourly":   {"pattern": "RHEL-9*x86_64*Hourly2-GP3",  "label": "RHEL 9 Marketplace (Hourly)"},
+            "rhel10-access2": {
+                "pattern": "RHEL-10*x86_64*Access2-GP3",
+                "label": "RHEL 10 Access2 (Gold Image / BYOS)",
+            },
+            "rhel10-hourly": {
+                "pattern": "RHEL-10*x86_64*Hourly2-GP3",
+                "label": "RHEL 10 Marketplace (Hourly)",
+            },
+            "rhel9-access2": {
+                "pattern": "RHEL-9*x86_64*Access2-GP3",
+                "label": "RHEL 9 Access2 (Gold Image / BYOS)",
+            },
+            "rhel9-hourly": {
+                "pattern": "RHEL-9*x86_64*Hourly2-GP3",
+                "label": "RHEL 9 Marketplace (Hourly)",
+            },
         }
 
         results = []
@@ -219,10 +253,16 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
                     {"Name": "state", "Values": ["available"]},
                 ],
             )
+
             def version_key(img):
                 m = re.search(r"RHEL-(\d+)\.(\d+)\.(\d+)", img["Name"])
                 if m:
-                    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), img["CreationDate"])
+                    return (
+                        int(m.group(1)),
+                        int(m.group(2)),
+                        int(m.group(3)),
+                        img["CreationDate"],
+                    )
                 return (0, 0, 0, img["CreationDate"])
 
             images = sorted(response["Images"], key=version_key)
@@ -232,23 +272,37 @@ def list_available_amis(provider_id: str, user: User = Depends(require_role("adm
                 ami_name = latest["Name"]
                 version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", ami_name)
                 version = version_match.group(1) if version_match else ""
-                label = info["label"].replace("RHEL 10", f"RHEL {version}").replace("RHEL 9", f"RHEL {version}") if version else info["label"]
-                results.append({
-                    "type": ami_type,
-                    "label": label,
-                    "ami_id": latest["ImageId"],
-                    "name": latest["Name"],
-                    "created": latest["CreationDate"],
-                })
+                label = (
+                    info["label"]
+                    .replace("RHEL 10", f"RHEL {version}")
+                    .replace("RHEL 9", f"RHEL {version}")
+                    if version
+                    else info["label"]
+                )
+                results.append(
+                    {
+                        "type": ami_type,
+                        "label": label,
+                        "ami_id": latest["ImageId"],
+                        "name": latest["Name"],
+                        "created": latest["CreationDate"],
+                    }
+                )
 
         return {"region": provider.default_region, "amis": results}
     except Exception:
         logger.exception("AMI discovery failed for %s", provider.name)
-        raise HTTPException(status_code=500, detail="AMI discovery failed. Check server logs.")
+        raise HTTPException(
+            status_code=500, detail="AMI discovery failed. Check server logs."
+        )
 
 
 @router.get("/{provider_id}/discover-vpcs")
-def discover_vpcs(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def discover_vpcs(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """List available VPCs and subnets in the provider's region."""
     import boto3
 
@@ -265,7 +319,9 @@ def discover_vpcs(provider_id: str, user: User = Depends(require_role("admin")),
             aws_secret_access_key=creds.get("secret_access_key"),
         )
 
-        vpcs_resp = ec2.describe_vpcs(Filters=[{"Name": "tag:ManagedBy", "Values": ["troshka"]}])
+        vpcs_resp = ec2.describe_vpcs(
+            Filters=[{"Name": "tag:ManagedBy", "Values": ["troshka"]}]
+        )
         vpcs = []
         for vpc in vpcs_resp["Vpcs"]:
             vpc_id = vpc["VpcId"]
@@ -274,30 +330,43 @@ def discover_vpcs(provider_id: str, user: User = Depends(require_role("admin")),
                 if tag["Key"] == "Name":
                     name = tag["Value"]
 
-            subnets_resp = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
-            subnets = [{
-                "subnet_id": s["SubnetId"],
-                "az": s["AvailabilityZone"],
-                "cidr": s["CidrBlock"],
-                "public": s.get("MapPublicIpOnLaunch", False),
-            } for s in subnets_resp["Subnets"]]
+            subnets_resp = ec2.describe_subnets(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )
+            subnets = [
+                {
+                    "subnet_id": s["SubnetId"],
+                    "az": s["AvailabilityZone"],
+                    "cidr": s["CidrBlock"],
+                    "public": s.get("MapPublicIpOnLaunch", False),
+                }
+                for s in subnets_resp["Subnets"]
+            ]
 
-            vpcs.append({
-                "vpc_id": vpc_id,
-                "name": name or vpc_id,
-                "cidr": vpc["CidrBlock"],
-                "is_default": vpc.get("IsDefault", False),
-                "subnets": subnets,
-            })
+            vpcs.append(
+                {
+                    "vpc_id": vpc_id,
+                    "name": name or vpc_id,
+                    "cidr": vpc["CidrBlock"],
+                    "is_default": vpc.get("IsDefault", False),
+                    "subnets": subnets,
+                }
+            )
 
         return {"region": provider.default_region, "vpcs": vpcs}
     except Exception:
         logger.exception("VPC discovery failed for %s", provider.name)
-        raise HTTPException(status_code=500, detail="VPC discovery failed. Check server logs.")
+        raise HTTPException(
+            status_code=500, detail="VPC discovery failed. Check server logs."
+        )
 
 
 @router.post("/{provider_id}/create-vpc")
-def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def create_vpc(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Create a new VPC with a public subnet for troshka hosts."""
     import boto3
 
@@ -316,44 +385,63 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
 
         vpc = ec2.create_vpc(CidrBlock="10.100.0.0/16")
         vpc_id = vpc["Vpc"]["VpcId"]
-        ec2.create_tags(Resources=[vpc_id], Tags=[
-            {"Key": "Name", "Value": "troshka-vpc"},
-            {"Key": "Project", "Value": "troshka"},
-            {"Key": "ManagedBy", "Value": "troshka"},
-        ])
+        ec2.create_tags(
+            Resources=[vpc_id],
+            Tags=[
+                {"Key": "Name", "Value": "troshka-vpc"},
+                {"Key": "Project", "Value": "troshka"},
+                {"Key": "ManagedBy", "Value": "troshka"},
+            ],
+        )
         ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
         ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
 
         igw = ec2.create_internet_gateway()
         igw_id = igw["InternetGateway"]["InternetGatewayId"]
         ec2.attach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
-        ec2.create_tags(Resources=[igw_id], Tags=[
-            {"Key": "Name", "Value": "troshka-igw"},
-            {"Key": "ManagedBy", "Value": "troshka"},
-        ])
+        ec2.create_tags(
+            Resources=[igw_id],
+            Tags=[
+                {"Key": "Name", "Value": "troshka-igw"},
+                {"Key": "ManagedBy", "Value": "troshka"},
+            ],
+        )
 
         # Create a subnet in every AZ so the provisioner can pick one that supports the instance type
-        azs_resp = ec2.describe_availability_zones(Filters=[{"Name": "state", "Values": ["available"]}])
+        azs_resp = ec2.describe_availability_zones(
+            Filters=[{"Name": "state", "Values": ["available"]}]
+        )
         azs = [az["ZoneName"] for az in azs_resp["AvailabilityZones"]]
 
         subnet_ids = []
         first_subnet_id = None
         for i, az in enumerate(azs):
             cidr = f"10.100.{i + 1}.0/24"
-            subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock=cidr, AvailabilityZone=az)
+            subnet = ec2.create_subnet(
+                VpcId=vpc_id, CidrBlock=cidr, AvailabilityZone=az
+            )
             sid = subnet["Subnet"]["SubnetId"]
-            ec2.modify_subnet_attribute(SubnetId=sid, MapPublicIpOnLaunch={"Value": True})
-            ec2.create_tags(Resources=[sid], Tags=[
-                {"Key": "Name", "Value": f"troshka-{az}"},
-                {"Key": "ManagedBy", "Value": "troshka"},
-            ])
+            ec2.modify_subnet_attribute(
+                SubnetId=sid, MapPublicIpOnLaunch={"Value": True}
+            )
+            ec2.create_tags(
+                Resources=[sid],
+                Tags=[
+                    {"Key": "Name", "Value": f"troshka-{az}"},
+                    {"Key": "ManagedBy", "Value": "troshka"},
+                ],
+            )
             subnet_ids.append(sid)
             if not first_subnet_id:
                 first_subnet_id = sid
 
-        route_tables = ec2.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
+        route_tables = ec2.describe_route_tables(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        )
         rt_id = route_tables["RouteTables"][0]["RouteTableId"]
-        ec2.create_route(RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
+        ec2.create_route(
+            RouteTableId=rt_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id
+        )
         # Associate all subnets with the route table
         for sid in subnet_ids:
             try:
@@ -368,19 +456,22 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
                 ServiceName=f"com.amazonaws.{provider.default_region}.s3",
                 RouteTableIds=[rt_id],
                 VpcEndpointType="Gateway",
-                TagSpecifications=[{
-                    "ResourceType": "vpc-endpoint",
-                    "Tags": [
-                        {"Key": "Name", "Value": "troshka-s3-endpoint"},
-                        {"Key": "ManagedBy", "Value": "troshka"},
-                    ],
-                }],
+                TagSpecifications=[
+                    {
+                        "ResourceType": "vpc-endpoint",
+                        "Tags": [
+                            {"Key": "Name", "Value": "troshka-s3-endpoint"},
+                            {"Key": "ManagedBy", "Value": "troshka"},
+                        ],
+                    }
+                ],
             )
             logger.info("Created S3 Gateway Endpoint for VPC %s", vpc_id)
         except Exception as e:
             logger.warning("S3 endpoint creation failed (non-fatal): %s", e)
 
         from app.services.provisioner import ensure_security_group
+
         sg_id = ensure_security_group(vpc_id, credentials=creds)
 
         provider.vpc_id = vpc_id
@@ -400,13 +491,20 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
         raise
     except Exception:
         logger.exception("VPC creation failed for %s", provider.name)
-        raise HTTPException(status_code=500, detail="VPC creation failed. Check server logs.")
+        raise HTTPException(
+            status_code=500, detail="VPC creation failed. Check server logs."
+        )
 
 
 @router.post("/{provider_id}/setup-infra")
-def setup_infrastructure(provider_id: str, vpc_id: str, subnet_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def setup_infrastructure(
+    provider_id: str,
+    vpc_id: str,
+    subnet_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Set VPC/subnet on the provider and ensure security group exists."""
-    import boto3
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
@@ -415,6 +513,7 @@ def setup_infrastructure(provider_id: str, vpc_id: str, subnet_id: str, user: Us
     creds = provider.get_credentials()
     try:
         from app.services.provisioner import ensure_security_group
+
         sg_id = ensure_security_group(vpc_id, credentials=creds)
 
         provider.vpc_id = vpc_id
@@ -429,11 +528,18 @@ def setup_infrastructure(provider_id: str, vpc_id: str, subnet_id: str, user: Us
         }
     except Exception:
         logger.exception("Infrastructure setup failed for %s", provider.name)
-        raise HTTPException(status_code=500, detail="Infrastructure setup failed. Check server logs.")
+        raise HTTPException(
+            status_code=500, detail="Infrastructure setup failed. Check server logs."
+        )
 
 
 @router.post("/{provider_id}/set-ami")
-def set_ami(provider_id: str, ami_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def set_ami(
+    provider_id: str,
+    ami_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Set the default AMI for a provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
@@ -444,7 +550,11 @@ def set_ami(provider_id: str, ami_id: str, user: User = Depends(require_role("ad
 
 
 @router.post("/{provider_id}/test")
-def test_provider(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def test_provider(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Test provider credentials by calling AWS STS."""
     import boto3
 
@@ -473,13 +583,29 @@ def test_provider(provider_id: str, user: User = Depends(require_role("admin")),
             # Then check bucket
             try:
                 s3.head_bucket(Bucket=bucket)
-                return {"status": "ok", "bucket": bucket, "account": identity["Account"]}
+                return {
+                    "status": "ok",
+                    "bucket": bucket,
+                    "account": identity["Account"],
+                }
             except s3.exceptions.ClientError as e:
                 code = e.response["Error"]["Code"]
                 if code == "404":
-                    return {"status": "ok", "bucket_missing": True, "bucket": bucket, "account": identity["Account"], "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket."}
+                    return {
+                        "status": "ok",
+                        "bucket_missing": True,
+                        "bucket": bucket,
+                        "account": identity["Account"],
+                        "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
+                    }
                 elif code == "403":
-                    return {"status": "ok", "bucket_denied": True, "bucket": bucket, "account": identity["Account"], "message": f"Credentials OK but no access to bucket '{bucket}'."}
+                    return {
+                        "status": "ok",
+                        "bucket_denied": True,
+                        "bucket": bucket,
+                        "account": identity["Account"],
+                        "message": f"Credentials OK but no access to bucket '{bucket}'.",
+                    }
                 raise
         else:
             sts = boto3.client(
@@ -489,14 +615,22 @@ def test_provider(provider_id: str, user: User = Depends(require_role("admin")),
                 aws_secret_access_key=creds.get("secret_access_key"),
             )
             identity = sts.get_caller_identity()
-            return {"status": "ok", "account": identity["Account"], "arn": identity["Arn"]}
+            return {
+                "status": "ok",
+                "account": identity["Account"],
+                "arn": identity["Arn"],
+            }
     except Exception:
         logger.exception("Provider test failed for %s", provider.name)
         raise HTTPException(status_code=400, detail="Credentials test failed")
 
 
 @router.post("/{provider_id}/create-bucket")
-def create_s3_bucket(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def create_s3_bucket(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Create the S3 bucket for a storage provider."""
     import boto3
 
@@ -522,7 +656,9 @@ def create_s3_bucket(provider_id: str, user: User = Depends(require_role("admin"
         else:
             s3.create_bucket(
                 Bucket=bucket,
-                CreateBucketConfiguration={"LocationConstraint": provider.default_region},
+                CreateBucketConfiguration={
+                    "LocationConstraint": provider.default_region
+                },
             )
         return {"status": "created", "bucket": bucket}
     except s3.exceptions.BucketAlreadyOwnedByYou:
@@ -533,7 +669,11 @@ def create_s3_bucket(provider_id: str, user: User = Depends(require_role("admin"
 
 
 @router.get("/{provider_id}/availability-zones")
-def list_availability_zones(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def list_availability_zones(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """List available AZs in the provider's region."""
     import boto3
 
@@ -563,7 +703,12 @@ class ConsoleSetupRequest(BaseModel):
 
 
 @router.post("/{provider_id}/setup-console")
-def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def setup_console(
+    provider_id: str,
+    req: ConsoleSetupRequest,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Create Route53 hosted zone and IAM resources for direct console proxy."""
     import boto3
 
@@ -596,6 +741,7 @@ def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depen
 
         if not zone_id:
             import time
+
             resp = r53.create_hosted_zone(
                 Name=base_domain,
                 CallerReference=f"troshka-console-{int(time.time())}",
@@ -617,10 +763,18 @@ def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depen
         try:
             iam.create_role(
                 RoleName=role_name,
-                AssumeRolePolicyDocument=json.dumps({
-                    "Version": "2012-10-17",
-                    "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}],
-                }),
+                AssumeRolePolicyDocument=json.dumps(
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {"Service": "ec2.amazonaws.com"},
+                                "Action": "sts:AssumeRole",
+                            }
+                        ],
+                    }
+                ),
                 Description="Allows EC2 hosts to manage Route53 for certbot DNS-01",
                 Tags=[{"Key": "ManagedBy", "Value": "troshka"}],
             )
@@ -630,18 +784,23 @@ def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depen
         iam.put_role_policy(
             RoleName=role_name,
             PolicyName="troshka-certbot-dns",
-            PolicyDocument=json.dumps({
-                "Version": "2012-10-17",
-                "Statement": [{
-                    "Effect": "Allow",
-                    "Action": "route53:ChangeResourceRecordSets",
-                    "Resource": f"arn:aws:route53:::hostedzone/{zone_id}",
-                }, {
-                    "Effect": "Allow",
-                    "Action": ["route53:GetChange", "route53:ListHostedZones"],
-                    "Resource": "*",
-                }],
-            }),
+            PolicyDocument=json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": "route53:ChangeResourceRecordSets",
+                            "Resource": f"arn:aws:route53:::hostedzone/{zone_id}",
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": ["route53:GetChange", "route53:ListHostedZones"],
+                            "Resource": "*",
+                        },
+                    ],
+                }
+            ),
         )
 
         try:
@@ -650,7 +809,9 @@ def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depen
             pass
 
         try:
-            iam.add_role_to_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
+            iam.add_role_to_instance_profile(
+                InstanceProfileName=profile_name, RoleName=role_name
+            )
         except iam.exceptions.LimitExceededException:
             pass
 
@@ -674,9 +835,14 @@ def setup_console(provider_id: str, req: ConsoleSetupRequest, user: User = Depen
 
 
 @router.delete("/{provider_id}/console")
-def delete_console(provider_id: str, user: User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+def delete_console(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
     """Remove console DNS configuration and hosted zone."""
     import boto3
+
     from app.models.host import Host
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -689,10 +855,14 @@ def delete_console(provider_id: str, user: User = Depends(require_role("admin"))
     zone_id = provider.console_zone_id
 
     # Only delete the hosted zone if no other providers share it
-    other_users = db.query(Provider).filter(
-        Provider.console_zone_id == zone_id,
-        Provider.id != provider_id,
-    ).count()
+    other_users = (
+        db.query(Provider)
+        .filter(
+            Provider.console_zone_id == zone_id,
+            Provider.id != provider_id,
+        )
+        .count()
+    )
 
     if other_users == 0:
         try:
@@ -711,7 +881,10 @@ def delete_console(provider_id: str, user: User = Depends(require_role("admin"))
                         changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
             if changes:
                 for i in range(0, len(changes), 100):
-                    r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes[i:i+100]})
+                    r53.change_resource_record_sets(
+                        HostedZoneId=zone_id,
+                        ChangeBatch={"Changes": changes[i : i + 100]},
+                    )
 
             r53.delete_hosted_zone(Id=zone_id)
             logger.info("Deleted hosted zone %s", zone_id)
@@ -719,7 +892,11 @@ def delete_console(provider_id: str, user: User = Depends(require_role("admin"))
         except Exception as e:
             logger.warning("Failed to fully clean up hosted zone %s: %s", zone_id, e)
     else:
-        logger.info("Hosted zone %s still used by %d other provider(s), keeping it", zone_id, other_users)
+        logger.info(
+            "Hosted zone %s still used by %d other provider(s), keeping it",
+            zone_id,
+            other_users,
+        )
 
     # Clear console_domain on all hosts under this provider
     hosts = db.query(Host).filter_by(provider_id=provider_id).all()

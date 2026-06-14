@@ -1,4 +1,4 @@
-from app.core.auth import hash_password, verify_password, create_jwt, decode_jwt
+from app.core.auth import create_jwt, decode_jwt, hash_password, verify_password
 
 
 def test_password_hashing():

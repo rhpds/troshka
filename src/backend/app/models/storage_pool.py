@@ -1,7 +1,16 @@
 import datetime
 import uuid
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +20,9 @@ from app.core.database import Base
 class StoragePool(Base):
     __tablename__ = "storage_pools"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     name: Mapped[str] = mapped_column(String(255), unique=True)
     mode: Mapped[str] = mapped_column(String(20))
     az: Mapped[str | None] = mapped_column(String(50))
@@ -48,7 +59,9 @@ class StoragePool(Base):
 class SharedCacheEntry(Base):
     __tablename__ = "shared_cache_entries"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
     storage_pool_id: Mapped[str] = mapped_column(ForeignKey("storage_pools.id"))
     item_type: Mapped[str] = mapped_column(String(20))
     item_id: Mapped[str] = mapped_column(String(36))

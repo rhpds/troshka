@@ -1,10 +1,9 @@
 """
 Library API — manage ISOs and disk images in S3.
 """
-import hashlib
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -65,10 +64,14 @@ def list_items(
 ):
     """List library items: user's own + shared with them."""
     from sqlalchemy import or_
+
     lib = _ensure_user_library(user, db)
 
     # Get IDs of items shared with this user
-    shared_ids = [s.item_id for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()]
+    shared_ids = [
+        s.item_id
+        for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()
+    ]
 
     query = db.query(LibraryItem).filter(
         or_(
@@ -112,7 +115,9 @@ def list_items(
 
 
 @router.get("/{item_id}")
-def get_item(item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_item(
+    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -137,7 +142,12 @@ class LibraryItemUpdate(BaseModel):
 
 
 @router.patch("/{item_id}")
-def update_item(item_id: str, body: LibraryItemUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_item(
+    item_id: str,
+    body: LibraryItemUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
@@ -160,9 +170,13 @@ def create_item(
 ):
     """Create a library item (metadata only). Upload file separately."""
     lib = _ensure_user_library(user, db)
-    existing = db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    existing = (
+        db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()
+    )
     if existing:
-        raise HTTPException(status_code=409, detail=f"You already have an item named \"{body.name}\"")
+        raise HTTPException(
+            status_code=409, detail=f'You already have an item named "{body.name}"'
+        )
     item = LibraryItem(
         library_id=lib.id,
         name=body.name,
@@ -186,8 +200,6 @@ def start_multipart_upload(
     db: Session = Depends(get_db),
 ):
     """Start a multipart S3 upload and return presigned URLs for each part."""
-    from pydantic import BaseModel as BM
-    import math
 
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
@@ -204,17 +216,20 @@ def start_multipart_upload(
     item.state = "uploading"
     db.commit()
 
-    from app.services.s3_storage import _get_s3_client, _bucket
+    from app.services.s3_storage import _bucket, _get_s3_client
+
     client = _get_s3_client()
 
     # Parse file_size from query param
-    from fastapi import Request
+
     # We'll receive file_size in the JSON body instead
     return _do_start_upload(client, _bucket(), s3_key, item_id)
 
 
 def _do_start_upload(client, bucket, s3_key, item_id):
-    mpu = client.create_multipart_upload(Bucket=bucket, Key=s3_key, ContentType="application/octet-stream")
+    mpu = client.create_multipart_upload(
+        Bucket=bucket, Key=s3_key, ContentType="application/octet-stream"
+    )
     upload_id = mpu["UploadId"]
     return {"upload_id": upload_id, "s3_key": s3_key}
 
@@ -232,11 +247,17 @@ def get_part_upload_url(
     if not item or not item.s3_key:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    from app.services.s3_storage import _get_s3_client, _bucket
+    from app.services.s3_storage import _bucket, _get_s3_client
+
     client = _get_s3_client()
     url = client.generate_presigned_url(
         "upload_part",
-        Params={"Bucket": _bucket(), "Key": item.s3_key, "UploadId": upload_id, "PartNumber": part_number},
+        Params={
+            "Bucket": _bucket(),
+            "Key": item.s3_key,
+            "UploadId": upload_id,
+            "PartNumber": part_number,
+        },
         ExpiresIn=7200,
     )
     return {"url": url, "part_number": part_number}
@@ -266,21 +287,32 @@ def complete_upload(
     if not item.s3_key:
         raise HTTPException(status_code=400, detail="No S3 key set")
 
-    from app.services.s3_storage import _get_s3_client, _bucket
+    from app.services.s3_storage import _bucket, _get_s3_client
+
     client = _get_s3_client()
     try:
         client.complete_multipart_upload(
             Bucket=_bucket(),
             Key=item.s3_key,
             UploadId=body.upload_id,
-            MultipartUpload={"Parts": [{"PartNumber": p["part_number"], "ETag": p["etag"]} for p in body.parts]},
+            MultipartUpload={
+                "Parts": [
+                    {"PartNumber": p["part_number"], "ETag": p["etag"]}
+                    for p in body.parts
+                ]
+            },
         )
 
         head = client.head_object(Bucket=_bucket(), Key=item.s3_key)
         item.size_bytes = head["ContentLength"]
         item.state = "ready"
         db.commit()
-        logger.info("Library item %s upload complete: %s (%d bytes)", item.id, item.s3_key, item.size_bytes)
+        logger.info(
+            "Library item %s upload complete: %s (%d bytes)",
+            item.id,
+            item.s3_key,
+            item.size_bytes,
+        )
         return {"id": item.id, "state": "ready", "size_bytes": item.size_bytes}
     except Exception as e:
         logger.exception("Upload completion failed for %s: %s", item_id, e)
@@ -290,7 +322,9 @@ def complete_upload(
 
 
 @router.delete("/{item_id}", status_code=204)
-def delete_item(item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_item(
+    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     """Delete a library item and its S3 object."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
@@ -338,11 +372,17 @@ def import_from_url(
     db.commit()
 
     import threading
+
     def _host_download():
         from app.core.database import SessionLocal as SL
-        from app.services.s3_storage import _get_s3_client, _bucket
-        from app.services.troshkad_client import start_job, wait_for_job, check_disk_usage, TroshkadError
         from app.models.host import Host
+        from app.services.s3_storage import _bucket, _get_s3_client
+        from app.services.troshkad_client import (
+            TroshkadError,
+            check_disk_usage,
+            start_job,
+            wait_for_job,
+        )
 
         sess = SL()
         try:
@@ -350,7 +390,11 @@ def import_from_url(
             if not it:
                 return
 
-            host = sess.query(Host).filter_by(state="active", agent_status="connected").first()
+            host = (
+                sess.query(Host)
+                .filter_by(state="active", agent_status="connected")
+                .first()
+            )
             if not host:
                 logger.error("Import %s: no active host available", item_id[:8])
                 it.state = "error"
@@ -361,8 +405,13 @@ def import_from_url(
 
             disk = check_disk_usage(host)
             if disk.get("used_pct", 100) >= 90:
-                free_gb = disk.get("free_bytes", 0) / (1024 ** 3)
-                logger.error("Import %s: host storage %d%% full (%.1f GB free)", item_id[:8], disk.get("used_pct", 100), free_gb)
+                free_gb = disk.get("free_bytes", 0) / (1024**3)
+                logger.error(
+                    "Import %s: host storage %d%% full (%.1f GB free)",
+                    item_id[:8],
+                    disk.get("used_pct", 100),
+                    free_gb,
+                )
                 it.state = "error"
                 sess.commit()
                 return
@@ -373,21 +422,30 @@ def import_from_url(
             cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
             s3_upload_url = f"s3://{bucket}/{s3_key}"
             from app.services.s3_storage import _get_s3_config
+
             s3_creds = _get_s3_config()
 
             try:
-                job_id = start_job(host, "/library/import", {
-                    "download_url": body.url,
-                    "cache_path": cache_path,
-                    "s3_upload_url": s3_upload_url,
-                    "aws_access_key_id": s3_creds.get("access_key_id", ""),
-                    "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
-                    "aws_region": s3_creds.get("region", "us-east-1"),
-                })
+                job_id = start_job(
+                    host,
+                    "/library/import",
+                    {
+                        "download_url": body.url,
+                        "cache_path": cache_path,
+                        "s3_upload_url": s3_upload_url,
+                        "aws_access_key_id": s3_creds.get("access_key_id", ""),
+                        "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
+                        "aws_region": s3_creds.get("region", "us-east-1"),
+                    },
+                )
                 job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)
 
                 if job["status"] == "failed":
-                    logger.error("Import %s: troshkad job failed: %s", item_id[:8], job.get("error", "unknown"))
+                    logger.error(
+                        "Import %s: troshkad job failed: %s",
+                        item_id[:8],
+                        job.get("error", "unknown"),
+                    )
                     it.state = "error"
                     sess.commit()
                     return
@@ -398,7 +456,11 @@ def import_from_url(
                 it.state = "ready"
                 it.tags = None
                 sess.commit()
-                logger.info("Import %s complete via troshkad: %d bytes", item_id[:8], it.size_bytes)
+                logger.info(
+                    "Import %s complete via troshkad: %d bytes",
+                    item_id[:8],
+                    it.size_bytes,
+                )
 
             except TroshkadError as e:
                 logger.error("Import %s: troshkad error: %s", item_id[:8], e)
@@ -420,7 +482,9 @@ def import_from_url(
 
 
 @router.post("/{item_id}/cancel")
-def cancel_import(item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def cancel_import(
+    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
     """Cancel an in-progress import and clean up S3."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
@@ -430,14 +494,17 @@ def cancel_import(item_id: str, user: User = Depends(get_current_user), db: Sess
         raise HTTPException(status_code=403, detail="Access denied")
 
     if item.s3_key:
-        from app.services.s3_storage import _get_s3_client, _bucket
+        from app.services.s3_storage import _bucket, _get_s3_client
+
         client = _get_s3_client()
         bucket = _bucket()
         # Abort any in-progress multipart uploads for this key
         try:
             mpus = client.list_multipart_uploads(Bucket=bucket, Prefix=item.s3_key)
             for u in mpus.get("Uploads", []):
-                client.abort_multipart_upload(Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"])
+                client.abort_multipart_upload(
+                    Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"]
+                )
         except Exception:
             pass
         # Delete any partial object
@@ -457,7 +524,12 @@ class ShareRequest(BaseModel):
 
 
 @router.post("/{item_id}/share")
-def share_item(item_id: str, body: ShareRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def share_item(
+    item_id: str,
+    body: ShareRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Share a library item with another user."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
@@ -473,18 +545,33 @@ def share_item(item_id: str, body: ShareRequest, user: User = Depends(get_curren
     if target_user.id == user.id:
         raise HTTPException(status_code=400, detail="Cannot share with yourself")
 
-    existing = db.query(LibraryShare).filter_by(item_id=item_id, shared_with_id=target_user.id).first()
+    existing = (
+        db.query(LibraryShare)
+        .filter_by(item_id=item_id, shared_with_id=target_user.id)
+        .first()
+    )
     if existing:
         existing.permission = body.permission
     else:
-        db.add(LibraryShare(item_id=item_id, shared_with_id=target_user.id, permission=body.permission))
+        db.add(
+            LibraryShare(
+                item_id=item_id,
+                shared_with_id=target_user.id,
+                permission=body.permission,
+            )
+        )
     db.commit()
 
     return {"shared_with": body.user_email, "permission": body.permission}
 
 
 @router.delete("/{item_id}/share/{user_email}")
-def unshare_item(item_id: str, user_email: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def unshare_item(
+    item_id: str,
+    user_email: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Remove sharing for a library item."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
@@ -498,7 +585,11 @@ def unshare_item(item_id: str, user_email: str, user: User = Depends(get_current
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    share = db.query(LibraryShare).filter_by(item_id=item_id, shared_with_id=target_user.id).first()
+    share = (
+        db.query(LibraryShare)
+        .filter_by(item_id=item_id, shared_with_id=target_user.id)
+        .first()
+    )
     if share:
         db.delete(share)
         db.commit()
@@ -571,6 +662,7 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
 
     # Scan snapshots/ and patterns/ — collect all objects grouped by ID
     import json
+
     from app.models.library import LibraryItemDisk
     from app.models.pattern import Pattern, PatternDisk
 
@@ -594,11 +686,15 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
                 if key.endswith("/metadata.json"):
                     try:
                         meta_resp = client.get_object(Bucket=bucket, Key=key)
-                        groups[obj_id]["metadata"] = json.loads(meta_resp["Body"].read())
+                        groups[obj_id]["metadata"] = json.loads(
+                            meta_resp["Body"].read()
+                        )
                     except Exception:
                         pass
                 else:
-                    groups[obj_id]["files"].append({"key": key, "size": obj.get("Size", 0)})
+                    groups[obj_id]["files"].append(
+                        {"key": key, "size": obj.get("Size", 0)}
+                    )
             if r.get("IsTruncated"):
                 cont = r.get("NextContinuationToken")
             else:
@@ -627,28 +723,46 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
             tags = {"orphaned": True}
 
         item = LibraryItem(
-            id=item_id, library_id=lib.id, name=name, type="image", format=fmt,
-            size_bytes=size, os_variant=os_variant, vm_config=vm_config, tags=tags, state="ready",
+            id=item_id,
+            library_id=lib.id,
+            name=name,
+            type="image",
+            format=fmt,
+            size_bytes=size,
+            os_variant=os_variant,
+            vm_config=vm_config,
+            tags=tags,
+            state="ready",
         )
         db.add(item)
         db.flush()
 
         if meta and meta.get("disks"):
             for disk in meta["disks"]:
-                db.add(LibraryItemDisk(
-                    library_item_id=item_id, s3_key=disk["s3_key"],
-                    format=disk.get("format", "qcow2"), size_bytes=disk.get("size_bytes", 0),
-                    virtual_size_bytes=disk.get("virtual_size_bytes", 0),
-                    boot_order=disk.get("boot_order", 0), state="available",
-                ))
+                db.add(
+                    LibraryItemDisk(
+                        library_item_id=item_id,
+                        s3_key=disk["s3_key"],
+                        format=disk.get("format", "qcow2"),
+                        size_bytes=disk.get("size_bytes", 0),
+                        virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                        boot_order=disk.get("boot_order", 0),
+                        state="available",
+                    )
+                )
         else:
             for i, f in enumerate(group["files"]):
                 file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
-                db.add(LibraryItemDisk(
-                    library_item_id=item_id, s3_key=f["key"],
-                    format=file_fmt, size_bytes=f["size"],
-                    boot_order=i, state="available",
-                ))
+                db.add(
+                    LibraryItemDisk(
+                        library_item_id=item_id,
+                        s3_key=f["key"],
+                        format=file_fmt,
+                        size_bytes=f["size"],
+                        boot_order=i,
+                        state="available",
+                    )
+                )
         snapshot_count += 1
 
     # Import patterns
@@ -659,44 +773,69 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
         meta = group["metadata"]
         if meta:
             pattern = Pattern(
-                id=pattern_id, name=meta.get("name", f"pattern-{pattern_id[:8]}"),
-                description=meta.get("description"), owner_id=user.id,
+                id=pattern_id,
+                name=meta.get("name", f"pattern-{pattern_id[:8]}"),
+                description=meta.get("description"),
+                owner_id=user.id,
                 visibility=meta.get("visibility", "private"),
-                topology=meta.get("topology", {}), state="available",
-                total_size_bytes=meta.get("total_size_bytes", 0), tags=meta.get("tags"),
+                topology=meta.get("topology", {}),
+                state="available",
+                total_size_bytes=meta.get("total_size_bytes", 0),
+                tags=meta.get("tags"),
             )
             db.add(pattern)
             db.flush()
             for disk in meta.get("disks", []):
                 import uuid as _uuid
-                db.add(PatternDisk(
-                    id=disk.get("id", str(_uuid.uuid4())), pattern_id=pattern_id,
-                    source_disk_id=disk.get("source_disk_id", ""),
-                    source_vm_id=disk.get("source_vm_id", ""),
-                    s3_key=disk["s3_key"], format=disk.get("format", "qcow2"),
-                    size_bytes=disk.get("size_bytes", 0),
-                    virtual_size_bytes=disk.get("virtual_size_bytes", 0), state="available",
-                ))
+
+                db.add(
+                    PatternDisk(
+                        id=disk.get("id", str(_uuid.uuid4())),
+                        pattern_id=pattern_id,
+                        source_disk_id=disk.get("source_disk_id", ""),
+                        source_vm_id=disk.get("source_vm_id", ""),
+                        s3_key=disk["s3_key"],
+                        format=disk.get("format", "qcow2"),
+                        size_bytes=disk.get("size_bytes", 0),
+                        virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                        state="available",
+                    )
+                )
         else:
             total_size = sum(f["size"] for f in group["files"])
             pattern = Pattern(
-                id=pattern_id, name=f"orphan-pattern-{pattern_id[:8]}",
-                owner_id=user.id, visibility="private",
-                topology={"nodes": [], "edges": []}, state="available",
-                total_size_bytes=total_size, tags={"orphaned": True},
+                id=pattern_id,
+                name=f"orphan-pattern-{pattern_id[:8]}",
+                owner_id=user.id,
+                visibility="private",
+                topology={"nodes": [], "edges": []},
+                state="available",
+                total_size_bytes=total_size,
+                tags={"orphaned": True},
             )
             db.add(pattern)
             db.flush()
             for f in group["files"]:
                 import uuid as _uuid
+
                 file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
-                disk_id = f["key"].split("/")[-1].rsplit(".", 1)[0] if "/" in f["key"] else str(_uuid.uuid4())
-                db.add(PatternDisk(
-                    id=str(_uuid.uuid4()), pattern_id=pattern_id,
-                    source_disk_id=disk_id, source_vm_id="",
-                    s3_key=f["key"], format=file_fmt,
-                    size_bytes=f["size"], state="available",
-                ))
+                disk_id = (
+                    f["key"].split("/")[-1].rsplit(".", 1)[0]
+                    if "/" in f["key"]
+                    else str(_uuid.uuid4())
+                )
+                db.add(
+                    PatternDisk(
+                        id=str(_uuid.uuid4()),
+                        pattern_id=pattern_id,
+                        source_disk_id=disk_id,
+                        source_vm_id="",
+                        s3_key=f["key"],
+                        format=file_fmt,
+                        size_bytes=f["size"],
+                        state="available",
+                    )
+                )
         pattern_count += 1
 
     if snapshot_count or pattern_count:

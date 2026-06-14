@@ -1,7 +1,9 @@
 import os
+
 os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test.db"
 
 from sqlalchemy.dialects import sqlite
+
 sqlite.base.SQLiteTypeCompiler.visit_JSONB = lambda self, type_, **kw: "JSON"
 sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(36)"
 
@@ -51,8 +53,13 @@ app.dependency_overrides[get_db] = get_test_db
 _db2 = TestSession()
 _admin = _db2.query(User).filter_by(role="admin").first()
 if not _admin:
-    _admin = User(email="dns-admin@example.com", display_name="Admin", role="admin",
-                  auth_source="local", password_hash=hash_password("pass"))
+    _admin = User(
+        email="dns-admin@example.com",
+        display_name="Admin",
+        role="admin",
+        auth_source="local",
+        password_hash=hash_password("pass"),
+    )
     _db2.add(_admin)
     _db2.commit()
     _db2.refresh(_admin)
@@ -64,18 +71,22 @@ client = TestClient(app)
 
 
 def test_create_dns_provider_api():
-    resp = client.post("/api/v1/dns-providers", json={
-        "name": "Test BIND API",
-        "type": "nsupdate",
-        "config": {
-            "server": "10.0.0.53",
-            "port": 53,
-            "key_name": "update-key",
-            "key_secret": "secret",
-            "key_algorithm": "hmac-sha256",
-            "default_zone": "example.com",
+    resp = client.post(
+        "/api/v1/dns-providers",
+        json={
+            "name": "Test BIND API",
+            "type": "nsupdate",
+            "config": {
+                "server": "10.0.0.53",
+                "port": 53,
+                "key_name": "update-key",
+                "key_secret": "secret",
+                "key_algorithm": "hmac-sha256",
+                "default_zone": "example.com",
+            },
         },
-    }, headers=ADMIN_HEADERS)
+        headers=ADMIN_HEADERS,
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "Test BIND API"
@@ -90,11 +101,15 @@ def test_list_dns_providers_api():
 
 
 def test_delete_dns_provider_api():
-    create_resp = client.post("/api/v1/dns-providers", json={
-        "name": "To Delete DNS",
-        "type": "nsupdate",
-        "config": {"server": "1.2.3.4"},
-    }, headers=ADMIN_HEADERS)
+    create_resp = client.post(
+        "/api/v1/dns-providers",
+        json={
+            "name": "To Delete DNS",
+            "type": "nsupdate",
+            "config": {"server": "1.2.3.4"},
+        },
+        headers=ADMIN_HEADERS,
+    )
     pid = create_resp.json()["id"]
     resp = client.delete(f"/api/v1/dns-providers/{pid}", headers=ADMIN_HEADERS)
     assert resp.status_code == 204

@@ -10,8 +10,13 @@ app.dependency_overrides[get_db] = get_test_db
 client = TestClient(app)
 
 _db = TestSession()
-_user = User(email="template-test@example.com", display_name="Template Tester", role="user",
-             auth_source="local", password_hash=hash_password("pass"))
+_user = User(
+    email="template-test@example.com",
+    display_name="Template Tester",
+    role="user",
+    auth_source="local",
+    password_hash=hash_password("pass"),
+)
 _db.add(_user)
 _db.commit()
 _db.refresh(_user)
@@ -22,11 +27,15 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
 def test_deploy_template_creates_project():
-    resp = client.post("/api/v1/deploy-template", json={
-        "template": "ocp-compact",
-        "version": "4.16",
-        "name": "My OCP Cluster",
-    }, headers=HEADERS)
+    resp = client.post(
+        "/api/v1/deploy-template",
+        json={
+            "template": "ocp-compact",
+            "version": "4.16",
+            "name": "My OCP Cluster",
+        },
+        headers=HEADERS,
+    )
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "My OCP Cluster"
@@ -39,12 +48,16 @@ def test_deploy_template_creates_project():
 
 
 def test_deploy_template_with_overrides():
-    resp = client.post("/api/v1/deploy-template", json={
-        "template": "ocp-compact",
-        "version": "4.16",
-        "name": "Custom OCP",
-        "overrides": {"control_ram_gb": 32, "worker_count": 2},
-    }, headers=HEADERS)
+    resp = client.post(
+        "/api/v1/deploy-template",
+        json={
+            "template": "ocp-compact",
+            "version": "4.16",
+            "name": "Custom OCP",
+            "overrides": {"control_ram_gb": 32, "worker_count": 2},
+        },
+        headers=HEADERS,
+    )
     assert resp.status_code == 201
     nodes = resp.json()["topology"]["nodes"]
     vm_nodes = [n for n in nodes if n["type"] == "vmNode"]
@@ -53,18 +66,26 @@ def test_deploy_template_with_overrides():
 
 
 def test_deploy_template_rejects_invalid_template():
-    resp = client.post("/api/v1/deploy-template", json={
-        "template": "nonexistent",
-        "version": "4.16",
-        "name": "Bad Template",
-    }, headers=HEADERS)
+    resp = client.post(
+        "/api/v1/deploy-template",
+        json={
+            "template": "nonexistent",
+            "version": "4.16",
+            "name": "Bad Template",
+        },
+        headers=HEADERS,
+    )
     assert resp.status_code == 400
 
 
 def test_deploy_template_rejects_invalid_version():
-    resp = client.post("/api/v1/deploy-template", json={
-        "template": "ocp-compact",
-        "version": "3.11",
-        "name": "Bad Version",
-    }, headers=HEADERS)
+    resp = client.post(
+        "/api/v1/deploy-template",
+        json={
+            "template": "ocp-compact",
+            "version": "3.11",
+            "name": "Bad Version",
+        },
+        headers=HEADERS,
+    )
     assert resp.status_code == 400

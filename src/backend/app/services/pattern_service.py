@@ -19,7 +19,7 @@ def get_capture_progress(pattern_id: str) -> dict | None:
 def cancel_capture(pattern_id: str, db) -> None:
     """Cancel in-flight capture jobs on the host."""
     from app.models.host import Host
-    from app.services.troshkad_client import cancel_job, TroshkadError
+    from app.services.troshkad_client import TroshkadError, cancel_job
 
     progress = _capture_progress.pop(pattern_id, None)
     if not progress:
@@ -34,21 +34,28 @@ def cancel_capture(pattern_id: str, db) -> None:
     for job_id in job_ids:
         try:
             cancel_job(host, job_id)
-            log.info("Cancelled capture job %s on host %s for pattern %s", job_id[:8], host.id[:8], pattern_id[:8])
+            log.info(
+                "Cancelled capture job %s on host %s for pattern %s",
+                job_id[:8],
+                host.id[:8],
+                pattern_id[:8],
+            )
         except TroshkadError:
             pass
 
 
-def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool = True) -> None:
+def capture_pattern_disks(
+    pattern_id: str, project_id: str, restart_after: bool = True
+) -> None:
     """Capture all disks from a project into a pattern.
 
     Runs in a background thread, spawned by the patterns API when creating from a source project.
     Uploads each disk to S3 via troshkad on the host, creates PatternDisk records, and updates pattern state.
     """
-    from app.models.project import Project
     from app.models.host import Host
+    from app.models.project import Project
     from app.services import s3_storage
-    from app.services.troshkad_client import start_job, poll_job, TroshkadError
+    from app.services.troshkad_client import TroshkadError, poll_job, start_job
 
     db = SessionLocal()
     try:
@@ -65,9 +72,15 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
             log.error("No host found for project %s", project_id)
             return
 
-        topology = project.deployed_topology or project.topology or {"nodes": [], "edges": []}
-        disk_nodes = [n for n in topology.get("nodes", []) if n.get("type") == "storageNode"]
-        vm_nodes = {n["id"]: n for n in topology.get("nodes", []) if n.get("type") == "vmNode"}
+        topology = (
+            project.deployed_topology or project.topology or {"nodes": [], "edges": []}
+        )
+        disk_nodes = [
+            n for n in topology.get("nodes", []) if n.get("type") == "storageNode"
+        ]
+        vm_nodes = {
+            n["id"]: n for n in topology.get("nodes", []) if n.get("type") == "vmNode"
+        }
 
         edges = topology.get("edges", [])
         disk_to_vm = {}
@@ -95,10 +108,12 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
         pool = None
         if host.storage_pool_id:
             from app.models.storage_pool import StoragePool
+
             pool = db.query(StoragePool).filter_by(id=host.storage_pool_id).first()
 
         from app.services.deploy_service import _disk_path
         from app.services.s3_storage import _get_s3_config
+
         creds = _get_s3_config()
 
         # Build all capture jobs upfront
@@ -121,44 +136,76 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 s3_url = f"s3://{bucket}/{s3_key}"
                 cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
-                disks_params.append({
-                    "disk_path": disk_path,
-                    "s3_url": s3_url,
-                    "cache_path": cache_path,
-                })
+                disks_params.append(
+                    {
+                        "disk_path": disk_path,
+                        "s3_url": s3_url,
+                        "cache_path": cache_path,
+                    }
+                )
 
-                disk_metadata.append({
-                    "disk_id": disk_id,
-                    "vm_id": vm_id,
-                    "s3_key": s3_key,
-                    "format": fmt,
-                    "virtual_size_bytes": int(disk_node.get("data", {}).get("size", 0)) * 1073741824,
-                })
+                disk_metadata.append(
+                    {
+                        "disk_id": disk_id,
+                        "vm_id": vm_id,
+                        "s3_key": s3_key,
+                        "format": fmt,
+                        "virtual_size_bytes": int(
+                            disk_node.get("data", {}).get("size", 0)
+                        )
+                        * 1073741824,
+                    }
+                )
 
             if not disks_params:
                 continue
 
             try:
                 domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
-                job_id = start_job(host, "/patterns/capture-direct", {
-                    "disks": disks_params,
-                    "domain_name": domain_name,
-                    "aws_access_key_id": creds.get("access_key_id", ""),
-                    "aws_secret_access_key": creds.get("secret_access_key", ""),
-                    "aws_region": creds.get("region", "us-east-1"),
-                })
-                vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
-                all_jobs.append({"job_id": job_id, "vm_id": vm_id, "vm_name": vm_name, "disks_params": disks_params, "disk_metadata": disk_metadata})
+                job_id = start_job(
+                    host,
+                    "/patterns/capture-direct",
+                    {
+                        "disks": disks_params,
+                        "domain_name": domain_name,
+                        "aws_access_key_id": creds.get("access_key_id", ""),
+                        "aws_secret_access_key": creds.get("secret_access_key", ""),
+                        "aws_region": creds.get("region", "us-east-1"),
+                    },
+                )
+                vm_name = (
+                    vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
+                )
+                all_jobs.append(
+                    {
+                        "job_id": job_id,
+                        "vm_id": vm_id,
+                        "vm_name": vm_name,
+                        "disks_params": disks_params,
+                        "disk_metadata": disk_metadata,
+                    }
+                )
                 all_metadata.extend(disk_metadata)
-                log.info("Pattern %s: started capture job for VM %s (%d disks)", pattern_id[:8], vm_id[:8], len(disks_params))
+                log.info(
+                    "Pattern %s: started capture job for VM %s (%d disks)",
+                    pattern_id[:8],
+                    vm_id[:8],
+                    len(disks_params),
+                )
             except TroshkadError as e:
-                log.error("Failed to start capture for pattern %s VM %s: %s", pattern_id[:8], vm_id[:8], e)
+                log.error(
+                    "Failed to start capture for pattern %s VM %s: %s",
+                    pattern_id[:8],
+                    vm_id[:8],
+                    e,
+                )
                 pattern.state = "error"
                 db.commit()
                 return
 
         # Poll all jobs concurrently, update progress with per-VM status
         import time as _time
+
         completed_jobs = set()
         deadline = _time.time() + 3600
         _capture_progress[pattern_id] = {
@@ -170,7 +217,9 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
 
         while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
             if pattern_id not in _capture_progress:
-                log.info("Pattern %s: capture cancelled, exiting poll loop", pattern_id[:8])
+                log.info(
+                    "Pattern %s: capture cancelled, exiting poll loop", pattern_id[:8]
+                )
                 return
             lines = []
             for idx, jinfo in enumerate(all_jobs):
@@ -193,10 +242,21 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                     output = job.get("output", [])
                     last = ""
                     for line in reversed(output):
-                        if "Flatten" in line or "Upload" in line or "Commit" in line or "Snapshot" in line or "Trim" in line or "Cach" in line:
+                        if (
+                            "Flatten" in line
+                            or "Upload" in line
+                            or "Commit" in line
+                            or "Snapshot" in line
+                            or "Trim" in line
+                            or "Cach" in line
+                        ):
                             last = line
                             break
-                    lines.append(f"{jinfo['vm_name']}: {last}" if last else f"{jinfo['vm_name']}: working...")
+                    lines.append(
+                        f"{jinfo['vm_name']}: {last}"
+                        if last
+                        else f"{jinfo['vm_name']}: working..."
+                    )
             progress = {
                 "step": "capturing",
                 "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
@@ -204,6 +264,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
             }
             _capture_progress[pattern_id] = progress
             from app.services.ws_pubsub import notify_pattern
+
             notify_pattern(pattern_id, {"type": "capture-progress", **progress})
             _time.sleep(5)
 
@@ -217,15 +278,26 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                     job = {"status": "failed", "result": {"error": "Job lost"}}
             try:
                 if job["status"] == "failed":
-                    error_msg = job.get("result", {}).get("error", "Pattern capture failed")
-                    log.error("Failed to capture pattern %s VM %s: %s", pattern_id[:8], jinfo["vm_id"][:8], error_msg)
+                    error_msg = job.get("result", {}).get(
+                        "error", "Pattern capture failed"
+                    )
+                    log.error(
+                        "Failed to capture pattern %s VM %s: %s",
+                        pattern_id[:8],
+                        jinfo["vm_id"][:8],
+                        error_msg,
+                    )
                     pattern.state = "error"
                     db.commit()
                     return
 
                 disk_results = job.get("result", {}).get("disks", [])
                 for j, metadata in enumerate(jinfo["disk_metadata"]):
-                    size_bytes = disk_results[j].get("size_bytes", 0) if j < len(disk_results) else 0
+                    size_bytes = (
+                        disk_results[j].get("size_bytes", 0)
+                        if j < len(disk_results)
+                        else 0
+                    )
                     pd = PatternDisk(
                         pattern_id=pattern_id,
                         source_disk_id=metadata["disk_id"],
@@ -238,10 +310,17 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                     )
                     db.add(pd)
                 db.commit()
-                log.info("Pattern %s: VM %s capture done", pattern_id[:8], jinfo["vm_id"][:8])
+                log.info(
+                    "Pattern %s: VM %s capture done", pattern_id[:8], jinfo["vm_id"][:8]
+                )
 
             except TroshkadError as e:
-                log.error("Troshkad error capturing pattern %s VM %s: %s", pattern_id[:8], jinfo["vm_id"][:8], str(e))
+                log.error(
+                    "Troshkad error capturing pattern %s VM %s: %s",
+                    pattern_id[:8],
+                    jinfo["vm_id"][:8],
+                    str(e),
+                )
                 pattern.state = "error"
                 db.commit()
                 return
@@ -260,8 +339,11 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 node["data"]["patternId"] = pattern_id
                 node["data"]["patternDiskId"] = pd.id
                 node["data"].pop("libraryItemId", None)
-        import json, copy
+        import copy
+        import json
+
         from sqlalchemy import text
+
         db.execute(
             text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
             {"topo": json.dumps(copy.deepcopy(topo)), "pid": pattern_id},
@@ -273,6 +355,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
 
         # Save metadata to S3 for recovery after DB loss
         from app.services import s3_storage
+
         metadata = {
             "type": "pattern",
             "name": pattern.name,
@@ -282,9 +365,15 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
             "total_size_bytes": pattern.total_size_bytes,
             "tags": pattern.tags,
             "disks": [
-                {"id": d.id, "source_disk_id": d.source_disk_id, "source_vm_id": d.source_vm_id,
-                 "s3_key": d.s3_key, "format": d.format, "size_bytes": d.size_bytes,
-                 "virtual_size_bytes": d.virtual_size_bytes}
+                {
+                    "id": d.id,
+                    "source_disk_id": d.source_disk_id,
+                    "source_vm_id": d.source_vm_id,
+                    "s3_key": d.s3_key,
+                    "format": d.format,
+                    "size_bytes": d.size_bytes,
+                    "virtual_size_bytes": d.virtual_size_bytes,
+                }
                 for d in pattern.disks
             ],
         }
@@ -300,6 +389,7 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
 
         log.info("Pattern %s capture complete", pattern_id)
         from app.services.ws_pubsub import notify_pattern
+
         notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
 
     except Exception as e:
@@ -310,7 +400,10 @@ def capture_pattern_disks(pattern_id: str, project_id: str, restart_after: bool 
                 pattern.state = "error"
                 db.commit()
                 from app.services.ws_pubsub import notify_pattern
-                notify_pattern(pattern_id, {"type": "capture-complete", "state": "error"})
+
+                notify_pattern(
+                    pattern_id, {"type": "capture-complete", "state": "error"}
+                )
         except Exception:
             pass
     finally:

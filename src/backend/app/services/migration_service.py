@@ -11,7 +11,9 @@ from app.models.storage_pool import StoragePool
 logger = logging.getLogger(__name__)
 
 
-def validate_migration(db: Session, project_id: str, source_host_id: str, target_host_id: str) -> list[str]:
+def validate_migration(
+    db: Session, project_id: str, source_host_id: str, target_host_id: str
+) -> list[str]:
     errors = []
 
     project = db.query(Project).get(project_id)
@@ -19,7 +21,9 @@ def validate_migration(db: Session, project_id: str, source_host_id: str, target
         errors.append("Project not found")
         return errors
     if project.state != "active":
-        errors.append(f"Project must be active to migrate (current state: {project.state})")
+        errors.append(
+            f"Project must be active to migrate (current state: {project.state})"
+        )
     if project.host_id != source_host_id:
         errors.append("Project is not on the specified source host")
 
@@ -51,10 +55,17 @@ def validate_migration(db: Session, project_id: str, source_host_id: str, target
     if target.state != "active":
         errors.append(f"Target host must be active (current state: {target.state})")
     if target.agent_status != "connected":
-        errors.append(f"Target host agent must be connected (status: {target.agent_status})")
+        errors.append(
+            f"Target host agent must be connected (status: {target.agent_status})"
+        )
 
     # Check target has enough capacity
-    from app.services.placement import calculate_project_requirements, get_allocatable, sync_host_capacity
+    from app.services.placement import (
+        calculate_project_requirements,
+        get_allocatable,
+        sync_host_capacity,
+    )
+
     topology = project.deployed_topology or project.topology or {}
     reqs = calculate_project_requirements(topology)
     sync_host_capacity(db, target)
@@ -62,9 +73,13 @@ def validate_migration(db: Session, project_id: str, source_host_id: str, target
     free_vcpus = alloc_vcpus - target.used_vcpus
     free_ram = alloc_ram - target.used_ram_mb
     if free_vcpus < reqs["total_vcpus"]:
-        errors.append(f"Target host has insufficient CPU ({free_vcpus} free, need {reqs['total_vcpus']})")
+        errors.append(
+            f"Target host has insufficient CPU ({free_vcpus} free, need {reqs['total_vcpus']})"
+        )
     if free_ram < reqs["total_ram_mb"]:
-        errors.append(f"Target host has insufficient RAM ({free_ram} MB free, need {reqs['total_ram_mb']} MB)")
+        errors.append(
+            f"Target host has insufficient RAM ({free_ram} MB free, need {reqs['total_ram_mb']} MB)"
+        )
 
     return errors
 
@@ -79,11 +94,14 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
 
 
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
-    from app.services.troshkad_client import start_job, wait_for_job
     from app.services.deploy_service import (
-        _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
-        _setup_bmc_via_troshkad, _teardown_bmc_via_troshkad, _extract_bmc_config,
+        _extract_bmc_config,
+        _setup_bmc_via_troshkad,
+        _setup_networks_via_troshkad,
+        _teardown_bmc_via_troshkad,
+        _teardown_networks_via_troshkad,
     )
+    from app.services.troshkad_client import start_job, wait_for_job
 
     db = SessionLocal()
     try:
@@ -101,7 +119,11 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         # Step 1: Set up networks on target
         network_nodes = [n for n in nodes if n.get("type") == "networkNode"]
         if network_nodes:
-            logger.info("Migration %s: setting up networks on target %s", project_id[:8], target_host_id[:8])
+            logger.info(
+                "Migration %s: setting up networks on target %s",
+                project_id[:8],
+                target_host_id[:8],
+            )
             _setup_networks_via_troshkad(target, topology, vni_map, db, project_id)
 
         # Step 2: Set up BMC on target (if applicable)
@@ -113,7 +135,11 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         # Step 3: Live-migrate each VM in start order
         vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
         start_order = topology.get("startOrder", [])
-        vm_ids_ordered = [s["vmId"] for s in start_order] if start_order else [n["id"] for n in vm_nodes]
+        vm_ids_ordered = (
+            [s["vmId"] for s in start_order]
+            if start_order
+            else [n["id"] for n in vm_nodes]
+        )
 
         for vm_id in vm_ids_ordered:
             vm_node = next((n for n in vm_nodes if n["id"] == vm_id), None)
@@ -124,18 +150,26 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
             logger.info("Migration %s: migrating VM %s", project_id[:8], domain)
 
             target_ip = target.private_ip or target.ip_address
-            job_id = start_job(source, "/vm/migrate", {
-                "domain": domain,
-                "target_host": target_ip,
-            })
+            job_id = start_job(
+                source,
+                "/vm/migrate",
+                {
+                    "domain": domain,
+                    "target_host": target_ip,
+                },
+            )
             result = wait_for_job(source, job_id, timeout=600)
             if result.get("status") == "failed":
                 error_msg = result.get("result", {}).get("error", "Unknown error")
                 raise RuntimeError(f"VM migration failed for {domain}: {error_msg}")
-            logger.info("Migration %s: VM %s migrated successfully", project_id[:8], domain)
+            logger.info(
+                "Migration %s: VM %s migrated successfully", project_id[:8], domain
+            )
 
         # Step 4: Tear down source infrastructure
-        logger.info("Migration %s: tearing down source %s", project_id[:8], source_host_id[:8])
+        logger.info(
+            "Migration %s: tearing down source %s", project_id[:8], source_host_id[:8]
+        )
         if network_nodes:
             _teardown_networks_via_troshkad(source, project_id, vni_map)
         if bmc_config:
@@ -171,10 +205,14 @@ def _do_evacuate_host(host_id: str):
     try:
         host = db.query(Host).get(host_id)
 
-        projects = db.query(Project).filter(
-            Project.host_id == host_id,
-            Project.state == "active",
-        ).all()
+        projects = (
+            db.query(Project)
+            .filter(
+                Project.host_id == host_id,
+                Project.state == "active",
+            )
+            .all()
+        )
 
         if not projects:
             logger.info("Evacuate %s: no active projects to migrate", host_id[:8])
@@ -183,12 +221,16 @@ def _do_evacuate_host(host_id: str):
         logger.info("Evacuate %s: migrating %d projects", host_id[:8], len(projects))
 
         # Find other hosts in the same pool
-        other_hosts = db.query(Host).filter(
-            Host.storage_pool_id == host.storage_pool_id,
-            Host.id != host_id,
-            Host.state == "active",
-            Host.agent_status == "connected",
-        ).all()
+        other_hosts = (
+            db.query(Host)
+            .filter(
+                Host.storage_pool_id == host.storage_pool_id,
+                Host.id != host_id,
+                Host.state == "active",
+                Host.agent_status == "connected",
+            )
+            .all()
+        )
 
         if not other_hosts:
             logger.error("Evacuate %s: no other hosts available in pool", host_id[:8])

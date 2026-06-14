@@ -78,8 +78,18 @@ def test_build_lb_config_from_topology():
                     "networkType": "loadbalancer",
                     "name": "ocp-lb",
                     "frontends": [
-                        {"name": "api", "bindPort": 6443, "mode": "tcp", "backendPort": 6443},
-                        {"name": "ingress", "bindPort": 443, "mode": "tcp", "backendPort": 443},
+                        {
+                            "name": "api",
+                            "bindPort": 6443,
+                            "mode": "tcp",
+                            "backendPort": 6443,
+                        },
+                        {
+                            "name": "ingress",
+                            "bindPort": 443,
+                            "mode": "tcp",
+                            "backendPort": 443,
+                        },
                     ],
                 },
             },
@@ -88,7 +98,9 @@ def test_build_lb_config_from_topology():
                 "type": "vmNode",
                 "data": {
                     "name": "cp-0",
-                    "nics": [{"id": "nic-1", "ip": "10.0.0.10", "mac": "52:54:00:aa:bb:01"}],
+                    "nics": [
+                        {"id": "nic-1", "ip": "10.0.0.10", "mac": "52:54:00:aa:bb:01"}
+                    ],
                 },
             },
             {
@@ -96,15 +108,37 @@ def test_build_lb_config_from_topology():
                 "type": "vmNode",
                 "data": {
                     "name": "cp-1",
-                    "nics": [{"id": "nic-2", "ip": "10.0.0.11", "mac": "52:54:00:aa:bb:02"}],
+                    "nics": [
+                        {"id": "nic-2", "ip": "10.0.0.11", "mac": "52:54:00:aa:bb:02"}
+                    ],
                 },
             },
         ],
         "edges": [
-            {"source": "net-1", "target": "vm-1", "sourceHandle": "net-1-bottom", "targetHandle": "nic-nic-1-top"},
-            {"source": "net-1", "target": "vm-2", "sourceHandle": "net-1-bottom", "targetHandle": "nic-nic-2-top"},
-            {"source": "lb-1", "target": "vm-1", "sourceHandle": "lb-1-bottom", "targetHandle": "nic-nic-1-top"},
-            {"source": "lb-1", "target": "vm-2", "sourceHandle": "lb-1-bottom", "targetHandle": "nic-nic-2-top"},
+            {
+                "source": "net-1",
+                "target": "vm-1",
+                "sourceHandle": "net-1-bottom",
+                "targetHandle": "nic-nic-1-top",
+            },
+            {
+                "source": "net-1",
+                "target": "vm-2",
+                "sourceHandle": "net-1-bottom",
+                "targetHandle": "nic-nic-2-top",
+            },
+            {
+                "source": "lb-1",
+                "target": "vm-1",
+                "sourceHandle": "lb-1-bottom",
+                "targetHandle": "nic-nic-1-top",
+            },
+            {
+                "source": "lb-1",
+                "target": "vm-2",
+                "sourceHandle": "lb-1-bottom",
+                "targetHandle": "nic-nic-2-top",
+            },
         ],
     }
     vni_map = {"net-1": 100}
