@@ -12,6 +12,8 @@ import {
   ToolbarContent,
   ToolbarItem,
   Tooltip,
+  ExpandableSection,
+  Switch,
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
 
@@ -38,6 +40,10 @@ interface Host {
   created_at: string;
   storage_pool_id: string | null;
   storage_warnings?: Array<{mount: string; used_pct: number; level: string}> | null;
+  auto_extend_enabled: boolean;
+  auto_extend_threshold_pct: number;
+  auto_extend_increment_gb: number;
+  auto_extend_max_gb: number | null;
 }
 
 interface RegionSummary {
@@ -267,6 +273,8 @@ export default function AdminHostsPage() {
   const [updating, setUpdating] = useState<string | null>(null);
   const [expectedVersion, setExpectedVersion] = useState("");
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
+  const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
+  const [extending, setExtending] = useState<Record<string, boolean>>({});
 
   const installAgent = async (hostId: string) => {
     setInstalling(hostId);
@@ -317,9 +325,52 @@ export default function AdminHostsPage() {
     }
   };
 
+  const updateAutoExtend = async (
+    hostId: string,
+    field: string,
+    value: boolean | number | null
+  ) => {
+    const resp = await fetch(`/api/v1/hosts/${hostId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update auto-extend settings");
+    }
+  };
+
+  const handleExtendStorage = async (host: Host) => {
+    if (!window.confirm(`Extend storage for host "${host.instance_id || host.id.slice(0, 8)}"? This will increase EBS volume capacity by ${host.auto_extend_increment_gb} GB.`)) return;
+    setExtending({ ...extending, [host.id]: true });
+    const resp = await fetch(`/api/v1/hosts/${host.id}/extend-storage`, {
+      method: "POST",
+    });
+    setExtending({ ...extending, [host.id]: false });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to extend storage");
+    }
+  };
+
   if (loading) {
     return <PageSection><Title headingLevel="h1">Loading...</Title></PageSection>;
   }
+
+  const inputStyle = {
+    width: "100%",
+    padding: "6px 10px",
+    borderRadius: 6,
+    border: "1px solid var(--pf-t--global--border--color--default)",
+    background: "var(--pf-t--global--background--color--primary--default)",
+    color: "var(--pf-t--global--text--color--regular)",
+    fontSize: 13,
+  };
 
   return (
     <>
@@ -839,6 +890,91 @@ export default function AdminHostsPage() {
                 {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
             </CardBody>
+            {h.state === "active" && h.agent_status === "connected" && !h.storage_pool_id && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <ExpandableSection
+                  toggleText="Auto-Extend Settings"
+                  isExpanded={expandedAutoExtend[h.id] || false}
+                  onToggle={() =>
+                    setExpandedAutoExtend({
+                      ...expandedAutoExtend,
+                      [h.id]: !expandedAutoExtend[h.id],
+                    })
+                  }
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400, marginTop: 8 }}>
+                    <Switch
+                      label="Auto-extend enabled"
+                      isChecked={h.auto_extend_enabled}
+                      onChange={(_, checked) => updateAutoExtend(h.id, "auto_extend_enabled", checked)}
+                    />
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                        Threshold (%)
+                      </label>
+                      <input
+                        style={inputStyle}
+                        type="number"
+                        value={h.auto_extend_threshold_pct}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value) || 80;
+                          if (val >= 50 && val <= 95) {
+                            updateAutoExtend(h.id, "auto_extend_threshold_pct", val);
+                          }
+                        }}
+                        min={50}
+                        max={95}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                        Increment (GB)
+                      </label>
+                      <input
+                        style={inputStyle}
+                        type="number"
+                        value={h.auto_extend_increment_gb}
+                        onChange={(e) =>
+                          updateAutoExtend(
+                            h.id,
+                            "auto_extend_increment_gb",
+                            parseInt(e.target.value) || 100
+                          )
+                        }
+                        min={10}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                        Max (GB, optional)
+                      </label>
+                      <input
+                        style={inputStyle}
+                        type="number"
+                        value={h.auto_extend_max_gb || ""}
+                        onChange={(e) =>
+                          updateAutoExtend(
+                            h.id,
+                            "auto_extend_max_gb",
+                            e.target.value ? parseInt(e.target.value) : null
+                          )
+                        }
+                        placeholder="No limit"
+                      />
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleExtendStorage(h)}
+                      isLoading={extending[h.id]}
+                      isDisabled={extending[h.id]}
+                    >
+                      Extend Storage
+                    </Button>
+                  </div>
+                </ExpandableSection>
+              </CardBody>
+            )}
             {showKeyFor === h.id && keyData[h.id] && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

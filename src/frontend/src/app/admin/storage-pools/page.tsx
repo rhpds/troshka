@@ -8,6 +8,8 @@ import {
   Card,
   CardBody,
   Alert,
+  ExpandableSection,
+  Switch,
 } from "@patternfly/react-core";
 
 interface StoragePool {
@@ -25,6 +27,10 @@ interface StoragePool {
   provider_id: string;
   host_count: number;
   created_at: string;
+  auto_extend_enabled: boolean;
+  auto_extend_threshold_pct: number;
+  auto_extend_increment_gb: number;
+  auto_extend_max_gb: number | null;
 }
 
 interface Provider {
@@ -77,6 +83,9 @@ export default function StoragePoolsPage() {
   const [editStorageGb, setEditStorageGb] = useState(128);
   const [editNfsEndpoint, setEditNfsEndpoint] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
+  const [extending, setExtending] = useState<Record<string, boolean>>({});
 
   const loadData = () => {
     Promise.all([
@@ -225,6 +234,40 @@ export default function StoragePoolsPage() {
     }
   };
 
+  const updateAutoExtend = async (
+    poolId: string,
+    field: string,
+    value: boolean | number | null
+  ) => {
+    const resp = await fetch(`/api/v1/storage-pools/${poolId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update auto-extend settings");
+    }
+  };
+
+  const handleExtendNow = async (pool: StoragePool) => {
+    if (!window.confirm(`Extend storage for pool "${pool.name}"? This will increase FSx filesystem capacity by ${pool.auto_extend_increment_gb} GB.`)) return;
+    setExtending({ ...extending, [pool.id]: true });
+    const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
+      method: "POST",
+    });
+    setExtending({ ...extending, [pool.id]: false });
+    if (resp.ok) {
+      loadData();
+      pollUntilSettled();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to extend storage");
+    }
+  };
+
   return (
     <PageSection>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -354,14 +397,100 @@ export default function StoragePoolsPage() {
                       </div>
                     </div>
                   ) : (
-                    <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16 }}>
-                      {pool.az && <span>AZ: {pool.az}</span>}
-                      <span>Hosts: {pool.host_count}</span>
-                      {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
-                      {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
-                      {pool.fsx_storage_gb && <span>Storage: {pool.fsx_storage_gb} GB</span>}
-                      {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
-                    </div>
+                    <>
+                      <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", gap: 16 }}>
+                        {pool.az && <span>AZ: {pool.az}</span>}
+                        <span>Hosts: {pool.host_count}</span>
+                        {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
+                        {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
+                        {pool.fsx_storage_gb && <span>Storage: {pool.fsx_storage_gb} GB</span>}
+                        {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
+                      </div>
+                      {pool.mode === "shared-fsx" && pool.status === "available" && (
+                        <ExpandableSection
+                          toggleText="Auto-Extend Settings"
+                          isExpanded={expandedAutoExtend[pool.id] || false}
+                          onToggle={() =>
+                            setExpandedAutoExtend({
+                              ...expandedAutoExtend,
+                              [pool.id]: !expandedAutoExtend[pool.id],
+                            })
+                          }
+                          style={{ marginTop: 12 }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400, marginTop: 8 }}>
+                            <Switch
+                              label="Auto-extend enabled"
+                              isChecked={pool.auto_extend_enabled}
+                              onChange={(_, checked) => updateAutoExtend(pool.id, "auto_extend_enabled", checked)}
+                            />
+                            <div>
+                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                                Threshold (%)
+                              </label>
+                              <input
+                                style={inputStyle}
+                                type="number"
+                                value={pool.auto_extend_threshold_pct}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value) || 80;
+                                  if (val >= 50 && val <= 95) {
+                                    updateAutoExtend(pool.id, "auto_extend_threshold_pct", val);
+                                  }
+                                }}
+                                min={50}
+                                max={95}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                                Increment (GB)
+                              </label>
+                              <input
+                                style={inputStyle}
+                                type="number"
+                                value={pool.auto_extend_increment_gb}
+                                onChange={(e) =>
+                                  updateAutoExtend(
+                                    pool.id,
+                                    "auto_extend_increment_gb",
+                                    parseInt(e.target.value) || 64
+                                  )
+                                }
+                                min={64}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                                Max (GB, optional)
+                              </label>
+                              <input
+                                style={inputStyle}
+                                type="number"
+                                value={pool.auto_extend_max_gb || ""}
+                                onChange={(e) =>
+                                  updateAutoExtend(
+                                    pool.id,
+                                    "auto_extend_max_gb",
+                                    e.target.value ? parseInt(e.target.value) : null
+                                  )
+                                }
+                                placeholder="No limit"
+                              />
+                            </div>
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              onClick={() => handleExtendNow(pool)}
+                              isLoading={extending[pool.id]}
+                              isDisabled={extending[pool.id]}
+                            >
+                              Extend Now
+                            </Button>
+                          </div>
+                        </ExpandableSection>
+                      )}
+                    </>
                   )}
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
