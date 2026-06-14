@@ -268,20 +268,45 @@ export default function StoragePoolsPage() {
   };
 
   const handleExtendNow = async (pool: StoragePool) => {
-    if (!window.confirm(`Extend storage for pool "${pool.name}"? This will increase FSx filesystem capacity by ${pool.auto_extend_increment_gb} GB.`)) return;
+    const newSize = (pool.fsx_storage_gb || 0) + pool.auto_extend_increment_gb;
+    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${pool.fsx_storage_gb} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)`)) return;
     setExtending({ ...extending, [pool.id]: true });
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
       method: "POST",
     });
-    setExtending({ ...extending, [pool.id]: false });
-    if (resp.ok) {
-      loadData();
-      const poll = setInterval(loadData, 5000);
-      setTimeout(() => clearInterval(poll), 60000);
-    } else {
+    if (!resp.ok) {
+      setExtending({ ...extending, [pool.id]: false });
       const data = await resp.json();
       setError(data.detail || "Failed to extend storage");
+      return;
     }
+    const pollUntilVisible = () => {
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch("/api/v1/hosts/storage");
+          if (!r.ok) return;
+          const storage = await r.json();
+          for (const [, info] of Object.entries(storage) as [string, any][]) {
+            const parts = info.partitions;
+            if (!parts) continue;
+            const shared = parts.find((p: any) => p.mount.includes("shared"));
+            if (shared && shared.total_bytes / (1024**3) >= newSize - 1) {
+              clearInterval(poll);
+              setExtending((prev) => ({ ...prev, [pool.id]: false }));
+              loadData();
+              return;
+            }
+          }
+        } catch {}
+      }, 5000);
+      setTimeout(() => {
+        clearInterval(poll);
+        setExtending((prev) => ({ ...prev, [pool.id]: false }));
+        loadData();
+      }, 120000);
+    };
+    loadData();
+    pollUntilVisible();
   };
 
   return (
