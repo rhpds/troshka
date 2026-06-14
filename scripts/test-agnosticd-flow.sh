@@ -26,11 +26,9 @@ COLLECTION_DIR="$HOME/troshka-ansible-collection"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 CONFIG="${TROSHKA_CONFIG:-openshift-cluster-troshka}"
 
-# --- Helper: install collection into temp dir ---
+# --- Helper: install collection ---
 install_collection() {
-    COLLECTIONS_DIR=$(mktemp -d)
-    ansible-galaxy collection install "$COLLECTION_DIR" -p "$COLLECTIONS_DIR" --force 2>&1 | tail -1
-    echo "$COLLECTIONS_DIR"
+    ansible-galaxy collection install "$COLLECTION_DIR" -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
 }
 
 # --- Helper: get or create API key ---
@@ -72,8 +70,7 @@ run_lifecycle() {
 
     echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') (project=$project_id) ==="
 
-    local collections_dir
-    collections_dir=$(install_collection)
+    install_collection
 
     local playbook="ansible/lifecycle_entry_point.yml"
     if [[ "$action" == "destroy" ]]; then
@@ -81,14 +78,11 @@ run_lifecycle() {
     fi
 
     cd "$AGD_DIR"
-    ANSIBLE_COLLECTIONS_PATH="${collections_dir}:${HOME}/.ansible/collections" \
     ansible-navigator run "$playbook" \
         --mode stdout --ee false \
         --extra-vars "cloud_provider=troshka config=${CONFIG} guid=${guid} ACTION=${action} troshka_api_url=${TROSHKA_API_URL} troshka_api_key=${api_key} troshka_project_id=${project_id}" \
         -v
     local status=$?
-
-    rm -rf "$collections_dir"
 
     if [[ $status -eq 0 ]]; then
         echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') OK ==="
@@ -169,8 +163,7 @@ echo "  Found pattern"
 
 # --- Install collection ---
 echo "=== Installing Troshka collection ==="
-COLLECTIONS_DIR=$(install_collection)
-echo "  Installed to $COLLECTIONS_DIR"
+install_collection
 
 # --- Create vars file ---
 VARS_FILE=$(mktemp /tmp/troshka-test-vars.XXXXXX)
@@ -198,7 +191,6 @@ echo "=== Deploying: guid=$GUID ==="
 # --- Run ansible-navigator ---
 cd "$AGD_DIR"
 
-ANSIBLE_COLLECTIONS_PATH="${COLLECTIONS_DIR}:${HOME}/.ansible/collections" \
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
@@ -209,7 +201,6 @@ STATUS=$?
 
 # --- Cleanup temp files ---
 rm -f "$VARS_FILE"
-rm -rf "$COLLECTIONS_DIR"
 
 if [[ $STATUS -eq 0 ]]; then
     PROJECT_ID=$(curl -sL "${TROSHKA_API_URL}/api/v1/projects/" \
