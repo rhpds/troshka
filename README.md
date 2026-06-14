@@ -17,6 +17,42 @@ Troshka is a self-service web platform for building nested VM environments. User
 
 The name "troshka" evokes nesting — VMs inside VMs inside cloud infrastructure, like a matryoshka doll.
 
+## Why Troshka?
+
+Today, every lab environment is built from scratch: provision cloud VMs, install an OS, deploy OpenShift, install operators, configure the lab. It works, but it's slow (45-90 minutes per environment), fragile (any step in the chain can fail), and expensive (each deploy burns compute time reproducing identical work).
+
+Troshka changes this with a **build once, deploy many** model:
+
+1. A lab author creates the environment once — either manually through the visual editor or via automation
+2. The finished environment is captured as a **pattern** — a snapshot of the entire topology with all VMs, disks, networks, and configuration
+3. When a student orders the lab, Troshka deploys the pattern by restoring the snapshot onto nested VMs
+
+The result:
+
+| | Traditional (agnosticd + AWS) | Troshka |
+|---|---|---|
+| **Deploy time** | 45-90 minutes | 1-2 minutes |
+| **Failure surface** | AMIs, CloudFormation, repos, OCP installer, operators | Single API call to restore a tested snapshot |
+| **Consistency** | Drift between deploys (package versions, timing issues) | Bit-for-bit identical every time |
+| **Iteration speed** | Change → wait 60 min → test | Change → capture → deploy in 90 seconds |
+| **Cost per deploy** | Full compute cost of building from scratch | Only the cost of running the environment |
+
+### What stays the same
+
+Troshka plugs into the existing ecosystem — it's not a replacement, it's a new cloud provider:
+
+- **Agnosticv** catalog items work the same way. Set `cloud_provider: troshka` instead of `ec2`.
+- **Babylon / RHPDS** ordering, lifecycle, and user experience are unchanged.
+- **AAP2** runs the same agnosticd playbooks. The Troshka Ansible collection handles the API calls.
+- **Showroom** lab guides work as-is. Showroom is baked into the pattern image.
+- **Workloads** can still overlay dynamic configuration on top of a base pattern when needed.
+
+### What's different
+
+- **Students don't get SSH.** They access VMs through a web-based console (VNC) and Showroom. This is more secure and closer to real infrastructure access patterns.
+- **No cloud credentials in agnosticv.** Each Troshka instance manages its own AWS credentials internally. Catalog items only need a Troshka API key.
+- **Patterns are portable.** A pattern built on one Troshka instance can be deployed on any other. The topology, disks, and configuration travel together.
+
 ### Key Features
 
 - **Visual topology editor** — Drag-and-drop VMs, networks, routers, gateways, and storage onto a Visio-like canvas
@@ -217,7 +253,8 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 - [x] Libvirt events (lifecycle callbacks, block threshold alerts, batch state polling)
 - [x] OCP topology templates (version dropdown, deploy estimates, auto-sizing)
 - [x] Parallel VM deployment (concurrent disk creation, definition, start)
-- [ ] OCP deployment & Ansible collection
+- [x] AgnosticD cloud provider integration (Ansible collection, student portal, template YAML)
+- [ ] OCP deployment automation
 
 ## License
 
