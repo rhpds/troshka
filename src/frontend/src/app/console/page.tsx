@@ -31,6 +31,7 @@ function ConsolePage() {
   const [projectDeleted, setProjectDeleted] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [vmPasswords, setVmPasswords] = useState<{label: string; value: string}[]>([]);
+  const [projectName, setProjectName] = useState("");
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
@@ -76,7 +77,9 @@ function ConsolePage() {
     fetch(`/api/v1/projects/${projectId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((data) => {
-        if (!data?.topology?.nodes) return;
+        if (!data) return;
+        if (data.name) setProjectName(data.name);
+        if (!data.topology?.nodes) return;
         const vm = data.topology.nodes.find((n: any) => n.id === vmId && n.type === "vmNode");
         if (!vm?.data) return;
         const pw: {label: string; value: string}[] = [];
@@ -200,8 +203,8 @@ function ConsolePage() {
   }, [ws.deleted]);
 
   useEffect(() => {
-    document.title = `Console: ${vmName}`;
-  }, [vmName]);
+    document.title = projectName ? `${projectName} — ${vmName}` : vmName;
+  }, [vmName, projectName]);
 
   // WebSocket → VM state
   useEffect(() => {
@@ -347,7 +350,10 @@ function ConsolePage() {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <img src="/images/troshka-logo-dark-200.png" alt="" style={{ height: 20 }} />
-          <span>{vmName}</span>
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+            {projectName && <span style={{ fontSize: 10, opacity: 0.5 }}>{projectName}</span>}
+            <span>{vmName}</span>
+          </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ color: statusColor }}>{displayStatus}</span>

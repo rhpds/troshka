@@ -11,6 +11,7 @@ from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.elastic_ip import ElasticIp
 from app.models.storage_pool import StoragePool, SharedCacheEntry
 from app.models.dns_provider import DnsProvider
+from app.models.portal import ProjectPortalToken
 
 __all__ = [
     "User", "Provider", "Host", "HostAssignment",
@@ -24,4 +25,5 @@ __all__ = [
     "ElasticIp",
     "StoragePool", "SharedCacheEntry",
     "DnsProvider",
+    "ProjectPortalToken",
 ]

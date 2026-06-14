@@ -250,6 +250,7 @@ def create_pattern(
 
 @router.get("/")
 def list_patterns(
+    name: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -258,26 +259,29 @@ def list_patterns(
     - patterns shared with them
     - public patterns
     Admin users see everything.
+
+    Optional query parameter:
+    - name: exact name match filter
     """
     if user.role == "admin":
-        patterns = db.query(Pattern).order_by(Pattern.created_at.desc()).all()
+        q = db.query(Pattern)
     else:
         shared_ids = [
             s.pattern_id
             for s in db.query(PatternShare.pattern_id).filter_by(user_id=user.id).all()
         ]
-        patterns = (
-            db.query(Pattern)
-            .filter(
-                or_(
-                    Pattern.owner_id == user.id,
-                    Pattern.id.in_(shared_ids) if shared_ids else False,
-                    Pattern.visibility == "public",
-                )
+        q = db.query(Pattern).filter(
+            or_(
+                Pattern.owner_id == user.id,
+                Pattern.id.in_(shared_ids) if shared_ids else False,
+                Pattern.visibility == "public",
             )
-            .order_by(Pattern.created_at.desc())
-            .all()
         )
+
+    if name is not None:
+        q = q.filter(Pattern.name == name)
+
+    patterns = q.order_by(Pattern.created_at.desc()).all()
 
     return [_pattern_to_list_dict(p) for p in patterns]
 
@@ -501,6 +505,24 @@ def deploy_pattern(
 
     new_topology = _remap_topology(pattern.topology)
 
+    if body.inject_vars:
+        nodes = new_topology.get("nodes", [])
+        target_vm = None
+        for n in nodes:
+            if n.get("type") == "vmNode":
+                tags = n.get("data", {}).get("tags", {})
+                groups = tags.get("AnsibleGroup", "")
+                if "bastions" in [g.strip() for g in groups.split(",")]:
+                    target_vm = n
+                    break
+        if target_vm is None:
+            for n in nodes:
+                if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+                    target_vm = n
+                    break
+        if target_vm is not None:
+            target_vm["data"]["ciInjectVars"] = body.inject_vars
+
     project = Project(
         name=project_name,
         description=body.description or pattern.description,
@@ -528,6 +550,7 @@ def deploy_pattern(
         "id": project.id,
         "name": project.name,
         "state": project.state,
+        "topology": project.topology,
     }
 
 

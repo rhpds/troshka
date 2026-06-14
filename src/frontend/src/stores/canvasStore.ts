@@ -41,6 +41,7 @@ export interface VMNodeData {
   icon: string;
   nics: VMNic[];
   diskControllers: VMDiskController[];
+  tags?: Record<string, string>;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }

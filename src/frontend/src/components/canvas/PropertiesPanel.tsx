@@ -133,7 +133,7 @@ export default function PropertiesPanel() {
   const [showPxeIsoPicker, setShowPxeIsoPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true });
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -1027,6 +1027,69 @@ export default function PropertiesPanel() {
                     })()}
                   </>
                 )}
+              </div>
+            )}
+          </div>
+          <div className="props-divider" />
+
+          {/* Tags Section */}
+          <div className="props-section">
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("tags")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("tags") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Tags
+            </div>
+            {!isCollapsed("tags") && (
+              <div className="props-section-body">
+                {Object.entries((data as Record<string, any>).tags || {}).map(([key, value]) => (
+                  <div key={key} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                    <input
+                      className="props-input"
+                      value={key}
+                      onChange={(e) => {
+                        const newKey = e.target.value;
+                        const tags = { ...((data as Record<string, any>).tags || {}) };
+                        const val = tags[key];
+                        delete tags[key];
+                        tags[newKey] = val;
+                        update("tags", tags);
+                      }}
+                      style={{ flex: 1, fontSize: 11 }}
+                      placeholder="Key"
+                    />
+                    <input
+                      className="props-input"
+                      value={value as string}
+                      onChange={(e) => {
+                        update("tags", { ...((data as Record<string, any>).tags || {}), [key]: e.target.value });
+                      }}
+                      style={{ flex: 1, fontSize: 11 }}
+                      placeholder="Value"
+                    />
+                    <button
+                      style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12, padding: 4 }}
+                      onClick={() => {
+                        const tags = { ...((data as Record<string, any>).tags || {}) };
+                        delete tags[key];
+                        update("tags", tags);
+                      }}
+                      title="Remove tag"
+                    >✕</button>
+                  </div>
+                ))}
+                <button
+                  className="props-library-btn"
+                  onClick={() => {
+                    const tags = { ...((data as Record<string, any>).tags || {}) };
+                    let newKey = "NewTag";
+                    let i = 1;
+                    while (newKey in tags) { newKey = `NewTag${i++}`; }
+                    tags[newKey] = "";
+                    update("tags", tags);
+                  }}
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                >
+                  + Add tag
+                </button>
               </div>
             )}
           </div>

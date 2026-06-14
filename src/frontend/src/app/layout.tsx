@@ -83,13 +83,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const isLoginPage = pathname === "/login";
   const isConsolePage = pathname?.startsWith("/console");
+  const isPortalPage = pathname?.startsWith("/portal");
   const isAuthenticated = !!user && !isLoginPage;
   const isAdmin = user?.role === "admin";
 
-  if (isConsolePage) {
+  if (isConsolePage || isPortalPage) {
     return (
       <html lang="en">
-        <head><title>Console</title></head>
+        <head><title>{isPortalPage ? "Lab Portal" : "Console"}</title></head>
+        {/* Portal page sets its own title via document.title */}
         <body style={{ margin: 0, padding: 0, overflow: "hidden" }}>{children}</body>
       </html>
     );

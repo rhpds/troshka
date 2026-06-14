@@ -1,3 +1,5 @@
+import copy
+
 from fastapi.testclient import TestClient
 
 from app.core.auth import create_jwt, hash_password
@@ -169,3 +171,59 @@ def test_bulk_deploy_validates_count():
 def test_dev_mode_allows_unauthenticated():
     resp = client.get("/api/v1/patterns")
     assert resp.status_code == 200
+
+
+def test_deploy_pattern_preserves_vm_tags():
+    topo = copy.deepcopy(SAMPLE_TOPOLOGY)
+    topo["nodes"][0]["data"]["tags"] = {"AnsibleGroup": "bastions,showroom"}
+    create_resp = client.post("/api/v1/patterns", json={
+        "name": "Tag Test",
+        "topology": topo,
+    }, headers=HEADERS)
+    pattern_id = create_resp.json()["id"]
+    deploy_resp = client.post(f"/api/v1/patterns/{pattern_id}/deploy", json={
+        "name": "Tag Deploy Test",
+    }, headers=HEADERS)
+    assert deploy_resp.status_code == 201
+    project_id = deploy_resp.json()["id"]
+    # Fetch the full project to get topology
+    project_resp = client.get(f"/api/v1/projects/{project_id}", headers=HEADERS)
+    assert project_resp.status_code == 200
+    vm_node = [n for n in project_resp.json()["topology"]["nodes"] if n["type"] == "vmNode"][0]
+    assert vm_node["data"]["tags"] == {"AnsibleGroup": "bastions,showroom"}
+
+
+def test_list_patterns_filter_by_name():
+    client.post("/api/v1/patterns", json={
+        "name": "Unique Lookup Name",
+        "topology": SAMPLE_TOPOLOGY,
+    }, headers=HEADERS)
+    resp = client.get("/api/v1/patterns", params={"name": "Unique Lookup Name"}, headers=HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Unique Lookup Name"
+
+
+def test_list_patterns_filter_by_name_not_found():
+    resp = client.get("/api/v1/patterns", params={"name": "Nonexistent Pattern xyz"}, headers=HEADERS)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 0
+
+
+def test_deploy_pattern_with_inject_vars():
+    topo = copy.deepcopy(SAMPLE_TOPOLOGY)
+    topo["nodes"][0]["data"]["tags"] = {"AnsibleGroup": "bastions"}
+    topo["nodes"][0]["data"]["cloudInit"] = True
+    create_resp = client.post("/api/v1/patterns", json={
+        "name": "Inject Vars Test",
+        "topology": topo,
+    }, headers=HEADERS)
+    pattern_id = create_resp.json()["id"]
+    resp = client.post(f"/api/v1/patterns/{pattern_id}/deploy", json={
+        "name": "Injected Deploy",
+        "inject_vars": {"guid": "abc123", "student_password": "s3cret"},
+    }, headers=HEADERS)
+    assert resp.status_code == 201
+    vm_node = [n for n in resp.json()["topology"]["nodes"] if n["type"] == "vmNode"][0]
+    assert vm_node["data"].get("ciInjectVars") == {"guid": "abc123", "student_password": "s3cret"}

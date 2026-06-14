@@ -177,11 +177,32 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [showOcpStatus, setShowOcpStatus] = useState(true);
   const [ocpLogModal, setOcpLogModal] = useState(false);
   const [ocpLog, setOcpLog] = useState("");
+  const [showPortal, setShowPortal] = useState(false);
+  const [portalToken, setPortalToken] = useState<{ token: string; access_level: string; portal_url: string } | null>(null);
+  const [portalAccessLevel, setPortalAccessLevel] = useState("console");
+  const [portalCopied, setPortalCopied] = useState(false);
   const ocpLogRef = React.useRef<HTMLPreElement>(null);
 
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const nodes = useCanvasStore((s) => s.nodes);
+
+  const createOrUpdatePortalToken = async (level: string) => {
+    if (!projectId) return;
+    try {
+      const resp = await fetch(`/api/v1/projects/${projectId}/portal-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ access_level: level }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const portalUrl = `${window.location.origin}/portal/${data.token}`;
+        setPortalToken({ ...data, portal_url: portalUrl });
+        setPortalAccessLevel(level);
+      }
+    } catch { /* ignore */ }
+  };
 
   React.useEffect(() => {
     if (!ocpLogModal || !projectId) return;
@@ -491,6 +512,71 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <div className="palette-item-label">Start Order</div>
               <div className="palette-item-desc">VM boot sequence</div>
             </div>
+          </div>
+        )}
+      </div>
+      <div className="palette-divider" />
+      <div className="palette-section">
+        <div
+          className="palette-section-title"
+          style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          onClick={() => { if (!showPortal && !portalToken) createOrUpdatePortalToken(portalAccessLevel); setShowPortal(!showPortal); }}
+        >
+          <span>Lab Portal</span>
+          <span style={{ fontSize: 9 }}>{showPortal ? "▾" : "▸"}</span>
+        </div>
+        {showPortal && (
+          <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+              <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>Access:</span>
+              <select
+                value={portalAccessLevel}
+                onChange={(e) => {
+                  setPortalAccessLevel(e.target.value);
+                  if (portalToken) createOrUpdatePortalToken(e.target.value);
+                }}
+                style={{
+                  fontSize: 11, padding: "2px 4px", borderRadius: 3,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--secondary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }}
+              >
+                <option value="readonly">Read Only</option>
+                <option value="power">Power</option>
+                <option value="console">Console</option>
+              </select>
+            </div>
+            {portalToken ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
+                  <input
+                    readOnly
+                    value={portalToken.portal_url}
+                    style={{
+                      flex: 1, fontSize: 10, padding: "3px 6px", borderRadius: 3,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                    }}
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                  <span
+                    style={{ cursor: "pointer", fontSize: 10, opacity: portalCopied ? 1 : 0.6, whiteSpace: "nowrap" }}
+                    onClick={() => { navigator.clipboard.writeText(portalToken.portal_url); setPortalCopied(true); setTimeout(() => setPortalCopied(false), 2000); }}
+                    title="Copy link"
+                  >{portalCopied ? "✓ Copied" : "Copy"}</span>
+                </div>
+                <a
+                  href={portalToken.portal_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontSize: 10, color: "#73bcf7", textDecoration: "underline" }}
+                >Open Portal ↗</a>
+              </>
+            ) : (
+              <div style={{ fontSize: 10, opacity: 0.5 }}>Generating link...</div>
+            )}
           </div>
         )}
       </div>

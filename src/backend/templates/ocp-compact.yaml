@@ -1,0 +1,10 @@
+name: ocp-compact
+description: Compact cluster (3 schedulable control plane nodes)
+extends: ocp-cluster
+defaults:
+  control_count: 3
+  control_vcpus: 4
+  control_ram_gb: 16
+  control_disk_gb: 120
+  control_schedulable: true
+  worker_count: 0

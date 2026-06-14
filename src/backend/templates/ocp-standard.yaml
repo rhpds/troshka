@@ -1,0 +1,13 @@
+name: ocp-standard
+description: Standard cluster (3 CP + 2 workers)
+extends: ocp-cluster
+defaults:
+  control_count: 3
+  control_vcpus: 4
+  control_ram_gb: 16
+  control_disk_gb: 120
+  control_schedulable: false
+  worker_count: 2
+  worker_vcpus: 4
+  worker_ram_gb: 16
+  worker_disk_gb: 120

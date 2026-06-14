@@ -80,6 +80,7 @@ class PatternDeployRequest(BaseModel):
     dns_provider_id: str | None = None
     auto_deploy: bool = True
     auto_start: bool = True
+    inject_vars: dict | None = None
 
 
 class PatternBulkDeployRequest(BaseModel):

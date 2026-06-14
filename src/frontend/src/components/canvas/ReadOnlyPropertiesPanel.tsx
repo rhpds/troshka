@@ -75,6 +75,14 @@ function VMProperties({ data }: { data: Record<string, any> }) {
       <Section title="Console">
         <PropRow label="Type" value={String(data.consoleType || "vnc")} />
       </Section>
+
+      {data.tags && Object.keys(data.tags as Record<string, string>).length > 0 && (
+        <Section title="Tags">
+          {Object.entries(data.tags as Record<string, string>).map(([key, value]) => (
+            <PropRow key={key} label={key} value={String(value)} />
+          ))}
+        </Section>
+      )}
     </>
   );
 }
