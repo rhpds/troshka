@@ -2680,21 +2680,22 @@ def _handle_gc_discover(job, params):
                 orphaned_bmc.append(entry)
                 _job_log(job,f"Orphaned BMC dir: {entry}")
 
-    # Scan S3 temp dir for stale files (older than 1 hour)
+    # Scan temp dir — cross-reference against running jobs' _tmpdirs
     stale_temps = []
     _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
     if os.path.exists(_s3_tmpdir):
-        now = time.time()
+        active_tmpdirs = set()
+        with _jobs_lock:
+            for j in _jobs.values():
+                if j["status"] == "running":
+                    for td in j.get("_tmpdirs", []):
+                        active_tmpdirs.add(os.path.realpath(td))
         try:
             for entry in os.listdir(_s3_tmpdir):
-                full_path = os.path.join(_s3_tmpdir, entry)
-                try:
-                    age = now - os.stat(full_path).st_mtime
-                    if age > 3600:
-                        stale_temps.append(full_path)
-                        _job_log(job, f"Stale temp file ({int(age)}s old): {full_path}")
-                except OSError:
-                    pass
+                full_path = os.path.realpath(os.path.join(_s3_tmpdir, entry))
+                if full_path not in active_tmpdirs:
+                    stale_temps.append(full_path)
+                    _job_log(job, f"Orphaned temp: {entry}")
         except OSError as e:
             _job_log(job, f"Failed to scan temp dir: {e}")
 
@@ -3086,6 +3087,7 @@ def _handle_snapshot_capture(job, params):
     os.makedirs(_local_tmp, exist_ok=True)
     try:
         with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
+            job.setdefault("_tmpdirs", []).append(tmpdir)
             tmp_flat = os.path.join(tmpdir, "flat.qcow2")
             _job_log(job,"Flattening disk...")
             cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
@@ -3289,6 +3291,7 @@ def _handle_pattern_capture_direct(job, params):
         _local_tmp = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
         os.makedirs(_local_tmp, exist_ok=True)
         with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
+            job.setdefault("_tmpdirs", []).append(tmpdir)
             tmp_flat = os.path.join(tmpdir, "flat.qcow2")
             src_size = os.path.getsize(disk_path)
             src_size_gb = round(src_size / (1024**3), 1)

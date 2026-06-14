@@ -174,9 +174,10 @@ def repair_networks(db: Session, host) -> dict:
     return {"repaired": repaired}
 
 
-def clean_s3_orphan_patterns(db: Session, dry_run: bool = False) -> dict:
-    """Delete S3 pattern folders that have no matching Pattern record in the DB."""
+def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
+    """Delete S3 objects that have no matching DB record (patterns, snapshots, library items)."""
     from app.models.pattern import Pattern
+    from app.models.library import LibraryItem
 
     try:
         from app.services import s3_storage
@@ -191,37 +192,46 @@ def clean_s3_orphan_patterns(db: Session, dry_run: bool = False) -> dict:
     except Exception as e:
         return {"error": f"S3 not configured: {e}"}
 
-    active_ids = {p.id for p in db.query(Pattern).all()}
-    resp = s3.list_objects_v2(Bucket=bucket, Prefix="patterns/", Delimiter="/")
-    orphan_prefixes = []
-    for cp in resp.get("CommonPrefixes", []):
-        prefix = cp["Prefix"]
-        pattern_id = prefix.strip("/").split("/")[-1]
-        if pattern_id not in active_ids:
-            orphan_prefixes.append(prefix)
+    active_pattern_ids = {p.id for p in db.query(Pattern).all()}
+    active_library_ids = {i.id for i in db.query(LibraryItem).all()}
 
     deleted = 0
     deleted_bytes = 0
-    for prefix in orphan_prefixes:
-        objects = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
-        if objects and not dry_run:
-            deleted_bytes += sum(o["Size"] for o in objects)
-            s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": o["Key"]} for o in objects]})
-            deleted += len(objects)
-            log.info("S3 GC: deleted %d objects from orphan pattern %s", len(objects), prefix)
 
+    # Scan each S3 prefix type for orphans
+    prefix_checks = [
+        ("patterns/", active_pattern_ids),
+        ("snapshots/", active_library_ids),
+        ("library/", active_library_ids),
+    ]
+    for s3_prefix, active_ids in prefix_checks:
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=s3_prefix, Delimiter="/")
+        for cp in resp.get("CommonPrefixes", []):
+            prefix = cp["Prefix"]
+            item_id = prefix.strip("/").split("/")[-1]
+            if item_id not in active_ids:
+                objects = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+                if objects and not dry_run:
+                    deleted_bytes += sum(o["Size"] for o in objects)
+                    s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": o["Key"]} for o in objects]})
+                    deleted += len(objects)
+                    log.info("S3 GC: deleted %d objects from orphan %s", len(objects), prefix)
+
+    # Abort stale multipart uploads
     aborted = 0
+    all_active = active_pattern_ids | active_library_ids
     try:
-        mp_resp = s3.list_multipart_uploads(Bucket=bucket, Prefix="patterns/")
+        mp_resp = s3.list_multipart_uploads(Bucket=bucket)
         for upload in mp_resp.get("Uploads", []):
-            key_pattern_id = upload["Key"].split("/")[1] if "/" in upload["Key"] else ""
-            if key_pattern_id not in active_ids and not dry_run:
+            parts = upload["Key"].split("/")
+            item_id = parts[1] if len(parts) > 1 else ""
+            if item_id and item_id not in all_active and not dry_run:
                 s3.abort_multipart_upload(Bucket=bucket, Key=upload["Key"], UploadId=upload["UploadId"])
                 aborted += 1
     except Exception:
         pass
 
-    result = {"orphan_prefixes": len(orphan_prefixes), "deleted": deleted, "aborted_multipart": aborted}
+    result = {"deleted": deleted, "aborted_multipart": aborted}
     if deleted_bytes:
         result["deleted_gb"] = round(deleted_bytes / (1024**3), 1)
     return result
@@ -270,15 +280,18 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             + len(orphans.get("orphaned_bmc_project_ids", []))
         )
         report["orphans_found"] = total_orphans
-        report["cache_items_found"] = len(orphans.get("cache_items", []))
+        orphaned_cache = _find_orphaned_cache(db, orphans.get("cache_items", []))
+        stale_temps = orphans.get("stale_temps", [])
+        report["cache_orphaned"] = len(orphaned_cache)
+        report["stale_temps_found"] = len(stale_temps)
 
-        cache_count = len(orphans.get("cache_items", []))
-        if (total_orphans > 0 or cache_count > 0) and not dry_run:
+        cleanable = total_orphans + len(orphaned_cache) + len(stale_temps)
+        if cleanable > 0 and not dry_run:
             cleanup = clean_orphans(host, orphans, db)
             report["cleanup"] = cleanup
             log.info("Host %s GC: cleaned %d orphans (%d cache)", host_id[:8], cleanup["cleaned"], cleanup.get("cache_cleaned", 0))
-        elif total_orphans > 0 or cache_count > 0:
-            report["cleanup"] = {"dry_run": True, "would_clean": total_orphans + cache_count}
+        elif cleanable > 0:
+            report["cleanup"] = {"dry_run": True, "would_clean": cleanable}
         else:
             report["cleanup"] = {"cleaned": 0}
             log.info("Host %s GC: no orphans found", host_id[:8])
@@ -289,9 +302,30 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             if network_repair.get("repaired", 0) > 0:
                 log.info("Host %s GC: repaired %d bridges", host_id[:8], network_repair["repaired"])
 
-        s3_cleanup = clean_s3_orphan_patterns(db, dry_run)
+        s3_cleanup = clean_s3_orphans(db, dry_run)
         if s3_cleanup.get("deleted", 0) > 0 or s3_cleanup.get("aborted_multipart", 0) > 0:
             report["s3_cleanup"] = s3_cleanup
+
+        # Re-sync capacity after cleanup freed disk space
+        if not dry_run and report.get("cleanup", {}).get("cache_cleaned", 0) > 0:
+            report["capacity_after"] = sync_host_capacity(db, host)
+
+        # Clean orphaned SharedCacheEntries
+        if not dry_run and host.storage_pool_id:
+            from app.models.storage_pool import SharedCacheEntry
+            from app.models.pattern import Pattern
+            from app.models.library import LibraryItem
+            active_ids = {p.id for p in db.query(Pattern).all()} | {i.id for i in db.query(LibraryItem).all()}
+            orphaned_entries = db.query(SharedCacheEntry).filter(
+                SharedCacheEntry.storage_pool_id == host.storage_pool_id,
+                ~SharedCacheEntry.item_id.in_(active_ids),
+            ).all()
+            if orphaned_entries:
+                for entry in orphaned_entries:
+                    db.delete(entry)
+                db.commit()
+                report["shared_cache_entries_cleaned"] = len(orphaned_entries)
+                log.info("Host %s GC: cleaned %d orphaned SharedCacheEntries", host_id[:8], len(orphaned_entries))
 
         return report
 
@@ -393,7 +427,7 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
             for entry in evictable:
                 full_path = f"/var/lib/troshka/shared/{entry.file_path}"
                 try:
-                    job_id = start_job(scan_host, "/gc/clean", {"files": [full_path]})
+                    job_id = start_job(scan_host, "/gc/clean", {"cache_items": [full_path]})
                     wait_for_job(scan_host, job_id, timeout=30)
                 except Exception as e:
                     log.warning("Pool GC %s: failed to evict %s: %s", pool_id[:8], entry.file_path, e)
@@ -418,20 +452,21 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
             report["orphans"] = orphans
 
             total_orphans = (
-                len(orphans.get("orphaned_projects", []))
-                + len(orphans.get("orphaned_domains", []))
-                + len(orphans.get("orphaned_bridges", []))
-                + len(orphans.get("orphaned_namespaces", []))
-                + len(orphans.get("orphaned_cache", []))
-                + len(orphans.get("stale_cache", []))
+                len(orphans.get("orphan_dirs", []))
+                + len(orphans.get("orphan_domains", []))
+                + len(orphans.get("orphan_bridges", []))
+                + len(orphans.get("orphan_namespaces", []))
+                + len(orphans.get("orphaned_bmc_project_ids", []))
             )
+            cache_count = len(orphans.get("cache_items", []))
+            stale_count = len(orphans.get("stale_temps", []))
             report["orphans_found"] = total_orphans
 
-            if total_orphans > 0 and not dry_run:
+            if (total_orphans > 0 or cache_count > 0 or stale_count > 0) and not dry_run:
                 cleanup = clean_orphans(scan_host, orphans, db)
                 report["cleanup"] = cleanup
-            elif total_orphans > 0:
-                report["cleanup"] = {"dry_run": True, "would_clean": total_orphans}
+            elif total_orphans > 0 or cache_count > 0 or stale_count > 0:
+                report["cleanup"] = {"dry_run": True, "would_clean": total_orphans + cache_count + stale_count}
 
         log.info("Pool GC %s: complete — %s", pool_id[:8], report)
         return report

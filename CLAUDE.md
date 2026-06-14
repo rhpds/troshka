@@ -161,10 +161,13 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### Garbage Collector
 - Runs on host agent connect, admin Clean button, or future cron
-- Steps: capacity sync → orphan cleanup → network repair → cache eviction
-- Cache eviction: cross-references host cache dirs against DB records (patterns + library items), deletes orphaned entries
-- Also cleans stale temp dirs (abandoned flatten/upload operations older than 1 hour)
-- S3 orphan cleanup: `clean_s3_orphan_patterns()` deletes S3 prefixes with no matching Pattern record + aborts stale multipart uploads
+- Steps: capacity sync → orphan cleanup → network repair → cache eviction → S3 cleanup → SharedCacheEntry cleanup
+- Cache eviction: cross-references host cache dirs against DB records (patterns + library items), deletes orphaned entries immediately
+- Temp dir cleanup: cross-references against running jobs' `_tmpdirs` — anything not owned by a running job is deleted immediately (no age threshold)
+- S3 orphan cleanup: `clean_s3_orphans()` scans `patterns/`, `snapshots/`, `library/` prefixes, deletes objects with no matching DB record, aborts stale multipart uploads
+- SharedCacheEntry cleanup: deletes DB records pointing to deleted patterns/library items
+- Capacity re-sync: re-runs after cache cleanup so counters reflect freed disk space
+- Dry-run mode: `reconcile_host(host_id, dry_run=True)` reports what would be cleaned without deleting
 
 ### Pattern Save State
 - Backend `Pattern.state`: "creating" → "capturing" → "available" or "error"
