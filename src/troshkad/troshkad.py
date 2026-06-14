@@ -3203,7 +3203,8 @@ def _handle_pattern_capture_direct(job, params):
                         if os.path.exists(tmp_flat):
                             cur = os.path.getsize(tmp_flat)
                             cur_gb = round(cur / (1024**3), 1)
-                            _job_log(job, f"Flattening: {cur_gb} of {src_size_gb} GB")
+                            pct = min(100, int(cur * 100 / src_size)) if src_size > 0 else 0
+                            _job_log(job, f"Flattening: {cur_gb} of {src_size_gb} GB ({pct}%)")
                     except OSError:
                         pass
                     flatten_done.wait(10)
