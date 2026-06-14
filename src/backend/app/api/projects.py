@@ -14,7 +14,7 @@ from app.models.user import User
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.services.placement import place_project, calculate_project_requirements
 from app.models.host import Host
-from app.services.deploy_service import (
+from app.services.deploy_service import (  # noqa: F401
     deploy_project_async, stop_project_async, start_project_async, destroy_project_sync,
     diff_topologies, _extract_vms, _find_vm_networks, _find_vm_disks,
     _setup_networks_via_troshkad, _teardown_networks_via_troshkad,
@@ -1199,7 +1199,7 @@ def reconfigure_project(
 def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Destroy and recreate a single VM in a background thread."""
     project, host = _get_project_and_host(project_id, user, db, check_disk=True)
-    _check_library_items_ready(project.topology, db)
+    _check_library_items_ready(project.topology or {}, db)
 
     p_id = project.id
     host_id = host.id
@@ -1232,7 +1232,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
             # Remove old disk files via troshkad
             # Build list of known files for this VM
-            vm_disks_to_remove = _find_vm_disks(target_vm_id, topology)
+            vm_disks_to_remove = _find_vm_disks(target_vm_id, topology or {})
             paths_to_remove = []
             for d in vm_disks_to_remove:
                 if d["format"] != "iso":
@@ -1244,13 +1244,13 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
             except TroshkadError as e:
                 logger.warning("Redeploy %s: failed to remove old files: %s", dom, e)
 
-            vm_node = next((n for n in topology.get("nodes", []) if n["id"] == target_vm_id and n.get("type") == "vmNode"), None)
+            vm_node = next((n for n in (topology or {}).get("nodes", []) if n["id"] == target_vm_id and n.get("type") == "vmNode"), None)
             if not vm_node:
                 logger.warning("Redeploy %s: node not found in topology", target_vm_id[:8])
                 _redeploy_progress.pop(dom, None)
                 return
 
-            edges = topology.get("edges", [])
+            edges = (topology or {}).get("edges", [])
             vm_connected_ids = set()
             for edge in edges:
                 src, tgt = edge.get("source"), edge.get("target")
@@ -1258,7 +1258,7 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                     vm_connected_ids.add(tgt)
                 elif tgt == target_vm_id:
                     vm_connected_ids.add(src)
-            vm_topo = {"nodes": [n for n in topology.get("nodes", []) if n["id"] in vm_connected_ids]}
+            vm_topo = {"nodes": [n for n in (topology or {}).get("nodes", []) if n["id"] in vm_connected_ids]}
 
             _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
             def _progress(downloaded, total):
@@ -1286,9 +1286,9 @@ def redeploy_vm(project_id: str, vm_id: str, user: User = Depends(get_current_us
                 "secure_boot": vdata.get("secureBoot", False),
             }
             disk_cache = "none" if pool and pool.mode.startswith("shared") else None
-            vm_disks = _find_vm_disks(target_vm_id, topology)
+            vm_disks = _find_vm_disks(target_vm_id, topology or {})
             _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
-            _create_vm_via_troshkad(h, p_id, vm_data, topology, vni_map, pool, disk_cache)
+            _create_vm_via_troshkad(h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache)
 
             should_start = was_running or vdata.get("powerOnAtDeploy", True)
             if should_start:
@@ -1342,7 +1342,7 @@ def redeploy_project(
     if project.state not in ("active", "stopped", "error"):
         raise HTTPException(status_code=409, detail=f"Project is {project.state}, cannot redeploy")
 
-    _check_library_items_ready(project.topology, db)
+    _check_library_items_ready(project.topology or {}, db)
 
     # Destroy existing and release capacity
     if project.host_id:
@@ -1650,9 +1650,13 @@ def migrate_project_endpoint(project_id: str, body: MigrateRequest,
     if not project:
         raise HTTPException(404, "Project not found")
 
-    errors = validate_migration(db, project_id, project.host_id, body.target_host_id)
+    if not project.host_id:
+        raise HTTPException(400, "Project has no assigned host")
+
+    host_id: str = project.host_id
+    errors = validate_migration(db, project_id, host_id, body.target_host_id)
     if errors:
         raise HTTPException(400, "; ".join(errors))
 
-    migrate_project(project_id, project.host_id, body.target_host_id)
+    migrate_project(project_id, host_id, body.target_host_id)
     return {"status": "migrating", "project_id": project_id, "target_host_id": body.target_host_id}
