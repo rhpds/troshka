@@ -276,7 +276,8 @@ export default function StoragePoolsPage() {
     setExtending({ ...extending, [pool.id]: false });
     if (resp.ok) {
       loadData();
-      pollUntilSettled();
+      const poll = setInterval(loadData, 5000);
+      setTimeout(() => clearInterval(poll), 60000);
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to extend storage");
