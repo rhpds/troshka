@@ -2,16 +2,15 @@
 """Client for communicating with troshkad agents on hosts.
 
 Replaces run_ssh_script() with HTTPS requests to the troshkad daemon.
-Uses only stdlib (http.client, ssl) -- no requests/httpx dependency.
-Uses http.client directly (not urllib) so we can verify the peer cert
-fingerprint before reading the response.
+Uses urllib3 connection pooling for performance and reliability.
 """
-import hashlib
-import http.client
 import json
 import logging
-import ssl
 import time
+import urllib3
+from urllib3.exceptions import SSLError, MaxRetryError, TimeoutError as U3Timeout
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +19,9 @@ DEFAULT_TIMEOUT = 30
 
 _DRAIN_RETRY_INTERVAL = 5  # seconds between retries during drain
 _DRAIN_RETRY_TIMEOUT = 330  # max seconds to wait (slightly > troshkad's 300s drain timeout)
+
+# Connection pool cache (one pool per host)
+_pools: dict[str, urllib3.HTTPSConnectionPool] = {}
 
 
 class TroshkadError(Exception):
@@ -30,24 +32,11 @@ class TroshkadError(Exception):
         self.response = response
 
 
-def _make_ssl_context():
-    """Create SSL context that accepts self-signed certs.
+def _get_pool(host):
+    """Get or create a urllib3 connection pool for a host.
 
-    We disable CA verification because troshkad uses self-signed certs.
-    Security is provided by cert fingerprint pinning after connection --
-    same principle as SSH known_hosts.
-    """
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
-
-
-def _verify_cert_fingerprint(conn, host):
-    """Verify the server cert SHA-256 fingerprint matches what we stored at install time.
-
-    Raises TroshkadError on mismatch or missing fingerprint.
+    Uses cert fingerprint pinning for security (same principle as SSH known_hosts).
+    Pools are cached per host IP address to enable connection reuse.
     """
     fingerprint = getattr(host, "agent_cert_fingerprint", None)
     if not fingerprint:
@@ -55,42 +44,53 @@ def _verify_cert_fingerprint(conn, host):
             f"No cert fingerprint stored for host {host.ip_address} -- "
             "cannot verify identity. Re-install the agent to generate credentials."
         )
-    peer_cert_der = conn.sock.getpeercert(binary_form=True)
-    if not peer_cert_der:
-        raise TroshkadError(f"No peer certificate received from {host.ip_address}")
-    actual_fp = hashlib.sha256(peer_cert_der).hexdigest().upper()
-    expected_fp = fingerprint.replace(":", "").upper()
-    if actual_fp != expected_fp:
-        raise TroshkadError(
-            f"Certificate fingerprint mismatch on {host.ip_address}: "
-            f"expected {expected_fp[:16]}..., got {actual_fp[:16]}..."
-        )
+
+    # Return cached pool if exists
+    if host.ip_address in _pools:
+        return _pools[host.ip_address]
+
+    # Create new pool with fingerprint pinning
+    # Format: "AA:BB:CC:..." -> "AABBCC..."
+    fingerprint_clean = fingerprint.replace(":", "").upper()
+    pool = urllib3.HTTPSConnectionPool(
+        host.ip_address,
+        port=TROSHKAD_PORT,
+        cert_reqs="CERT_NONE",  # Accept self-signed certs
+        assert_fingerprint=fingerprint_clean,  # urllib3 verifies SHA-256 fingerprint
+        maxsize=10,  # Max connections in pool
+        block=False,  # Don't block waiting for a connection
+    )
+    _pools[host.ip_address] = pool
+    return pool
 
 
 def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, retries=3):
     """Make an HTTPS request to a host's troshkad agent with automatic retry.
 
     Retries on connection errors and 503s. Non-retryable errors (auth, 4xx) fail immediately.
+    Uses urllib3 connection pooling for better performance and reliability.
     """
+    pool = _get_pool(host)  # Get or create pool (validates fingerprint exists)
     last_error = None
+
     for attempt in range(retries):
-        data = json.dumps(body).encode() if body else None
+        encoded_body = json.dumps(body).encode() if body else None
         headers = {
             "Authorization": f"Bearer {host.agent_token}",
         }
-        if data:
+        if encoded_body:
             headers["Content-Type"] = "application/json"
 
-        ctx = _make_ssl_context()
-        conn = http.client.HTTPSConnection(
-            host.ip_address, TROSHKAD_PORT, context=ctx, timeout=timeout,
-        )
-
         try:
-            conn.request(method, path, body=data, headers=headers)
-            _verify_cert_fingerprint(conn, host)
-            resp = conn.getresponse()
-            resp_body = resp.read().decode()
+            resp = pool.urlopen(
+                method,
+                path,
+                body=encoded_body,
+                headers=headers,
+                timeout=timeout,
+                retries=False,  # We handle retries ourselves
+            )
+            resp_body = resp.data.decode()
 
             if resp.status >= 400:
                 try:
@@ -108,13 +108,18 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
                     time.sleep(5)
                     continue
                 raise err
+
             result = json.loads(resp_body)
             if attempt > 0:
                 logger.info("troshkad %s connection re-established", host.ip_address)
             return result
+
         except TroshkadError:
             raise
-        except (ConnectionError, ConnectionResetError, OSError, TimeoutError) as e:
+        except SSLError as e:
+            # Fingerprint mismatch or other SSL errors
+            raise TroshkadError(f"Certificate verification failed for {host.ip_address}: {e}")
+        except (MaxRetryError, U3Timeout) as e:
             last_error = TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
             if attempt < retries - 1:
                 logger.info("troshkad %s connection failed, retrying in 5s (%d/%d)...", host.ip_address, attempt + 1, retries)
@@ -123,8 +128,7 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
             raise last_error
         except Exception as e:
             raise TroshkadError(f"troshkad request failed: {e}")
-        finally:
-            conn.close()
+
     raise last_error or TroshkadError(f"troshkad request failed after {retries} retries")
 
 
