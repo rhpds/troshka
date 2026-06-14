@@ -77,11 +77,15 @@ def host_storage(user: User = Depends(require_role("operator")), db: Session = D
         disk = check_disk_usage(h)
         if disk.get("error"):
             continue
-        result[h.id] = {
-            "used_pct": disk["used_pct"],
-            "free_gb": round(disk["free_bytes"] / (1024 ** 3), 1),
-            "total_gb": round(disk["total_bytes"] / (1024 ** 3), 1),
-        }
+        partitions = disk.get("partitions")
+        if partitions:
+            result[h.id] = {"partitions": partitions}
+        elif "used_pct" in disk:
+            result[h.id] = {
+                "used_pct": disk["used_pct"],
+                "free_gb": round(disk["free_bytes"] / (1024 ** 3), 1),
+                "total_gb": round(disk["total_bytes"] / (1024 ** 3), 1),
+            }
     return result
 
 

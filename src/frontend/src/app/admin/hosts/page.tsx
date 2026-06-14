@@ -92,7 +92,18 @@ export default function AdminHostsPage() {
     fetch("/api/v1/hosts/expected-agent-version").then((r) => r.ok ? r.json() : {}).then((d) => setExpectedVersion(d.version || ""));
     // Storage fetched separately — SSH calls can be slow and shouldn't block the page
     fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
-      if (d && typeof d === "object") setStorageInfo(d as Record<string, { used_pct: number; free_gb: number; total_gb: number }>);
+      if (d && typeof d === "object") {
+        const mapped: Record<string, { used_pct: number; free_gb: number; total_gb: number }> = {};
+        for (const [id, info] of Object.entries(d) as [string, any][]) {
+          if (info.partitions) {
+            const p = info.partitions.find((p: any) => p.mount.includes("troshka")) || info.partitions[0];
+            if (p) mapped[id] = { used_pct: p.used_pct, free_gb: Math.round(p.free_bytes / (1024**3) * 10) / 10, total_gb: Math.round(p.total_bytes / (1024**3) * 10) / 10 };
+          } else if (info.used_pct !== undefined) {
+            mapped[id] = info;
+          }
+        }
+        setStorageInfo(mapped);
+      }
     }).catch(() => {});
   };
 
