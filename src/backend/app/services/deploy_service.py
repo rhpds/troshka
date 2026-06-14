@@ -198,13 +198,8 @@ def _find_vm_networks(
         # BMC networks use a dedicated bridge (no VNI)
         net_node = next((n for n in nodes if n["id"] == network_node_id), None)
         if net_node and net_node.get("data", {}).get("networkType") == "bmc":
-            # Use the bmc0 NIC's MAC if available, otherwise generate one
-            bmc_mac = ""
-            if vm_node:
-                for nic in vm_node.get("data", {}).get("nics", []):
-                    if nic.get("name", "").startswith("bmc"):
-                        bmc_mac = nic.get("mac", "")
-                        break
+            # Use the NIC's MAC from the edge handle, otherwise generate one
+            bmc_mac = mac  # mac was already resolved from the handle above
             if not bmc_mac:
                 import random
 

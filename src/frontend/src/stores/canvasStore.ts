@@ -1121,6 +1121,15 @@ useCanvasStore.subscribe((state) => {
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
   if (_loadingProject) return;
   if (state.nodes.length === 0) return;
+
+  // Recompute dirty flag on every change (only after deployed state is loaded)
+  if (Object.keys(state.deployedNodeData).length > 0) {
+    const dirty = computeTopologyDirty(state);
+    if (dirty !== state.topologyDirty) {
+      useCanvasStore.setState({ topologyDirty: dirty });
+    }
+  }
+
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     if (_loadingProject) return;

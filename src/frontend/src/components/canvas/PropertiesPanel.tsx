@@ -1669,21 +1669,44 @@ export default function PropertiesPanel() {
                       <option value="restrict">Restrict by port</option>
                     </select>
                   </div>
-                  {(data as Record<string, any>).outboundPolicy === "restrict" && (
-                    <div className="props-field">
-                      <label className="props-label">Allowed Ports</label>
-                      <input
-                        className="props-input"
-                        value={(data as Record<string, any>).outboundPorts as string || ""}
-                        onChange={(e) => update("outboundPorts", e.target.value)}
-                        placeholder="e.g. 80,443,53/udp"
-                        style={{ fontFamily: "monospace" }}
-                      />
-                      <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                        Comma-separated. Both TCP+UDP unless specified (e.g. 53/udp, 443/tcp).
-                      </span>
-                    </div>
-                  )}
+                  {(data as Record<string, any>).outboundPolicy === "restrict" && (() => {
+                    const currentPorts = ((data as Record<string, any>).outboundPorts as string || "").split(",").map((p: string) => p.trim()).filter(Boolean);
+                    const removePort = (port: string) => {
+                      update("outboundPorts", currentPorts.filter((p: string) => p !== port).join(","));
+                    };
+                    return (
+                      <div className="props-field">
+                        <label className="props-label">Allowed Ports</label>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                          {currentPorts.map((port: string) => (
+                            <span key={port} style={{
+                              display: "inline-flex", alignItems: "center", gap: 4,
+                              padding: "2px 8px", borderRadius: 12, fontSize: 11,
+                              background: "rgba(0,102,204,0.15)", color: "#73bcf7",
+                              border: "1px solid rgba(0,102,204,0.3)",
+                            }}>
+                              {port}
+                              <span onClick={() => removePort(port)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
+                            </span>
+                          ))}
+                        </div>
+                        <input
+                          className="props-input"
+                          placeholder="port or port/proto (Enter to add)"
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              const val = (e.target as HTMLInputElement).value.trim();
+                              if (val && !currentPorts.includes(val)) {
+                                update("outboundPorts", [...currentPorts, val].join(","));
+                                (e.target as HTMLInputElement).value = "";
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {(data as Record<string, any>).gatewayMode === "nat-portforward" && (

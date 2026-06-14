@@ -1442,6 +1442,14 @@ def reconfigure_project(
                     )
                     continue
 
+                if current_cfg["nics"] != desired_nics:
+                    logger.info(
+                        "Reconfigure %s: VM %s NIC diff — current:%s desired:%s",
+                        p_id[:8],
+                        vm["name"],
+                        current_cfg["nics"],
+                        desired_nics,
+                    )
                 logger.info(
                     "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s nics:%s disks:%s cdroms:%s",
                     p_id[:8],
