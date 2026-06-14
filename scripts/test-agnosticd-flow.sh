@@ -23,12 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TROSHKA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGD_DIR="$HOME/agnosticd-v2"
 COLLECTION_DIR="$HOME/troshka-ansible-collection"
-STATE_DIR="$HOME/.troshka-test-state"
-
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 CONFIG="${TROSHKA_CONFIG:-openshift-cluster-troshka}"
-
-mkdir -p "$STATE_DIR"
 
 # --- Helper: install collection into temp dir ---
 install_collection() {
@@ -43,46 +39,22 @@ get_api_key() {
         echo "$TROSHKA_API_KEY"
         return
     fi
-    if [[ -f "$STATE_DIR/api_key" ]]; then
-        cat "$STATE_DIR/api_key"
-        return
-    fi
     local key
     key=$(curl -s -X POST "${TROSHKA_API_URL}/api/v1/api-keys/" \
         -H "Content-Type: application/json" \
-        -d "{\"name\": \"agnosticd-test\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])")
-    echo "$key" > "$STATE_DIR/api_key"
+        -d "{\"name\": \"agnosticd-test-$(date +%s)\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['key'])")
     echo "$key"
-}
-
-# --- Helper: load state for a GUID ---
-load_state() {
-    local guid="$1"
-    local state_file="$STATE_DIR/${guid}.json"
-    if [[ ! -f "$state_file" ]]; then
-        # Try "latest" symlink
-        if [[ -L "$STATE_DIR/latest" ]]; then
-            state_file=$(readlink "$STATE_DIR/latest")
-        fi
-    fi
-    if [[ ! -f "$state_file" ]]; then
-        echo "ERROR: No saved state for guid '$guid'. Run a deploy first." >&2
-        exit 1
-    fi
-    cat "$state_file"
 }
 
 # --- Helper: run lifecycle action ---
 run_lifecycle() {
     local action="$1"
-    local guid="$2"
-    local state_json
-    state_json=$(load_state "$guid")
-    local project_id api_key
-    project_id=$(echo "$state_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['project_id'])")
+    local project_id="$2"
+    local api_key
     api_key=$(get_api_key)
+    local guid="${GUID:-lifecycle}"
 
-    echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') (guid=$guid, project=$project_id) ==="
+    echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') (project=$project_id) ==="
 
     local collections_dir
     collections_dir=$(install_collection)
@@ -102,17 +74,7 @@ run_lifecycle() {
 
     rm -rf "$collections_dir"
 
-    if [[ "$action" == "destroy" && $status -eq 0 ]]; then
-        rm -f "$STATE_DIR/${guid}.json"
-        if [[ -L "$STATE_DIR/latest" ]]; then
-            local latest_target
-            latest_target=$(readlink "$STATE_DIR/latest")
-            if [[ "$latest_target" == *"${guid}"* ]]; then
-                rm -f "$STATE_DIR/latest"
-            fi
-        fi
-        echo "=== DESTROYED ==="
-    elif [[ $status -eq 0 ]]; then
+    if [[ $status -eq 0 ]]; then
         echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') OK ==="
     else
         echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') FAILED (exit code: $status) ==="
@@ -129,42 +91,32 @@ while [[ $# -gt 0 ]]; do
         --stop)    ACTION="stop";    shift ;;
         --start)   ACTION="start";   shift ;;
         --status)  ACTION="status";  shift ;;
-        --project-id) PROJECT_ID_ARG="$2"; shift 2 ;;
+        --project-id)   PROJECT_ID_ARG="$2"; shift 2 ;;
+        --pattern-name) PATTERN_NAME_ARG="$2"; shift 2 ;;
+        --guid)         GUID_ARG="$2"; shift 2 ;;
         *) break ;;
     esac
 done
 
 if [[ -n "$ACTION" ]]; then
-    GUID="${1:-}"
-    if [[ -n "$PROJECT_ID_ARG" ]]; then
-        # Create ad-hoc state from --project-id
-        GUID="${GUID:-adhoc-$(date +%s)}"
-        API_KEY=$(get_api_key)
-        echo "{\"guid\": \"$GUID\", \"project_id\": \"$PROJECT_ID_ARG\", \"api_key\": \"$API_KEY\"}" > "$STATE_DIR/${GUID}.json"
-    fi
-    if [[ -z "$GUID" && -L "$STATE_DIR/latest" ]]; then
-        GUID=$(readlink "$STATE_DIR/latest" | xargs basename | sed 's/.json//')
-    fi
-    if [[ -z "$GUID" ]]; then
-        echo "Usage: $0 --${ACTION} [guid]"
-        echo "       $0 --${ACTION} --project-id <uuid>"
-        echo "No guid specified and no latest deploy found."
+    if [[ -z "$PROJECT_ID_ARG" ]]; then
+        echo "Usage: $0 --${ACTION} --project-id <uuid>"
         exit 1
     fi
-    run_lifecycle "$ACTION" "$GUID"
+    run_lifecycle "$ACTION" "$PROJECT_ID_ARG"
     exit $?
 fi
 
 # --- Deploy flow ---
-PATTERN_NAME="${1:-}"
-GUID="${2:-test-$(date +%s)}"
+PATTERN_NAME="${PATTERN_NAME_ARG:-${1:-}}"
+GUID="${GUID_ARG:-${2:-test-$(date +%s)}}"
 
 if [[ -z "$PATTERN_NAME" ]]; then
-    echo "Usage: $0 <pattern-name> [guid]"
-    echo "       $0 --destroy [guid]"
-    echo "       $0 --stop [guid]"
-    echo "       $0 --start [guid]"
-    echo "       $0 --status [guid]"
+    echo "Usage: $0 --pattern-name <name> [--guid <guid>]"
+    echo "       $0 --destroy --project-id <uuid>"
+    echo "       $0 --stop --project-id <uuid>"
+    echo "       $0 --start --project-id <uuid>"
+    echo "       $0 --status --project-id <uuid>"
     echo ""
     echo "Available patterns:"
     curl -s "${TROSHKA_API_URL}/api/v1/patterns/" | python3 -c "
@@ -172,13 +124,6 @@ import sys, json
 for p in json.load(sys.stdin):
     print(f'  {p[\"name\"]}  (state={p[\"state\"]})')
 " 2>/dev/null || echo "  (could not fetch patterns — is backend running?)"
-    echo ""
-    echo "Previous deploys:"
-    for f in "$STATE_DIR"/*.json 2>/dev/null; do
-        [[ -f "$f" ]] || continue
-        local_guid=$(basename "$f" .json)
-        echo "  $local_guid"
-    done
     exit 1
 fi
 
@@ -241,7 +186,6 @@ rm -f "$VARS_FILE"
 rm -rf "$COLLECTIONS_DIR"
 
 if [[ $STATUS -eq 0 ]]; then
-    # --- Save state for lifecycle commands ---
     PROJECT_ID=$(curl -sL "${TROSHKA_API_URL}/api/v1/projects/" \
         -H "Authorization: Bearer ${API_KEY}" | python3 -c "
 import sys, json
@@ -249,27 +193,16 @@ for p in json.load(sys.stdin):
     if p['name'] == '${GUID}':
         print(p['id']); break
 ")
-    if [[ -n "$PROJECT_ID" ]]; then
-        cat > "$STATE_DIR/${GUID}.json" <<STATE
-{"guid": "${GUID}", "project_id": "${PROJECT_ID}", "api_key": "${API_KEY}", "pattern": "${PATTERN_NAME}"}
-STATE
-        ln -sf "$STATE_DIR/${GUID}.json" "$STATE_DIR/latest"
-        echo ""
-        echo "=== SUCCESS ==="
-        echo "GUID:       $GUID"
-        echo "Project ID: $PROJECT_ID"
-        echo "State saved to $STATE_DIR/${GUID}.json"
-        echo ""
-        echo "Lifecycle commands:"
-        echo "  $0 --status"
-        echo "  $0 --stop"
-        echo "  $0 --start"
-        echo "  $0 --destroy"
-    else
-        echo ""
-        echo "=== SUCCESS (but could not find project ID to save state) ==="
-        echo "GUID: $GUID"
-    fi
+    echo ""
+    echo "=== SUCCESS ==="
+    echo "GUID:       $GUID"
+    echo "Project ID: $PROJECT_ID"
+    echo ""
+    echo "Lifecycle commands:"
+    echo "  $0 --status --project-id $PROJECT_ID"
+    echo "  $0 --stop --project-id $PROJECT_ID"
+    echo "  $0 --start --project-id $PROJECT_ID"
+    echo "  $0 --destroy --project-id $PROJECT_ID"
 else
     echo ""
     echo "=== FAILED (exit code: $STATUS) ==="
