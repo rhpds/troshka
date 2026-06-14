@@ -32,5 +32,6 @@ class HostResponse(BaseModel):
     last_health_at: datetime.datetime | None = None
     created_at: datetime.datetime
     storage_pool_id: str | None = None
+    storage_warnings: list | None = None
 
     model_config = {"from_attributes": True}
