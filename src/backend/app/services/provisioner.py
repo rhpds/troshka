@@ -74,6 +74,25 @@ def _ensure_troshkad_rule(client, sg_id: str):
             logger.warning("Failed to add troshkad rule to SG %s", sg_id, exc_info=True)
 
 
+def _ensure_console_rule(client, sg_id: str):
+    """Ensure port 443 rule exists on an existing security group."""
+    sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
+    for perm in sg.get("IpPermissions", []):
+        if perm.get("FromPort") == 443 and perm.get("ToPort") == 443:
+            return
+    try:
+        client.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[{
+                "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}],
+            }],
+        )
+        logger.info("Added port 443 rule to existing SG %s", sg_id)
+    except Exception:
+        pass
+
+
 def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None) -> str:
     client = _get_ec2_client(credentials=credentials)
     existing = client.describe_security_groups(
@@ -85,6 +104,7 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
     if existing["SecurityGroups"]:
         sg_id = existing["SecurityGroups"][0]["GroupId"]
         _ensure_troshkad_rule(client, sg_id)
+        _ensure_console_rule(client, sg_id)
         return sg_id
 
     backend_ip = get_public_ip()
@@ -100,6 +120,7 @@ def ensure_security_group(vpc_id: str, name: str = "troshka-host-sg", credential
         GroupId=sg_id,
         IpPermissions=[
             {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
+            {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}]},
             {"IpProtocol": "tcp", "FromPort": 31337, "ToPort": 31337, "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}]},
             {"IpProtocol": "udp", "FromPort": 4789, "ToPort": 4789, "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}]},
         ],
@@ -301,7 +322,7 @@ def provision_host(
     last_error = None
     for try_subnet in subnet_ids:
         try:
-            response = client.run_instances(
+            launch_kwargs = dict(
                 ImageId=ami_id,
                 InstanceType=instance_type,
                 KeyName=key_name,
@@ -339,6 +360,9 @@ def provision_host(
                     "AssociatePublicIpAddress": True,
                 }],
             )
+            if getattr(config.console, "hosted_zone_id", ""):
+                launch_kwargs["IamInstanceProfile"] = {"Name": "troshka-certbot-profile"}
+            response = client.run_instances(**launch_kwargs)
             break
         except client.exceptions.ClientError as e:
             if "Unsupported" in str(e):

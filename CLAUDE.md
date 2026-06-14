@@ -74,13 +74,29 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - `useState` + `useEffect` for state management
 - PatternFly components: `PageSection`, `Toolbar`, `Card`, `Button`
 
-### Console
+### Console (Direct Proxy)
 - VNC console at `/console?vm=&project=&name=` — bare layout (no app header)
-- noVNC (`@novnc/novnc`) over WebSocket, `focusOnClick=true`
-- Virtual keyboard at `/console/keyboard?name=` — opens as popup window via `window.open()`
+- **Direct proxy**: Browser → `wss://{instance_id}.{base_domain}/ws/{jwt}` → troshka-vncd → localhost VNC (2 hops, no SSH tunnel)
+- Backend issues a short-lived JWT (5 min, single-use) signed with the host's agent token
+- `troshka-vncd` daemon on each host validates JWT, resolves VNC port via `virsh dumpxml`, proxies binary frames
+- TLS via Let's Encrypt (certbot DNS-01 challenge with Route53 instance profile)
+- noVNC (`@novnc/novnc`), `focusOnClick=true`
+- Virtual keyboard at `/console/keyboard?name=` — popup via `window.open()`
 - Keyboard communicates via `postMessage` with same-origin restriction (never `"*"`)
 - Key macros: Linux/Windows dropdowns send X11 keysyms via `sendCombo()`
 - `sendCombo()`: press all keys down in order, release in reverse — standard VNC key combo pattern
+
+### Console Route53 Setup
+- Requires a Route53 hosted zone for console domains (e.g., `troshka.dev.rhdp.net`)
+- Config: `console.hosted_zone_id` and `console.base_domain` in `config.local.yaml`
+- Each host gets an A record: `{instance_id}.{base_domain}` → public IP
+- DNS record created automatically during host provisioning, deleted on removal
+- IAM: `troshka-certbot-role` + `troshka-certbot-profile` created during VPC setup
+- Instance profile attached to EC2 instances — allows certbot DNS-01 without storing AWS creds on hosts
+- certbot installed in `/opt/troshka/venv/`, certs at `/etc/letsencrypt/live/{fqdn}/`
+- Auto-renewal via cron: `certbot renew --quiet`
+- `console_domain` stored on Host model, set during provisioning
+- **IAM policy note**: `route53:GetChange` requires `Resource: "*"` (not scoped to hosted zone)
 
 ### Canvas
 - Topology stored as JSONB in `Project.topology` (source of truth)
@@ -130,7 +146,9 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Single-file Python daemon at `src/troshkad/troshkad.py` — stdlib only, no pip
 - Backend client: `src/backend/app/services/troshkad_client.py` — urllib3 connection pooling with cert fingerprint pinning
 - HTTPS on port 31337, bearer token auth
-- All host operations go through troshkad — SSH only for initial install + VNC console
+- All host operations go through troshkad — SSH only for initial install
+- **troshka-vncd**: separate daemon (`src/troshka-vncd/troshka-vncd.py`) for VNC console relay — port 443, `websockets` library, systemd-managed
+- vncd updates pushed via `/admin/update-vncd` endpoint on troshkad, also handled by `update-agent.sh`
 - **Qemu hook** (`/etc/libvirt/hooks/qemu`): lives ONLY in agent install script (`agent_deployer.py`), must NOT call `virsh` (deadlocks virtqemud), parses XML from stdin
 - **Python string escaping**: backslashes in install script heredocs must be doubled (`\\(`, `\\1`, `\\K`)
 - **Shared ISOs**: hard-linked into VM dirs (not symlinked) — prevents qemu permission denied and survives `virsh undefine --remove-all-storage`

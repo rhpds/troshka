@@ -1,3 +1,4 @@
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -5,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
+from app.core.config import config
 from app.core.database import get_db
 from app.models.provider import Provider
 from app.models.user import User
@@ -372,6 +374,66 @@ def create_vpc(provider_id: str, user: User = Depends(require_role("admin")), db
             logger.info("Created S3 Gateway Endpoint for VPC %s", vpc_id)
         except Exception as e:
             logger.warning("S3 endpoint creation failed (non-fatal): %s", e)
+
+        # Create IAM instance profile for certbot DNS-01 challenges
+        console_zone_id = getattr(config.console, "hosted_zone_id", "")
+        if console_zone_id:
+            try:
+                iam = boto3.client(
+                    "iam",
+                    aws_access_key_id=creds.get("access_key_id"),
+                    aws_secret_access_key=creds.get("secret_access_key"),
+                )
+                role_name = "troshka-certbot-role"
+                profile_name = "troshka-certbot-profile"
+
+                try:
+                    iam.create_role(
+                        RoleName=role_name,
+                        AssumeRolePolicyDocument=json.dumps({
+                            "Version": "2012-10-17",
+                            "Statement": [{
+                                "Effect": "Allow",
+                                "Principal": {"Service": "ec2.amazonaws.com"},
+                                "Action": "sts:AssumeRole",
+                            }],
+                        }),
+                        Description="Allows EC2 hosts to manage Route53 for certbot DNS-01",
+                        Tags=[{"Key": "ManagedBy", "Value": "troshka"}],
+                    )
+                except iam.exceptions.EntityAlreadyExistsException:
+                    pass
+
+                iam.put_role_policy(
+                    RoleName=role_name,
+                    PolicyName="troshka-certbot-dns",
+                    PolicyDocument=json.dumps({
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": "route53:ChangeResourceRecordSets",
+                            "Resource": f"arn:aws:route53:::hostedzone/{console_zone_id}",
+                        }, {
+                            "Effect": "Allow",
+                            "Action": ["route53:GetChange", "route53:ListHostedZones"],
+                            "Resource": "*",
+                        }],
+                    }),
+                )
+
+                try:
+                    iam.create_instance_profile(InstanceProfileName=profile_name)
+                except iam.exceptions.EntityAlreadyExistsException:
+                    pass
+
+                try:
+                    iam.add_role_to_instance_profile(InstanceProfileName=profile_name, RoleName=role_name)
+                except iam.exceptions.LimitExceededException:
+                    pass
+
+                logger.info("Created IAM instance profile %s for certbot", profile_name)
+            except Exception as e:
+                logger.warning("Failed to create certbot instance profile: %s (console proxy will not work)", e)
 
         from app.services.provisioner import ensure_security_group
         sg_id = ensure_security_group(vpc_id, credentials=creds)

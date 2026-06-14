@@ -22,7 +22,7 @@ function ConsolePage() {
   const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
-  const [consoleToken, setConsoleToken] = useState<string | null>(null);
+  const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [scaled, setScaled] = useState(true);
   const [focused, setFocused] = useState(false);
   const [openMenu, setOpenMenu] = useState<"linux" | "windows" | "power" | null>(null);
@@ -87,14 +87,14 @@ function ConsolePage() {
       .catch(() => {});
   }, [projectId, vmId]);
 
-  // Fetch console token from API, retry if VM not running
-  const fetchConsoleToken = useCallback(async (): Promise<string | null> => {
+  // Fetch console WebSocket URL from API, retry if VM not running
+  const fetchConsoleUrl = useCallback(async (): Promise<string | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
-      if (data.token) return data.token;
+      if (data.ws_url) return data.ws_url;
     } catch { /* ignore */ }
     return null;
   }, [projectId, vmId, projectDeleted]);
@@ -102,17 +102,15 @@ function ConsolePage() {
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleToken().then((token) => {
+    fetchConsoleUrl().then((url) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (token) {
-        setConsoleToken(token);
+      if (url) {
+        setWsUrl(url);
       } else {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
       }
     });
-  }, [fetchConsoleToken, projectDeleted]);
-
-  const wsUrl = consoleToken ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/v1/console/ws/${consoleToken}` : null;
+  }, [fetchConsoleUrl, projectDeleted]);
 
   const createRfb = useCallback(() => {
     if (!wsUrl || !canvasRef.current || !RFBClass.current || !mountedRef.current) return;
@@ -135,7 +133,7 @@ function ConsolePage() {
       const r = rfb as unknown as { addEventListener: (e: string, cb: (ev: Record<string, unknown>) => void) => void };
       r.addEventListener("connect", () => {
         _activeRfb = rfb;
-        _activeToken = consoleToken;
+        _activeToken = wsUrl;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
       r.addEventListener("disconnect", () => {
@@ -143,14 +141,14 @@ function ConsolePage() {
         _activeToken = null;
         if (mountedRef.current) {
           setStatus("Reconnecting...");
-          setConsoleToken(null);
+          setWsUrl(null);
           reconnectTimer.current = setTimeout(pollForPort, 3000);
         }
       });
     } catch {
       if (mountedRef.current) {
         setStatus("Reconnecting...");
-        setConsoleToken(null);
+        setWsUrl(null);
         reconnectTimer.current = setTimeout(pollForPort, 3000);
       }
     }
@@ -175,21 +173,21 @@ function ConsolePage() {
     };
   }, []);
 
-  // When we have a token, connect. When we don't, poll for one.
+  // When we have a URL, connect. When we don't, poll for one.
   // Module-level _activeRfb survives hot-reloads — skip reconnect if already connected.
   useEffect(() => {
     if (_activeRfb && _activeToken) {
       rfbRef.current = _activeRfb;
-      setConsoleToken(_activeToken);
+      setWsUrl(_activeToken);
       setStatus("Connected");
       return;
     }
-    if (consoleToken && RFBClass.current) {
+    if (wsUrl && RFBClass.current) {
       createRfb();
-    } else if (!consoleToken) {
+    } else if (!wsUrl) {
       pollForPort();
     }
-  }, [consoleToken, createRfb, pollForPort]);
+  }, [wsUrl, createRfb, pollForPort]);
 
   useEffect(() => {
     if (ws.deleted) {

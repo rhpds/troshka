@@ -30,7 +30,6 @@ from app.services.troshkad_client import (
     reconfigure_vm as troshkad_reconfigure_vm,
     undefine_vm as troshkad_undefine_vm,
 )
-from app.services.console_proxy import get_or_create_proxy
 from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -675,7 +674,6 @@ def restart_vm(project_id: str, vm_id: str, user: User = Depends(get_current_use
 
 @router.get("/{project_id}/vms/{vm_id}/console")
 def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.services.console_proxy import create_console_token
     project, host = _get_project_and_host(project_id, user, db)
     dom = _domain_name(project_id, vm_id)
     vnc_port = troshkad_get_vnc_port(host, dom)
@@ -683,14 +681,12 @@ def get_vm_console(project_id: str, vm_id: str, user: User = Depends(get_current
     if not vnc_port:
         return {"error": "VNC not available"}
 
-    proxy = get_or_create_proxy(dom, host.ip_address, host.private_key, vnc_port)
-    if "error" in proxy:
-        return {"error": proxy["error"]}
+    if not host.console_domain or not host.agent_token:
+        return {"error": "Console proxy not configured for this host"}
 
-    token = create_console_token(proxy["ws_port"], user.id, project_id, vm_id)
-    return {
-        "token": token,
-    }
+    from app.services.console_dns import sign_console_jwt
+    jwt = sign_console_jwt(dom, host.id, host.agent_token)
+    return {"ws_url": f"wss://{host.console_domain}/ws/{jwt}"}
 
 
 @router.post("/{project_id}/vms/{vm_id}/exec")
@@ -1435,10 +1431,6 @@ def delete_project(
         raise HTTPException(status_code=403, detail="Access denied")
 
     notify_project(project_id, {"type": "project-deleted"})
-
-    # Close any active console proxies for this project's VMs (no network calls)
-    from app.services.console_proxy import close_proxies_for_project
-    close_proxies_for_project(project_id)
 
     # Release EIPs before deleting DB record (delete cascades null the FK)
     from app.models.elastic_ip import ElasticIp

@@ -329,6 +329,59 @@ fi
 
 echo "troshkad: service started"
 
+# Write vncd systemd unit
+cat > /etc/systemd/system/troshka-vncd.service << 'SYSTEMDEOF'
+[Unit]
+Description=Troshka VNC Console Proxy Daemon
+After=network.target troshkad.service
+
+[Service]
+Type=simple
+ExecStart=/opt/troshka/venv/bin/python3 /opt/troshka/troshka-vncd.py
+WorkingDirectory=/opt/troshka
+Restart=always
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMDEOF
+
+# Console TLS via Let's Encrypt (only if console_domain is set)
+CONSOLE_DOMAIN="{console_domain}"
+if [ -n "$CONSOLE_DOMAIN" ]; then
+    echo "=== Setting up console TLS ==="
+    /opt/troshka/venv/bin/pip install $PIP_ARGS certbot certbot-dns-route53
+    /opt/troshka/venv/bin/certbot certonly --dns-route53 \
+        -d "$CONSOLE_DOMAIN" \
+        --non-interactive --agree-tos -m noreply@redhat.com \
+        --preferred-challenges dns-01 2>&1 || echo "certbot: initial cert may have failed (will retry)"
+
+    # Auto-renewal cron
+    echo "0 3 * * * root /opt/troshka/venv/bin/certbot renew --quiet" > /etc/cron.d/certbot-renew
+
+    # Store console_domain in troshkad config for vncd to find
+    python3 -c "
+import json
+conf = json.load(open('/opt/troshka/troshkad.conf'))
+conf['console_domain'] = '$CONSOLE_DOMAIN'
+json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+"
+
+    # Open port 443
+    if which firewall-cmd &>/dev/null; then
+        firewall-cmd --add-port=443/tcp --permanent 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+    fi
+
+    systemctl daemon-reload
+    systemctl enable troshka-vncd
+    systemctl restart troshka-vncd
+    echo "vncd: started with Let's Encrypt cert for $CONSOLE_DOMAIN"
+else
+    echo "vncd: no console_domain, skipping TLS setup"
+fi
+
 # BMC tools venv (sushy-tools for Redfish, virtualbmc for IPMI)
 # Uses --system-site-packages to access the system python3-libvirt RPM
 # (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
@@ -348,7 +401,7 @@ else
     echo "No system libvirt, attempting full install"
     /opt/troshka/venv/bin/pip install $PIP_ARGS sushy-tools virtualbmc
 fi
-/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli
+/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli websockets
 echo "BMC venv ready at /opt/troshka/venv"
 
 # Output credentials for backend to capture (tab-separated to avoid colon ambiguity)
@@ -402,7 +455,8 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
 
 def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = "",
                  storage_mode: str = "local", nfs_server: str = "", nfs_path: str = "",
-                 ca_cert: str = "", host_cert: str = "", host_key: str = "") -> dict:
+                 ca_cert: str = "", host_cert: str = "", host_key: str = "",
+                 console_domain: str = "") -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
 
@@ -418,7 +472,8 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
               .replace("{nfs_path}", nfs_path)
               .replace("{ca_cert_b64}", base64.b64encode(ca_cert.encode()).decode() if ca_cert else "")
               .replace("{host_cert_b64}", base64.b64encode(host_cert.encode()).decode() if host_cert else "")
-              .replace("{host_key_b64}", base64.b64encode(host_key.encode()).decode() if host_key else ""))
+              .replace("{host_key_b64}", base64.b64encode(host_key.encode()).decode() if host_key else "")
+              .replace("{console_domain}", console_domain))
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)
@@ -463,6 +518,30 @@ def deploy_agent(host_ip: str, private_key: str, host_id: str, api_url: str = ""
                 )
         else:
             logger.warning("troshkad.py not found at %s", troshkad_path)
+
+        # SCP vncd.py to host
+        vncd_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+            "troshka-vncd",
+            "troshka-vncd.py"
+        )
+        if os.path.exists(vncd_path):
+            logger.info("Copying troshka-vncd.py to %s", host_ip)
+            scp_result = subprocess.run(
+                ["scp", *ssh_opts, vncd_path, f"ec2-user@{host_ip}:/tmp/troshka-vncd.py"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if scp_result.returncode != 0:
+                logger.warning("SCP troshka-vncd.py failed: %s", scp_result.stderr)
+            else:
+                subprocess.run(
+                    ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "mv", "/tmp/troshka-vncd.py", "/opt/troshka/troshka-vncd.py"],
+                    capture_output=True, timeout=30,
+                )
+        else:
+            logger.warning("troshka-vncd.py not found at %s", vncd_path)
 
         # Copy utility scripts
         tools_dir = os.path.dirname(troshkad_path)

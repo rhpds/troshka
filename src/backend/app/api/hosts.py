@@ -193,6 +193,7 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
 
     # Auto-install agent in background
     import threading
+    provider_creds = creds  # Capture for use in thread
     def _auto_install():
         from app.core.database import SessionLocal
         from app.services.agent_deployer import wait_for_ssh, deploy_agent
@@ -222,7 +223,8 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
                                   storage_mode=_sm,
                                   nfs_server=nfs_kwargs.get("nfs_server", ""),
                                   nfs_path=nfs_kwargs.get("nfs_path", ""),
-                                  ca_cert=_ca_cert, host_cert=_host_cert, host_key=_host_key)
+                                  ca_cert=_ca_cert, host_cert=_host_cert, host_key=_host_key,
+                                  console_domain=h.console_domain or "")
             h.agent_status = "connected" if result["success"] else "install_failed"
 
             # Store troshkad credentials
@@ -231,6 +233,17 @@ def add_host(body: ProvisionRequest, user: User = Depends(require_role("admin"))
                 h.agent_token = creds["token"]
                 h.agent_cert_fingerprint = creds["fingerprint"]
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
+            # Create console DNS record
+            base_domain = getattr(config.console, "base_domain", "")
+            if base_domain and h.instance_id and h.ip_address:
+                from app.services.console_dns import console_domain_for_host, upsert_dns_record
+                fqdn = console_domain_for_host(h.instance_id, base_domain)
+                try:
+                    upsert_dns_record(fqdn, h.ip_address, credentials=provider_creds)
+                    h.console_domain = fqdn
+                except Exception as e:
+                    logger.warning("Failed to create console DNS for %s: %s", h.id[:8], e)
 
             s.commit()
         except Exception:
@@ -288,6 +301,8 @@ def install_agent(host_id: str, user: User = Depends(require_role("admin")), db:
             h.agent_status = "installing"
             s.commit()
             _install_kwargs = {}
+            if h.console_domain:
+                _install_kwargs["console_domain"] = h.console_domain
             if h.storage_pool_id:
                 from app.models.storage_pool import StoragePool as _SP2
                 _pool = s.query(_SP2).get(h.storage_pool_id)
@@ -535,6 +550,8 @@ def poweron_host(host_id: str, body: PowerOnRequest | None = None, user: User = 
             h.agent_status = "installing"
             s.commit()
             _kwargs = {}
+            if h.console_domain:
+                _kwargs["console_domain"] = h.console_domain
             if h.storage_pool_id:
                 from app.models.storage_pool import StoragePool as _SP
                 _pool = s.query(_SP).get(h.storage_pool_id)
@@ -738,6 +755,14 @@ def remove_host(host_id: str, user: User = Depends(require_role("admin")), db: S
     # Mark as terminating first
     host.state = "terminating"
     db.commit()
+
+    # Clean up console DNS record
+    if host.console_domain and host.ip_address:
+        try:
+            from app.services.console_dns import delete_dns_record
+            delete_dns_record(host.console_domain, host.ip_address, credentials=creds)
+        except Exception as e:
+            logger.warning("Failed to delete console DNS for %s: %s", host_id[:8], e)
 
     if host.instance_id:
         try:

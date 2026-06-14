@@ -109,6 +109,34 @@
           "iam:AWSServiceName": "fsx.amazonaws.com"
         }
       }
+    },
+    {
+      "Sid": "Route53Console",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeResourceRecordSets",
+        "route53:GetChange",
+        "route53:ListHostedZones"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IAMInstanceProfile",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:CreateInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/troshka-certbot-role",
+        "arn:aws:iam::*:instance-profile/troshka-certbot-profile"
+      ]
     }
   ]
 }

@@ -249,6 +249,14 @@ def push_update(host, script_bytes, version, force=False):
     }, timeout=30)
 
 
+def push_vncd_update(host, script_bytes: bytes):
+    """Push a troshka-vncd update to a host."""
+    import base64
+    troshkad_request(host, "POST", "/admin/update-vncd", body={
+        "script": base64.b64encode(script_bytes).decode(),
+    }, timeout=30)
+
+
 def get_vm_state(host, domain_name, timeout=15):
     """Get VM state and boot config. Returns dict with 'state' and 'boot_devs'."""
     try:

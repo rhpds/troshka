@@ -32,7 +32,7 @@ import hashlib, os, sys, time
 
 from app.core.database import SessionLocal
 from app.models.host import Host
-from app.services.troshkad_client import push_update, check_health, TroshkadError
+from app.services.troshkad_client import push_update, push_vncd_update, check_health, TroshkadError
 
 prefix = '${HOST_PREFIX}'
 force = ${FORCE:-False}
@@ -44,6 +44,14 @@ with open(troshkad_path, 'rb') as f:
 version = hashlib.sha256(script_bytes).hexdigest()[:12]
 script_text = script_bytes.decode().replace('VERSION = \"dev\"', f'VERSION = \"{version}\"')
 script_bytes = script_text.encode()
+
+vncd_path = os.path.join(os.path.dirname(troshkad_path), '..', 'troshka-vncd', 'troshka-vncd.py')
+vncd_bytes = b''
+if os.path.exists(vncd_path):
+    with open(vncd_path, 'rb') as f:
+        vncd_bytes = f.read()
+    vncd_text = vncd_bytes.decode().replace('VERSION = \"dev\"', f'VERSION = \"{version}\"')
+    vncd_bytes = vncd_text.encode()
 
 db = SessionLocal()
 try:
@@ -65,6 +73,8 @@ try:
         print(f'{h.id[:8]} ({h.ip_address}): updating {old_ver} -> {version}...', end=' ', flush=True)
         try:
             push_update(h, script_bytes, version, force=force)
+            if vncd_bytes:
+                push_vncd_update(h, vncd_bytes)
             # Wait for restart
             for _ in range(30):
                 time.sleep(3)

@@ -3792,6 +3792,44 @@ def handle_update(handler, params):
     drain_thread.start()
 
 
+@route("POST", "/admin/update-vncd")
+def handle_update_vncd(handler, params):
+    """Update troshka-vncd.py and restart the vncd service."""
+    import base64
+
+    body = handler._read_body()
+    if "script" not in body:
+        handler._send_json(400, {"error": "missing 'script' field"})
+        return
+
+    # Decode script
+    try:
+        script_bytes = base64.b64decode(body["script"])
+    except Exception as e:
+        handler._send_json(400, {"error": f"invalid base64: {e}"})
+        return
+
+    # Write to file
+    vncd_path = "/opt/troshka/troshka-vncd.py"
+    try:
+        with open(vncd_path + ".new", "wb") as f:
+            f.write(script_bytes)
+        os.rename(vncd_path + ".new", vncd_path)
+        os.chmod(vncd_path, 0o755)
+    except Exception as e:
+        handler._send_json(500, {"error": f"failed to write vncd: {e}"})
+        return
+
+    # Restart service
+    try:
+        subprocess.run(["systemctl", "restart", "troshka-vncd"], timeout=10, check=True)
+    except Exception as e:
+        handler._send_json(500, {"error": f"failed to restart vncd: {e}"})
+        return
+
+    handler._send_json(200, {"status": "updated"})
+
+
 # ── Server factory ──
 
 _start_time = time.time()
