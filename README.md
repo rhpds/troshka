@@ -31,15 +31,25 @@ The result:
 
 | | Traditional (agnosticd + AWS) | Troshka |
 |---|---|---|
-| **Deploy time** | 45-90 minutes | 1-2 minutes |
+| **Deploy time** | 45-90 minutes | 5-10 minutes |
 | **Failure surface** | AMIs, CloudFormation, repos, OCP installer, operators | Single API call to restore a tested snapshot |
 | **Consistency** | Drift between deploys (package versions, timing issues) | Bit-for-bit identical every time |
-| **Iteration speed** | Change → wait 60 min → test | Change → capture → deploy in 90 seconds |
-| **Cost per deploy** | Full compute cost of building from scratch | Only the cost of running the environment |
+| **Iteration speed** | Change → wait 60 min → test | Change → capture → deploy in minutes |
+| **Cost per environment** | Dedicated cloud instances per student | Multiple environments share a single host |
+| **Infrastructure overhead** | SSL certs, DNS zones, cloud networking per environment | All internal — no certs, no DNS, no cloud networking |
+| **Cluster access** | Shared or limited access, managed credentials | Each student gets full admin over their own cluster |
+
+### Why it's cheaper
+
+Traditional labs provision dedicated cloud instances for every student — a 3-node OCP cluster means 3+ EC2 instances per person. Troshka runs lab environments as nested VMs on EC2 instances with nested virtualization enabled. A single large EC2 instance can host multiple complete OCP clusters side by side, each fully isolated with its own networking. Disk images are thin-provisioned and shared across deploys via copy-on-write, so 50 identical OCP labs don't need 50 copies of the base image.
+
+No SSL certificates to provision. No DNS zones to manage. No cloud security groups or load balancers per environment. The nested VMs use internal `.local` domains and private networking — students access everything through the web portal and Showroom.
+
+No more failed destroys leaving orphaned cloud resources. A Troshka project is a single entity — deleting it cleans up everything: VMs, disks, networks, tokens. There are no CloudFormation stacks to get stuck, no dangling EIPs to leak, no security groups left behind. If something does go sideways, the host garbage collector catches it on the next pass.
 
 ### What stays the same
 
-Troshka plugs into the existing ecosystem — it's not a replacement, it's a new cloud provider:
+Troshka plugs into the existing ecosystem — it's a new cloud provider, not a replacement:
 
 - **Agnosticv** catalog items work the same way. Set `cloud_provider: troshka` instead of `ec2`.
 - **Babylon / RHPDS** ordering, lifecycle, and user experience are unchanged.
@@ -49,7 +59,8 @@ Troshka plugs into the existing ecosystem — it's not a replacement, it's a new
 
 ### What's different
 
-- **Students don't get SSH.** They access VMs through a web-based console (VNC) and Showroom. This is more secure and closer to real infrastructure access patterns.
+- **Students get their own cluster.** Each student is a full admin of their own OCP cluster — no shared tenancy, no namespace restrictions, no worrying about stepping on each other.
+- **No laptop issues.** Everything runs in the browser over standard HTTPS — no SSH clients, no VPN, no local tools to install. Students just need a web browser. The entire experience from lab guide to terminal to VM console is curated and consistent regardless of what OS or machine the student is using.
 - **No cloud credentials in agnosticv.** Each Troshka instance manages its own AWS credentials internally. Catalog items only need a Troshka API key.
 - **Patterns are portable.** A pattern built on one Troshka instance can be deployed on any other. The topology, disks, and configuration travel together.
 
