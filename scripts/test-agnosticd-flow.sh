@@ -46,13 +46,29 @@ get_api_key() {
     echo "$key"
 }
 
+# --- Helper: resolve project ID from --guid ---
+resolve_project_id() {
+    local guid="$1"
+    local api_key
+    api_key=$(get_api_key)
+    curl -sL "${TROSHKA_API_URL}/api/v1/projects/?guid=${guid}" \
+        -H "Authorization: Bearer ${api_key}" | python3 -c "
+import sys, json
+projects = json.load(sys.stdin)
+if not projects:
+    print('', end='')
+else:
+    print(projects[0]['id'], end='')
+"
+}
+
 # --- Helper: run lifecycle action ---
 run_lifecycle() {
     local action="$1"
     local project_id="$2"
+    local guid="$3"
     local api_key
     api_key=$(get_api_key)
-    local guid="${GUID:-lifecycle}"
 
     echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') (project=$project_id) ==="
 
@@ -99,11 +115,21 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "$ACTION" ]]; then
+    if [[ -n "$GUID_ARG" && -z "$PROJECT_ID_ARG" ]]; then
+        echo "Looking up project for guid=$GUID_ARG..."
+        PROJECT_ID_ARG=$(resolve_project_id "$GUID_ARG")
+        if [[ -z "$PROJECT_ID_ARG" ]]; then
+            echo "ERROR: No project found with guid '$GUID_ARG'"
+            exit 1
+        fi
+        echo "  Found: $PROJECT_ID_ARG"
+    fi
     if [[ -z "$PROJECT_ID_ARG" ]]; then
         echo "Usage: $0 --${ACTION} --project-id <uuid>"
+        echo "       $0 --${ACTION} --guid <guid>"
         exit 1
     fi
-    run_lifecycle "$ACTION" "$PROJECT_ID_ARG"
+    run_lifecycle "$ACTION" "$PROJECT_ID_ARG" "${GUID_ARG:-lifecycle}"
     exit $?
 fi
 
@@ -199,10 +225,10 @@ for p in json.load(sys.stdin):
     echo "Project ID: $PROJECT_ID"
     echo ""
     echo "Lifecycle commands:"
-    echo "  $0 --status --project-id $PROJECT_ID"
-    echo "  $0 --stop --project-id $PROJECT_ID"
-    echo "  $0 --start --project-id $PROJECT_ID"
-    echo "  $0 --destroy --project-id $PROJECT_ID"
+    echo "  $0 --status --guid $GUID"
+    echo "  $0 --stop --guid $GUID"
+    echo "  $0 --start --guid $GUID"
+    echo "  $0 --destroy --guid $GUID"
 else
     echo ""
     echo "=== FAILED (exit code: $STATUS) ==="

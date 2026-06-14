@@ -39,10 +39,13 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 def list_projects(
     skip: int = 0,
     limit: int = 50,
+    guid: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(Project).filter(Project.owner_id == user.id)
+    if guid is not None:
+        query = query.filter(Project.guid == guid)
     return query.offset(skip).limit(limit).all()
 
 
