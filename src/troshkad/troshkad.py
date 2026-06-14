@@ -2889,91 +2889,6 @@ def _get_disk_path_by_index(domain, disk_index):
 
 
 
-def _streaming_capture_upload(job, disk_path, s3_url, cache_path, aws_access_key="",
-                               aws_secret_key="", aws_region="us-east-1", use_unsafe=False):
-    """Pipe qemu-img convert → tee (cache) → aws s3 cp (S3).
-
-    Three-process pipeline: compress, tee to local cache, and upload
-    to S3 simultaneously. No temp file needed.
-    """
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-
-    env = os.environ.copy()
-    if aws_access_key:
-        env["AWS_ACCESS_KEY_ID"] = aws_access_key
-        env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
-        env["AWS_DEFAULT_REGION"] = aws_region
-    _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
-    os.makedirs(_s3_tmpdir, exist_ok=True)
-    env["TMPDIR"] = _s3_tmpdir
-
-    aws_bin = "/opt/troshka/venv/bin/aws"
-    if not os.path.exists(aws_bin):
-        aws_bin = "aws"
-
-    convert_cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
-    if use_unsafe:
-        convert_cmd.insert(2, "-U")
-    convert_cmd.extend([disk_path, "/dev/stdout"])
-
-    qemu_proc = subprocess.Popen(convert_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    tee_proc = subprocess.Popen(["tee", cache_path], stdin=qemu_proc.stdout,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    qemu_proc.stdout.close()
-    s3_proc = subprocess.Popen([aws_bin, "s3", "cp", "-", s3_url],
-                                stdin=tee_proc.stdout, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, env=env)
-    tee_proc.stdout.close()
-
-    monitor_done = threading.Event()
-    def _monitor():
-        while not monitor_done.is_set():
-            try:
-                if os.path.exists(cache_path):
-                    cur = os.path.getsize(cache_path)
-                    if cur > 0:
-                        cur_gb = round(cur / (1024**3), 1)
-                        _job_log(job, f"Streaming: {cur_gb} GB compressed")
-            except OSError:
-                pass
-            monitor_done.wait(10)
-    mon = threading.Thread(target=_monitor, daemon=True)
-    mon.start()
-
-    s3_proc.wait()
-    tee_proc.wait()
-    qemu_proc.wait()
-    monitor_done.set()
-
-    if qemu_proc.returncode != 0:
-        stderr = qemu_proc.stderr.read().decode().strip()
-        try:
-            os.remove(cache_path)
-        except OSError:
-            pass
-        raise RuntimeError(f"qemu-img convert failed (exit {qemu_proc.returncode}): {stderr}")
-
-    if s3_proc.returncode != 0:
-        stderr = s3_proc.stderr.read().decode().strip()
-        try:
-            os.remove(cache_path)
-        except OSError:
-            pass
-        raise RuntimeError(f"S3 upload failed (exit {s3_proc.returncode}): {stderr}")
-
-    if tee_proc.returncode != 0:
-        try:
-            os.remove(cache_path)
-        except OSError:
-            pass
-        raise RuntimeError(f"tee failed (exit {tee_proc.returncode})")
-
-    size_bytes = os.path.getsize(cache_path)
-    size_gb = round(size_bytes / (1024**3), 1)
-    _job_log(job, f"Streaming capture complete: {size_gb} GB compressed")
-    return size_bytes
-
-
 def _s3_upload(job, local_path, s3_url, aws_access_key="", aws_secret_key="", aws_region="us-east-1"):
     """Upload a file to S3 using aws cli with file-size progress monitoring."""
     total_bytes = os.path.getsize(local_path)
@@ -3272,43 +3187,59 @@ def _handle_pattern_capture_direct(job, params):
         if not os.path.exists(disk_path):
             raise RuntimeError(f"Disk not found: {disk_path}")
 
-        use_unsafe = running and not snapshotted
-        _job_log(job, f"Streaming compress+upload for {os.path.basename(disk_path)}...")
+        import tempfile as _tf
+        _local_tmp = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+        os.makedirs(_local_tmp, exist_ok=True)
+        with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
+            tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+            src_size = os.path.getsize(disk_path)
+            src_size_gb = round(src_size / (1024**3), 1)
+            _job_log(job,f"Flattening {os.path.basename(disk_path)} ({src_size_gb} GB)...")
 
-        commit_thread = None
-        if snapshotted:
-            def _do_commit():
-                _commit_snapshot(job, domain_name)
-            commit_thread = threading.Thread(target=_do_commit, daemon=True)
-            commit_thread.start()
-            snapshotted = False
+            flatten_done = threading.Event()
+            def _monitor_flatten():
+                while not flatten_done.is_set():
+                    try:
+                        if os.path.exists(tmp_flat):
+                            cur = os.path.getsize(tmp_flat)
+                            cur_gb = round(cur / (1024**3), 1)
+                            _job_log(job, f"Flattening: {cur_gb} of {src_size_gb} GB")
+                    except OSError:
+                        pass
+                    flatten_done.wait(10)
+            mon = threading.Thread(target=_monitor_flatten, daemon=True)
+            mon.start()
 
-        try:
-            size_bytes = _streaming_capture_upload(
-                job, disk_path, s3_url, cache_path,
-                aws_access_key, aws_secret_key, aws_region,
-                use_unsafe=use_unsafe,
-            )
-        except RuntimeError:
-            _job_log(job, "Streaming capture failed, falling back to temp file approach")
-            import tempfile as _tf
-            _local_tmp = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
-            os.makedirs(_local_tmp, exist_ok=True)
-            with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
-                tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-                cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
-                if use_unsafe:
-                    cmd.insert(2, "-U")
-                cmd.extend([disk_path, tmp_flat])
-                _run_cmd(job, cmd, timeout=3600)
-                _s3_upload(job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region)
-                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                shutil.copy(tmp_flat, cache_path)
-            size_bytes = os.path.getsize(cache_path)
+            cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
+            if running and not snapshotted:
+                cmd.insert(2, "-U")
+            cmd.extend([disk_path, tmp_flat])
+            _run_cmd(job, cmd, timeout=3600)
+            flatten_done.set()
 
-        if commit_thread:
-            commit_thread.join(timeout=600)
+            flat_size = os.path.getsize(tmp_flat)
+            flat_size_gb = round(flat_size / (1024**3), 1)
+            _job_log(job, f"Flattened: {flat_size_gb} GB (compressed)")
 
+            commit_thread = None
+            if snapshotted:
+                def _do_commit():
+                    _commit_snapshot(job, domain_name)
+                commit_thread = threading.Thread(target=_do_commit, daemon=True)
+                commit_thread.start()
+                snapshotted = False
+
+            _job_log(job, f"Uploading {flat_size_gb} GB to S3...")
+            _s3_upload(job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region)
+
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            _job_log(job, f"Caching to {cache_path}...")
+            shutil.copy(tmp_flat, cache_path)
+
+            if commit_thread:
+                commit_thread.join(timeout=600)
+
+        size_bytes = os.path.getsize(cache_path)
         result_disks.append({"size_bytes": size_bytes})
     finally:
         if snapshotted:
