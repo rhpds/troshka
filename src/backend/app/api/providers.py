@@ -688,29 +688,38 @@ def delete_console(provider_id: str, user: User = Depends(require_role("admin"))
     creds = provider.get_credentials()
     zone_id = provider.console_zone_id
 
-    try:
-        r53 = boto3.client(
-            "route53",
-            aws_access_key_id=creds.get("access_key_id"),
-            aws_secret_access_key=creds.get("secret_access_key"),
-        )
+    # Only delete the hosted zone if no other providers share it
+    other_users = db.query(Provider).filter(
+        Provider.console_zone_id == zone_id,
+        Provider.id != provider_id,
+    ).count()
 
-        # Delete all A records in the zone
-        paginator = r53.get_paginator("list_resource_record_sets")
-        changes = []
-        for page in paginator.paginate(HostedZoneId=zone_id):
-            for rrs in page["ResourceRecordSets"]:
-                if rrs["Type"] in ("A", "CNAME"):
-                    changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
-        if changes:
-            for i in range(0, len(changes), 100):
-                r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes[i:i+100]})
+    if other_users == 0:
+        try:
+            r53 = boto3.client(
+                "route53",
+                aws_access_key_id=creds.get("access_key_id"),
+                aws_secret_access_key=creds.get("secret_access_key"),
+            )
 
-        r53.delete_hosted_zone(Id=zone_id)
-        logger.info("Deleted hosted zone %s", zone_id)
+            # Delete all A records in the zone
+            paginator = r53.get_paginator("list_resource_record_sets")
+            changes = []
+            for page in paginator.paginate(HostedZoneId=zone_id):
+                for rrs in page["ResourceRecordSets"]:
+                    if rrs["Type"] in ("A", "CNAME"):
+                        changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
+            if changes:
+                for i in range(0, len(changes), 100):
+                    r53.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes[i:i+100]})
 
-    except Exception as e:
-        logger.warning("Failed to fully clean up hosted zone %s: %s", zone_id, e)
+            r53.delete_hosted_zone(Id=zone_id)
+            logger.info("Deleted hosted zone %s", zone_id)
+
+        except Exception as e:
+            logger.warning("Failed to fully clean up hosted zone %s: %s", zone_id, e)
+    else:
+        logger.info("Hosted zone %s still used by %d other provider(s), keeping it", zone_id, other_users)
 
     # Clear console_domain on all hosts under this provider
     hosts = db.query(Host).filter_by(provider_id=provider_id).all()
