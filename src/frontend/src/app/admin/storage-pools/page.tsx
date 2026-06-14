@@ -280,33 +280,32 @@ export default function StoragePoolsPage() {
       setError(data.detail || "Failed to extend storage");
       return;
     }
-    const pollUntilVisible = () => {
-      const poll = setInterval(async () => {
-        try {
-          const r = await fetch("/api/v1/hosts/storage");
-          if (!r.ok) return;
-          const storage = await r.json();
-          for (const [, info] of Object.entries(storage) as [string, any][]) {
-            const parts = info.partitions;
-            if (!parts) continue;
-            const shared = parts.find((p: any) => p.mount.includes("shared"));
-            if (shared && shared.total_bytes / (1024**3) >= newSize - 1) {
-              clearInterval(poll);
-              setExtending((prev) => ({ ...prev, [pool.id]: false }));
-              loadData();
-              return;
-            }
+    const data = await resp.json();
+    const targetGb = data.new_size_gb || newSize;
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch("/api/v1/hosts/storage");
+        if (!r.ok) return;
+        const storage = await r.json();
+        for (const [, info] of Object.entries(storage) as [string, any][]) {
+          const parts = info.partitions;
+          if (!parts) continue;
+          const shared = parts.find((p: any) => p.mount.includes("shared"));
+          if (shared && shared.total_bytes / (1024**3) >= targetGb - 1) {
+            clearInterval(poll);
+            setExtending((prev) => ({ ...prev, [pool.id]: false }));
+            loadData();
+            return;
           }
-        } catch {}
-      }, 5000);
-      setTimeout(() => {
-        clearInterval(poll);
-        setExtending((prev) => ({ ...prev, [pool.id]: false }));
+        }
         loadData();
-      }, 120000);
-    };
-    loadData();
-    pollUntilVisible();
+      } catch {}
+    }, 5000);
+    setTimeout(() => {
+      clearInterval(poll);
+      setExtending((prev) => ({ ...prev, [pool.id]: false }));
+      loadData();
+    }, 120000);
   };
 
   return (
