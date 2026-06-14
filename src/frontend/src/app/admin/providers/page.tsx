@@ -500,7 +500,7 @@ export default function AdminProvidersPage() {
                             <div style={{ fontSize: 12, fontFamily: "monospace", marginBottom: 8 }}>
                               {p.console_nameservers.map((ns: string) => <div key={ns}>{ns}</div>)}
                             </div>
-                            <Button variant="danger" onClick={() => removeConsole(p.id)}>Remove Console DNS</Button>
+                            <Button variant="danger" onClick={() => removeConsole(p.id)}>Remove Console DNS Domain</Button>
                           </CardBody>
                         </Card>
                       </details>
