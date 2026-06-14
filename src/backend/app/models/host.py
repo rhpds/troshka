@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +35,10 @@ class Host(Base):
     agent_version: Mapped[str | None] = mapped_column(String(50))
     storage_pool_id: Mapped[str | None] = mapped_column(ForeignKey("storage_pools.id"))
     storage_warnings: Mapped[list | None] = mapped_column(JSONB, default=None)
+    auto_extend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_extend_threshold_pct: Mapped[int] = mapped_column(Integer, default=80)
+    auto_extend_increment_gb: Mapped[int] = mapped_column(Integer, default=100)
+    auto_extend_max_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
