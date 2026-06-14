@@ -11,7 +11,9 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Tooltip,
 } from "@patternfly/react-core";
+import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
 
 interface Host {
   id: string;
@@ -35,6 +37,7 @@ interface Host {
   last_health_at: string | null;
   created_at: string;
   storage_pool_id: string | null;
+  storage_warnings?: Array<{mount: string; used_pct: number; level: string}> | null;
 }
 
 interface RegionSummary {
@@ -592,6 +595,25 @@ export default function AdminHostsPage() {
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
                     {agentLabels[h.agent_status] || h.agent_status}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
+                  {h.storage_warnings && h.storage_warnings.length > 0 && (
+                    <Tooltip
+                      content={
+                        <div>
+                          {h.storage_warnings.map((w: any, i: number) => (
+                            <div key={i}>
+                              {w.mount}: {w.used_pct}% used ({w.level})
+                            </div>
+                          ))}
+                        </div>
+                      }
+                    >
+                      {h.storage_warnings.some((w: any) => w.level === "critical") ? (
+                        <ExclamationCircleIcon style={{ color: "var(--pf-t--global--color--status--danger--default)", marginLeft: 8 }} />
+                      ) : (
+                        <ExclamationTriangleIcon style={{ color: "var(--pf-t--global--color--status--warning--default)", marginLeft: 8 }} />
+                      )}
+                    </Tooltip>
+                  )}
                   {h.agent_status === "connected" && h.last_health_at && (
                     <span style={{ fontSize: 11, opacity: 0.5 }}>
                       health: {Math.round((Date.now() - new Date(h.last_health_at).getTime()) / 1000)}s ago
