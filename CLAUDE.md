@@ -18,6 +18,8 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 ./scripts/host-ssh.sh -- <cmd>   # Run command on host
 ./scripts/host-db.sh             # Interactive Python shell with DB session + models
 ./scripts/host-db.sh "<code>"    # Run inline DB query
+./scripts/update-agent.sh       # Push troshkad update via API (fast, stamps version)
+./scripts/reinstall-agent.sh    # Full SSH reinstall (for broken agents)
 ```
 
 - Backend: http://localhost:8200 (no auto-reload — restart required for Python changes)
