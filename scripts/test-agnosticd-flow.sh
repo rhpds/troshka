@@ -82,7 +82,7 @@ run_lifecycle() {
     project_id=$(echo "$state_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['project_id'])")
     api_key=$(get_api_key)
 
-    echo "=== ${action^^} (guid=$guid, project=$project_id) ==="
+    echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') (guid=$guid, project=$project_id) ==="
 
     local collections_dir
     collections_dir=$(install_collection)
@@ -113,29 +113,41 @@ run_lifecycle() {
         fi
         echo "=== DESTROYED ==="
     elif [[ $status -eq 0 ]]; then
-        echo "=== ${action^^} OK ==="
+        echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') OK ==="
     else
-        echo "=== ${action^^} FAILED (exit code: $status) ==="
+        echo "=== $(echo "$action" | tr '[:lower:]' '[:upper:]') FAILED (exit code: $status) ==="
     fi
     return $status
 }
 
 # --- Parse arguments ---
 ACTION=""
-case "${1:-}" in
-    --destroy) ACTION="destroy"; shift ;;
-    --stop)    ACTION="stop";    shift ;;
-    --start)   ACTION="start";   shift ;;
-    --status)  ACTION="status";  shift ;;
-esac
+PROJECT_ID_ARG=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --destroy) ACTION="destroy"; shift ;;
+        --stop)    ACTION="stop";    shift ;;
+        --start)   ACTION="start";   shift ;;
+        --status)  ACTION="status";  shift ;;
+        --project-id) PROJECT_ID_ARG="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
 
 if [[ -n "$ACTION" ]]; then
     GUID="${1:-}"
+    if [[ -n "$PROJECT_ID_ARG" ]]; then
+        # Create ad-hoc state from --project-id
+        GUID="${GUID:-adhoc-$(date +%s)}"
+        API_KEY=$(get_api_key)
+        echo "{\"guid\": \"$GUID\", \"project_id\": \"$PROJECT_ID_ARG\", \"api_key\": \"$API_KEY\"}" > "$STATE_DIR/${GUID}.json"
+    fi
     if [[ -z "$GUID" && -L "$STATE_DIR/latest" ]]; then
         GUID=$(readlink "$STATE_DIR/latest" | xargs basename | sed 's/.json//')
     fi
     if [[ -z "$GUID" ]]; then
         echo "Usage: $0 --${ACTION} [guid]"
+        echo "       $0 --${ACTION} --project-id <uuid>"
         echo "No guid specified and no latest deploy found."
         exit 1
     fi
