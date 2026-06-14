@@ -87,15 +87,18 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - `sendCombo()`: press all keys down in order, release in reverse — standard VNC key combo pattern
 
 ### Console Route53 Setup
-- Requires a Route53 hosted zone for console domains (e.g., `troshka.dev.rhdp.net`)
-- Config: `console.hosted_zone_id` and `console.base_domain` in `config.local.yaml`
-- Each host gets an A record: `{instance_id}.{base_domain}` → public IP
-- DNS record created automatically during host provisioning, deleted on removal
-- IAM: `troshka-certbot-role` + `troshka-certbot-profile` created during VPC setup
+- Fully automated from admin UI: Providers page → "Setup Console" → enter domain → done
+- Console config stored on Provider model (`console_zone_id`, `console_base_domain`, `console_nameservers`)
+- `POST /providers/{id}/setup-console` creates Route53 hosted zone + IAM role/instance profile
+- `DELETE /providers/{id}/console` removes hosted zone, clears DNS records and host `console_domain` fields
+- Each host gets an A record: `{instance_id}.{base_domain}` → public IP (created during provisioning, deleted on removal)
+- NS delegation: UI shows nameservers in a collapsible section — admin adds NS records in parent zone
+- IAM: `troshka-certbot-role` + `troshka-certbot-profile` created by setup-console endpoint (idempotent)
 - Instance profile attached to EC2 instances — allows certbot DNS-01 without storing AWS creds on hosts
 - certbot installed in `/opt/troshka/venv/`, certs at `/etc/letsencrypt/live/{fqdn}/`
 - Auto-renewal via cron: `certbot renew --quiet`
 - `console_domain` stored on Host model, set during provisioning
+- **No config.yaml** — console config lives on the Provider, not in config files
 - **IAM policy note**: `route53:GetChange` requires `Resource: "*"` (not scoped to hosted zone)
 
 ### Canvas
