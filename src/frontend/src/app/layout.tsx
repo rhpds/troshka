@@ -103,6 +103,27 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isAuthenticated = !!user && !isLoginPage;
   const isAdmin = user?.role === "admin";
 
+  const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean }>({ hosts: false, pools: false });
+  useEffect(() => {
+    if (!isAdmin) return;
+    const check = () => {
+      fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then((hosts: any[]) => {
+        let hostWarn = false;
+        let poolWarn = false;
+        for (const h of hosts) {
+          for (const w of (h.storage_warnings || [])) {
+            if (w.mount.includes("/shared") && h.storage_pool_id) poolWarn = true;
+            else if (w.level === "warning" || w.level === "critical") hostWarn = true;
+          }
+        }
+        setNavWarnings({ hosts: hostWarn, pools: poolWarn });
+      }).catch(() => {});
+    };
+    check();
+    const iv = setInterval(check, 30000);
+    return () => clearInterval(iv);
+  }, [isAdmin]);
+
   if (isConsolePage || isPortalPage) {
     return (
       <html lang="en">
@@ -227,15 +248,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {isAdmin && (
           <Nav aria-label="Admin">
             <NavList title="Admin">
-              {adminItems.map((item) => (
+              {adminItems.map((item) => {
+                const warn = (item.path === "/admin/hosts" && navWarnings.hosts) ||
+                             (item.path === "/admin/storage-pools" && navWarnings.pools);
+                return (
                 <NavItem
                   key={item.path}
                   isActive={pathname === item.path}
                   onClick={() => router.push(item.path)}
                 >
                   {item.label}
+                  {warn && <span style={{ color: "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
                 </NavItem>
-              ))}
+                );
+              })}
             </NavList>
           </Nav>
         )}

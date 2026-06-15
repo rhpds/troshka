@@ -410,20 +410,27 @@ def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
 
 
 def check_disk_usage(host, timeout=15, retries=3):
-    """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct} for the troshka partition."""
+    """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct, partitions} for the troshka partition."""
     import time
 
     for attempt in range(retries):
         try:
             result = troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)
             if "partitions" in result:
-                for p in result["partitions"]:
+                partitions = result["partitions"]
+                primary = None
+                for p in partitions:
                     if p.get("mount") == "/var/lib/troshka":
-                        return p
-                for p in result["partitions"]:
-                    if p.get("mount") == "/":
-                        return p
-                return result["partitions"][0] if result["partitions"] else result
+                        primary = p
+                        break
+                if not primary:
+                    for p in partitions:
+                        if p.get("mount") == "/":
+                            primary = p
+                            break
+                if not primary:
+                    primary = partitions[0] if partitions else {}
+                return {**primary, "partitions": partitions}
             return result
         except TroshkadError:
             if attempt == retries - 1:

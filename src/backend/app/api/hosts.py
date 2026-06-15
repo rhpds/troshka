@@ -86,7 +86,10 @@ def host_storage(
     )
     result = {}
     for h in hosts:
-        disk = check_disk_usage(h)
+        try:
+            disk = check_disk_usage(h)
+        except Exception:
+            continue
         if disk.get("error"):
             continue
         partitions = disk.get("partitions")
@@ -869,12 +872,7 @@ def resize_storage(
         )
 
     provider = host.provider
-    creds = None
-    if provider:
-        creds = {
-            "access_key_id": provider.access_key_id,
-            "secret_access_key": provider.secret_access_key,
-        }
+    creds = provider.get_credentials() if provider else None
 
     from app.services.provisioner import _get_ec2_client
 
@@ -894,7 +892,20 @@ def resize_storage(
         )
 
     vol_id = volumes["Volumes"][0]["VolumeId"]
-    ec2.modify_volume(VolumeId=vol_id, Size=new_size)
+    try:
+        ec2.modify_volume(VolumeId=vol_id, Size=new_size)
+    except Exception as e:
+        msg = str(e)
+        if "ModificationState" in msg or "OPTIMIZING" in msg:
+            raise HTTPException(
+                status_code=409,
+                detail="EBS volume is still optimizing from a previous resize. Try again in a few minutes.",
+            )
+        logger.exception("EBS modify_volume failed for %s", vol_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to resize EBS volume. Check server logs for details.",
+        )
 
     # Grow the filesystem on the host (XFS online grow)
     if host.ip_address and host.agent_status == "connected":
@@ -907,11 +918,12 @@ def resize_storage(
                 status_code=500, detail=job["result"].get("error", "Resize failed")
             )
 
+    old_size = host.storage_size_gb
     host.storage_size_gb = new_size
     db.commit()
     return {
         "status": "resized",
-        "old_size_gb": host.storage_size_gb,
+        "old_size_gb": old_size,
         "new_size_gb": new_size,
         "volume_id": vol_id,
     }
@@ -939,6 +951,33 @@ def extend_storage(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
+
+
+@router.patch("/{host_id}")
+def update_host(
+    host_id: str,
+    body: dict,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    allowed = {
+        "auto_extend_enabled": bool,
+        "auto_extend_threshold_pct": int,
+        "auto_extend_increment_gb": int,
+        "auto_extend_max_gb": (int, type(None)),
+    }
+    for key, val in body.items():
+        if key not in allowed:
+            raise HTTPException(status_code=400, detail=f"Cannot update field: {key}")
+        if not isinstance(val, allowed[key]):
+            raise HTTPException(status_code=400, detail=f"Invalid type for {key}")
+        setattr(host, key, val)
+    db.commit()
+    db.refresh(host)
+    return {"status": "updated"}
 
 
 @router.delete("/{host_id}", status_code=204)

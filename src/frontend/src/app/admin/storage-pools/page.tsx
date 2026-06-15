@@ -88,6 +88,8 @@ export default function StoragePoolsPage() {
   const [saving, setSaving] = useState(false);
 
   const [extending, setExtending] = useState<Record<string, boolean>>({});
+  const [extendTarget, setExtendTarget] = useState<Record<string, string>>({});
+  const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
   const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
   const loadData = () => {
@@ -308,6 +310,51 @@ export default function StoragePoolsPage() {
     }, 120000);
   };
 
+  const handleResizePool = async (pool: StoragePool) => {
+    const targetGb = parseInt(extendTarget[pool.id]);
+    const currentGb = pool.fsx_storage_gb || 0;
+    if (!targetGb || targetGb <= currentGb) {
+      setError(`New size must be larger than current (${currentGb} GB)`);
+      return;
+    }
+    const minGrow = Math.ceil(currentGb * 1.1);
+    if (targetGb < minGrow) {
+      setError(`FSx requires at least 10% growth (minimum ${minGrow} GB)`);
+      return;
+    }
+    if (!window.confirm(`Resize pool "${pool.name}" to ${targetGb} GB? (currently ${currentGb} GB)\n\nNote: FSx only allows one resize every 6 hours.`)) return;
+    setExtending({ ...extending, [pool.id]: true });
+    const incrementGb = targetGb - currentGb;
+    const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ increment_gb: incrementGb }),
+    });
+    setExtending({ ...extending, [pool.id]: false });
+    if (resp.ok) {
+      setExtendTarget({ ...extendTarget, [pool.id]: "" });
+      alert(`Pool storage resized: ${currentGb} GB → ${targetGb} GB`);
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to resize pool storage");
+    }
+  };
+
+  const updatePoolField = async (poolId: string, field: string, value: boolean | number | null) => {
+    const resp = await fetch(`/api/v1/storage-pools/${poolId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    if (resp.ok) {
+      loadData();
+    } else {
+      const data = await resp.json();
+      setError(data.detail || "Failed to update pool settings");
+    }
+  };
+
   return (
     <PageSection>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -473,18 +520,89 @@ export default function StoragePoolsPage() {
                         <span>Hosts: {pool.host_count}</span>
                         {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
                         {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
-                        {pool.fsx_storage_gb && <span>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
+                        {pool.fsx_storage_gb && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
                         {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
-                        {pool.auto_extend_enabled && <span>Auto-extend: on (≥{pool.auto_extend_threshold_pct}%, +{pool.auto_extend_increment_gb} GB{pool.auto_extend_max_gb ? `, max ${pool.auto_extend_max_gb} GB` : ""})</span>}
                       </div>
                       {pool.mode === "shared-fsx" && pool.status === "available" && (
-                        <div style={{ marginTop: 8 }}>
-                          <Button variant="secondary" size="sm"
-                                  onClick={() => handleExtendNow(pool)}
-                                  isLoading={extending[pool.id]}
-                                  isDisabled={extending[pool.id]}>
-                            Extend Now
-                          </Button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <input
+                              style={{ ...inputStyle, width: 80, padding: "5px 8px", fontSize: 12 }}
+                              type="number"
+                              value={extendTarget[pool.id] || ""}
+                              onChange={(e) => setExtendTarget({ ...extendTarget, [pool.id]: e.target.value })}
+                              placeholder={`${pool.fsx_storage_gb} GB`}
+                              min={(pool.fsx_storage_gb || 0) + 1}
+                            />
+                            <Button
+                              variant="secondary"
+                              onClick={() => handleResizePool(pool)}
+                              isLoading={extending[pool.id]}
+                              isDisabled={extending[pool.id] || !extendTarget[pool.id] || parseInt(extendTarget[pool.id]) <= (pool.fsx_storage_gb || 0)}
+                            >
+                              Resize
+                            </Button>
+                          </div>
+                          <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24 }} />
+                          <Switch
+                            label={`Auto-extend${pool.auto_extend_enabled ? ` (${pool.auto_extend_threshold_pct}% → +${pool.auto_extend_increment_gb} GB)` : ""}`}
+                            isChecked={pool.auto_extend_enabled}
+                            onChange={(_, checked) => updatePoolField(pool.id, "auto_extend_enabled", checked)}
+                            style={{ fontSize: 12 }}
+                          />
+                          {pool.auto_extend_enabled && (
+                            <Button
+                              variant="plain"
+                              size="sm"
+                              onClick={() => setExpandedAutoExtend({ ...expandedAutoExtend, [pool.id]: !expandedAutoExtend[pool.id] })}
+                              style={{ padding: "2px 6px", fontSize: 11 }}
+                            >
+                              {expandedAutoExtend[pool.id] ? "▲" : "▼"}
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                      {pool.mode === "shared-fsx" && pool.auto_extend_enabled && expandedAutoExtend[pool.id] && (
+                        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600, marginTop: 8 }}>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
+                            <input
+                              style={{ ...inputStyle, width: 80 }}
+                              type="number"
+                              value={pool.auto_extend_threshold_pct}
+                              onChange={(e) => {
+                                const val = parseInt(e.target.value) || 80;
+                                if (val >= 50 && val <= 95) updatePoolField(pool.id, "auto_extend_threshold_pct", val);
+                              }}
+                              min={50}
+                              max={95}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
+                            <input
+                              style={{ ...inputStyle, width: 80 }}
+                              type="number"
+                              value={pool.auto_extend_increment_gb}
+                              onChange={(e) => updatePoolField(pool.id, "auto_extend_increment_gb", parseInt(e.target.value) || 64)}
+                              min={64}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB)</label>
+                            <input
+                              style={{ ...inputStyle, width: 100 }}
+                              type="number"
+                              value={pool.auto_extend_max_gb || ""}
+                              onChange={(e) => updatePoolField(pool.id, "auto_extend_max_gb", e.target.value ? parseInt(e.target.value) : null)}
+                              placeholder="No limit"
+                            />
+                          </div>
+                          <div style={{ display: "flex", alignItems: "flex-end" }}>
+                            <Button variant="primary" size="sm" onClick={() => handleExtendNow(pool)} isLoading={extending[pool.id]} isDisabled={extending[pool.id]}>
+                              Extend Now (+{pool.auto_extend_increment_gb} GB)
+                            </Button>
+                          </div>
                         </div>
                       )}
                     </>

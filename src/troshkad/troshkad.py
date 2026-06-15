@@ -3668,8 +3668,49 @@ def _start_libvirt_event_loop():
 
 
 def _handle_resize_storage(job, params):
-    """Resize /var/lib/troshka filesystem using xfs_growfs."""
-    _run_cmd(job, ["xfs_growfs", "/var/lib/troshka"], timeout=120)
+    """Resize /var/lib/troshka filesystem using xfs_growfs.
+
+    After an EBS modify_volume call, the kernel block device may take a few
+    seconds to reflect the new size.  Poll until it grows (or 60s timeout),
+    then run xfs_growfs.
+    """
+    mount = "/var/lib/troshka"
+    # Find the block device backing the mount
+    dev = None
+    with open("/proc/mounts") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == mount:
+                dev = parts[0]
+                break
+    if not dev:
+        raise RuntimeError(f"Cannot find block device for {mount}")
+
+    # Get current filesystem size via statvfs
+    st = os.statvfs(mount)
+    fs_bytes = st.f_blocks * st.f_frsize
+
+    # Resolve the sysfs size file for this block device
+    dev_name = os.path.basename(os.path.realpath(dev))
+    sys_size = f"/sys/block/{dev_name}/size"
+    if not os.path.exists(sys_size):
+        _job_log(job, f"No sysfs entry {sys_size}, running xfs_growfs directly")
+        _run_cmd(job, ["xfs_growfs", mount], timeout=120)
+        return {"status": "resized"}
+
+    # Poll until block device is larger than current filesystem (max 60s)
+    import time as _time
+    for _ in range(60):
+        with open(sys_size) as f:
+            blk_bytes = int(f.read().strip()) * 512
+        if blk_bytes > fs_bytes:
+            _job_log(job, f"Block device {dev_name}: {blk_bytes // (1024**3)} GB (fs: {fs_bytes // (1024**3)} GB)")
+            break
+        _time.sleep(1)
+    else:
+        _job_log(job, f"Block device did not grow after 60s (still {blk_bytes // (1024**3)} GB)")
+
+    _run_cmd(job, ["xfs_growfs", mount], timeout=120)
     return {"status": "resized"}
 
 COMMAND_HANDLERS["host/resize-storage"] = _handle_resize_storage

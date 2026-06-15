@@ -1168,7 +1168,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeStart as string || ""}
                             onChange={(e) => update("dhcpRangeStart", e.target.value)}
-                            placeholder={and?.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
+                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -1178,7 +1178,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeEnd as string || ""}
                             onChange={(e) => update("dhcpRangeEnd", e.target.value)}
-                            placeholder={and?.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
+                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -1189,7 +1189,7 @@ export default function PropertiesPanel() {
                           className="props-input"
                           value={(data as Record<string, any>).dhcpGateway as string || ""}
                           onChange={(e) => update("dhcpGateway", e.target.value)}
-                          placeholder={and?.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "x.x.x.1"}
+                          placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".1") : "x.x.x.1"}
                           style={{ fontFamily: "monospace" }}
                         />
                       </div>
@@ -1270,7 +1270,7 @@ export default function PropertiesPanel() {
                           className="props-input"
                           value={(data as Record<string, any>).dnsServerIp as string || ""}
                           onChange={(e) => update("dnsServerIp", e.target.value)}
-                          placeholder={and?.cidr ? nd.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
+                          placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
                           style={{ fontFamily: "monospace" }}
                         />
                         <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>

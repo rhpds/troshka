@@ -12,7 +12,6 @@ import {
   ToolbarContent,
   ToolbarItem,
   Tooltip,
-  ExpandableSection,
   Switch,
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
@@ -286,6 +285,8 @@ export default function AdminHostsPage() {
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
   const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
   const [extending, setExtending] = useState<Record<string, boolean>>({});
+  const [resizeTarget, setResizeTarget] = useState<Record<string, string>>({});
+  const [resizing, setResizing] = useState<Record<string, boolean>>({});
 
   const installAgent = async (hostId: string) => {
     setInstalling(hostId);
@@ -366,6 +367,34 @@ export default function AdminHostsPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to extend storage");
+    }
+  };
+
+  const handleResizeStorage = async (host: Host) => {
+    const sizeGb = parseInt(resizeTarget[host.id]);
+    if (!sizeGb || sizeGb <= host.storage_size_gb) {
+      setError(`New size must be larger than current (${host.storage_size_gb} GB)`);
+      return;
+    }
+    if (!window.confirm(`Resize storage for host "${host.instance_id || host.id.slice(0, 8)}" to ${sizeGb} GB? (currently ${host.storage_size_gb} GB)`)) return;
+    setResizing({ ...resizing, [host.id]: true });
+    try {
+      const resp = await fetch(`/api/v1/hosts/${host.id}/resize-storage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size_gb: sizeGb }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setResizeTarget({ ...resizeTarget, [host.id]: "" });
+        alert(`Storage resized: ${data.old_size_gb} GB → ${data.new_size_gb} GB`);
+        loadData();
+      } else {
+        const data = await resp.json();
+        setError(data.detail || "Failed to resize storage");
+      }
+    } finally {
+      setResizing({ ...resizing, [host.id]: false });
     }
   };
 
@@ -657,11 +686,15 @@ export default function AdminHostsPage() {
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
                     {agentLabels[h.agent_status] || h.agent_status}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
-                  {h.storage_warnings && h.storage_warnings.length > 0 && (
+                  {(() => {
+                    const localWarnings = (h.storage_warnings || []).filter((w: any) =>
+                      !h.storage_pool_id || !w.mount.includes("/shared")
+                    );
+                    return localWarnings.length > 0 && (
                     <Tooltip
                       content={
                         <div>
-                          {h.storage_warnings.map((w: any, i: number) => (
+                          {localWarnings.map((w: any, i: number) => (
                             <div key={i}>
                               {w.mount}: {w.used_pct}% used ({w.level})
                             </div>
@@ -669,13 +702,13 @@ export default function AdminHostsPage() {
                         </div>
                       }
                     >
-                      {h.storage_warnings.some((w: any) => w.level === "critical") ? (
+                      {localWarnings.some((w: any) => w.level === "critical") ? (
                         <ExclamationCircleIcon style={{ color: "var(--pf-t--global--color--status--danger--default)", marginLeft: 8 }} />
                       ) : (
                         <ExclamationTriangleIcon style={{ color: "var(--pf-t--global--color--status--warning--default)", marginLeft: 8 }} />
                       )}
                     </Tooltip>
-                  )}
+                  ); })()}
                   {h.agent_status === "connected" && h.last_health_at && (
                     <span style={{ fontSize: 11, opacity: 0.5 }}>
                       health: {Math.round((Date.now() - new Date(h.last_health_at).getTime()) / 1000)}s ago
@@ -710,11 +743,12 @@ export default function AdminHostsPage() {
                   <div><strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB</div>
                   <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1</div>
                 </div>
-                {(() => { const si = storageInfo[h.id]; return (
+                {(() => { const si = storageInfo[h.id]; const optimizing = si && h.storage_size_gb > Math.round(si.total_gb); return (
                 <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Storage</div>
                   <div>{si ? <><strong>{si.used_pct}%</strong> of {Math.round(si.total_gb)} GB</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}</div>
                   {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(si.free_gb)} GB free</div>}
+                  {optimizing && <div style={{ fontSize: 10, color: "#facc15" }}>Optimizing → {h.storage_size_gb} GB</div>}
                 </div>); })()}
                 {h.max_eips > 0 && (
                   <div style={{ textAlign: "center" }}>
@@ -900,90 +934,90 @@ export default function AdminHostsPage() {
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
                 {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
-            </CardBody>
-            {h.state === "active" && h.agent_status === "connected" && !h.storage_pool_id && (
-              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
-                <ExpandableSection
-                  toggleText="Auto-Extend Settings"
-                  isExpanded={expandedAutoExtend[h.id] || false}
-                  onToggle={() =>
-                    setExpandedAutoExtend({
-                      ...expandedAutoExtend,
-                      [h.id]: !expandedAutoExtend[h.id],
-                    })
-                  }
-                >
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400, marginTop: 8 }}>
-                    <Switch
-                      label="Auto-extend enabled"
-                      isChecked={h.auto_extend_enabled}
-                      onChange={(_, checked) => updateAutoExtend(h.id, "auto_extend_enabled", checked)}
+              {h.state === "active" && h.agent_status === "connected" && (
+                <>
+                  <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <input
+                      style={{ ...inputStyle, width: 80, padding: "5px 8px", fontSize: 12 }}
+                      type="number"
+                      value={resizeTarget[h.id] || ""}
+                      onChange={(e) => setResizeTarget({ ...resizeTarget, [h.id]: e.target.value })}
+                      placeholder={`${h.storage_size_gb} GB`}
+                      min={h.storage_size_gb + 1}
                     />
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                        Threshold (%)
-                      </label>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        value={h.auto_extend_threshold_pct}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value) || 80;
-                          if (val >= 50 && val <= 95) {
-                            updateAutoExtend(h.id, "auto_extend_threshold_pct", val);
-                          }
-                        }}
-                        min={50}
-                        max={95}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                        Increment (GB)
-                      </label>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        value={h.auto_extend_increment_gb}
-                        onChange={(e) =>
-                          updateAutoExtend(
-                            h.id,
-                            "auto_extend_increment_gb",
-                            parseInt(e.target.value) || 100
-                          )
-                        }
-                        min={10}
-                      />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                        Max (GB, optional)
-                      </label>
-                      <input
-                        style={inputStyle}
-                        type="number"
-                        value={h.auto_extend_max_gb || ""}
-                        onChange={(e) =>
-                          updateAutoExtend(
-                            h.id,
-                            "auto_extend_max_gb",
-                            e.target.value ? parseInt(e.target.value) : null
-                          )
-                        }
-                        placeholder="No limit"
-                      />
-                    </div>
                     <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => handleExtendStorage(h)}
-                      isLoading={extending[h.id]}
-                      isDisabled={extending[h.id]}
+                      variant="secondary"
+                      onClick={() => handleResizeStorage(h)}
+                      isLoading={resizing[h.id]}
+                      isDisabled={resizing[h.id] || !resizeTarget[h.id] || parseInt(resizeTarget[h.id]) <= h.storage_size_gb}
                     >
-                      Extend Storage
+                      Resize
                     </Button>
                   </div>
-                </ExpandableSection>
+                  <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
+                  <Switch
+                    label={`Auto-extend${h.auto_extend_enabled ? ` (${h.auto_extend_threshold_pct}% → +${h.auto_extend_increment_gb} GB)` : ""}`}
+                    isChecked={h.auto_extend_enabled}
+                    onChange={(_, checked) => updateAutoExtend(h.id, "auto_extend_enabled", checked)}
+                    style={{ fontSize: 12 }}
+                  />
+                  {h.auto_extend_enabled && (
+                    <Button
+                      variant="plain"
+                      size="sm"
+                      onClick={() => setExpandedAutoExtend({ ...expandedAutoExtend, [h.id]: !expandedAutoExtend[h.id] })}
+                      style={{ padding: "2px 6px", fontSize: 11 }}
+                    >
+                      {expandedAutoExtend[h.id] ? "▲" : "▼"}
+                    </Button>
+                  )}
+                </>
+              )}
+            </CardBody>
+            {h.state === "active" && h.agent_status === "connected" && h.auto_extend_enabled && expandedAutoExtend[h.id] && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600 }}>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
+                    <input
+                      style={{ ...inputStyle, width: 80 }}
+                      type="number"
+                      value={h.auto_extend_threshold_pct}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value) || 80;
+                        if (val >= 50 && val <= 95) updateAutoExtend(h.id, "auto_extend_threshold_pct", val);
+                      }}
+                      min={50}
+                      max={95}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Increment (GB)</label>
+                    <input
+                      style={{ ...inputStyle, width: 80 }}
+                      type="number"
+                      value={h.auto_extend_increment_gb}
+                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_increment_gb", parseInt(e.target.value) || 100)}
+                      min={10}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Max (GB)</label>
+                    <input
+                      style={{ ...inputStyle, width: 100 }}
+                      type="number"
+                      value={h.auto_extend_max_gb || ""}
+                      onChange={(e) => updateAutoExtend(h.id, "auto_extend_max_gb", e.target.value ? parseInt(e.target.value) : null)}
+                      placeholder="No limit"
+                    />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "flex-end" }}>
+                    <Button variant="primary" size="sm" onClick={() => handleExtendStorage(h)} isLoading={extending[h.id]} isDisabled={extending[h.id]}>
+                      Extend Now (+{h.auto_extend_increment_gb} GB)
+                    </Button>
+                  </div>
+                </div>
               </CardBody>
             )}
             {showKeyFor === h.id && keyData[h.id] && (
