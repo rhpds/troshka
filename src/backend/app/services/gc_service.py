@@ -237,12 +237,12 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
     deleted_bytes = 0
 
     # Scan each S3 prefix type for orphans
-    prefix_checks = [
+    # patterns/ and snapshots/ are: {prefix}/{item_id}/...
+    # library/ is: library/{user_id}/{item_id}/... (extra nesting level)
+    for s3_prefix, active_ids in [
         ("patterns/", active_pattern_ids),
         ("snapshots/", active_library_ids),
-        ("library/", active_library_ids),
-    ]
-    for s3_prefix, active_ids in prefix_checks:
+    ]:
         resp = s3.list_objects_v2(Bucket=bucket, Prefix=s3_prefix, Delimiter="/")
         for cp in resp.get("CommonPrefixes", []):
             prefix = cp["Prefix"]
@@ -260,6 +260,34 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
                     deleted += len(objects)
                     log.info(
                         "S3 GC: deleted %d objects from orphan %s", len(objects), prefix
+                    )
+
+    # library/ has extra nesting: library/{user_id}/{item_id}/...
+    # Must scan two levels deep to find the item_id
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix="library/", Delimiter="/")
+    for user_cp in resp.get("CommonPrefixes", []):
+        user_prefix = user_cp["Prefix"]
+        items_resp = s3.list_objects_v2(
+            Bucket=bucket, Prefix=user_prefix, Delimiter="/"
+        )
+        for item_cp in items_resp.get("CommonPrefixes", []):
+            item_prefix = item_cp["Prefix"]
+            item_id = item_prefix.strip("/").split("/")[-1]
+            if item_id not in active_library_ids:
+                objects = s3.list_objects_v2(Bucket=bucket, Prefix=item_prefix).get(
+                    "Contents", []
+                )
+                if objects and not dry_run:
+                    deleted_bytes += sum(o["Size"] for o in objects)
+                    s3.delete_objects(
+                        Bucket=bucket,
+                        Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
+                    )
+                    deleted += len(objects)
+                    log.info(
+                        "S3 GC: deleted %d objects from orphan library item %s",
+                        len(objects),
+                        item_prefix,
                     )
 
     # Abort stale multipart uploads
