@@ -634,11 +634,11 @@ export default function StoragePoolsPage() {
                 <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
                   <div style={{ fontSize: 11, marginBottom: 4 }}>
                     {pool.worker_status === "connected" ? (
-                      <span style={{ color: "#4ade80" }}>Pattern Buffer: connected</span>
+                      <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""} · {pool.worker_instance_id || ""}</span>
                     ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
-                      <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...</span>
+                      <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
                     ) : pool.worker_host_id ? (
-                      <span style={{ color: "#f87171" }}>Pattern Buffer: {pool.worker_status || "unknown"}</span>
+                      <span style={{ color: "#f87171" }}>Pattern Buffer: {pool.worker_status || "disconnected"}{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
                     ) : (
                       <span style={{ opacity: 0.5 }}>No Pattern Buffer</span>
                     )}

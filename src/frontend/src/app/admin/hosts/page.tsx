@@ -13,6 +13,7 @@ import {
   ToolbarItem,
   Tooltip,
   Switch,
+  Label,
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
 
@@ -737,7 +738,7 @@ export default function AdminHostsPage() {
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
-                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : h.host_type}</span>
+                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : <Label color="blue" isCompact>compute</Label>}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
@@ -787,7 +788,7 @@ export default function AdminHostsPage() {
                   Installing...
                 </Button>
               )}
-              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && (
+              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && h.host_type !== "pattern_buffer" && (
                 <Button variant="secondary" isDisabled={hostBusy} onClick={() => handleEvacuate(h.id)}>
                   Evacuate
                 </Button>
@@ -849,7 +850,7 @@ export default function AdminHostsPage() {
                   }}>
                     {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
-                  <Button variant="secondary" isLoading={updating === `gc-${h.id}`} isDisabled={hostBusy || updating === `gc-${h.id}`} onClick={async () => {
+                  {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updating === `gc-${h.id}`} isDisabled={hostBusy || updating === `gc-${h.id}`} onClick={async () => {
                     if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
                     setUpdating(`gc-${h.id}`);
                     try {
@@ -886,8 +887,8 @@ export default function AdminHostsPage() {
                     }
                   }}>
                     Clean
-                  </Button>
-                  <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={hostBusy || updating === `wipe-${h.id}`} onClick={async () => {
+                  </Button>}
+                  {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={hostBusy || updating === `wipe-${h.id}`} onClick={async () => {
                     if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
                     if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
                     setUpdating(`wipe-${h.id}`);
@@ -905,7 +906,7 @@ export default function AdminHostsPage() {
                     }
                   }}>
                     {updating === `wipe-${h.id}` ? "Wiping..." : "Wipe Host"}
-                  </Button>
+                  </Button>}
                 </>
               )}
               </>); })()}
@@ -942,7 +943,7 @@ export default function AdminHostsPage() {
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
                 {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
-              {h.state === "active" && h.agent_status === "connected" && (
+              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && (
                 <>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>

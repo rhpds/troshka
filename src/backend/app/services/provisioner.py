@@ -271,7 +271,7 @@ runcmd:
       grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
     fi
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
-{storage_setup}  - echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+{storage_setup}  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
   - |
     # Kernel tuning for VM memory overcommit
     sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true
@@ -374,21 +374,23 @@ def provision_host(
     if kwargs.get("host_type") == "pattern_buffer":
         storage_setup += (
             "  - |\n"
-            "    # Mount instance-store NVMe for fast local I/O (pattern buffer)\n"
-            "    # Instance-store devices have model 'Amazon EC2 NVMe Instance Storage'\n"
-            "    # EBS volumes have model 'Amazon Elastic Block Store'\n"
+            "    cat > /var/lib/cloud/scripts/per-boot/mount-nvme.sh << 'NVMEOF'\n"
+            "    #!/bin/bash\n"
+            "    mountpoint -q /var/lib/troshka/local && exit 0\n"
             "    for dev in /dev/nvme*n1; do\n"
             '      [ -b "$dev" ] || continue\n'
             "      MODEL=$(nvme id-ctrl \"$dev\" 2>/dev/null | grep -o 'Amazon.*' | head -1)\n"
             '      if echo "$MODEL" | grep -q "Instance Storage"; then\n'
             '        mkfs.xfs -f "$dev"\n'
-            "        mkdir -p /var/lib/troshka/local\n"
+            "        mkdir -p /var/lib/troshka/local/tmp /var/lib/troshka/local/cache\n"
             '        mount "$dev" /var/lib/troshka/local\n'
             "        mkdir -p /var/lib/troshka/local/tmp /var/lib/troshka/local/cache\n"
-            '        echo "$dev /var/lib/troshka/local xfs defaults,nofail 0 2" >> /etc/fstab\n'
             "        break\n"
             "      fi\n"
             "    done\n"
+            "    NVMEOF\n"
+            "    chmod +x /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
+            "    bash /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
         )
     user_data = CLOUD_INIT.format(
         hostname=hostname, host_id=host_id, storage_setup=storage_setup

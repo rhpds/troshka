@@ -57,7 +57,9 @@ def list_hosts(
     from app.services.eip_service import get_host_eip_usage
     from app.services.placement import sync_host_capacity
 
-    query = db.query(Host)
+    query = db.query(Host).filter(
+        Host.state != "terminated", Host.host_type != "pattern_buffer"
+    )
     if region:
         query = query.filter(Host.region == region)
     hosts = query.order_by(Host.region, Host.created_at).all()
@@ -111,7 +113,11 @@ def host_summary(
     """Summary of host pool by region."""
     from app.services.placement import get_allocatable
 
-    hosts = db.query(Host).all()
+    hosts = (
+        db.query(Host)
+        .filter(Host.state != "terminated", Host.host_type != "pattern_buffer")
+        .all()
+    )
     regions: dict[str, dict] = {}
     for h in hosts:
         alloc_vcpus, alloc_ram = get_allocatable(h)

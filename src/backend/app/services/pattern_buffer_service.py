@@ -131,7 +131,15 @@ def _provision_pattern_buffer(pool_id: str):
         db.commit()
         db.refresh(host)
 
-        logger.info("Pattern buffer %s provisioned, installing agent...", host_id[:8])
+        logger.info("Pattern buffer %s provisioned, waiting for SSH...", host_id[:8])
+
+        from app.services.agent_deployer import wait_for_ssh
+
+        if not wait_for_ssh(result["public_ip"], result["private_key"], timeout=300):
+            logger.error("Pattern buffer %s SSH never became available", host_id[:8])
+            return
+
+        logger.info("Pattern buffer %s SSH ready, installing agent...", host_id[:8])
 
         storage_mode = "shared" if nfs_kwargs else "local"
         cert_pem = key_pem = ca_pem = ""
@@ -175,16 +183,18 @@ def replace_pattern_buffer(db: Session, pool: StoragePool):
     """Terminate existing pattern buffer and provision a new one."""
     if pool.worker_host_id:
         old_host = db.query(Host).filter_by(id=pool.worker_host_id).first()
-        if old_host and old_host.instance_id:
-            from app.services.provisioner import terminate_host
+        if old_host:
+            if old_host.instance_id:
+                from app.services.provisioner import terminate_host
 
-            try:
-                provider = _find_ec2_provider(db, pool)
-                credentials = provider.get_credentials() if provider else None
-                terminate_host(old_host.instance_id, credentials=credentials)
-            except Exception as e:
-                logger.warning("Failed to terminate old pattern buffer: %s", e)
+                try:
+                    provider = _find_ec2_provider(db, pool)
+                    credentials = provider.get_credentials() if provider else None
+                    terminate_host(old_host.instance_id, credentials=credentials)
+                except Exception as e:
+                    logger.warning("Failed to terminate old pattern buffer: %s", e)
             old_host.state = "terminated"
+            old_host.agent_status = "disconnected"
 
         pool.worker_host_id = None
         db.commit()
