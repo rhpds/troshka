@@ -39,6 +39,8 @@ class Project(Base):
     deployed_topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deploy_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ocp_install_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     guid: Mapped[str | None] = mapped_column(String(50), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dns_provider_id: Mapped[str | None] = mapped_column(

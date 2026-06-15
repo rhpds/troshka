@@ -138,6 +138,7 @@ def clean_orphans(host, orphans: dict, db: Session = None) -> dict:
             "orphan_namespaces": orphans.get("orphan_namespaces", []),
             "cache_items": cache_items,
             "orphan_bmc_project_ids": orphans.get("orphaned_bmc_project_ids", []),
+            "orphan_metadata_ids": orphans.get("orphaned_metadata_ids", []),
         },
     )
     job = wait_for_job(host, job_id, timeout=120)

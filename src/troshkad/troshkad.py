@@ -661,15 +661,14 @@ def _handle_vm_create(job, params):
         path = _validate_path(disk["path"])
         bus = _validate_bus(disk.get("bus", "virtio"))
         device = disk.get("device", "disk")
-        # Hard-link shared cached files into VM dir (preserves permissions, survives --remove-all-storage)
         link_from = disk.get("symlink_from")
         if link_from:
             link_from = _validate_path(link_from)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             try:
                 if link_from.endswith(".iso"):
-                    os.link(link_from, path)
-                    _job_log(job, f"Linked {os.path.basename(path)}")
+                    os.symlink(link_from, path)
+                    _job_log(job, f"Symlinked {os.path.basename(path)}")
                 else:
                     src_size = os.path.getsize(link_from)
                     _job_log(job, f"Copying {os.path.basename(link_from)} ({round(src_size / (1024**3), 1)} GB)...")
@@ -2288,6 +2287,19 @@ def _handle_network_full_teardown(job, params):
             except FileNotFoundError:
                 pass
 
+    # Kill metadata service and remove script + log
+    try:
+        _run_cmd(job, ["pkill", "-9", "-f", f"metadata-{pid}.py"], timeout=5, check=False)
+    except RuntimeError:
+        pass
+    for meta_path in [f"/opt/troshka/metadata-{pid}.py",
+                      f"/var/log/troshka-metadata-{pid}.log"]:
+        try:
+            os.remove(meta_path)
+            _job_log(job, f"Removed: {meta_path}")
+        except FileNotFoundError:
+            pass
+
     # Delete namespace
     try:
         _run_cmd(job, ["ip", "netns", "del", ns], timeout=10)
@@ -2754,6 +2766,14 @@ def _handle_gc_discover(job, params):
         except OSError as e:
             _job_log(job, f"Failed to scan temp dir: {e}")
 
+    # Discover orphaned metadata scripts
+    orphaned_metadata_ids = []
+    for entry in glob.glob("/opt/troshka/metadata-*.py"):
+        prefix = os.path.basename(entry).replace("metadata-", "").replace(".py", "")
+        if prefix not in known_prefixes:
+            orphaned_metadata_ids.append(prefix)
+            _job_log(job, f"Orphaned metadata: {entry}")
+
     return {
         "orphan_dirs": orphan_dirs,
         "orphan_domains": orphan_domains,
@@ -2761,6 +2781,7 @@ def _handle_gc_discover(job, params):
         "orphan_namespaces": orphan_namespaces,
         "cache_items": cache_items,
         "orphaned_bmc_project_ids": orphaned_bmc,
+        "orphaned_metadata_ids": orphaned_metadata_ids,
         "stale_temps": stale_temps,
     }
 
@@ -2787,10 +2808,23 @@ def _handle_gc_clean(job, params):
             validated = _validate_path(path)
             if os.path.isdir(validated):
                 shutil.rmtree(validated)
-                _job_log(job,f"Removed dir: {validated}")
+                _job_log(job, f"Removed dir: {validated}")
                 removed_dirs += 1
-        except Exception as e:
-            _job_log(job,f"Failed to remove {path}: {e}")
+        except OSError:
+            # rmtree may fail on NFS (busy .nfs* files) — retry: delete visible files, then rmdir
+            try:
+                validated = _validate_path(path)
+                for entry in os.listdir(validated):
+                    fp = os.path.join(validated, entry)
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+                os.rmdir(validated)
+                _job_log(job, f"Removed dir (retry): {validated}")
+                removed_dirs += 1
+            except OSError as e2:
+                _job_log(job, f"Failed to remove {path}: {e2}")
 
     # 2. Remove orphan domains (virsh destroy + undefine)
     for domain in orphan_domains:
@@ -2884,7 +2918,24 @@ def _handle_gc_clean(job, params):
         except RuntimeError:
             pass
 
-    # 7. Remove stale temp files (containment check prevents path traversal)
+    # 7. Remove orphan metadata scripts + logs
+    removed_metadata = 0
+    for project_id in params.get("orphan_metadata_ids", []):
+        pid_short = project_id[:8]
+        try:
+            _run_cmd(job, ["pkill", "-9", "-f", f"metadata-{pid_short}.py"], timeout=5, check=False)
+        except RuntimeError:
+            pass
+        for meta_path in [f"/opt/troshka/metadata-{pid_short}.py",
+                          f"/var/log/troshka-metadata-{pid_short}.log"]:
+            try:
+                os.remove(meta_path)
+                _job_log(job, f"Removed orphan: {meta_path}")
+                removed_metadata += 1
+            except FileNotFoundError:
+                pass
+
+    # 8. Remove stale temp files (containment check prevents path traversal)
     removed_temps = 0
     _s3_tmpdir = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
     real_tmpdir = os.path.realpath(_s3_tmpdir)
@@ -2910,6 +2961,7 @@ def _handle_gc_clean(job, params):
         "removed_namespaces": removed_namespaces,
         "removed_cache": removed_cache,
         "removed_bmc": removed_bmc,
+        "removed_metadata": removed_metadata,
         "removed_temps": removed_temps,
     }
 

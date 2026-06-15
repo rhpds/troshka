@@ -1943,7 +1943,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     if not is_pattern:
         # Fresh install — monitor install.log progress with structured phases
         _push("installing", "waiting for OpenShift install")
-        install_deadline = _t.time() + 5400
+        install_deadline = _t.time() + 7200
         tracked_ops = [
             "authentication",
             "console",
@@ -1989,9 +1989,35 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             if "Agent Rest API Initialized" in full_text:
                 phases_seen.add("api-init")
 
+            # Detect install failure
+            if (
+                "Bootstrap failed to complete" in full_text
+                or "failed to complete" in full_text
+                or "context deadline exceeded" in full_text
+            ):
+                _push("error", "install failed")
+                try:
+                    from app.core.database import SessionLocal
+                    from app.models.project import Project
+
+                    db = SessionLocal()
+                    p = db.query(Project).filter_by(id=project_id).first()
+                    if p:
+                        p.ocp_status = "error"
+                        db.commit()
+                    db.close()
+                except Exception:
+                    pass
+                logger.warning(
+                    "OCP install failed for %s (%s)",
+                    project_id[:8],
+                    _elapsed(),
+                )
+                return
+
             # Detect phases from log content
             if (
-                "Install complete" in full_text
+                "Install complete!" in full_text
                 or "Install completed" in full_text
                 or "All cluster operators have completed" in full_text
             ):
@@ -2176,6 +2202,25 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             _t.sleep(15)
         else:
             _push("timeout", "install timed out")
+            try:
+                from app.core.database import SessionLocal
+                from app.models.project import Project
+
+                db = SessionLocal()
+                p = db.query(Project).filter_by(id=project_id).first()
+                if p:
+                    p.ocp_status = "error"
+                    db.commit()
+                db.close()
+            except Exception:
+                pass
+            logger.warning(
+                "OCP install timed out for %s (%s)",
+                project_id[:8],
+                _elapsed(),
+            )
+            return
+        elapsed_secs = int(_t.time() - start)
         _push("ready", "cluster ready")
         try:
             from app.core.database import SessionLocal
@@ -2185,6 +2230,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             p = db.query(Project).filter_by(id=project_id).first()
             if p:
                 p.ocp_status = "ready"
+                p.ocp_install_elapsed = elapsed_secs
                 db.commit()
             db.close()
         except Exception:
@@ -2308,6 +2354,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         _push("console", "waiting for OpenShift console")
         _t.sleep(5)
 
+    elapsed_secs = int(_t.time() - start)
     _push("ready", "cluster ready")
     try:
         from app.core.database import SessionLocal
@@ -2317,6 +2364,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
         p = db.query(Project).filter_by(id=project_id).first()
         if p:
             p.ocp_status = "ready"
+            p.ocp_install_elapsed = elapsed_secs
             db.commit()
         db.close()
     except Exception:

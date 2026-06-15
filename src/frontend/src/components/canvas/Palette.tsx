@@ -344,15 +344,16 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
             onClick={() => setShowOcpStatus(!showOcpStatus)}
           >
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {ocpHealth.phase !== "ready" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "error" && ocpHealth.phase !== "timeout" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              {(ocpHealth.phase === "error" || ocpHealth.phase === "timeout") && <span style={{ color: "#f87171" }}>✗</span>}
               OCP STATUS
             </span>
             <span style={{ fontSize: 9 }}>{showOcpStatus ? "▾" : "▸"}</span>
           </div>
           {showOcpStatus && (
             <div style={{ padding: "0 12px 8px", fontSize: 11 }}>
-              <div style={{ marginBottom: 4, color: ocpHealth.phase === "ready" ? "#4ade80" : "var(--pf-t--global--text--color--regular)", display: "flex", alignItems: "center", gap: 6 }}>
-                {ocpHealth.phase === "ready" && "✓"} {ocpHealth.detail}
+              <div style={{ marginBottom: 4, color: ocpHealth.phase === "ready" ? "#4ade80" : ocpHealth.phase === "error" || ocpHealth.phase === "timeout" ? "#f87171" : "var(--pf-t--global--text--color--regular)", display: "flex", alignItems: "center", gap: 6 }}>
+                {ocpHealth.phase === "ready" && "✓"} {(ocpHealth.phase === "error" || ocpHealth.phase === "timeout") && "✗"} {ocpHealth.detail}
               </div>
               {ocpHealth.items && (
                 <div style={{ fontSize: 10, lineHeight: 1.6, color: "var(--pf-t--global--text--color--subtle)" }}>
@@ -384,7 +385,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   </div>
                 );
               })()}
-              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "ssh" && ocpHealth.phase !== "waiting" && projectId && (
+              {ocpHealth.phase !== "ssh" && ocpHealth.phase !== "waiting" && projectId && (
                 <div style={{ marginTop: 4 }}>
                   <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }} onClick={() => { setOcpLog(""); setOcpLogModal(true); }}>View Install Log</span>
                 </div>

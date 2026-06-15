@@ -19,6 +19,28 @@ _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 
 
+def _find_sno_node_ip(topology):
+    """Find the SNO node's cluster IP from the topology.
+
+    Matches 'sno' in the name, or the first cp-* node if it's the only one
+    (YAML templates name SNO nodes 'cp-0' not 'sno-0').
+    """
+    cp_nodes = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        name = node.get("data", {}).get("name", "")
+        nics = node.get("data", {}).get("nics", [])
+        ip = nics[0].get("ip") if nics else None
+        if "sno" in name and ip:
+            return ip
+        if name.startswith("cp-") and ip:
+            cp_nodes.append(ip)
+    if len(cp_nodes) == 1:
+        return cp_nodes[0]
+    return None
+
+
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     """Apply OCP Agent-Based configuration to a base topology."""
     cluster_name = config.get("cluster_name", "ocp")
@@ -37,7 +59,20 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     api_vip = "10.0.0.2"
     ingress_vip = "10.0.0.3"
 
-    _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip)
+    # SNO uses platform: none — no VIP management, DNS must point to node IP
+    if template_id == "ocp-sno":
+        sno_ip = _find_sno_node_ip(topology)
+        if sno_ip:
+            dns_api = sno_ip
+            dns_ingress = sno_ip
+        else:
+            dns_api = api_vip
+            dns_ingress = ingress_vip
+    else:
+        dns_api = api_vip
+        dns_ingress = ingress_vip
+
+    _setup_dns_records(topology, cluster_name, base_domain, dns_api, dns_ingress)
     _attach_bastion_image(topology, bastion_image)
     _attach_bastion_iso(topology, bastion_iso)
     _setup_bastion_cloud_init(
@@ -650,7 +685,7 @@ def _build_install_script(
             "    cd /home/cloud-user/ocp-install\n"
             "    cp install-config.yaml install-config.yaml.bak\n"
             "    cp agent-config.yaml agent-config.yaml.bak\n"
-            "    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | tee /home/cloud-user/create-image.log\n"
+            '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
             "    \n"
             "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
             "    # Serve the ISO on port 8080\n"
@@ -683,11 +718,19 @@ def _build_install_script(
             "    \n"
             "    \n"
             "    echo 'Waiting for cluster installation to complete...'\n"
-            "    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1\n"
+            '    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\'\n'
+            "    OCP_EXIT=${PIPESTATUS[0]}\n"
             "    INSTALL_END=$(date +%s)\n"
             "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
             "    echo ''\n"
             "    echo '================================================'\n"
+            "    if [ $OCP_EXIT -ne 0 ]; then\n"
+            '    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"\n'
+            '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
+            "    echo '================================================'\n"
+            "    kill $HTTP_PID 2>/dev/null\n"
+            "    exit 1\n"
+            "    fi\n"
             '    echo "Install completed at $(date)"\n'
             '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
             "    echo '================================================'\n"

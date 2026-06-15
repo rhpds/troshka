@@ -24,6 +24,7 @@ class ProjectUpdate(BaseModel):
     guest_permission: str | None = None
     state: str | None = None
     topology: dict | None = None
+    tags: dict | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -42,6 +43,7 @@ class ProjectResponse(BaseModel):
     topology: dict | None = None
     deployed_topology: dict | None = None
     deploy_error: str | None = None
+    tags: dict | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

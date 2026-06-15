@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import TagEditor from "@/components/TagEditor";
 import {
   Button,
   Card,
@@ -48,6 +49,8 @@ export default function ImagesPage() {
   const [editItem, setEditItem] = useState<LibraryItem | null>(null);
   const [editName, setEditName] = useState("");
   const [editUrl, setEditUrl] = useState("");
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editNameValue, setEditNameValue] = useState("");
   const [editOcpDefault, setEditOcpDefault] = useState(false);
   const [newType, setNewType] = useState("iso");
   const [newFormat, setNewFormat] = useState("iso");
@@ -367,7 +370,42 @@ export default function ImagesPage() {
                     return next;
                   })} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
                   <span style={{ fontSize: 18 }}>{item.format === "iso" ? "💿" : "🛢"}</span>
-                  <strong>{item.name}</strong>
+                  {editingName === item.id ? (
+                    <input
+                      autoFocus
+                      value={editNameValue}
+                      onChange={(e) => setEditNameValue(e.target.value)}
+                      onBlur={() => {
+                        const trimmed = editNameValue.trim();
+                        if (trimmed && trimmed !== item.name) {
+                          fetch(`/api/v1/library/${item.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name: trimmed }),
+                          }).then((r) => { if (r.ok) loadItems(); });
+                        }
+                        setEditingName(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") setEditingName(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        borderRadius: 4, padding: "2px 6px", minWidth: 200,
+                      }}
+                    />
+                  ) : (
+                    <strong
+                      onClick={() => { setEditingName(item.id); setEditNameValue(item.name); }}
+                      title="Click to rename"
+                      style={{ cursor: "text" }}
+                    >{item.name}</strong>
+                  )}
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
                     {item.state === "downloading" ? (item.size_bytes > 0 ? `downloading from URL · ${formatSize(item.size_bytes)}` : "starting download...")
                       : item.state === "uploading_s3" ? (() => {
@@ -390,15 +428,51 @@ export default function ImagesPage() {
                 </div>
               </div>
             </CardBody>
-            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
-              <Button variant="secondary" onClick={() => {
-                setEditItem(item);
-                setEditName(item.name);
-                setEditUrl(item.source_url || "");
-                setEditOcpDefault(item.tags?.ocp_default || false);
-              }}>
-                Edit
-              </Button>
+            <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
+              {item.state === "ready" && (
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginRight: 8, opacity: 0.7 }}>
+                  <input type="checkbox" checked={item.format === "iso" ? (item.tags?.ocp_default_iso || false) : (item.tags?.ocp_default_image || false)} onChange={async (e) => {
+                    const tagKey = item.format === "iso" ? "ocp_default_iso" : "ocp_default_image";
+                    await fetch(`/api/v1/library/${item.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tags: { ...(item.tags || {}), [tagKey]: e.target.checked || undefined } }),
+                    });
+                    loadItems();
+                  }} />
+                  OCP Default
+                </label>
+              )}
+              <TagEditor
+                tags={(item.tags?.user_tags as string[]) || []}
+                onAdd={async (tag) => {
+                  const cur = (item.tags?.user_tags as string[]) || [];
+                  await fetch(`/api/v1/library/${item.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tags: { ...(item.tags || {}), user_tags: [...cur, tag] } }),
+                  });
+                  loadItems();
+                }}
+                onRemove={async (tag) => {
+                  const cur = (item.tags?.user_tags as string[]) || [];
+                  await fetch(`/api/v1/library/${item.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ tags: { ...(item.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
+                  });
+                  loadItems();
+                }}
+              />
+              {["error", "pending"].includes(item.state) && (
+                <Button variant="secondary" onClick={() => {
+                  setEditItem(item);
+                  setEditName(item.name);
+                  setEditUrl(item.source_url || "");
+                }}>
+                  Edit URL
+                </Button>
+              )}
               {["importing", "uploading", "downloading", "uploading_s3"].includes(item.state) && (
                 <Button variant="secondary" onClick={async () => {
                   if (!window.confirm("Cancel this transfer?")) return;
@@ -427,87 +501,43 @@ export default function ImagesPage() {
             boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
             border: "1px solid var(--pf-t--global--border--color--default)",
           }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 16px" }}>Edit Library Item</h3>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Name</label>
+            <h3 style={{ margin: "0 0 16px" }}>Edit Source URL</h3>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Source URL</label>
               <input
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
+                autoFocus
+                value={editUrl}
+                onChange={(e) => setEditUrl(e.target.value)}
+                placeholder="https://..."
                 style={{
                   width: "100%", padding: "6px 10px", borderRadius: 4, fontSize: 13,
                   border: "1px solid var(--pf-t--global--border--color--default)",
                   background: "var(--pf-t--global--background--color--secondary--default)",
                   color: "var(--pf-t--global--text--color--regular)",
+                  fontFamily: "monospace",
                 }}
               />
-            </div>
-            {(editItem.state === "error" || editItem.state === "pending") && (
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Source URL</label>
-                <input
-                  value={editUrl}
-                  onChange={(e) => setEditUrl(e.target.value)}
-                  placeholder="https://..."
-                  style={{
-                    width: "100%", padding: "6px 10px", borderRadius: 4, fontSize: 13,
-                    border: "1px solid var(--pf-t--global--border--color--default)",
-                    background: "var(--pf-t--global--background--color--secondary--default)",
-                    color: "var(--pf-t--global--text--color--regular)",
-                    fontFamily: "monospace",
-                  }}
-                />
-              </div>
-            )}
-            {editItem.state === "ready" && editItem.source_url && (
-              <div style={{ marginBottom: 12, fontSize: 11, color: "var(--pf-t--global--text--color--subtle)" }}>
-                Source: {editItem.source_url}
-              </div>
-            )}
-            <div style={{ marginBottom: 16 }}>
-              {editItem.format !== "iso" && (
-                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="checkbox" checked={editItem.tags?.ocp_default_image || false} onChange={(e) => {
-                    setEditItem({ ...editItem, tags: { ...(editItem.tags || {}), ocp_default_image: e.target.checked || undefined } });
-                  }} />
-                  Default Image for OCP Templates
-                </label>
-              )}
-              {editItem.format === "iso" && (
-                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-                  <input type="checkbox" checked={editItem.tags?.ocp_default_iso || false} onChange={(e) => {
-                    setEditItem({ ...editItem, tags: { ...(editItem.tags || {}), ocp_default_iso: e.target.checked || undefined } });
-                  }} />
-                  Default ISO for OCP Templates
-                </label>
-              )}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <Button variant="secondary" onClick={() => setEditItem(null)}>Cancel</Button>
               <Button variant="primary" onClick={async () => {
-                const updates: Record<string, any> = {};
-                if (editName !== editItem.name) updates.name = editName;
-                if (editUrl !== (editItem.source_url || "")) updates.source_url = editUrl;
-                updates.tags = editItem.tags || {};
-                if (Object.keys(updates).length > 0) {
+                if (editUrl !== (editItem.source_url || "")) {
                   await fetch(`/api/v1/library/${editItem.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(updates),
+                    body: JSON.stringify({ source_url: editUrl }),
                   });
                 }
                 setEditItem(null);
                 loadItems();
               }}>Save</Button>
-              {(editItem.state === "error" || editItem.state === "pending") && editUrl && (
+              {editUrl && (
                 <Button variant="primary" style={{ background: "#3e8635" }} onClick={async () => {
-                  const updates: Record<string, string> = {};
-                  if (editName !== editItem.name) updates.name = editName;
-                  if (editUrl !== (editItem.source_url || "")) updates.source_url = editUrl;
-                  if (Object.keys(updates).length > 0) {
+                  if (editUrl !== (editItem.source_url || "")) {
                     await fetch(`/api/v1/library/${editItem.id}`, {
                       method: "PATCH",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(updates),
+                      body: JSON.stringify({ source_url: editUrl }),
                     });
                   }
                   await fetch(`/api/v1/library/${editItem.id}/import-url`, {

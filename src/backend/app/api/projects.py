@@ -268,6 +268,8 @@ def get_project(
         "vni_map": project.vni_map,
         "deploy_error": project.deploy_error,
         "ocp_status": project.ocp_status,
+        "ocp_install_elapsed": project.ocp_install_elapsed,
+        "tags": project.tags,
         "run_timer_hours": project.run_timer_hours,
         "lifetime_expires_at": project.lifetime_expires_at,
         "poweroff_mode": project.poweroff_mode,

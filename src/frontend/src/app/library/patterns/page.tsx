@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import TagEditor from "@/components/TagEditor";
 import {
   Button,
   Card,
@@ -35,6 +36,7 @@ interface Pattern {
   total_size_gb: number;
   total_size_bytes: number;
   capture_progress?: { step?: string; detail?: string; vms?: string[] };
+  tags: Record<string, any> | null;
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;
@@ -154,6 +156,8 @@ export default function PatternsPage() {
   const [deployPattern, setDeployPattern] = useState<{ id: string; name: string } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
   const [selectedPatterns, setSelectedPatterns] = useState<Set<string>>(new Set());
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editNameValue, setEditNameValue] = useState("");
 
   const loadPatterns = () => {
     fetch("/api/v1/patterns/")
@@ -295,7 +299,48 @@ export default function PatternsPage() {
                           return next;
                         });
                       }} onClick={(e) => e.stopPropagation()} style={{ width: 18, height: 18, minWidth: 18, cursor: "pointer", marginTop: 2 }} />
-                      <strong>{pattern.name}</strong>
+                      {editingName === pattern.id ? (
+                        <input
+                          autoFocus
+                          value={editNameValue}
+                          onChange={(e) => setEditNameValue(e.target.value)}
+                          onBlur={() => {
+                            const trimmed = editNameValue.trim();
+                            if (trimmed && trimmed !== pattern.name) {
+                              fetch(`/api/v1/patterns/${pattern.id}`, {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ name: trimmed }),
+                              }).then((r) => { if (r.ok) loadPatterns(); });
+                            }
+                            setEditingName(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                            if (e.key === "Escape") setEditingName(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            fontSize: "inherit", fontWeight: "bold", fontFamily: "inherit",
+                            background: "var(--pf-t--global--background--color--primary--default)",
+                            color: "var(--pf-t--global--text--color--regular)",
+                            border: "1px solid var(--pf-t--global--border--color--default)",
+                            borderRadius: 4, padding: "2px 6px", width: "100%",
+                          }}
+                        />
+                      ) : (
+                        <strong
+                          onClick={(e) => {
+                            if (!saving) {
+                              e.stopPropagation();
+                              setEditingName(pattern.id);
+                              setEditNameValue(pattern.name);
+                            }
+                          }}
+                          title="Click to rename"
+                          style={{ cursor: saving ? "default" : "text" }}
+                        >{pattern.name}</strong>
+                      )}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {saving ? (
@@ -325,7 +370,28 @@ export default function PatternsPage() {
                     </div>
                   )}
                 </CardBody>
-                <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+                <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                  <TagEditor
+                    tags={(pattern.tags?.user_tags as string[]) || []}
+                    onAdd={async (tag) => {
+                      const cur = (pattern.tags?.user_tags as string[]) || [];
+                      await fetch(`/api/v1/patterns/${pattern.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tags: { ...(pattern.tags || {}), user_tags: [...cur, tag] } }),
+                      });
+                      loadPatterns();
+                    }}
+                    onRemove={async (tag) => {
+                      const cur = (pattern.tags?.user_tags as string[]) || [];
+                      await fetch(`/api/v1/patterns/${pattern.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ tags: { ...(pattern.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
+                      });
+                      loadPatterns();
+                    }}
+                  />
                   <Button variant="primary" size="sm" isDisabled={saving} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name })}>
                     Create Project
                   </Button>

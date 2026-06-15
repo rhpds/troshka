@@ -17,11 +17,14 @@ while true; do
     pid=$(basename "$proj_dir")
     total=$(du -sh "$proj_dir" 2>/dev/null | cut -f1)
     echo "── Project ${pid:0:8} ($total) ──"
-    for f in "$proj_dir"*.qcow2 "$proj_dir"*.iso; do
+    for f in "$proj_dir"*.qcow2 "$proj_dir"*.iso "$proj_dir".nfs*; do
       [ -f "$f" ] || continue
+      links=$(stat -c '%h' "$f" 2>/dev/null)
       sz=$(ls -lh "$f" | awk '{print $5}')
       mod=$(stat -c '%y' "$f" 2>/dev/null | cut -d. -f1)
-      printf "  %-40s %6s  %s\n" "$(basename "$f")" "$sz" "$mod"
+      tag=""
+      if [ "$links" -gt 1 ] 2>/dev/null; then tag=" (hardlink)"; fi
+      printf "  %-40s %6s  %s%s\n" "$(basename "$f")" "$sz" "$mod" "$tag"
     done
     echo
   done
@@ -55,7 +58,8 @@ while true; do
     echo "$tmp_files" | while read f; do
       sz=$(ls -lh "$f" | awk '{print $5}')
       mod=$(stat -c '%y' "$f" 2>/dev/null | cut -d. -f1)
-      printf "  %-40s %6s  %s\n" "$(basename "$f")" "$sz" "$mod"
+      short=$(echo "$f" | sed 's|.*/tmp/||')
+      printf "  %-40s %6s  %s\n" "$short" "$sz" "$mod"
     done
     echo
   fi

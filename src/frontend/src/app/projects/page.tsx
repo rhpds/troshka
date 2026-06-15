@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import TagEditor from "@/components/TagEditor";
 import {
   Button,
   Card,
@@ -28,6 +29,7 @@ interface Project {
   state: string;
   host_type: string;
   poweroff_mode: string;
+  tags: Record<string, any> | null;
   created_at: string;
 }
 
@@ -871,8 +873,29 @@ export default function ProjectsPage() {
                   </p>
                 </div>
               </CardBody>
-              {/* Row 2: Buttons */}
-              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+              {/* Row 2: Tags + Buttons */}
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                <TagEditor
+                  tags={(p.tags?.user_tags as string[]) || []}
+                  onAdd={async (tag) => {
+                    const cur = (p.tags?.user_tags as string[]) || [];
+                    await fetch(`/api/v1/projects/${p.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tags: { ...(p.tags || {}), user_tags: [...cur, tag] } }),
+                    });
+                    fetchProjects();
+                  }}
+                  onRemove={async (tag) => {
+                    const cur = (p.tags?.user_tags as string[]) || [];
+                    await fetch(`/api/v1/projects/${p.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tags: { ...(p.tags || {}), user_tags: cur.filter((t: string) => t !== tag) } }),
+                    });
+                    fetchProjects();
+                  }}
+                />
                 {deletingProjects.has(p.id) ? (
                   <Button variant="plain" isDisabled><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</Button>
                 ) : (<>
