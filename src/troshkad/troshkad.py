@@ -1917,6 +1917,9 @@ def _handle_network_full_setup(job, params):
                 os.remove(dnsmasq_pid)
             except FileNotFoundError:
                 pass
+        # Fallback: kill by conf file match in case pidfile was stale
+        subprocess.run(["pkill", "-f", dnsmasq_conf], capture_output=True, timeout=5)
+        time.sleep(0.3)
 
         _run_cmd(job, ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"], timeout=10)
         try:
