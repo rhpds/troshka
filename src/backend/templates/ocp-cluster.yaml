@@ -50,3 +50,4 @@ gateway:
     - 80    # HTTP (redirects, some repos)
     - 443   # HTTPS (registry pulls, API)
     - 123   # NTP
+    - icmp  # ping (network connectivity checks)

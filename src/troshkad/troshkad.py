@@ -1982,7 +1982,10 @@ def _handle_network_full_setup(job, params):
         for net in networks:
             bridge = net["bridge_name"]
             for entry in allowed:
-                if "/" in entry:
+                if entry == "icmp":
+                    _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                                    "iifname", bridge, "oifname", veth_ns, "ip", "protocol", "icmp", "accept"], timeout=10)
+                elif "/" in entry:
                     port, proto = entry.split("/", 1)
                     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
                                     "iifname", bridge, "oifname", veth_ns, proto, "dport", port, "accept"], timeout=10)
