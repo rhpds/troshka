@@ -388,13 +388,23 @@ export default function ImagesPage() {
             </CardBody>
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
               <Button variant="secondary" onClick={() => {
-                const newName = window.prompt("Rename:", item.name);
-                if (newName && newName !== item.name) {
+                const newName = window.prompt("Name:", item.name);
+                if (newName !== null && newName !== item.name) {
                   fetch(`/api/v1/library/${item.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ name: newName }),
                   }).then(() => loadItems());
+                }
+                if (item.state === "error" || item.state === "pending") {
+                  const newUrl = window.prompt("Source URL:", item.source_url || "");
+                  if (newUrl !== null && newUrl !== (item.source_url || "")) {
+                    fetch(`/api/v1/library/${item.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ source_url: newUrl }),
+                    }).then(() => loadItems());
+                  }
                 }
               }}>
                 Edit
@@ -406,6 +416,20 @@ export default function ImagesPage() {
                   loadItems();
                 }}>
                   Cancel
+                </Button>
+              )}
+              {item.state === "error" && (
+                <Button variant="secondary" onClick={async () => {
+                  const url = item.source_url || window.prompt("Enter download URL to retry import:");
+                  if (!url) return;
+                  await fetch(`/api/v1/library/${item.id}/import-url`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url }),
+                  });
+                  loadItems();
+                }}>
+                  Retry
                 </Button>
               )}
               <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>

@@ -43,6 +43,7 @@ class LibraryItem(Base):
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     os_variant: Mapped[str | None] = mapped_column(String(50))
     state: Mapped[str] = mapped_column(String(20), default="uploading")
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     source_vm_id: Mapped[str | None] = mapped_column(String(36))
     vm_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

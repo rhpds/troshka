@@ -139,6 +139,7 @@ def get_item(
 class LibraryItemUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    source_url: str | None = None
 
 
 @router.patch("/{item_id}")
@@ -368,6 +369,7 @@ def import_from_url(
     s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
 
     item.s3_key = s3_key
+    item.source_url = body.url
     item.state = "importing"
     db.commit()
 

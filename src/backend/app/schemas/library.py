@@ -29,5 +29,6 @@ class SnapshotResponse(BaseModel):
     state: str
     vm_config: dict | None = None
     source_vm_id: str | None = None
+    source_url: str | None = None
     created_at: datetime.datetime
     model_config = {"from_attributes": True}
