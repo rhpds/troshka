@@ -535,13 +535,15 @@ def _build_agent_config(
             f"    - hostname: {vm_name}\n"
             f"      role: {role}\n"
             f"      interfaces:\n"
-            f"        - name: ens3\n"
+            f"        - name: cluster-nic\n"
             f"          macAddress: {boot_mac}\n"
             f"      networkConfig:\n"
             f"        interfaces:\n"
-            f"          - name: ens3\n"
+            f"          - name: cluster-nic\n"
             f"            type: ethernet\n"
             f"            state: up\n"
+            f"            identifier: mac-address\n"
+            f"            mac-address: {boot_mac}\n"
             f"            ipv4:\n"
             f"              enabled: true\n"
             f"              address:\n"
@@ -556,7 +558,7 @@ def _build_agent_config(
             f"          config:\n"
             f"            - destination: 0.0.0.0/0\n"
             f"              next-hop-address: 10.0.0.1\n"
-            f"              next-hop-interface: ens3\n"
+            f"              next-hop-interface: cluster-nic\n"
         )
 
     ac_lines = [
