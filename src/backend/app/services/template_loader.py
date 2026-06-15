@@ -196,7 +196,7 @@ def _bastion_node(x, y, bastion_cfg, cluster_ip="10.0.0.50"):
     }
     nic_bmc = {
         "id": f"nic-{_id()}",
-        "name": "bmc0",
+        "name": "eth1",
         "mac": _bmc_mac(),
         "model": "virtio",
     }
@@ -259,15 +259,15 @@ def _net_edge(net_id, vm_node, nic_index=0, vm_handle="top"):
         "id": _id(),
         "source": net_id,
         "target": vm_node["id"],
-        "sourceHandle": f"port-{net_id}-{vm_handle}",
-        "targetHandle": f"nic-{nic['id']}-bottom",
+        "sourceHandle": "bottom" if vm_handle == "top" else "top",
+        "targetHandle": f"nic-{nic['id']}-{vm_handle}",
+        "type": "smoothstep",
         "style": {
-            "stroke": "rgba(56,189,248,0.4)",
+            "stroke": "rgba(34,211,238,0.5)",
             "strokeWidth": 2,
-            "strokeDasharray": "6 3",
+            "strokeDasharray": "6 4",
         },
         "animated": True,
-        "className": "edge-network",
     }
 
 
@@ -276,8 +276,15 @@ def _gw_net_edge(gw_id, net_id):
         "id": _id(),
         "source": gw_id,
         "target": net_id,
-        "sourceHandle": f"port-{gw_id}-bottom",
-        "targetHandle": f"port-{net_id}-top",
+        "sourceHandle": "left",
+        "targetHandle": "left",
+        "type": "smoothstep",
+        "style": {
+            "stroke": "rgba(251,146,60,0.5)",
+            "strokeWidth": 2,
+            "strokeDasharray": "6 4",
+        },
+        "animated": True,
     }
 
 
@@ -356,6 +363,7 @@ def generate_topology_from_template(
         "data": {
             "name": "cluster-network",
             "label": "cluster-network",
+            "subtype": "network",
             "cidr": cluster_net.get("cidr", "10.0.0.0/24"),
             "dhcp": cluster_net.get("dhcp", True),
             "icon": "\U0001F310",
@@ -368,9 +376,11 @@ def generate_topology_from_template(
         "data": {
             "name": "bmc",
             "label": "bmc",
+            "subtype": "network",
             "cidr": bmc_net.get("cidr", "192.168.100.0/24"),
             "dhcp": False,
             "networkType": "bmc",
+            "bmcUsername": "admin",
             "bmcPassword": bmc_password,
             "icon": "\U0001F310",
         },
