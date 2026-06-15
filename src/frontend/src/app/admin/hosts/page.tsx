@@ -545,18 +545,26 @@ export default function AdminHostsPage() {
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{s.region}</div>
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{s.active_hosts}<span style={{ fontSize: 14, opacity: 0.5 }}>/{s.total_hosts}</span></div>
                 <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts</div>
-                <div style={{ fontSize: 11, marginTop: 8 }}>
-                  <span>vCPU: {s.used_vcpus}/{(s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus} <span style={{ opacity: 0.4 }}>({s.total_vcpus} phys)</span></span>
-                  <span style={{ marginLeft: 12 }}>RAM: {Math.round(s.used_ram_mb / 1024)}/{Math.round(((s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb) / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(s.total_ram_mb / 1024)} phys)</span></span>
-                </div>
-                <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 4 }}>
-                  <div style={{
-                    height: 4,
-                    borderRadius: 2,
-                    width: `${(s as unknown as Record<string, number>).alloc_vcpus ? (s.used_vcpus / (s as unknown as Record<string, number>).alloc_vcpus) * 100 : 0}%`,
-                    background: (s.used_vcpus / Math.max((s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus, 1)) > 0.8 ? "#f87171" : "#4ade80",
-                  }} />
-                </div>
+                {(() => {
+                  const allocVcpus = (s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus;
+                  const allocRamMb = (s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb;
+                  const cpuPct = allocVcpus ? (s.used_vcpus / allocVcpus) * 100 : 0;
+                  const ramPct = allocRamMb ? (s.used_ram_mb / allocRamMb) * 100 : 0;
+                  return (<>
+                    <div style={{ fontSize: 11, marginTop: 8 }}>
+                      vCPU: {s.used_vcpus}/{allocVcpus} <span style={{ opacity: 0.4 }}>({s.total_vcpus} phys)</span>
+                    </div>
+                    <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                      <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 6 }}>
+                      RAM: {Math.round(s.used_ram_mb / 1024)}/{Math.round(allocRamMb / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(s.total_ram_mb / 1024)} phys)</span>
+                    </div>
+                    <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                      <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
+                    </div>
+                  </>);
+                })()}
               </CardBody>
             </Card>
           ))}

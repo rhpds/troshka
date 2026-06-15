@@ -40,6 +40,10 @@ interface Pattern {
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;
+  total_vcpus?: number;
+  total_ram_gb?: number;
+  total_disk_gb?: number;
+  vm_count?: number;
 }
 
 function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
@@ -364,8 +368,11 @@ export default function PatternsPage() {
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>
-                      {pattern.disk_count} disk{pattern.disk_count !== 1 ? "s" : ""}
-                      {" · "}{formatSize(pattern.total_size_bytes)}
+                      {pattern.vm_count || 0} VM{(pattern.vm_count || 0) !== 1 ? "s" : ""}
+                      {" · "}{pattern.total_vcpus || 0} vCPU
+                      {" · "}{pattern.total_ram_gb || 0} GB RAM
+                      {" · "}{pattern.total_disk_gb || 0} GB disk
+                      {" · "}{formatSize(pattern.total_size_bytes)} compressed
                       {" · "}{new Date(pattern.created_at).toLocaleDateString()}
                     </div>
                   )}

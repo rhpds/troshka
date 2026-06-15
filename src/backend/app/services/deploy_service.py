@@ -1238,15 +1238,29 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                     "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
                 )
         if not host or not host.ip_address:
+            if not project.host_id:
+                from app.services.placement import (
+                    calculate_project_requirements as _calc_reqs,
+                )
+
+                reqs = _calc_reqs(project.topology or {})
+                ram_gb = round(reqs["total_ram_mb"] / 1024, 1)
+                error_msg = f"Not enough capacity in pool — need {reqs['total_vcpus']} vCPUs and {ram_gb} GB RAM but no host has room. Free up resources or add a host."
+            elif not host:
+                error_msg = "Assigned host no longer exists"
+            else:
+                error_msg = (
+                    "Assigned host has no IP address — it may still be provisioning"
+                )
             project.state = "error"
-            project.deploy_error = "Host not available"
+            project.deploy_error = error_msg
             s.commit()
             notify_project(
                 project_id,
                 {
                     "type": "project-state",
                     "state": "error",
-                    "deploy_error": "Host not available",
+                    "deploy_error": error_msg,
                 },
             )
             return
@@ -2387,15 +2401,16 @@ def stop_project_async(project_id: str):
 
         host = s.query(Host).filter_by(id=project.host_id).first()
         if not host or not host.ip_address:
+            error_msg = "Host is disconnected or unavailable — cannot stop VMs"
             project.state = "error"
-            project.deploy_error = "Host not available"
+            project.deploy_error = error_msg
             s.commit()
             notify_project(
                 project_id,
                 {
                     "type": "project-state",
                     "state": "error",
-                    "deploy_error": "Host not available",
+                    "deploy_error": error_msg,
                 },
             )
             return
@@ -2459,15 +2474,16 @@ def start_project_async(project_id: str):
 
         host = s.query(Host).filter_by(id=project.host_id).first()
         if not host or not host.ip_address:
+            error_msg = "Host is disconnected or unavailable — cannot start VMs"
             project.state = "error"
-            project.deploy_error = "Host not available"
+            project.deploy_error = error_msg
             s.commit()
             notify_project(
                 project_id,
                 {
                     "type": "project-state",
                     "state": "error",
-                    "deploy_error": "Host not available",
+                    "deploy_error": error_msg,
                 },
             )
             return

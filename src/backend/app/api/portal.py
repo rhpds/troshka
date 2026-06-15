@@ -180,7 +180,7 @@ def portal_vm_action(
 
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
-        raise HTTPException(400, "Host not available")
+        raise HTTPException(400, "Host is disconnected or unavailable")
 
     dom_name = f"troshka-{project.id[:8]}-{vm_id[:8]}"
     endpoint, timeout = ACTION_MAP[action]

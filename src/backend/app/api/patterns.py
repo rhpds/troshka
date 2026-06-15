@@ -144,7 +144,19 @@ def _remap_topology(topology: dict) -> dict:
 def _pattern_to_list_dict(p: Pattern) -> dict:
     """Serialize a Pattern for list responses (lightweight)."""
     nodes = (p.topology or {}).get("nodes", [])
-    vm_count = sum(1 for n in nodes if n.get("type") == "vmNode")
+    vms = [n for n in nodes if n.get("type") == "vmNode"]
+    total_vcpus = 0
+    total_ram_gb = 0
+    total_disk_gb = 0
+    for vm in vms:
+        data = vm.get("data", {})
+        total_vcpus += data.get("vcpus", 2)
+        total_ram_gb += data.get("ram", 4)
+    for n in nodes:
+        if n.get("type") == "storageNode":
+            data = n.get("data", {})
+            if data.get("format") != "iso":
+                total_disk_gb += data.get("size", 0)
     return {
         "id": p.id,
         "name": p.name,
@@ -159,7 +171,10 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "tags": p.tags,
         "created_at": p.created_at,
         "disk_count": len(p.disks),
-        "vm_count": vm_count,
+        "vm_count": len(vms),
+        "total_vcpus": total_vcpus,
+        "total_ram_gb": total_ram_gb,
+        "total_disk_gb": total_disk_gb,
     }
 
 
