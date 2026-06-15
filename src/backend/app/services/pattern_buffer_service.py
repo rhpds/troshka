@@ -192,8 +192,34 @@ def _provision_pattern_buffer(pool_id: str):
         db.close()
 
 
+def _check_pattern_buffer_busy(db: Session, pool: StoragePool) -> str | None:
+    """Return a reason string if the pattern buffer is busy, None if idle."""
+    if not pool.worker_host_id:
+        return None
+    host = db.query(Host).filter_by(id=pool.worker_host_id).first()
+    if not host or host.agent_status != "connected":
+        return None
+
+    from app.services.troshkad_client import check_health
+
+    health = check_health(host)
+    if health and health.get("running_jobs", 0) > 0:
+        return f"{health['running_jobs']} active job(s) on pattern buffer"
+
+    from app.services.pattern_service import _capture_progress
+
+    for pattern_id, progress in _capture_progress.items():
+        if progress.get("step") in ("capturing",):
+            return f"Pattern capture in progress ({pattern_id[:8]})"
+
+    return None
+
+
 def replace_pattern_buffer(db: Session, pool: StoragePool):
     """Terminate existing pattern buffer and provision a new one."""
+    busy = _check_pattern_buffer_busy(db, pool)
+    if busy:
+        raise RuntimeError(f"Cannot replace pattern buffer: {busy}")
     if pool.worker_host_id:
         old_host = db.query(Host).filter_by(id=pool.worker_host_id).first()
         if old_host:
@@ -217,6 +243,9 @@ def replace_pattern_buffer(db: Session, pool: StoragePool):
 
 def stop_pattern_buffer(db: Session, pool: StoragePool):
     """Stop the pattern buffer instance (EC2 stop, not terminate)."""
+    busy = _check_pattern_buffer_busy(db, pool)
+    if busy:
+        raise RuntimeError(f"Cannot stop pattern buffer: {busy}")
     if not pool.worker_host_id:
         return
     host = db.query(Host).filter_by(id=pool.worker_host_id).first()
@@ -278,6 +307,7 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
     ec2.start_instances(InstanceIds=[host.instance_id])
     waiter = ec2.get_waiter("instance_running")
     waiter.wait(InstanceIds=[host.instance_id])
+    logger.info("Pattern buffer %s EC2 running", host.id[:8])
 
     desc = ec2.describe_instances(InstanceIds=[host.instance_id])
     inst = desc["Reservations"][0]["Instances"][0]

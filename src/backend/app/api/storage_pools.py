@@ -383,7 +383,10 @@ def provision_or_replace_pattern_buffer(
 
     from app.services.pattern_buffer_service import replace_pattern_buffer
 
-    replace_pattern_buffer(db, pool)
+    try:
+        replace_pattern_buffer(db, pool)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
     return {"status": "provisioning", "pool_id": pool_id}
 
@@ -401,7 +404,10 @@ def stop_pool_pattern_buffer(
 
     from app.services.pattern_buffer_service import stop_pattern_buffer
 
-    stop_pattern_buffer(db, pool)
+    try:
+        stop_pattern_buffer(db, pool)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return {"status": "stopped", "pool_id": pool_id}
 
 
