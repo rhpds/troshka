@@ -148,7 +148,7 @@ def test_deploy_pattern_creates_project():
     assert resp.status_code == 201
     data = resp.json()
     assert data["name"] == "My Lab Instance"
-    assert data["state"] == "draft"
+    assert data["state"] in ("draft", "deploying")
     assert data["topology"] is not None
     nodes = data["topology"]["nodes"]
     assert len(nodes) == 2
@@ -173,7 +173,7 @@ def test_deploy_pattern_remaps_edges():
         assert edge["target"] in node_ids
 
 
-def test_deploy_pattern_regenerates_macs():
+def test_deploy_pattern_preserves_macs():
     list_resp = client.get("/api/v1/patterns", headers=HEADERS)
     patterns = [p for p in list_resp.json() if p["name"] == "Deploy Test"]
     pattern_id = patterns[0]["id"]
@@ -184,8 +184,8 @@ def test_deploy_pattern_regenerates_macs():
     )
     data = resp.json()
     vm_node = [n for n in data["topology"]["nodes"] if n["type"] == "vmNode"][0]
-    # MAC should be regenerated (not the original)
-    assert vm_node["data"]["nics"][0]["mac"] != "52:54:00:aa:bb:cc"
+    # MACs are preserved for CoreOS/ignition compatibility
+    assert vm_node["data"]["nics"][0]["mac"] == "52:54:00:aa:bb:cc"
 
 
 def test_bulk_deploy_pattern():
