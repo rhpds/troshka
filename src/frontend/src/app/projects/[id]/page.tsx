@@ -178,37 +178,40 @@ export default function ProjectCanvasPage() {
   // WebSocket → VM states into canvas store
   const [deployedVmIds, setDeployedVmIds] = useState<Set<string>>(new Set());
 
+  // VM states driven by REST polling (below), not WS — WS is unreliable in dev mode
   useEffect(() => {
     if (!Object.keys(ws.vmStates).length) return;
     setLatestVmStates(ws.vmStates);
-
     const ids = new Set<string>(Object.keys(ws.vmStates));
-    const hasUndeployed = Object.values(ws.vmStates).some((s) => s === "not_found");
     setDeployedVmIds(ids);
     useCanvasStore.setState({ deployedVmIds: ids });
-    if (hasUndeployed) {
-      useCanvasStore.setState({ topologyDirty: true });
-    }
-
-    const store = useCanvasStore.getState();
-    useCanvasStore.setState({
-      nodes: store.nodes.map((node) => {
-        if (node.type !== "vmNode") return node;
-        if (node.id in ws.vmStates) {
-          const redeployInfo = ws.vmProgress[node.id];
-          const liveBootDevs = ws.vmBootDevs[node.id] || null;
-          return { ...node, data: { ...node.data, status: ws.vmStates[node.id], redeployStep: redeployInfo?.step || null, redeployDetail: redeployInfo?.detail || null, liveBootDevs } };
-        }
-        return node;
-      }),
-    });
-  }, [ws.vmStates, ws.vmProgress, ws.vmBootDevs]);
+  }, [ws.vmStates]);
 
   useEffect(() => {
     if (projectState === "draft") {
       setAllVmStatus("stopped");
     }
   }, [projectState, setAllVmStatus]);
+
+  // REST poll for VM states — stored in latestVmStates, not on node data
+  // (writing status to node data triggers auto-save which fights with WS)
+  useEffect(() => {
+    if (projectState !== "active" && projectState !== "stopped") return;
+    if (!projectId) return;
+    const poll = async () => {
+      try {
+        const resp = await fetch(`/api/v1/projects/${projectId}/vm-states`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.states && Object.keys(data.states).length > 0) {
+          setLatestVmStates(data.states);
+        }
+      } catch { /* ignore */ }
+    };
+    const timer = setInterval(poll, 5000);
+    poll();
+    return () => clearInterval(timer);
+  }, [projectId, projectState]);
 
   const [reconfigWarnings, setReconfigWarnings] = useState<{ type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] | null>(null);
 

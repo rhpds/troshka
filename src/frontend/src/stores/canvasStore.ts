@@ -165,6 +165,19 @@ export function generateMac(): string {
 
 export function setLatestVmStates(states: Record<string, string>) {
   _latestVmStates = states;
+  const store = useCanvasStore.getState();
+  if (!store.nodes.length) return;
+  let changed = false;
+  const updated = store.nodes.map((n) => {
+    if (n.type !== "vmNode" || !n.id) return n;
+    const newStatus = states[n.id];
+    if (newStatus && (n.data as Record<string, unknown>).status !== newStatus) {
+      changed = true;
+      return { ...n, data: { ...(n.data as Record<string, unknown>), status: newStatus } };
+    }
+    return n;
+  });
+  if (changed) useCanvasStore.setState({ nodes: updated });
 }
 
 export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string }): boolean {
@@ -1136,8 +1149,13 @@ useCanvasStore.subscribe((state) => {
     if (_loadingProject) return;
     const s = useCanvasStore.getState();
     if (s.nodes.length === 0) return;
-    const topoKey = s.nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
-      + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|");
+    const topoKey = s.nodes.map((n) => {
+      if (n.type === "vmNode") {
+        const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+        return `${n.id}:${JSON.stringify(stable)}`;
+      }
+      return `${n.id}:${JSON.stringify(n.data)}`;
+    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|");
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;
