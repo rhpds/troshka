@@ -46,7 +46,7 @@ class StoragePool(Base):
     auto_extend_max_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider_id: Mapped[str] = mapped_column(ForeignKey("providers.id"))
     worker_host_id: Mapped[str | None] = mapped_column(
-        ForeignKey("hosts.id", ondelete="SET NULL"), nullable=True
+        ForeignKey("hosts.id", ondelete="SET NULL", use_alter=True), nullable=True
     )
     worker_instance_type: Mapped[str | None] = mapped_column(
         String(50), default="c6id.xlarge"
@@ -56,7 +56,10 @@ class StoragePool(Base):
     )
 
     provider: Mapped["Provider"] = relationship()
-    hosts: Mapped[list["Host"]] = relationship(back_populates="storage_pool")
+    hosts: Mapped[list["Host"]] = relationship(
+        back_populates="storage_pool",
+        foreign_keys="[Host.storage_pool_id]",
+    )
     cache_entries: Mapped[list["SharedCacheEntry"]] = relationship(
         back_populates="storage_pool", cascade="all, delete-orphan"
     )
