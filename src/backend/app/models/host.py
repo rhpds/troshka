@@ -50,7 +50,7 @@ class Host(Base):
 
     provider: Mapped["Provider | None"] = relationship(back_populates="hosts")
     storage_pool: Mapped["StoragePool | None"] = relationship(
-        back_populates="hosts", foreign_keys=[storage_pool_id]
+        back_populates="hosts", foreign_keys="[Host.storage_pool_id]"
     )
     vms: Mapped[list["VM"]] = relationship(back_populates="host")
 
