@@ -658,7 +658,7 @@ def _build_install_script(
             '    echo "HTTP server PID: $HTTP_PID"\n'
             "    \n"
             "    # Boot each CP node via Redfish virtual media\n"
-            "    BASTION_IP=$(ip -4 addr show ens4 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}')\n"
+            "    BASTION_IP=$(hostname -I | awk '{print $1}')\n"
             '    ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"\n'
             '    echo "ISO URL: $ISO_URL"\n'
             "    \n"
