@@ -936,14 +936,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const disks = vmToStorage.get(vm.id) || [];
       const hasDisk = disks.length > 0;
 
-      // Position disks to the left of the VM
+      // Position disks to the left of the VM, stacked vertically with enough gap
       if (hasDisk) {
+        const diskSpacing = diskH + 20;
         disks.forEach((diskId, di) => {
           updated.set(diskId, {
             x: cursorX,
-            y: vmRowY + 20 + di * (diskH + 10),
+            y: vmRowY + 20 + di * diskSpacing,
           });
         });
+        const disksBottom = vmRowY + 20 + disks.length * diskSpacing;
+        if (disksBottom > maxVmBottom) maxVmBottom = disksBottom;
         cursorX += diskW + diskGap;
       }
 
