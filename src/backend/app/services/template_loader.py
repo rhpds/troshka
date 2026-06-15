@@ -67,12 +67,35 @@ def resolve_template(
 
     resolved["parameters"] = base_params
     resolved["name"] = tmpl["name"]
+    resolved["display_name"] = tmpl.get("display_name", tmpl["name"])
     resolved["description"] = tmpl.get("description", "")
+    resolved["category"] = tmpl.get("category", "")
+    resolved["install_method"] = tmpl.get("install_method", "agent")
+    resolved["deploy_time"] = tmpl.get("deploy_time", "")
     resolved["bastion"] = base_for_versions.get("bastion", {})
     resolved["networks"] = base_for_versions.get("networks", {})
     resolved["gateway"] = base_for_versions.get("gateway", {})
 
     return resolved
+
+
+def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dict]:
+    result = []
+    templates_path = Path(templates_dir)
+    for f in sorted(templates_path.glob("*.yaml")):
+        tmpl = yaml.safe_load(f.read_text())
+        if tmpl.get("extends"):
+            result.append(
+                {
+                    "id": tmpl["name"],
+                    "name": tmpl.get("display_name", tmpl["name"]),
+                    "description": tmpl.get("description", ""),
+                    "category": tmpl.get("category", ""),
+                    "install_method": tmpl.get("install_method", "agent"),
+                    "deploy_time": tmpl.get("deploy_time", ""),
+                }
+            )
+    return result
 
 
 # ---------------------------------------------------------------------------

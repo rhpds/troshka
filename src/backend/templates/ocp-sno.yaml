@@ -1,10 +1,14 @@
 name: ocp-sno
-description: Single Node OpenShift
+display_name: "OpenShift SNO (Agent Installer)"
+description: "Single Node OpenShift — 8 vCPU, 32 GB RAM, 50 GB disk"
+category: openshift
+install_method: agent
+deploy_time: "~20 min"
 extends: ocp-cluster
 defaults:
   control_count: 1
-  control_vcpus: 16
-  control_ram_gb: 64
+  control_vcpus: 8
+  control_ram_gb: 32
   control_disk_gb: 120
   control_schedulable: true
   worker_count: 0

@@ -103,9 +103,9 @@ def create_project(
 
 @router.get("/templates")
 def list_topology_templates(user: User = Depends(get_current_user)):
-    from app.services.topology_templates import list_templates
+    from app.services.template_loader import list_yaml_templates
 
-    return list_templates()
+    return list_yaml_templates()
 
 
 @router.post("/from-template", status_code=201)
@@ -114,41 +114,34 @@ def create_project_from_template(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from app.models.library import LibraryItem
-    from app.services.topology_templates import TEMPLATES, generate_topology
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
 
     template_id = body.get("template_id")
-    if not template_id or template_id not in TEMPLATES:
-        raise HTTPException(status_code=404, detail="Template not found")
+    if not template_id:
+        raise HTTPException(status_code=400, detail="template_id is required")
+
+    try:
+        resolved = resolve_template(template_id)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, detail=f"Template '{template_id}' not found"
+        )
+
     bastion_password = body.get("bastion_password", "")
     external_access = body.get("external_access", False)
     block_outbound = body.get("block_outbound", True)
-    topology = generate_topology(
-        template_id,
+
+    if not block_outbound:
+        resolved.setdefault("gateway", {}).pop("outbound_ports", None)
+
+    topology = generate_topology_from_template(
+        resolved,
         bmc_password=bastion_password or "password",
         external_access=external_access,
     )
-
-    # Apply outbound port restriction to gateway if requested
-    if block_outbound:
-        ocp_ports = "53,80,443,123"
-        try:
-            from app.services.template_loader import load_template
-
-            base_tmpl = load_template("ocp-cluster")
-            gw_cfg = base_tmpl.get("gateway", {})
-            if gw_cfg.get("outbound_ports"):
-                ocp_ports = ",".join(str(p) for p in gw_cfg["outbound_ports"])
-        except Exception:
-            pass
-        for node in topology.get("nodes", []):
-            if (
-                node.get("type") == "networkNode"
-                and node.get("data", {}).get("subtype") == "gateway"
-            ):
-                node["data"]["outboundPolicy"] = "restrict"
-                node["data"]["outboundPorts"] = ocp_ports
-                break
 
     # OCP template customization — resolve DB objects, then delegate to plugin
     from app.models.library import LibraryItem
@@ -206,11 +199,8 @@ def create_project_from_template(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid bastion BMC IP")
 
-    install_method = TEMPLATES.get(template_id, {}).get("install_method", "ipi")
-    if install_method == "agent":
-        from app.services.ocp.agent_template import customize_topology as customize_ocp
-    else:
-        from app.services.ocp.ipi_template import customize_topology as customize_ocp
+    from app.services.ocp.agent_template import customize_topology as customize_ocp
+
     customize_ocp(
         topology,
         template_id,
@@ -230,7 +220,7 @@ def create_project_from_template(
         },
     )
 
-    desc_parts = [TEMPLATES[template_id]["description"]]
+    desc_parts = [resolved.get("description", "")]
     cluster_name = body.get("cluster_name", "ocp")
     base_domain = body.get("base_domain", "ocp.local")
     ocp_version = body.get("ocp_version", "")
@@ -239,7 +229,7 @@ def create_project_from_template(
     desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
 
     project = Project(
-        name=body.get("name", TEMPLATES[template_id]["name"]),
+        name=body.get("name", resolved.get("display_name", template_id)),
         description=" | ".join(desc_parts),
         owner_id=user.id,
         topology=topology,

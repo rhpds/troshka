@@ -1,5 +1,9 @@
 name: ocp-standard
-description: Standard cluster (3 CP + 2 workers)
+display_name: "OpenShift Standard 3+2 (Agent Installer)"
+description: "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)"
+category: openshift
+install_method: agent
+deploy_time: "~30 min"
 extends: ocp-cluster
 defaults:
   control_count: 3

@@ -1,5 +1,9 @@
 name: ocp-compact
-description: Compact cluster (3 schedulable control plane nodes)
+display_name: "OpenShift Compact 3-Node (Agent Installer)"
+description: "3 combined CP + worker nodes — 4 vCPU, 16 GB, 120 GB each"
+category: openshift
+install_method: agent
+deploy_time: "~25 min"
 extends: ocp-cluster
 defaults:
   control_count: 3
