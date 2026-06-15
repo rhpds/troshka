@@ -393,7 +393,7 @@ def generate_topology_from_template(
             "name": "gateway",
             "label": "gateway",
             "subtype": "gateway",
-            "gatewayMode": "nat-portforward",
+            "gatewayMode": "nat-portforward" if external_access else "nat",
             "portForwards": ocp_port_forwards,
             "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
             "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
