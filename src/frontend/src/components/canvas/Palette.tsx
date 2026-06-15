@@ -219,7 +219,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           if (r.ok) {
             const d = await r.json();
             if (active) {
-              setOcpLog(d.output || "No log available");
+              setOcpLog(d.output || "Install log not available yet — waiting for bastion to start the OCP installer...");
               setTimeout(() => { if (ocpLogRef.current) ocpLogRef.current.scrollTop = ocpLogRef.current.scrollHeight; }, 50);
             }
           }
@@ -384,7 +384,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   </div>
                 );
               })()}
-              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "ssh" && projectId && (
+              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "ssh" && ocpHealth.phase !== "waiting" && projectId && (
                 <div style={{ marginTop: 4 }}>
                   <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }} onClick={() => { setOcpLog(""); setOcpLogModal(true); }}>View Install Log</span>
                 </div>
