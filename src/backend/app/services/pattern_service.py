@@ -388,6 +388,11 @@ def capture_pattern_disks(
             log.warning("Failed to save pattern metadata to S3 for %s", pattern_id[:8])
 
         log.info("Pattern %s capture complete", pattern_id)
+        _capture_progress[pattern_id] = {
+            "step": "complete",
+            "detail": "Capture complete",
+            "vms": [],
+        }
         from app.services.ws_pubsub import notify_pattern
 
         notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
@@ -399,6 +404,11 @@ def capture_pattern_disks(
             if pattern:
                 pattern.state = "error"
                 db.commit()
+                _capture_progress[pattern_id] = {
+                    "step": "error",
+                    "detail": "Capture failed",
+                    "vms": [],
+                }
                 from app.services.ws_pubsub import notify_pattern
 
                 notify_pattern(
@@ -407,5 +417,8 @@ def capture_pattern_disks(
         except Exception:
             pass
     finally:
+        import time
+
+        time.sleep(2)
         _capture_progress.pop(pattern_id, None)
         db.close()

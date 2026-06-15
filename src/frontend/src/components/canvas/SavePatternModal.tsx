@@ -115,7 +115,13 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
               } catch {}
             };
             ws.onerror = () => { clearTimeout(timeout); ws.close(); resolve("error"); };
-            ws.onclose = () => { clearTimeout(timeout); };
+            ws.onclose = () => {
+              clearTimeout(timeout);
+              fetch(`/api/v1/patterns/${data.id}`)
+                .then((r) => r.json())
+                .then((p) => resolve(p.state === "available" ? "available" : "error"))
+                .catch(() => resolve("error"));
+            };
           });
           if (result === "error") {
             setError("Disk capture failed");
