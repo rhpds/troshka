@@ -218,7 +218,7 @@ def _setup_bastion_cloud_init(
                 "    enabled: true\n"
                 "    gpgcheck: false\n"
                 "runcmd:\n"
-                '  - nmcli con up "cloud-init ens3" 2>/dev/null || true\n'
+                "  - nmcli con up cluster-nic 2>/dev/null || true\n"
             )
 
         # Guard: skip all remaining runcmd blocks if cluster already installed (pattern deploy)
@@ -408,14 +408,21 @@ def _setup_bastion_cloud_init(
             "    fi\n"
         )
 
-        # Static IP on BMC NIC
+        # Static IP on BMC NIC — use MAC matching for firmware-agnostic naming
         bmc_ip = str(ipaddress.IPv4Address(bastion_bmc_ip))
+        nics = node["data"].get("nics", [])
+        cluster_mac = nics[0]["mac"] if len(nics) > 0 else ""
+        bmc_mac = nics[1]["mac"] if len(nics) > 1 else ""
         node["data"]["ciNetworkConfig"] = (
             "version: 2\n"
             "ethernets:\n"
-            "  ens3:\n"
+            "  cluster-nic:\n"
+            f"    match:\n"
+            f'      macaddress: "{cluster_mac}"\n'
             "    dhcp4: true\n"
-            "  ens4:\n"
+            "  bmc-nic:\n"
+            f"    match:\n"
+            f'      macaddress: "{bmc_mac}"\n'
             "    addresses:\n"
             f"      - {bmc_ip}/24\n"
         )
