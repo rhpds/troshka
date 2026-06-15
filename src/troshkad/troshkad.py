@@ -2680,6 +2680,11 @@ def _handle_gc_discover(job, params):
         ("/var/lib/troshka/cache/patterns", "pattern"),
         ("/var/lib/troshka/cache/snapshots", "snapshot"),
         ("/var/lib/troshka/images", "image"),
+        ("/var/lib/troshka/local/cache/patterns", "pattern"),
+        ("/var/lib/troshka/local/cache/snapshots", "snapshot"),
+        ("/var/lib/troshka/shared/images", "image"),
+        ("/var/lib/troshka/shared/cache/patterns", "pattern"),
+        ("/var/lib/troshka/shared/cache/snapshots", "snapshot"),
     ]
     for cache_dir, item_type in cache_dirs:
         if os.path.exists(cache_dir):
