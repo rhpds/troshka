@@ -73,7 +73,7 @@ try:
         print(f'{h.id[:8]} ({h.ip_address}): updating {old_ver} -> {version}...', end=' ', flush=True)
         try:
             push_update(h, script_bytes, version, force=force)
-            if vncd_bytes:
+            if vncd_bytes and h.host_type != 'pattern_buffer':
                 push_vncd_update(h, vncd_bytes)
             # Wait for restart
             for _ in range(30):

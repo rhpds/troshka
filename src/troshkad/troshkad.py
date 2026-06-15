@@ -4025,6 +4025,9 @@ def main():
     cleanup_thread = threading.Thread(target=_job_cleanup_loop, daemon=True)
     cleanup_thread.start()
 
+    _cleanup_nbd_ports()
+    threading.Thread(target=_nbd_reaper_loop, daemon=True).start()
+
     # Restore services from previous deploy
     _restore_bmc_services()
     _restore_dnsmasq()
@@ -5012,11 +5015,53 @@ NBD_PORT_START = 10809
 NBD_PORT_END = 10829
 
 
+NBD_MAX_AGE = 3600  # kill qemu-nbd exports older than 1 hour
+
+
+def _cleanup_nbd_ports():
+    """Kill qemu-nbd processes on NBD ports not tracked in _nbd_ports."""
+    for port in range(NBD_PORT_START, NBD_PORT_END + 1):
+        with _nbd_ports_lock:
+            if port in _nbd_ports:
+                continue
+        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
+
+
+def _nbd_reaper_loop():
+    """Periodically clean up stale NBD exports."""
+    while True:
+        time.sleep(300)
+        now = time.time()
+        stale = []
+        with _nbd_ports_lock:
+            for port, info in list(_nbd_ports.items()):
+                if now - info.get("started", now) > NBD_MAX_AGE:
+                    stale.append(port)
+        for port in stale:
+            logger.warning("Reaping stale NBD export on port %d", port)
+            with _nbd_ports_lock:
+                info = _nbd_ports.pop(port, None)
+            if info and info.get("pid"):
+                try:
+                    os.kill(info["pid"], signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
+        _cleanup_nbd_ports()
+
+
+def _port_in_use(port):
+    """Check if a TCP port is actually in use."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _allocate_nbd_port():
     """Find the next free port in the NBD range."""
     with _nbd_ports_lock:
         for port in range(NBD_PORT_START, NBD_PORT_END + 1):
-            if port not in _nbd_ports:
+            if port not in _nbd_ports and not _port_in_use(port):
                 return port
     raise RuntimeError("No free NBD ports available")
 
@@ -5037,7 +5082,9 @@ def _handle_nbd_export(job, params):
         snapshotted = _snapshot_domain(job, domain_name)
 
     port = _allocate_nbd_port()
-    tls_dir = "/etc/pki/libvirt"
+
+    # Kill any orphaned qemu-nbd on this port
+    subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
 
     cmd = [
         "qemu-nbd",
@@ -5073,10 +5120,23 @@ def _handle_nbd_export(job, params):
             "domain": domain_name,
             "disk_path": disk_path,
             "snapshotted": snapshotted,
+            "started": time.time(),
         }
 
+    disk_size = 0
+    try:
+        info = subprocess.run(
+            ["qemu-img", "info", "--output=json", disk_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if info.returncode == 0:
+            import json as _json
+            disk_size = _json.loads(info.stdout).get("actual-size", 0)
+    except Exception:
+        pass
+
     _job_log(job, f"NBD export active on port {port} (PID {pid})")
-    return {"port": port, "export_name": "disk", "snapshotted": snapshotted}
+    return {"port": port, "export_name": "disk", "snapshotted": snapshotted, "disk_size_bytes": disk_size}
 
 
 COMMAND_HANDLERS["nbd/export"] = _handle_nbd_export

@@ -1,6 +1,7 @@
 """
 Pattern service — captures VM disk snapshots to S3 for pattern storage.
 """
+
 import logging
 import os
 
@@ -19,6 +20,32 @@ def _get_pattern_buffer(db, host):
     from app.services.pattern_buffer_service import get_pattern_buffer_host
 
     return get_pattern_buffer_host(db, host.storage_pool_id)
+
+
+def _poll_job_with_progress(host, job_id, log_fn, timeout=3600, poll_interval=5):
+    """Poll a troshkad job and forward the latest output line to log_fn."""
+    import time
+
+    from app.services.troshkad_client import TroshkadError, poll_job
+
+    deadline = time.time() + timeout
+    last_output_len = 0
+    while time.time() < deadline:
+        try:
+            job = poll_job(host, job_id)
+        except TroshkadError:
+            time.sleep(poll_interval)
+            continue
+        output = job.get("output", [])
+        if len(output) > last_output_len:
+            latest = output[-1]
+            if "Flatten" in latest or "Upload" in latest or "Cach" in latest:
+                log_fn(latest)
+            last_output_len = len(output)
+        if job["status"] in ("completed", "failed"):
+            return job
+        time.sleep(poll_interval)
+    raise TroshkadError(f"Job {job_id} timed out after {timeout}s")
 
 
 def _capture_vm_via_nbd(
@@ -53,8 +80,7 @@ def _capture_vm_via_nbd(
             output_filename = f"{pattern_id[:8]}-{vm_id[:8]}-{i}.qcow2"
             output_path = f"/var/lib/troshka/local/tmp/{output_filename}"
 
-            total_bytes = disk_info.get("virtual_size_bytes", 0)
-            job_log_fn(f"Flattening via NBD from {host.private_ip}:{nbd_port}...")
+            job_log_fn("Flattening...")
             flatten_job_id = start_job(
                 worker_host,
                 "/nbd/pull-flatten",
@@ -63,11 +89,11 @@ def _capture_vm_via_nbd(
                     "nbd_port": nbd_port,
                     "export_name": "disk",
                     "output_path": output_path,
-                    "total_bytes": total_bytes,
+                    "total_bytes": 0,
                 },
             )
-            flatten_job = wait_for_job(
-                worker_host, flatten_job_id, timeout=3600, poll_interval=10
+            flatten_job = _poll_job_with_progress(
+                worker_host, flatten_job_id, job_log_fn, timeout=3600
             )
             if flatten_job["status"] != "completed":
                 raise RuntimeError(
@@ -88,8 +114,8 @@ def _capture_vm_via_nbd(
                     "aws_region": creds.get("region", "us-east-1"),
                 },
             )
-            upload_job = wait_for_job(
-                worker_host, upload_job_id, timeout=3600, poll_interval=10
+            upload_job = _poll_job_with_progress(
+                worker_host, upload_job_id, job_log_fn, timeout=3600
             )
             if upload_job["status"] != "completed":
                 raise RuntimeError(
@@ -232,32 +258,20 @@ def capture_pattern_disks(
             )
             import time as _time
 
-            vm_count = len(vm_to_disks)
-            vm_done = 0
-            _capture_progress[pattern_id] = {
-                "step": "capturing",
-                "detail": f"0/{vm_count} VMs done (NBD)",
-                "_host_id": host.id,
-                "_job_ids": [],
-            }
-
+            vm_tasks = []
             for vm_id, vm_disk_nodes in vm_to_disks.items():
                 disks_params = []
                 disk_metadata = []
                 for disk_node in vm_disk_nodes:
                     disk_id = disk_node["id"]
                     fmt = disk_node.get("data", {}).get("format", "qcow2")
-
                     if fmt == "iso":
                         continue
-
                     disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
-
                     s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
                     bucket = s3_storage._bucket()
                     s3_url = f"s3://{bucket}/{s3_key}"
                     cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
-
                     vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
                     disks_params.append(
                         {
@@ -267,65 +281,108 @@ def capture_pattern_disks(
                             "virtual_size_bytes": vsize,
                         }
                     )
-
                     disk_metadata.append(
                         {
                             "disk_id": disk_id,
                             "vm_id": vm_id,
                             "s3_key": s3_key,
                             "format": fmt,
-                            "virtual_size_bytes": int(
-                                disk_node.get("data", {}).get("size", 0)
-                            )
-                            * 1073741824,
+                            "virtual_size_bytes": vsize,
                         }
                     )
-
                 if not disks_params:
                     continue
-
                 vm_name = (
                     vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
                 )
                 domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
-
-                def _nbd_log(
-                    msg, _vm_name=vm_name, _vm_done=vm_done, _vm_count=vm_count
-                ):
-                    progress = {
-                        "step": "capturing",
-                        "detail": f"{_vm_done}/{_vm_count} VMs done (NBD)",
-                        "vms": [f"{_vm_name}: {msg}"],
+                vm_tasks.append(
+                    {
+                        "vm_id": vm_id,
+                        "vm_name": vm_name,
+                        "domain_name": domain_name,
+                        "disks_params": disks_params,
+                        "disk_metadata": disk_metadata,
                     }
-                    _capture_progress[pattern_id] = progress
-                    from app.services.ws_pubsub import notify_pattern
+                )
 
-                    notify_pattern(pattern_id, {"type": "capture-progress", **progress})
+            vm_count = len(vm_tasks)
+            vm_status = {t["vm_id"]: "waiting" for t in vm_tasks}
+            _capture_progress[pattern_id] = {
+                "step": "capturing",
+                "detail": f"0/{vm_count} VMs done (NBD)",
+                "_host_id": host.id,
+                "_job_ids": [],
+            }
 
+            def _update_progress():
+                done = sum(1 for s in vm_status.values() if s == "done")
+                lines = []
+                for t in vm_tasks:
+                    s = vm_status[t["vm_id"]]
+                    lines.append(f"{t['vm_name']}: {s}")
+                progress = {
+                    "step": "capturing",
+                    "detail": f"{done}/{vm_count} VMs done (NBD)",
+                    "vms": lines,
+                }
+                _capture_progress[pattern_id] = progress
+                from app.services.ws_pubsub import notify_pattern
+
+                notify_pattern(pattern_id, {"type": "capture-progress", **progress})
+
+            import threading as _threading
+
+            errors = {}
+            results_map = {}
+
+            def _capture_one_vm(task):
+                vid = task["vm_id"]
                 try:
-                    nbd_results = _capture_vm_via_nbd(
+
+                    def _log(msg, _vid=vid):
+                        vm_status[_vid] = msg
+                        _update_progress()
+
+                    r = _capture_vm_via_nbd(
                         host,
                         worker_host,
-                        vm_id,
-                        domain_name,
-                        disks_params,
+                        vid,
+                        task["domain_name"],
+                        task["disks_params"],
                         creds,
                         pattern_id,
-                        _nbd_log,
+                        _log,
                     )
+                    results_map[vid] = r
+                    vm_status[vid] = "done"
+                    _update_progress()
                 except Exception as e:
-                    log.error(
-                        "NBD capture failed for pattern %s VM %s: %s",
-                        pattern_id[:8],
-                        vm_id[:8],
-                        e,
-                    )
-                    pattern.state = "error"
-                    db.commit()
-                    return
+                    errors[vid] = str(e)
+                    vm_status[vid] = f"error: {e}"
+                    _update_progress()
 
-                # Create PatternDisk records from NBD results
-                for j, metadata in enumerate(disk_metadata):
+            threads = []
+            for task in vm_tasks:
+                t = _threading.Thread(target=_capture_one_vm, args=(task,), daemon=True)
+                t.start()
+                threads.append(t)
+
+            for t in threads:
+                t.join(timeout=3600)
+
+            if errors:
+                log.error(
+                    "NBD capture errors for pattern %s: %s", pattern_id[:8], errors
+                )
+                pattern.state = "error"
+                db.commit()
+                return
+
+            for task in vm_tasks:
+                vid = task["vm_id"]
+                nbd_results = results_map.get(vid, [])
+                for j, metadata in enumerate(task["disk_metadata"]):
                     size_bytes = (
                         nbd_results[j].get("size_bytes", 0)
                         if j < len(nbd_results)
@@ -343,15 +400,7 @@ def capture_pattern_disks(
                     )
                     db.add(pd)
                 db.commit()
-
-                vm_done += 1
-                log.info(
-                    "Pattern %s: VM %s NBD capture done (%d/%d)",
-                    pattern_id[:8],
-                    vm_id[:8],
-                    vm_done,
-                    vm_count,
-                )
+                log.info("Pattern %s: VM %s NBD capture done", pattern_id[:8], vid[:8])
 
         else:
             # --- Direct path: capture on VM host (original flow) ---
