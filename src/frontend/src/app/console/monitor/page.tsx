@@ -131,12 +131,21 @@ function MegaConsolePage() {
       localStorage.setItem(`megaconsole-hidden-${projectId}`, JSON.stringify([...next]));
       return next;
     });
-    // Disconnect RFB for hidden VM
+    // Disconnect RFB and clear status so reconnect works on unhide
     const rfb = _rfbInstances[vmId];
     if (rfb?.disconnect) {
       try { rfb.disconnect(); } catch { /* ignore */ }
     }
     delete _rfbInstances[vmId];
+    if (reconnectTimers.current[vmId]) {
+      clearTimeout(reconnectTimers.current[vmId]);
+      delete reconnectTimers.current[vmId];
+    }
+    setRfbStatuses((prev) => {
+      const next = { ...prev };
+      delete next[vmId];
+      return next;
+    });
   }, [projectId]);
 
   const showVm = useCallback((vmId: string) => {
