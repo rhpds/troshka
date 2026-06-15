@@ -151,6 +151,127 @@ def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, ret
     )
 
 
+def troshkad_request_raw(
+    host, method, path, body=None, headers=None, timeout=DEFAULT_TIMEOUT
+):
+    """Make a raw HTTPS request — supports binary request/response bodies.
+
+    Unlike troshkad_request(), this does not JSON-encode the body or JSON-parse
+    the response. Caller is responsible for encoding/decoding.
+
+    Returns urllib3.HTTPResponse so caller can access .data (bytes) and .status.
+    """
+    pool = _get_pool(host)
+    req_headers = {"Authorization": f"Bearer {host.agent_token}"}
+    if headers:
+        req_headers.update(headers)
+
+    try:
+        resp = pool.urlopen(
+            method,
+            path,
+            body=body,
+            headers=req_headers,
+            timeout=timeout,
+            retries=False,
+        )
+        if resp.status >= 400:
+            resp_text = resp.data.decode(errors="replace")
+            try:
+                error_body = json.loads(resp_text)
+            except (json.JSONDecodeError, ValueError):
+                error_body = {"error": resp_text}
+            raise TroshkadError(
+                f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
+                status_code=resp.status,
+                response=error_body,
+            )
+        return resp
+    except TroshkadError:
+        raise
+    except SSLError as e:
+        raise TroshkadError(
+            f"Certificate verification failed for {host.ip_address}: {e}"
+        )
+    except (MaxRetryError, U3Timeout) as e:
+        raise TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
+    except Exception as e:
+        raise TroshkadError(f"troshkad request failed: {e}")
+
+
+def troshkad_upload_to_vm(
+    host,
+    file_bytes,
+    project_id,
+    vm_ip,
+    username,
+    password,
+    remote_path,
+    mode="0644",
+    timeout=3600,
+):
+    """Upload a file to a VM via troshkad's /vm/file-push endpoint.
+
+    For files >10MB, troshkad returns 202 with a job_id; we poll until complete.
+    For smaller files, troshkad does the SCP synchronously and returns 200.
+    """
+    import urllib.parse
+
+    qs = urllib.parse.urlencode(
+        {
+            "project_id": project_id,
+            "vm_ip": vm_ip,
+            "username": username,
+            "password": password,
+            "remote_path": remote_path,
+            "mode": mode,
+        }
+    )
+    resp = troshkad_request_raw(
+        host,
+        "POST",
+        f"/vm/file-push?{qs}",
+        body=file_bytes,
+        headers={"Content-Type": "application/octet-stream"},
+        timeout=min(timeout, 120),
+    )
+    result = json.loads(resp.data.decode())
+
+    if resp.status == 202 and "job_id" in result:
+        job = wait_for_job(host, result["job_id"], timeout=timeout)
+        if job["status"] == "failed":
+            raise TroshkadError(f"File push failed: {job['result'].get('error')}")
+        return job["result"]
+
+    return result
+
+
+def troshkad_download_from_vm(
+    host, project_id, vm_ip, username, password, remote_path, timeout=3600
+):
+    """Download a file from a VM via troshkad's /vm/file-pull endpoint.
+
+    Returns raw bytes of the file content.
+    """
+    resp = troshkad_request_raw(
+        host,
+        "POST",
+        "/vm/file-pull",
+        body=json.dumps(
+            {
+                "project_id": project_id,
+                "vm_ip": vm_ip,
+                "username": username,
+                "password": password,
+                "remote_path": remote_path,
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+        timeout=timeout,
+    )
+    return resp.data
+
+
 def start_job(host, path, params, request_timeout=30):
     """Start an operation on a host. Returns job_id.
 

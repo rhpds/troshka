@@ -1,7 +1,8 @@
 import logging
 import uuid as uuid_mod
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,8 @@ from app.services.placement import calculate_project_requirements, place_project
 from app.services.troshkad_client import (
     TroshkadError,
     start_job,
+    troshkad_download_from_vm,
+    troshkad_upload_to_vm,
     wait_for_job,
 )
 from app.services.troshkad_client import (
@@ -914,14 +917,22 @@ def get_vm_console(
 
 
 @router.post("/{project_id}/vms/{vm_id}/exec")
-def vm_serial_exec(
+def vm_exec(
     project_id: str,
     vm_id: str,
     body: dict,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Execute a command on a VM via SSH (preferred) or serial console (fallback)."""
+    """Execute a command on a VM via SSH (preferred) or serial console (fallback).
+
+    Body params:
+        command: Shell command to execute (required)
+        username: SSH user (default: cloud-user)
+        password: VM password (auto-resolved from topology if omitted)
+        timeout: Command timeout in seconds (default: 10, max: 3600)
+        use_ssh: If true, SSH only — no serial fallback (default: false)
+    """
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
         raise HTTPException(status_code=409, detail="Project must be active")
@@ -939,7 +950,8 @@ def vm_serial_exec(
     if not password and vm_node:
         password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
-    timeout = min(body.get("timeout", 10), 60)
+    timeout = min(body.get("timeout", 10), 3600)
+    use_ssh = body.get("use_ssh", False)
 
     # Try SSH first — faster and more reliable
     vm_ip = ""
@@ -966,10 +978,22 @@ def vm_serial_exec(
             job = wait_for_job(host, job_id, timeout=timeout + 30)
             if job["status"] == "completed":
                 result = job.get("result", {})
-                if not result.get("error"):
-                    return {"output": result.get("output", ""), "error": ""}
+                return {
+                    "output": result.get("output", ""),
+                    "error": result.get("error", ""),
+                    "exit_code": result.get("exit_code", 0),
+                }
         except TroshkadError:
-            pass
+            if use_ssh:
+                raise HTTPException(
+                    status_code=503, detail="SSH exec failed and use_ssh=true"
+                )
+
+    if use_ssh:
+        raise HTTPException(
+            status_code=503,
+            detail="SSH exec unavailable (no IP or password) and use_ssh=true",
+        )
 
     # Fallback to serial console
     dom = _domain_name(project_id, vm_id)
@@ -992,6 +1016,110 @@ def vm_serial_exec(
         return {"output": result.get("output", ""), "error": result.get("error", "")}
     except TroshkadError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+def _resolve_vm_ssh_params(project, vm_id):
+    """Resolve VM IP, username defaults, and password from topology."""
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    if not vm_node:
+        raise HTTPException(status_code=404, detail=f"VM {vm_id} not found in topology")
+
+    vm_ip = ""
+    for nic in vm_node.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            vm_ip = nic["ip"]
+            break
+
+    password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
+    return vm_node, vm_ip, password
+
+
+@router.put("/{project_id}/vms/{vm_id}/files")
+async def vm_upload_file(
+    project_id: str,
+    vm_id: str,
+    file: UploadFile,
+    remote_path: str = Query(..., description="Destination path on the VM"),
+    mode: str = Query("0644", description="File permissions (octal)"),
+    username: str = Query("cloud-user"),
+    password: str = Query(""),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Upload a file to a VM via SCP."""
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail="Project must be active")
+
+    vm_node, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
+    if not vm_ip:
+        raise HTTPException(status_code=400, detail="VM has no IP address")
+    pw = password or topo_password
+    if not pw:
+        raise HTTPException(status_code=400, detail="No password available for VM")
+
+    file_bytes = await file.read()
+    try:
+        result = troshkad_upload_to_vm(
+            host,
+            file_bytes,
+            project_id,
+            vm_ip,
+            username,
+            pw,
+            remote_path,
+            mode,
+        )
+        return result
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.get("/{project_id}/vms/{vm_id}/files")
+def vm_download_file(
+    project_id: str,
+    vm_id: str,
+    remote_path: str = Query(..., description="Path of the file on the VM"),
+    username: str = Query("cloud-user"),
+    password: str = Query(""),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download a file from a VM via SCP."""
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail="Project must be active")
+
+    vm_node, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
+    if not vm_ip:
+        raise HTTPException(status_code=400, detail="VM has no IP address")
+    pw = password or topo_password
+    if not pw:
+        raise HTTPException(status_code=400, detail="No password available for VM")
+
+    try:
+        file_bytes = troshkad_download_from_vm(
+            host,
+            project_id,
+            vm_ip,
+            username,
+            pw,
+            remote_path,
+        )
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    import os
+
+    filename = os.path.basename(remote_path)
+    return Response(
+        content=file_bytes,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{project_id}/reconfigure")

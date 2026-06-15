@@ -363,6 +363,33 @@ class TroshkadHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode())
 
+    def _read_raw_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return b""
+        return self.rfile.read(length)
+
+    def _send_binary(self, status, data, content_type="application/octet-stream"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _stream_file(self, status, file_path, content_type="application/octet-stream"):
+        size = os.path.getsize(file_path)
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(size))
+        self.send_header("X-File-Size", str(size))
+        self.end_headers()
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
     def _handle(self, method):
         if not self._check_auth():
             self._send_json(401, {"error": "unauthorized"})
@@ -3458,7 +3485,18 @@ def _handle_pattern_capture_direct(job, params):
             _job_log(job, f"Saving {flat_size_gb} GB...")
             _s3_upload_with_cache(job, tmp_flat, flat_size, s3_url, cache_path, aws_access_key, aws_secret_key, aws_region)
 
-            cache_thread.join(timeout=600)
+            _job_log(job, "Upload complete, waiting for cache...")
+            while cache_thread.is_alive():
+                try:
+                    if os.path.exists(cache_path):
+                        cached = os.path.getsize(cache_path)
+                        cached_gb = round(cached / (1024**3), 1)
+                        cache_pct = min(100, int(cached * 100 / flat_size)) if flat_size > 0 else 0
+                        _job_log(job, f"Caching: {cached_gb} of {flat_size_gb} GB ({cache_pct}%)")
+                except OSError:
+                    pass
+                cache_thread.join(timeout=5)
+
             if cache_error[0]:
                 _job_log(job, f"Cache copy failed: {cache_error[0]}")
 
@@ -4751,7 +4789,7 @@ def _handle_vm_ssh_exec(job, params):
     username = params.get("username", "cloud-user")
     password = params.get("password", "")
     command = params.get("command", "")
-    timeout_secs = min(params.get("timeout", 10), 60)
+    timeout_secs = min(params.get("timeout", 10), 3600)
 
     if not command:
         raise RuntimeError("No command specified")
@@ -4780,6 +4818,187 @@ def _handle_vm_ssh_exec(job, params):
     return {"output": output, "error": error, "exit_code": result.returncode}
 
 COMMAND_HANDLERS["vm/ssh-exec"] = _handle_vm_ssh_exec
+
+
+# ── VM file transfer ──
+
+def _scp_common_args(password):
+    """SSH/SCP args shared by file transfer operations."""
+    return [
+        "sshpass", "-p", password,
+        "scp", "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=10",
+    ]
+
+
+def _ssh_common_args(password):
+    """SSH args shared by file transfer operations."""
+    return [
+        "sshpass", "-p", password,
+        "ssh", "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=10",
+    ]
+
+
+def _handle_vm_file_push_job(job, params):
+    """SCP a local temp file to a VM (job-based for large files)."""
+    project_id = params["project_id"]
+    vm_ip = params["vm_ip"]
+    username = params["username"]
+    password = params["password"]
+    remote_path = params["remote_path"]
+    mode = params.get("mode", "")
+    local_path = params["local_path"]
+    file_size = os.path.getsize(local_path)
+
+    ns = f"troshka-{project_id[:8]}" if project_id else ""
+    ns_prefix = ["ip", "netns", "exec", ns] if ns else []
+
+    try:
+        _job_log(job, f"Uploading {file_size} bytes to {remote_path}")
+        proc = subprocess.Popen(
+            ns_prefix + _scp_common_args(password) + [
+                local_path, f"{username}@{vm_ip}:{remote_path}",
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        job["_process"] = proc
+        _, stderr = proc.communicate(timeout=3600)
+        job["_process"] = None
+        if proc.returncode != 0:
+            raise RuntimeError(f"SCP failed (exit {proc.returncode}): {stderr.decode().strip()}")
+
+        if mode:
+            subprocess.run(
+                ns_prefix + _ssh_common_args(password) + [
+                    f"{username}@{vm_ip}", f"chmod {mode} {remote_path}",
+                ],
+                capture_output=True, timeout=30,
+            )
+
+        _job_log(job, f"Upload complete: {file_size} bytes")
+        return {"size": file_size, "remote_path": remote_path}
+    finally:
+        try:
+            os.unlink(local_path)
+        except OSError:
+            pass
+
+
+COMMAND_HANDLERS["vm/file-push-job"] = _handle_vm_file_push_job
+
+LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10 MB
+
+
+@route("POST", "/vm/file-push")
+def handle_vm_file_push(handler, params):
+    """Push a file to a VM via SCP. Binary body, metadata in query params."""
+    import urllib.parse
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+
+    project_id = qs.get("project_id", [""])[0]
+    vm_ip = qs.get("vm_ip", [""])[0]
+    username = qs.get("username", ["cloud-user"])[0]
+    password = qs.get("password", [""])[0]
+    remote_path = qs.get("remote_path", [""])[0]
+    mode = qs.get("mode", [""])[0]
+
+    if not all([project_id, vm_ip, password, remote_path]):
+        handler._send_json(400, {"error": "Missing required params: project_id, vm_ip, password, remote_path"})
+        return
+
+    data = handler._read_raw_body()
+    if not data:
+        handler._send_json(400, {"error": "Empty file body"})
+        return
+
+    tmp_path = f"/tmp/troshka-xfer-{uuid.uuid4()}"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+
+    file_size = len(data)
+
+    if file_size > LARGE_FILE_THRESHOLD:
+        status, body = _dispatch_job("vm/file-push-job", {
+            "project_id": project_id, "vm_ip": vm_ip,
+            "username": username, "password": password,
+            "remote_path": remote_path, "mode": mode,
+            "local_path": tmp_path,
+        })
+        if "job_id" in body:
+            body["size"] = file_size
+        handler._send_json(status, body)
+        return
+
+    ns = f"troshka-{project_id[:8]}" if project_id else ""
+    ns_prefix = ["ip", "netns", "exec", ns] if ns else []
+
+    try:
+        result = subprocess.run(
+            ns_prefix + _scp_common_args(password) + [
+                tmp_path, f"{username}@{vm_ip}:{remote_path}",
+            ],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode != 0:
+            handler._send_json(502, {"error": f"SCP failed: {result.stderr.decode().strip()}"})
+            return
+
+        if mode:
+            subprocess.run(
+                ns_prefix + _ssh_common_args(password) + [
+                    f"{username}@{vm_ip}", f"chmod {mode} {remote_path}",
+                ],
+                capture_output=True, timeout=30,
+            )
+
+        handler._send_json(200, {"size": file_size, "remote_path": remote_path})
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@route("POST", "/vm/file-pull")
+def handle_vm_file_pull(handler, params):
+    """Pull a file from a VM via SCP. Returns binary response."""
+    body = handler._read_body()
+    project_id = body.get("project_id", "")
+    vm_ip = body.get("vm_ip", "")
+    username = body.get("username", "cloud-user")
+    password = body.get("password", "")
+    remote_path = body.get("remote_path", "")
+
+    if not all([project_id, vm_ip, password, remote_path]):
+        handler._send_json(400, {"error": "Missing required fields: project_id, vm_ip, password, remote_path"})
+        return
+
+    ns = f"troshka-{project_id[:8]}" if project_id else ""
+    ns_prefix = ["ip", "netns", "exec", ns] if ns else []
+
+    tmp_path = f"/tmp/troshka-xfer-{uuid.uuid4()}"
+    try:
+        result = subprocess.run(
+            ns_prefix + _scp_common_args(password) + [
+                f"{username}@{vm_ip}:{remote_path}", tmp_path,
+            ],
+            capture_output=True, timeout=3600,
+        )
+        if result.returncode != 0:
+            handler._send_json(502, {"error": f"SCP failed: {result.stderr.decode().strip()}"})
+            return
+
+        handler._stream_file(200, tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
