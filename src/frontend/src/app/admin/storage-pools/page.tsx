@@ -649,6 +649,26 @@ export default function StoragePoolsPage() {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
+                    {pool.worker_status === "connected" && (
+                      <Button variant="secondary" size="sm"
+                        isLoading={extending[`gc-${pool.id}`]}
+                        isDisabled={extending[`gc-${pool.id}`]}
+                        onClick={async () => {
+                          setExtending((p) => ({ ...p, [`gc-${pool.id}`]: true }));
+                          try {
+                            const resp = await fetch(`/api/v1/hosts/${pool.worker_host_id}/gc`, { method: "POST" });
+                            if (resp.ok) {
+                              const r = await resp.json();
+                              alert(`Cleaned: ${r.cleanup?.cleaned || 0} orphans, ${r.cleanup?.cache_cleaned || 0} cache items`);
+                            } else {
+                              alert("Clean failed");
+                            }
+                          } finally {
+                            setExtending((p) => ({ ...p, [`gc-${pool.id}`]: false }));
+                            loadData();
+                          }
+                        }}>Clean</Button>
+                    )}
                     {pool.worker_status === "connected" && expectedAgentVersion && pool.worker_agent_version && pool.worker_agent_version !== expectedAgentVersion && (
                       <Button variant="primary" size="sm" onClick={async () => {
                         await fetch(`/api/v1/hosts/${pool.worker_host_id}/update-agent`, { method: "POST" });
