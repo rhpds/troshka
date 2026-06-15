@@ -340,7 +340,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             <button
               className="vm-node-action power-running"
               title="Graceful Shutdown"
-              onClick={(e) => { e.stopPropagation(); vmAction("stop"); }}
+              onClick={(e) => { e.stopPropagation(); if (window.confirm(`Shut down "${d.name}"?`)) vmAction("stop"); }}
               disabled={!!actionPending || isRedeploying}
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
@@ -348,13 +348,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             <button
               className="vm-node-action power-running"
               title="Force Power Off"
-              onClick={(e) => { e.stopPropagation(); vmAction("forcestop"); }}
+              onClick={(e) => { e.stopPropagation(); if (window.confirm(`Force power off "${d.name}"? This may cause data loss.`)) vmAction("forcestop"); }}
               disabled={!!actionPending || isRedeploying}
               style={{ color: "#ef4444" }}
             >
               {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
             </button>
-            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
+            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (window.confirm(`Restart "${d.name}"?`)) vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
               {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
             </button>
           </>

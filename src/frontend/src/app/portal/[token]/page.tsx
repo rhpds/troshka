@@ -40,6 +40,7 @@ export default function PortalPage() {
   const [loading, setLoading] = useState(true);
   const [isDark, setIsDark] = useState(true);
   const [vmStates, setVmStates] = useState<Record<string, string>>({});
+  const [vmPending, setVmPending] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const saved = localStorage.getItem("troshka-theme");
@@ -118,16 +119,23 @@ export default function PortalPage() {
   };
 
   const handleVmAction = async (vmId: string, action: string) => {
-    if (action === "stop" || action === "forcestop") {
+    if (action === "stop" || action === "forcestop" || action === "restart") {
       const vm = (data?.topology.nodes || []).find((n: any) => n.id === vmId);
       const name = vm?.data?.name || "this VM";
       const msg = action === "forcestop"
         ? `Force power off "${name}"? This is equivalent to pulling the power cord and may cause data loss.`
-        : `Stop "${name}"? The VM will be gracefully shut down.`;
+        : action === "restart"
+          ? `Restart "${name}"?`
+          : `Stop "${name}"? The VM will be gracefully shut down.`;
       if (!window.confirm(msg)) return;
     }
+    setVmPending((prev) => ({ ...prev, [vmId]: action }));
+    if (action === "stop") {
+      setVmStates((prev) => ({ ...prev, [vmId]: "stopping" }));
+    }
     await fetch(`/api/v1/portal/${token}/vms/${vmId}/${action}`, { method: "POST" });
-    setTimeout(fetchPortal, 1500);
+    setVmPending((prev) => { const next = { ...prev }; delete next[vmId]; return next; });
+    setTimeout(fetchVmStates, 1500);
   };
 
   if (loading) {
@@ -163,6 +171,7 @@ export default function PortalPage() {
 
   const statusColor = (s?: string) => {
     if (s === "running") return "#3e8635";
+    if (s === "stopping") return "#f0ab00";
     if (s === "stopped") return "#c9190b";
     return "#6a6e73";
   };
@@ -247,40 +256,48 @@ export default function PortalPage() {
                     <button
                       onClick={() => handleVmAction(vm.id, vm.status === "running" ? "stop" : "start")}
                       title={vm.status === "running" ? "Stop" : "Start"}
+                      disabled={!!vmPending[vm.id]}
                       style={{
                         padding: "6px 10px", borderRadius: 4,
                         border: `1px solid ${isDark ? "#555" : "#ccc"}`,
                         background: "transparent", color: vm.status === "running" ? "#f0ab00" : "#3e8635",
-                        cursor: "pointer", fontSize: 14,
+                        cursor: vmPending[vm.id] ? "wait" : "pointer", fontSize: 14,
+                        opacity: vmPending[vm.id] ? 0.5 : 1,
                       }}
                     >
-                      {vm.status === "running" ? <StopIcon /> : <PlayIcon />}
+                      {vmPending[vm.id] === "start" || vmPending[vm.id] === "stop"
+                        ? <Spinner size="sm" />
+                        : vm.status === "running" ? <StopIcon /> : <PlayIcon />}
                     </button>
                     {vm.status === "running" && (
                       <>
                         <button
                           onClick={() => handleVmAction(vm.id, "restart")}
                           title="Restart"
+                          disabled={!!vmPending[vm.id]}
                           style={{
                             padding: "6px 10px", borderRadius: 4,
                             border: `1px solid ${isDark ? "#555" : "#ccc"}`,
                             background: "transparent", color: textColor,
-                            cursor: "pointer", fontSize: 14,
+                            cursor: vmPending[vm.id] ? "wait" : "pointer", fontSize: 14,
+                            opacity: vmPending[vm.id] ? 0.5 : 1,
                           }}
                         >
-                          <RedoIcon />
+                          {vmPending[vm.id] === "restart" ? <Spinner size="sm" /> : <RedoIcon />}
                         </button>
                         <button
                           onClick={() => handleVmAction(vm.id, "forcestop")}
                           title="Force Power Off"
+                          disabled={!!vmPending[vm.id]}
                           style={{
                             padding: "6px 10px", borderRadius: 4,
                             border: "1px solid #c9190b",
                             background: "transparent", color: "#c9190b",
-                            cursor: "pointer", fontSize: 14,
+                            cursor: vmPending[vm.id] ? "wait" : "pointer", fontSize: 14,
+                            opacity: vmPending[vm.id] ? 0.5 : 1,
                           }}
                         >
-                          <PowerOffIcon />
+                          {vmPending[vm.id] === "forcestop" ? <Spinner size="sm" /> : <PowerOffIcon />}
                         </button>
                       </>
                     )}
