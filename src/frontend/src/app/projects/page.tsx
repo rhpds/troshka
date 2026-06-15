@@ -86,6 +86,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
   const [externalAccess, setExternalAccess] = useState(false);
+  const [blockOutbound, setBlockOutbound] = useState(true);
   const [customVersion, setCustomVersion] = useState(false);
   const [customVersionText, setCustomVersionText] = useState("");
   const [loadingVersions, setLoadingVersions] = useState(true);
@@ -180,6 +181,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
         if (ocpVersion) templateBody.ocp_version = ocpVersion;
         templateBody.auto_install_ocp = autoInstallOcp;
         templateBody.external_access = externalAccess;
+        templateBody.block_outbound = blockOutbound;
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -492,6 +494,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
                       External access (allocate EIP)
+                    </label>
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
+                      <input type="checkbox" checked={blockOutbound} onChange={(e) => setBlockOutbound(e.target.checked)} />
+                      Restrict outbound ports to install OCP only
                     </label>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>

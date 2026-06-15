@@ -75,7 +75,16 @@ def resolve_template(
     return resolved
 
 
-def _generate_mac() -> str:
+# ---------------------------------------------------------------------------
+# Topology generation from resolved templates
+# ---------------------------------------------------------------------------
+
+
+def _id():
+    return str(uuid.uuid4())
+
+
+def _mac():
     return "52:54:00:%02x:%02x:%02x" % (
         random.randint(0, 255),
         random.randint(0, 255),
@@ -83,249 +92,325 @@ def _generate_mac() -> str:
     )
 
 
-def generate_topology_from_template(resolved: dict) -> dict:
+def _bmc_mac():
+    return "52:54:01:%02x:%02x:%02x" % (
+        random.randint(0, 255),
+        random.randint(0, 255),
+        random.randint(0, 255),
+    )
+
+
+def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip="", tags=None):
+    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
+    if cluster_ip:
+        nic["ip"] = cluster_ip
+    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
+    dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
+    disk_id = _id()
+    disk_node = {
+        "id": disk_id,
+        "type": "storageNode",
+        "position": {"x": x - 190, "y": y + 70},
+        "data": {
+            "label": f"{name}-disk",
+            "name": f"{name}-disk",
+            "size": disk_gb,
+            "format": "qcow2",
+            "icon": "\U0001F6E2",
+        },
+    }
+    vm_data = {
+        "label": name,
+        "name": name,
+        "vcpus": vcpus,
+        "ram": ram,
+        "os": "rhcos",
+        "icon": "\U0001F5A5",
+        "nics": [nic],
+        "diskControllers": [dc, dc_cdrom],
+        "bmcEnabled": True,
+        "firmware": "uefi",
+        "secureBoot": False,
+        "bootDevices": [disk_id],
+        "bootMethod": "disk",
+        "powerOnAtDeploy": True,
+    }
+    if bmc_ip:
+        vm_data["bmcIp"] = bmc_ip
+    if tags:
+        vm_data["tags"] = tags
+    vm_node = {
+        "id": _id(),
+        "type": "vmNode",
+        "position": {"x": x, "y": y},
+        "data": vm_data,
+    }
+    disk_edge = {
+        "id": _id(),
+        "source": disk_id,
+        "target": vm_node["id"],
+        "sourceHandle": "right",
+        "targetHandle": f"dp-{dc['id']}-left",
+        "type": "smoothstep",
+        "style": {
+            "stroke": "rgba(251,191,36,0.6)",
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
+        "animated": False,
+        "className": "edge-storage-pulse",
+    }
+    return vm_node, disk_node, disk_edge
+
+
+def _bastion_node(x, y, bastion_cfg, cluster_ip="10.0.0.50"):
+    nic_cluster = {
+        "id": f"nic-{_id()}",
+        "name": "eth0",
+        "mac": _mac(),
+        "model": "virtio",
+        "ip": cluster_ip,
+    }
+    nic_bmc = {
+        "id": f"nic-{_id()}",
+        "name": "bmc0",
+        "mac": _bmc_mac(),
+        "model": "virtio",
+    }
+    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
+    disk_id = _id()
+    disk_node = {
+        "id": disk_id,
+        "type": "storageNode",
+        "position": {"x": x - 190, "y": y + 70},
+        "data": {
+            "label": "bastion-disk",
+            "name": "bastion-disk",
+            "size": bastion_cfg.get("disk_gb", 20),
+            "format": "qcow2",
+            "icon": "\U0001F6E2",
+        },
+    }
+    vm_node = {
+        "id": _id(),
+        "type": "vmNode",
+        "position": {"x": x, "y": y},
+        "data": {
+            "label": "bastion",
+            "name": "bastion",
+            "vcpus": bastion_cfg.get("vcpus", 2),
+            "ram": bastion_cfg.get("ram_gb", 4),
+            "os": bastion_cfg.get("image", "rhel-10"),
+            "icon": "\U0001F5A5",
+            "nics": [nic_cluster, nic_bmc],
+            "diskControllers": [dc],
+            "firmware": "uefi",
+            "secureBoot": False,
+            "bootDevices": [disk_id],
+            "bootMethod": "disk",
+            "powerOnAtDeploy": True,
+            "tags": {"AnsibleGroup": "bastions,showroom"},
+        },
+    }
+    disk_edge = {
+        "id": _id(),
+        "source": disk_id,
+        "target": vm_node["id"],
+        "sourceHandle": "right",
+        "targetHandle": f"dp-{dc['id']}-left",
+        "type": "smoothstep",
+        "style": {
+            "stroke": "rgba(251,191,36,0.6)",
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
+        "animated": False,
+        "className": "edge-storage-pulse",
+    }
+    return vm_node, disk_node, disk_edge
+
+
+def _net_edge(net_id, vm_node, nic_index=0, vm_handle="top"):
+    nic = vm_node["data"]["nics"][nic_index]
+    return {
+        "id": _id(),
+        "source": net_id,
+        "target": vm_node["id"],
+        "sourceHandle": f"port-{net_id}-{vm_handle}",
+        "targetHandle": f"nic-{nic['id']}-bottom",
+        "style": {
+            "stroke": "rgba(56,189,248,0.4)",
+            "strokeWidth": 2,
+            "strokeDasharray": "6 3",
+        },
+        "animated": True,
+        "className": "edge-network",
+    }
+
+
+def _gw_net_edge(gw_id, net_id):
+    return {
+        "id": _id(),
+        "source": gw_id,
+        "target": net_id,
+        "sourceHandle": f"port-{gw_id}-bottom",
+        "targetHandle": f"port-{net_id}-top",
+    }
+
+
+# Keep for backward compat with imports
+_generate_mac = _mac
+
+
+def generate_topology_from_template(
+    resolved: dict,
+    bmc_password: str = "password",
+    external_access: bool = False,  # pragma: allowlist secret
+) -> dict:
     nodes = []
     edges = []
+    external_ips = []
 
-    x_spacing = 400
-    cp_y = 350
-    worker_y = 720
-    bastion_x_offset = 150
-
-    cluster_net_id = f"net-{uuid.uuid4()}"
-    bmc_net_id = f"net-{uuid.uuid4()}"
-    cluster_net = resolved["networks"].get("cluster", {})
-    bmc_net = resolved["networks"].get("bmc", {})
-
-    nodes.append(
-        {
-            "id": cluster_net_id,
-            "type": "networkNode",
-            "position": {"x": 600, "y": 100},
-            "data": {
-                "name": "cluster",
-                "label": "cluster",
-                "cidr": cluster_net.get("cidr", "10.0.0.0/24"),
-                "dhcp": cluster_net.get("dhcp", True),
-                "icon": "\U0001F310",
-            },
-        }
-    )
-    nodes.append(
-        {
-            "id": bmc_net_id,
-            "type": "networkNode",
-            "position": {"x": 600, "y": 900},
-            "data": {
-                "name": "bmc",
-                "label": "bmc",
-                "cidr": bmc_net.get("cidr", "192.168.100.0/24"),
-                "dhcp": False,
-                "networkType": "bmc",
-                "icon": "\U0001F310",
-            },
-        }
-    )
-
-    # Gateway node with outbound port restrictions
-    gateway_cfg = resolved.get("gateway", {})
-    gateway_outbound_ports = gateway_cfg.get("outbound_ports", [])
-    gateway_id = f"net-{uuid.uuid4()}"
-    nodes.append(
-        {
-            "id": gateway_id,
-            "type": "networkNode",
-            "position": {"x": 200, "y": 100},
-            "data": {
-                "name": "gateway",
-                "label": "gateway",
-                "subtype": "gateway",
-                "gatewayMode": "nat-portforward",
-                "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
-                "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
-                "icon": "\U0001F310",
-            },
-        }
-    )
-    edges.append(
-        {
-            "id": f"e-{uuid.uuid4()}",
-            "source": gateway_id,
-            "target": cluster_net_id,
-        }
-    )
+    VM_SPACING = 400
+    GW_Y = 0
+    NET_ROW_Y = 150
+    VM_ROW_Y = 350
+    WORKER_ROW_Y = VM_ROW_Y + 370
 
     control_count = resolved.get("control_count", 3)
     worker_count = resolved.get("worker_count", 0)
     bastion_cfg = resolved.get("bastion", {})
+    cluster_net = resolved["networks"].get("cluster", {})
+    bmc_net = resolved["networks"].get("bmc", {})
+    gateway_cfg = resolved.get("gateway", {})
+    gateway_outbound_ports = gateway_cfg.get("outbound_ports", [])
+
+    vm_x_start = 150
+    bast_x = vm_x_start + control_count * VM_SPACING
+    net_x = vm_x_start + int((control_count / 2) * VM_SPACING) - 120
+
+    # Port forwards for external access
+    ocp_port_forwards = []
+    if external_access:
+        eip_id = _id()
+        external_ips = [{"id": eip_id, "label": "OCP"}]
+        ocp_port_forwards = [
+            {
+                "extIpId": eip_id,
+                "extPort": "22",
+                "intIp": "10.0.0.50",
+                "intPort": "22",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "6443",
+                "intIp": "10.0.0.2",
+                "intPort": "6443",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "443",
+                "intIp": "10.0.0.3",
+                "intPort": "443",
+                "proto": "tcp",
+            },
+            {
+                "extIpId": eip_id,
+                "extPort": "80",
+                "intIp": "10.0.0.3",
+                "intPort": "80",
+                "proto": "tcp",
+            },
+        ]
+
+    # Network nodes
+    net = {
+        "id": _id(),
+        "type": "networkNode",
+        "position": {"x": net_x, "y": NET_ROW_Y},
+        "data": {
+            "name": "cluster-network",
+            "label": "cluster-network",
+            "cidr": cluster_net.get("cidr", "10.0.0.0/24"),
+            "dhcp": cluster_net.get("dhcp", True),
+            "icon": "\U0001F310",
+        },
+    }
+    bmc = {
+        "id": _id(),
+        "type": "networkNode",
+        "position": {"x": bast_x, "y": NET_ROW_Y},
+        "data": {
+            "name": "bmc",
+            "label": "bmc",
+            "cidr": bmc_net.get("cidr", "192.168.100.0/24"),
+            "dhcp": False,
+            "networkType": "bmc",
+            "bmcPassword": bmc_password,
+            "icon": "\U0001F310",
+        },
+    }
+    gw = {
+        "id": _id(),
+        "type": "networkNode",
+        "position": {"x": net_x, "y": GW_Y},
+        "data": {
+            "name": "gateway",
+            "label": "gateway",
+            "subtype": "gateway",
+            "gatewayMode": "nat-portforward",
+            "portForwards": ocp_port_forwards,
+            "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
+            "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
+            "icon": "\U0001F310",
+        },
+    }
+    nodes.extend([net, bmc, gw])
+    edges.append(_gw_net_edge(gw["id"], net["id"]))
 
     # Bastion
-    bastion_id = f"vm-{uuid.uuid4()}"
-    nic_id = f"nic-{uuid.uuid4()}"
-    dp_id = f"dp-{uuid.uuid4()}"
-    total_cols = control_count + (1 if worker_count == 0 else 0)
-    bastion_x = bastion_x_offset + total_cols * x_spacing
-
-    nodes.append(
-        {
-            "id": bastion_id,
-            "type": "vmNode",
-            "position": {"x": bastion_x, "y": cp_y},
-            "data": {
-                "name": "bastion",
-                "label": "bastion",
-                "vcpus": bastion_cfg.get("vcpus", 2),
-                "ram": bastion_cfg.get("ram_gb", 4),
-                "os": bastion_cfg.get("image", "rhel-10"),
-                "icon": "\U0001F5A5",
-                "firmware": "uefi",
-                "powerOnAtDeploy": True,
-                "bootMethod": "disk",
-                "nics": [
-                    {
-                        "id": nic_id,
-                        "name": "eth0",
-                        "mac": _generate_mac(),
-                        "model": "virtio",
-                    }
-                ],
-                "diskControllers": [{"id": dp_id, "name": "disk0", "bus": "virtio"}],
-                "tags": {"AnsibleGroup": "bastions,showroom"},
-            },
-        }
-    )
-    edges.append(
-        {
-            "id": f"e-{uuid.uuid4()}",
-            "source": bastion_id,
-            "target": cluster_net_id,
-            "sourceHandle": f"nic-{nic_id}-bottom",
-            "targetHandle": f"port-{cluster_net_id}-top",
-        }
+    bast_vm, bast_disk, bast_disk_edge = _bastion_node(bast_x, VM_ROW_Y, bastion_cfg)
+    nodes.extend([bast_vm, bast_disk])
+    edges.extend(
+        [
+            bast_disk_edge,
+            _net_edge(net["id"], bast_vm, 0),
+            _net_edge(bmc["id"], bast_vm, 1, "bottom"),
+        ]
     )
 
     # Control plane nodes
     for i in range(control_count):
-        vm_id = f"vm-{uuid.uuid4()}"
-        nic_cluster_id = f"nic-{uuid.uuid4()}"
-        nic_bmc_id = f"nic-{uuid.uuid4()}"
-        dp_id = f"dp-{uuid.uuid4()}"
-        nodes.append(
-            {
-                "id": vm_id,
-                "type": "vmNode",
-                "position": {"x": bastion_x_offset + i * x_spacing, "y": cp_y},
-                "data": {
-                    "name": f"cp-{i}",
-                    "label": f"cp-{i}",
-                    "vcpus": resolved.get("control_vcpus", 4),
-                    "ram": resolved.get("control_ram_gb", 16),
-                    "os": "rhcos",
-                    "icon": "\U0001F5A5",
-                    "firmware": "uefi",
-                    "powerOnAtDeploy": True,
-                    "bootMethod": "disk",
-                    "bmcEnabled": True,
-                    "nics": [
-                        {
-                            "id": nic_cluster_id,
-                            "name": "eth0",
-                            "mac": _generate_mac(),
-                            "model": "virtio",
-                        },
-                        {
-                            "id": nic_bmc_id,
-                            "name": "eth1",
-                            "mac": _generate_mac(),
-                            "model": "virtio",
-                        },
-                    ],
-                    "diskControllers": [
-                        {"id": dp_id, "name": "disk0", "bus": "virtio"}
-                    ],
-                    "tags": {"AnsibleGroup": "controllers"},
-                },
-            }
+        vm, disk, disk_edge = _vm_node(
+            f"cp-{i}",
+            resolved.get("control_vcpus", 4),
+            resolved.get("control_ram_gb", 16),
+            vm_x_start + i * VM_SPACING,
+            VM_ROW_Y,
+            disk_gb=resolved.get("control_disk_gb", 120),
+            bmc_ip=f"192.168.100.{10 + i}",
+            cluster_ip=f"10.0.0.{10 + i}",
+            tags={"AnsibleGroup": "controllers"},
         )
-        edges.append(
-            {
-                "id": f"e-{uuid.uuid4()}",
-                "source": vm_id,
-                "target": cluster_net_id,
-                "sourceHandle": f"nic-{nic_cluster_id}-bottom",
-                "targetHandle": f"port-{cluster_net_id}-top",
-            }
-        )
-        edges.append(
-            {
-                "id": f"e-{uuid.uuid4()}",
-                "source": vm_id,
-                "target": bmc_net_id,
-                "sourceHandle": f"nic-{nic_bmc_id}-bottom",
-                "targetHandle": f"port-{bmc_net_id}-top",
-            }
-        )
+        nodes.extend([vm, disk])
+        edges.extend([disk_edge, _net_edge(net["id"], vm)])
 
     # Worker nodes
     for i in range(worker_count):
-        vm_id = f"vm-{uuid.uuid4()}"
-        nic_cluster_id = f"nic-{uuid.uuid4()}"
-        nic_bmc_id = f"nic-{uuid.uuid4()}"
-        dp_id = f"dp-{uuid.uuid4()}"
-        nodes.append(
-            {
-                "id": vm_id,
-                "type": "vmNode",
-                "position": {"x": bastion_x_offset + i * x_spacing, "y": worker_y},
-                "data": {
-                    "name": f"worker-{i}",
-                    "label": f"worker-{i}",
-                    "vcpus": resolved.get("worker_vcpus", 4),
-                    "ram": resolved.get("worker_ram_gb", 16),
-                    "os": "rhcos",
-                    "icon": "\U0001F5A5",
-                    "firmware": "uefi",
-                    "powerOnAtDeploy": True,
-                    "bootMethod": "disk",
-                    "bmcEnabled": True,
-                    "nics": [
-                        {
-                            "id": nic_cluster_id,
-                            "name": "eth0",
-                            "mac": _generate_mac(),
-                            "model": "virtio",
-                        },
-                        {
-                            "id": nic_bmc_id,
-                            "name": "eth1",
-                            "mac": _generate_mac(),
-                            "model": "virtio",
-                        },
-                    ],
-                    "diskControllers": [
-                        {"id": dp_id, "name": "disk0", "bus": "virtio"}
-                    ],
-                    "tags": {"AnsibleGroup": "workers"},
-                },
-            }
+        vm, disk, disk_edge = _vm_node(
+            f"worker-{i}",
+            resolved.get("worker_vcpus", 4),
+            resolved.get("worker_ram_gb", 16),
+            vm_x_start + i * VM_SPACING,
+            WORKER_ROW_Y,
+            disk_gb=resolved.get("worker_disk_gb", 120),
+            bmc_ip=f"192.168.100.{20 + i}",
+            cluster_ip=f"10.0.0.{20 + i}",
+            tags={"AnsibleGroup": "workers"},
         )
-        edges.append(
-            {
-                "id": f"e-{uuid.uuid4()}",
-                "source": vm_id,
-                "target": cluster_net_id,
-                "sourceHandle": f"nic-{nic_cluster_id}-bottom",
-                "targetHandle": f"port-{cluster_net_id}-top",
-            }
-        )
-        edges.append(
-            {
-                "id": f"e-{uuid.uuid4()}",
-                "source": vm_id,
-                "target": bmc_net_id,
-                "sourceHandle": f"nic-{nic_bmc_id}-bottom",
-                "targetHandle": f"port-{bmc_net_id}-top",
-            }
-        )
+        nodes.extend([vm, disk])
+        edges.extend([disk_edge, _net_edge(net["id"], vm)])
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": nodes, "edges": edges, "externalIps": external_ips}

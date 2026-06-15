@@ -122,11 +122,33 @@ def create_project_from_template(
         raise HTTPException(status_code=404, detail="Template not found")
     bastion_password = body.get("bastion_password", "")
     external_access = body.get("external_access", False)
+    block_outbound = body.get("block_outbound", True)
     topology = generate_topology(
         template_id,
         bmc_password=bastion_password or "password",
         external_access=external_access,
     )
+
+    # Apply outbound port restriction to gateway if requested
+    if block_outbound:
+        ocp_ports = "53,80,443,123"
+        try:
+            from app.services.template_loader import load_template
+
+            base_tmpl = load_template("ocp-cluster")
+            gw_cfg = base_tmpl.get("gateway", {})
+            if gw_cfg.get("outbound_ports"):
+                ocp_ports = ",".join(str(p) for p in gw_cfg["outbound_ports"])
+        except Exception:
+            pass
+        for node in topology.get("nodes", []):
+            if (
+                node.get("type") == "networkNode"
+                and node.get("data", {}).get("subtype") == "gateway"
+            ):
+                node["data"]["outboundPolicy"] = "restrict"
+                node["data"]["outboundPorts"] = ocp_ports
+                break
 
     # OCP template customization — resolve DB objects, then delegate to plugin
     from app.models.library import LibraryItem
