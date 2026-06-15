@@ -167,14 +167,26 @@ def update_item(
         new_tags = body.tags
         # Enforce only one default per type
         if new_tags.get("ocp_default_image"):
-            for other in db.query(LibraryItem).filter(LibraryItem.id != item.id).all():
+            for other in (
+                db.query(LibraryItem)
+                .filter(
+                    LibraryItem.id != item.id, LibraryItem.library_id == item.library_id
+                )
+                .all()
+            ):
                 if other.tags and other.tags.get("ocp_default_image"):
                     other.tags = {
                         k: v for k, v in other.tags.items() if k != "ocp_default_image"
                     }
                     flag_modified(other, "tags")
         if new_tags.get("ocp_default_iso"):
-            for other in db.query(LibraryItem).filter(LibraryItem.id != item.id).all():
+            for other in (
+                db.query(LibraryItem)
+                .filter(
+                    LibraryItem.id != item.id, LibraryItem.library_id == item.library_id
+                )
+                .all()
+            ):
                 if other.tags and other.tags.get("ocp_default_iso"):
                     other.tags = {
                         k: v for k, v in other.tags.items() if k != "ocp_default_iso"
