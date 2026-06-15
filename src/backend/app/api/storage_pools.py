@@ -24,17 +24,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/storage-pools", tags=["storage-pools"])
 
 
+def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
+    resp = StoragePoolResponse.model_validate(pool)
+    resp.host_count = (
+        db.query(Host)
+        .filter(Host.storage_pool_id == pool.id, Host.host_type != "pattern_buffer")
+        .count()
+    )
+    if pool.worker_host_id:
+        worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
+        if worker:
+            if worker.agent_status == "connected":
+                resp.worker_status = "connected"
+            elif worker.state == "active":
+                resp.worker_status = "installing"
+            else:
+                resp.worker_status = worker.state
+        else:
+            resp.worker_status = "error"
+    elif pool.worker_instance_type:
+        from app.services.pattern_buffer_service import is_provisioning
+
+        if is_provisioning(pool.id):
+            resp.worker_status = "provisioning"
+    return resp
+
+
 @router.get("/", response_model=list[StoragePoolResponse])
 def list_pools(
     user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
 ):
     pools = db.query(StoragePool).order_by(StoragePool.created_at).all()
-    results = []
-    for pool in pools:
-        resp = StoragePoolResponse.model_validate(pool)
-        resp.host_count = db.query(Host).filter(Host.storage_pool_id == pool.id).count()
-        results.append(resp)
-    return results
+    return [_pool_response(pool, db) for pool in pools]
 
 
 @router.get("/{pool_id}", response_model=StoragePoolResponse)
@@ -46,9 +67,7 @@ def get_pool(
     pool = db.query(StoragePool).get(pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
-    resp = StoragePoolResponse.model_validate(pool)
-    resp.host_count = db.query(Host).filter(Host.storage_pool_id == pool.id).count()
-    return resp
+    return _pool_response(pool, db)
 
 
 @router.post("/", response_model=StoragePoolResponse, status_code=201)
@@ -140,9 +159,7 @@ def create_pool(
 
     provision_pattern_buffer_async(pool.id)
 
-    resp = StoragePoolResponse.model_validate(pool)
-    resp.host_count = 0
-    return resp
+    return _pool_response(pool, db)
 
 
 @router.patch("/{pool_id}", response_model=StoragePoolResponse)
@@ -204,9 +221,7 @@ def update_pool(
 
     db.commit()
     db.refresh(pool)
-    resp = StoragePoolResponse.model_validate(pool)
-    resp.host_count = db.query(Host).filter(Host.storage_pool_id == pool.id).count()
-    return resp
+    return _pool_response(pool, db)
 
 
 @router.post("/{pool_id}/extend")
@@ -351,6 +366,7 @@ def run_pool_gc(
 @router.post("/{pool_id}/pattern-buffer")
 def provision_or_replace_pattern_buffer(
     pool_id: str,
+    body: dict | None = None,
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
@@ -358,6 +374,10 @@ def provision_or_replace_pattern_buffer(
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool:
         raise HTTPException(status_code=404, detail="Pool not found")
+
+    if body and body.get("instance_type"):
+        pool.worker_instance_type = body["instance_type"]
+        db.commit()
 
     from app.services.pattern_buffer_service import replace_pattern_buffer
 

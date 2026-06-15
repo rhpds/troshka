@@ -41,8 +41,8 @@ def _get_ec2_client(region: str | None = None, credentials: dict | None = None):
     )
 
 
-def find_rhel_ami(region: str | None = None) -> str:
-    client = _get_ec2_client(region)
+def find_rhel_ami(region: str | None = None, credentials: dict | None = None) -> str:
+    client = _get_ec2_client(region, credentials=credentials)
     response = client.describe_images(
         Owners=["309956199498"],
         Filters=[
@@ -323,7 +323,9 @@ def provision_host(
     instance_type = instance_type or config.aws.default_instance_type or "m8i.xlarge"
 
     if not ami_id:
-        ami_id = getattr(config.aws, "default_ami", None) or find_rhel_ami()
+        ami_id = getattr(config.aws, "default_ami", None) or find_rhel_ami(
+            region, credentials
+        )
 
     vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
     subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
@@ -368,6 +370,26 @@ def provision_host(
         )
     else:
         storage_setup = ""
+
+    if kwargs.get("host_type") == "pattern_buffer":
+        storage_setup += (
+            "  - |\n"
+            "    # Mount instance-store NVMe for fast local I/O (pattern buffer)\n"
+            "    # Instance-store devices have model 'Amazon EC2 NVMe Instance Storage'\n"
+            "    # EBS volumes have model 'Amazon Elastic Block Store'\n"
+            "    for dev in /dev/nvme*n1; do\n"
+            '      [ -b "$dev" ] || continue\n'
+            "      MODEL=$(nvme id-ctrl \"$dev\" 2>/dev/null | grep -o 'Amazon.*' | head -1)\n"
+            '      if echo "$MODEL" | grep -q "Instance Storage"; then\n'
+            '        mkfs.xfs -f "$dev"\n'
+            "        mkdir -p /var/lib/troshka/local\n"
+            '        mount "$dev" /var/lib/troshka/local\n'
+            "        mkdir -p /var/lib/troshka/local/tmp /var/lib/troshka/local/cache\n"
+            '        echo "$dev /var/lib/troshka/local xfs defaults,nofail 0 2" >> /etc/fstab\n'
+            "        break\n"
+            "      fi\n"
+            "    done\n"
+        )
     user_data = CLOUD_INIT.format(
         hostname=hostname, host_id=host_id, storage_setup=storage_setup
     )
@@ -397,7 +419,11 @@ def provision_host(
                 KeyName=key_name,
                 MinCount=1,
                 MaxCount=1,
-                CpuOptions={"NestedVirtualization": "enabled"},
+                **(
+                    {"CpuOptions": {"NestedVirtualization": "enabled"}}
+                    if kwargs.get("host_type") != "pattern_buffer"
+                    else {}
+                ),
                 UserData=user_data,
                 BlockDeviceMappings=[
                     {

@@ -41,6 +41,7 @@ class StoragePoolResponse(BaseModel):
     host_count: int = 0
     worker_host_id: str | None = None
     worker_instance_type: str | None = None
+    worker_status: str | None = None
     created_at: datetime.datetime
     auto_extend_enabled: bool = False
     auto_extend_threshold_pct: int = 80

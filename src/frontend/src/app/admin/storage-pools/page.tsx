@@ -32,6 +32,7 @@ interface StoragePool {
   auto_extend_max_gb: number | null;
   worker_host_id: string | null;
   worker_instance_type: string | null;
+  worker_status: string | null;
 }
 
 interface Provider {
@@ -94,6 +95,17 @@ export default function StoragePoolsPage() {
   const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
   const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
+  const [pbPoolId, setPbPoolId] = useState<string | null>(null);
+  const [pbInstanceType, setPbInstanceType] = useState("i4i.large");
+  const pbTypes = [
+    { value: "i4i.large", label: "i4i.large — 2 vCPU / 16 GB / 468 GB NVMe — ~$0.31/hr" },
+    { value: "i4i.xlarge", label: "i4i.xlarge — 4 vCPU / 32 GB / 937 GB NVMe — ~$0.62/hr" },
+    { value: "i4i.2xlarge", label: "i4i.2xlarge — 8 vCPU / 64 GB / 1.8 TB NVMe — ~$1.25/hr" },
+    { value: "c6id.large", label: "c6id.large — 2 vCPU / 4 GB / 118 GB NVMe — ~$0.13/hr" },
+    { value: "c6id.xlarge", label: "c6id.xlarge — 4 vCPU / 8 GB / 237 GB NVMe — ~$0.25/hr" },
+    { value: "c6id.2xlarge", label: "c6id.2xlarge — 8 vCPU / 16 GB / 474 GB NVMe — ~$0.50/hr" },
+  ];
+
   const loadData = () => {
     Promise.all([
       fetch("/api/v1/storage-pools/").then((r) => (r.ok ? r.json() : [])),
@@ -141,6 +153,15 @@ export default function StoragePoolsPage() {
     const interval = setInterval(loadData, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const provisioning = pools.some(
+      (p) => p.worker_status && !["connected"].includes(p.worker_status)
+    );
+    if (!provisioning) return;
+    const fast = setInterval(loadData, 3000);
+    return () => clearInterval(fast);
+  }, [pools]);
 
   const fetchAzs = async (providerId: string) => {
     if (!providerId) { setAvailableAzs([]); return; }
@@ -612,8 +633,12 @@ export default function StoragePoolsPage() {
                 </div>
                 <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
                   <div style={{ fontSize: 11, marginBottom: 4 }}>
-                    {pool.worker_host_id ? (
-                      <span style={{ color: "#4ade80" }}>Pattern Buffer: active</span>
+                    {pool.worker_status === "connected" ? (
+                      <span style={{ color: "#4ade80" }}>Pattern Buffer: connected</span>
+                    ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
+                      <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...</span>
+                    ) : pool.worker_host_id ? (
+                      <span style={{ color: "#f87171" }}>Pattern Buffer: {pool.worker_status || "unknown"}</span>
                     ) : (
                       <span style={{ opacity: 0.5 }}>No Pattern Buffer</span>
                     )}
@@ -621,8 +646,8 @@ export default function StoragePoolsPage() {
                   <div style={{ display: "flex", gap: 6 }}>
                     {pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
-                        fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer`, { method: "POST" });
-                        setTimeout(loadData, 3000);
+                        setPbInstanceType("i4i.large");
+                        setPbPoolId(pool.id);
                       }}>
                         {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
                       </Button>
@@ -641,6 +666,40 @@ export default function StoragePoolsPage() {
           </Card>
         ))}
       </div>
+      {pbPoolId && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }} onClick={() => setPbPoolId(null)}>
+          <Card style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+            <CardBody>
+              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12 }}>Add Pattern Buffer</div>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
+              <select
+                style={inputStyle}
+                value={pbInstanceType}
+                onChange={(e) => setPbInstanceType(e.target.value)}
+              >
+                {pbTypes.map((t) => (
+                  <option key={t.value} value={t.value}>{t.label}</option>
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+                <Button variant="secondary" size="sm" onClick={() => setPbPoolId(null)}>Cancel</Button>
+                <Button variant="primary" size="sm" onClick={async () => {
+                  await fetch(`/api/v1/storage-pools/${pbPoolId}/pattern-buffer`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ instance_type: pbInstanceType }),
+                  });
+                  setPbPoolId(null);
+                  loadData();
+                }}>Provision</Button>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
     </PageSection>
   );
 }
