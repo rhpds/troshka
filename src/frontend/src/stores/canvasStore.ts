@@ -1116,6 +1116,7 @@ let _saveTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastSavedNodeCount = 0;
 let _loadingProject = false;
 let _latestVmStates: Record<string, string> = {};
+let _lastSavedTopologyKey = "";
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
   if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
@@ -1135,6 +1136,10 @@ useCanvasStore.subscribe((state) => {
     if (_loadingProject) return;
     const s = useCanvasStore.getState();
     if (s.nodes.length === 0) return;
+    const topoKey = s.nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
+      + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|");
+    if (topoKey === _lastSavedTopologyKey) return;
+    _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;
     _saveTopologyToApi(s.currentProjectId!, s);
   }, 1000);

@@ -1674,36 +1674,70 @@ export default function PropertiesPanel() {
                     const removePort = (port: string) => {
                       update("outboundPorts", currentPorts.filter((p: string) => p !== port).join(","));
                     };
+                    let _portInputEl: HTMLInputElement | null = null;
+                    const addPortProtoRef = { current: "both" };
+                    const addPort = () => {
+                      const num = (_portInputEl?.value || "").trim();
+                      if (!num || isNaN(Number(num))) return;
+                      const proto = addPortProtoRef.current;
+                      const entry = proto === "both" ? num : `${num}/${proto}`;
+                      if (!currentPorts.includes(entry)) {
+                        update("outboundPorts", [...currentPorts, entry].join(","));
+                      }
+                      if (_portInputEl) _portInputEl.value = "";
+                    };
                     return (
                       <div className="props-field">
-                        <label className="props-label">Allowed Ports</label>
+                        <label className="props-label">Allowed Outbound Ports</label>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
-                          {currentPorts.map((port: string) => (
-                            <span key={port} style={{
-                              display: "inline-flex", alignItems: "center", gap: 4,
-                              padding: "2px 8px", borderRadius: 12, fontSize: 11,
-                              background: "rgba(0,102,204,0.15)", color: "#73bcf7",
-                              border: "1px solid rgba(0,102,204,0.3)",
-                            }}>
-                              {port}
-                              <span onClick={() => removePort(port)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
-                            </span>
-                          ))}
+                          {currentPorts.map((port: string) => {
+                            const label = port.includes("/") ? port : `${port} tcp/udp`;
+                            return (
+                              <span key={port} style={{
+                                display: "inline-flex", alignItems: "center", gap: 4,
+                                padding: "2px 8px", borderRadius: 12, fontSize: 11,
+                                background: "rgba(0,102,204,0.15)", color: "#73bcf7",
+                                border: "1px solid rgba(0,102,204,0.3)",
+                              }}>
+                                {label}
+                                <span onClick={() => removePort(port)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
+                              </span>
+                            );
+                          })}
                         </div>
-                        <input
-                          className="props-input"
-                          placeholder="port or port/proto (Enter to add)"
-                          style={{ fontFamily: "monospace", fontSize: 11 }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              const val = (e.target as HTMLInputElement).value.trim();
-                              if (val && !currentPorts.includes(val)) {
-                                update("outboundPorts", [...currentPorts, val].join(","));
-                                (e.target as HTMLInputElement).value = "";
-                              }
-                            }
-                          }}
-                        />
+                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                          <input
+                            type="number"
+                            className="props-input"
+                            placeholder="Port"
+                            style={{ width: 70, fontSize: 11, fontFamily: "monospace" }}
+                            ref={(el) => { _portInputEl = el; }}
+                            onKeyDown={(e) => { if (e.key === "Enter") addPort(); }}
+                          />
+                          <select
+                            defaultValue="both"
+                            onChange={(e) => { addPortProtoRef.current = e.target.value; }}
+                            style={{
+                              fontSize: 11, padding: "3px 4px", borderRadius: 3,
+                              border: "1px solid var(--pf-t--global--border--color--default)",
+                              background: "var(--pf-t--global--background--color--secondary--default)",
+                              color: "var(--pf-t--global--text--color--regular)",
+                            }}
+                          >
+                            <option value="both">TCP+UDP</option>
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                            <option value="icmp">ICMP</option>
+                          </select>
+                          <button
+                            onClick={() => { addPort(); }}
+                            style={{
+                              padding: "3px 8px", borderRadius: 3, fontSize: 11, cursor: "pointer",
+                              border: "1px solid var(--pf-t--global--border--color--default)",
+                              background: "transparent", color: "var(--pf-t--global--text--color--regular)",
+                            }}
+                          >Add</button>
+                        </div>
                       </div>
                     );
                   })()}

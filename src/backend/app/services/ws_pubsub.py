@@ -204,6 +204,8 @@ def _poll_active_projects():
                         vm_progress[node["id"]] = _redeploy_progress[dom_name]
                     else:
                         state = batch.get(dom_name, "not_found")
+                        if state == "not_found":
+                            continue
                         if state in (
                             "shut_off",
                             "shutting_down",
@@ -232,7 +234,7 @@ def _poll_active_projects():
                         new_state,
                     )
 
-            if (
+            if vm_states and (
                 vm_states != prev_vm_states
                 or vm_progress != last.get("vm_progress")
                 or vm_boot_devs != last.get("vm_boot_devs")

@@ -302,10 +302,15 @@ def update_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    fields = body.model_dump(exclude_unset=True)
+    for field, value in fields.items():
         setattr(project, field, value)
     db.commit()
     db.refresh(project)
+    if "topology" in fields:
+        notify_project(
+            project_id, {"type": "topology-update", "topology": project.topology}
+        )
     return project
 
 
@@ -1191,40 +1196,50 @@ def reconfigure_project(
                 _deploy_progress.pop(p_id, None)
                 return
 
-            # Cache any new library images (ISOs, disk images) before reconfiguring VMs
-            _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+            # Only cache images and deploy metadata when VMs changed
+            has_vm_changes = (
+                diff.get("added_vms")
+                or diff.get("removed_vms")
+                or diff.get("changed_vms")
+            )
 
-            def _reconfig_dl_progress(downloaded, total):
-                pct = (
-                    f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+            if has_vm_changes:
+                _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+
+                def _reconfig_dl_progress(downloaded, total):
+                    pct = (
+                        f"{int(downloaded / max(total, 1) * 100)}%"
+                        if total > 0
+                        else "..."
+                    )
+                    _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+
+                cache_library_images(
+                    current, h, s, progress_callback=_reconfig_dl_progress
                 )
-                _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+            if has_vm_changes:
+                _deploy_progress[p_id] = {
+                    "step": "cloud-init",
+                    "detail": "deploying metadata service",
+                }
+                from app.services.deploy_service import _setup_metadata_via_troshkad
 
-            cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
+                try:
+                    _setup_metadata_via_troshkad(h, p_id, current, vni_map)
+                    logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
+                except Exception:
+                    logger.exception(
+                        "Reconfigure %s: metadata service deployment failed (non-fatal)",
+                        p_id[:8],
+                    )
 
-            # Deploy metadata service via troshkad
-            _deploy_progress[p_id] = {
-                "step": "cloud-init",
-                "detail": "deploying metadata service",
-            }
-            from app.services.deploy_service import _setup_metadata_via_troshkad
-
-            try:
-                _setup_metadata_via_troshkad(h, p_id, current, vni_map)
-                logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
-            except Exception:
-                logger.exception(
-                    "Reconfigure %s: metadata service deployment failed (non-fatal)",
-                    p_id[:8],
-                )
-
-            _setup_pxe_via_troshkad(h, current, vni_map, p_id)
+                _setup_pxe_via_troshkad(h, current, vni_map, p_id)
 
             # Create BMC bridge if needed (must exist before VM restart)
             from app.services.deploy_service import _extract_bmc_config
 
             bmc_config = _extract_bmc_config(current, p_id)
-            if bmc_config:
+            if bmc_config and has_vm_changes:
                 net_data = bmc_config["bmc_network"]
                 cidr = net_data.get("cidr", "192.168.100.0/24")
                 try:
@@ -1426,12 +1441,14 @@ def reconfigure_project(
                     if vm_networks
                     else []
                 )
+                current_bridges = sorted(n["bridge"] for n in current_cfg["nics"])
+                desired_bridges = sorted(n["bridge"] for n in desired_nics)
                 desired_disks = [d["path"] for d in disk_list]
                 if (
                     current_cfg["boot_devs"] == boot_devs
                     and current_cfg["vcpus"] == vm["vcpus"]
                     and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
-                    and current_cfg["nics"] == desired_nics
+                    and current_bridges == desired_bridges
                     and current_cfg["disks"] == desired_disks
                     and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
                 ):
@@ -1442,22 +1459,14 @@ def reconfigure_project(
                     )
                     continue
 
-                if current_cfg["nics"] != desired_nics:
-                    logger.info(
-                        "Reconfigure %s: VM %s NIC diff — current:%s desired:%s",
-                        p_id[:8],
-                        vm["name"],
-                        current_cfg["nics"],
-                        desired_nics,
-                    )
                 logger.info(
-                    "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s nics:%s disks:%s cdroms:%s",
+                    "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s bridges:%s disks:%s cdroms:%s",
                     p_id[:8],
                     vm["name"],
                     current_cfg["boot_devs"] != boot_devs,
                     current_cfg["vcpus"] != vm["vcpus"],
                     current_cfg["ram_mb"] != vm["ram_gb"] * 1024,
-                    current_cfg["nics"] != desired_nics,
+                    current_bridges != desired_bridges,
                     current_cfg["disks"] != desired_disks,
                     sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
                 )
@@ -1467,7 +1476,7 @@ def reconfigure_project(
                     or current_cfg["boot_devs"] != boot_devs
                     or current_cfg["vcpus"] != vm["vcpus"]
                     or current_cfg["ram_mb"] != vm["ram_gb"] * 1024
-                    or current_cfg["nics"] != desired_nics
+                    or current_bridges != desired_bridges
                     or current_cfg["disks"] != desired_disks
                 )
                 try:
@@ -1597,6 +1606,36 @@ def reconfigure_project(
                 proj.deploy_error = "\n".join(errors)
             s.commit()
             _deploy_progress.pop(p_id, None)
+            notify_project(
+                p_id,
+                {
+                    "type": "project-state",
+                    "state": "active",
+                    "deploy_error": proj.deploy_error,
+                },
+            )
+            try:
+                from app.services.troshkad_client import get_all_vm_states
+
+                batch = get_all_vm_states(h) or {}
+                vm_states = {}
+                for node in (current or {}).get("nodes", []):
+                    if node.get("type") != "vmNode":
+                        continue
+                    dom = _vm_domain_name(p_id, node["id"])
+                    raw = batch.get(dom, "unknown")
+                    vm_states[node["id"]] = (
+                        "running"
+                        if raw == "running"
+                        else "stopped"
+                        if raw == "shut_off"
+                        else raw
+                    )
+                notify_project(
+                    p_id, {"type": "vm-state", "states": vm_states, "progress": {}}
+                )
+            except Exception:
+                pass
             logger.info(
                 "Reconfigure %s complete%s",
                 p_id[:8],

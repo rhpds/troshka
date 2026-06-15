@@ -148,6 +148,20 @@ export default function ProjectCanvasPage() {
     setDeployProgress(ws.deployProgress);
   }, [ws.deployProgress]);
 
+  // WebSocket → topology update from another session
+  useEffect(() => {
+    if (!ws.topologyUpdate) return;
+    const topo = ws.topologyUpdate;
+    const store = useCanvasStore.getState();
+    if (topo.nodes && topo.edges) {
+      const currentKey = store.nodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
+      const incomingKey = topo.nodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
+      if (currentKey !== incomingKey) {
+        useCanvasStore.setState({ nodes: topo.nodes, edges: topo.edges });
+      }
+    }
+  }, [ws.topologyUpdate]);
+
   useEffect(() => {
     if (ws.ocpHealth?.phase === "ready") setOcpStatus("ready");
     else if (ws.ocpHealth) setOcpStatus("monitoring");
