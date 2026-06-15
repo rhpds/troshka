@@ -425,6 +425,15 @@ export default function ProjectCanvasPage() {
           </span>
         </div>
         <div className="project-action-bar-right">
+          {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (
+            <button
+              className="project-publish-btn"
+              onClick={() => window.open(`/console/monitor?project=${projectId}`, "_blank")}
+              style={{ opacity: 0.85 }}
+            >
+              MegaConsole
+            </button>
+          )}
           {(projectState === "active" || projectState === "stopped") && (
             <button className="project-publish-btn" onClick={() => setShowPatternModal(true)} style={{ opacity: 0.85 }}>
               Save as Pattern
@@ -654,7 +663,6 @@ export default function ProjectCanvasPage() {
           }}
         >{showPalette ? "◂" : "▸"}</button>
         <Canvas
-          onSavePattern={() => setShowPatternModal(true)}
           onSnapshotVM={(vmId, vmName, isRunning) => setSnapshotTarget({ vmId, vmName, isRunning })}
         />
         <button

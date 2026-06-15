@@ -42,11 +42,10 @@ interface EdgeContextMenuState {
 }
 
 interface CanvasProps {
-  onSavePattern?: () => void;
   onSnapshotVM?: (nodeId: string, nodeName: string, isRunning: boolean) => void;
 }
 
-export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
+export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -422,7 +421,7 @@ export default function Canvas({ onSavePattern, onSnapshotVM }: CanvasProps) {
           size={1}
           color="rgba(255,255,255,0.06)"
         />
-        <CanvasToolbar onSavePattern={onSavePattern} />
+        <CanvasToolbar />
         {showMinimap && (
           <MiniMap
             nodeStrokeWidth={3}
