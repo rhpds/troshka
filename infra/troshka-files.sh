@@ -7,9 +7,9 @@ while true; do
   output=$(
   echo "=== Troshka Storage — $(date) ==="
   echo
-  printf "%-20s %6s %6s %5s\n" Mount Used Free Use%
-  df -h /var/lib/troshka /var/lib/troshka/shared 2>/dev/null | tail -n+2 | while read fs sz used avail pct mnt; do
-    printf "%-20s %6s %6s %5s\n" "$mnt" "$used" "$avail" "$pct"
+  printf "%-25s %6s %6s %5s\n" Mount Used Free Use%
+  df -h /var/lib/troshka /var/lib/troshka/shared /var/lib/troshka/local 2>/dev/null | tail -n+2 | awk '!seen[$6]++' | while read fs sz used avail pct mnt; do
+    printf "%-25s %6s %6s %5s\n" "$mnt" "$used" "$avail" "$pct"
   done
   echo
   for proj_dir in /var/lib/troshka/shared/vms/*/; do

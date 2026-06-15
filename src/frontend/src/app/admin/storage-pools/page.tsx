@@ -96,6 +96,7 @@ export default function StoragePoolsPage() {
   const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
   const [pbPoolId, setPbPoolId] = useState<string | null>(null);
+  const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
   const [pbInstanceType, setPbInstanceType] = useState("i4i.large");
   const pbTypes = [
     { value: "i4i.large", label: "i4i.large — 2 vCPU / 16 GB / 468 GB NVMe — ~$0.31/hr" },
@@ -115,6 +116,8 @@ export default function StoragePoolsPage() {
       setProviders(prov);
     });
     fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []).then((hosts: any[]) => {
+      const versions = hosts.map((h: any) => h.agent_version).filter(Boolean);
+      if (versions.length > 0) setExpectedAgentVersion(versions[0]);
       fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((storage: any) => {
         const usage: Record<string, { used_gb: number; total_gb: number; used_pct: number }> = {};
         for (const h of hosts) {
@@ -646,6 +649,12 @@ export default function StoragePoolsPage() {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
+                    {pool.worker_status === "connected" && expectedAgentVersion && pool.worker_agent_version && pool.worker_agent_version !== expectedAgentVersion && (
+                      <Button variant="primary" size="sm" onClick={async () => {
+                        await fetch(`/api/v1/hosts/${pool.worker_host_id}/update-agent`, { method: "POST" });
+                        setTimeout(loadData, 5000);
+                      }}>Update Pattern Buffer Agent</Button>
+                    )}
                     {pool.worker_status === "connected" && (
                       <Button variant="secondary" size="sm" onClick={async () => {
                         if (!window.confirm("Stop pattern buffer? It will auto-wake when needed.")) return;

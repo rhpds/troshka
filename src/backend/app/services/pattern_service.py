@@ -53,6 +53,7 @@ def _capture_vm_via_nbd(
             output_filename = f"{pattern_id[:8]}-{vm_id[:8]}-{i}.qcow2"
             output_path = f"/var/lib/troshka/local/tmp/{output_filename}"
 
+            total_bytes = disk_info.get("virtual_size_bytes", 0)
             job_log_fn(f"Flattening via NBD from {host.private_ip}:{nbd_port}...")
             flatten_job_id = start_job(
                 worker_host,
@@ -62,6 +63,7 @@ def _capture_vm_via_nbd(
                     "nbd_port": nbd_port,
                     "export_name": "disk",
                     "output_path": output_path,
+                    "total_bytes": total_bytes,
                 },
             )
             flatten_job = wait_for_job(
@@ -256,11 +258,13 @@ def capture_pattern_disks(
                     s3_url = f"s3://{bucket}/{s3_key}"
                     cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
+                    vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
                     disks_params.append(
                         {
                             "disk_path": disk_path,
                             "s3_url": s3_url,
                             "cache_path": cache_path,
+                            "virtual_size_bytes": vsize,
                         }
                     )
 
@@ -371,11 +375,13 @@ def capture_pattern_disks(
                     s3_url = f"s3://{bucket}/{s3_key}"
                     cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
+                    vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
                     disks_params.append(
                         {
                             "disk_path": disk_path,
                             "s3_url": s3_url,
                             "cache_path": cache_path,
+                            "virtual_size_bytes": vsize,
                         }
                     )
 

@@ -34,11 +34,13 @@ from app.core.database import SessionLocal
 from app.models.host import Host
 db = SessionLocal()
 prefix = '${HOST_PREFIX}'
-if prefix:
+if prefix in ('pb', 'pattern-buffer', 'pattern_buffer'):
+    hosts = db.query(Host).filter(Host.host_type == 'pattern_buffer', Host.state.in_(['active', 'stopped'])).all()
+elif prefix:
     from sqlalchemy import cast, String
     hosts = db.query(Host).filter(Host.agent_status == 'connected', cast(Host.id, String).like(prefix + '%')).all()
 else:
-    hosts = db.query(Host).filter(Host.agent_status == 'connected').all()
+    hosts = db.query(Host).filter(Host.agent_status == 'connected', Host.host_type != 'pattern_buffer').all()
 if not hosts:
     print('ERROR: No connected host found' + (f' matching {prefix}' if prefix else ''), file=sys.stderr)
     sys.exit(1)

@@ -5047,11 +5047,6 @@ def _handle_nbd_export(job, params):
         "--persistent",
         "--fork",
     ]
-    if os.path.exists(os.path.join(tls_dir, "servercert.pem")):
-        cmd.extend(["--tls-creds", f"dir={tls_dir},endpoint=server"])
-
-    if running and not snapshotted:
-        cmd.append("-U")
 
     cmd.append(disk_path)
 
@@ -5134,36 +5129,37 @@ def _handle_nbd_pull_flatten(job, params):
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    cmd = ["qemu-img", "convert"]
+    nbd_src = f"nbd://{nbd_host}:{nbd_port}/{export_name}"
+    total_bytes = params.get("total_bytes", 0)
 
-    if os.path.exists(os.path.join(tls_dir, "clientcert.pem")):
-        cmd.extend([
-            "--object",
-            f"tls-creds-x509,id=tls0,dir={tls_dir},endpoint=client",
-            "--image-opts",
-        ])
-        nbd_src = (
-            f"driver=nbd,host={nbd_host},port={nbd_port},"
-            f"export={export_name},tls-creds=tls0"
-        )
-    else:
-        nbd_src = f"nbd://{nbd_host}:{nbd_port}/{export_name}"
-
-    cmd.extend(["-c", "-o", "compression_type=zstd", "-O", "qcow2"])
+    cmd = ["qemu-img", "convert", "-c", "-o", "compression_type=zstd", "-O", "qcow2"]
     cmd.append(nbd_src)
     cmd.append(output_path)
 
-    _job_log(job, f"Pulling from {nbd_host}:{nbd_port}, flattening to {os.path.basename(output_path)}")
+    total_gb = round(total_bytes / (1024**3), 1) if total_bytes else 0
+    _job_log(job, f"Pulling from {nbd_host}:{nbd_port}, flattening {total_gb} GB...")
 
     flatten_done = threading.Event()
 
     def _monitor():
+        prev_bytes = [0]
+        prev_time = [time.time()]
         while not flatten_done.is_set():
             try:
                 if os.path.exists(output_path):
                     cur = os.path.getsize(output_path)
                     cur_gb = round(cur / (1024**3), 1)
-                    _job_log(job, f"Flattening: {cur_gb} GB written")
+                    now = time.time()
+                    dt = now - prev_time[0]
+                    rate_mbps = round((cur - prev_bytes[0]) / (1024**2) / dt) if dt > 0 else 0
+                    prev_bytes[0] = cur
+                    prev_time[0] = now
+                    rate_str = f" ({rate_mbps} MB/s)" if rate_mbps > 0 else ""
+                    if total_bytes:
+                        pct = min(100, int(cur * 100 / total_bytes))
+                        _job_log(job, f"Flattening: {cur_gb} of {total_gb} GB ({pct}%){rate_str}")
+                    else:
+                        _job_log(job, f"Flattening: {cur_gb} GB written{rate_str}")
             except OSError:
                 pass
             flatten_done.wait(10)

@@ -228,35 +228,7 @@ hostname: {hostname}
 packages:
 {packages}
 runcmd:
-{vm_runcmd}
-  - |
-    # Detect data volume (/dev/sdf) via nvme id-ctrl — NVMe ordering is not guaranteed
-    find_nvme_dev() {{
-      local target="$1"
-      for dev in /dev/nvme*n1; do
-        [ -b "$dev" ] || continue
-        DEVNAME=$(nvme id-ctrl "$dev" -b 2>/dev/null | dd bs=1 skip=3072 count=32 2>/dev/null | tr -d '\\0 ')
-        if [ "$DEVNAME" = "$target" ] || [ "$DEVNAME" = "/dev/$target" ]; then
-          echo "$dev"; return
-        fi
-      done
-    }}
-    # Mount data volume
-    DATA_DEV=$(find_nvme_dev sdf)
-    if [ -n "$DATA_DEV" ]; then
-      blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"
-      mkdir -p /var/lib/troshka
-      mount "$DATA_DEV" /var/lib/troshka
-      grep -q /var/lib/troshka /etc/fstab || echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab
-    fi
-    # Mount swap volume
-    SWAP_DEV=$(find_nvme_dev sdg)
-    if [ -n "$SWAP_DEV" ]; then
-      mkswap "$SWAP_DEV" 2>/dev/null || true
-      swapon "$SWAP_DEV" 2>/dev/null || true
-      grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab
-    fi
-  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
+{vm_runcmd}{ebs_setup}  - mkdir -p /var/lib/troshka /etc/troshka-agent
 {storage_setup}  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
 {vm_tuning}"""
 
@@ -350,7 +322,41 @@ def provision_host(
     is_pattern_buffer = kwargs.get("host_type") == "pattern_buffer"
 
     if is_pattern_buffer:
-        packages = "  - python3\n  - python3-pip\n  - nvme-cli\n  - qemu-img\n"
+        ebs_setup = ""
+    else:
+        ebs_setup = (
+            "  - |\n"
+            "    # Detect data volume (/dev/sdf) via nvme id-ctrl\n"
+            "    find_nvme_dev() {{\n"
+            '      local target="$1"\n'
+            "      for dev in /dev/nvme*n1; do\n"
+            '        [ -b "$dev" ] || continue\n'
+            "        DEVNAME=$(nvme id-ctrl \"$dev\" -b 2>/dev/null | dd bs=1 skip=3072 count=32 2>/dev/null | tr -d '\\\\0 ')\n"
+            '        if [ "$DEVNAME" = "$target" ] || [ "$DEVNAME" = "/dev/$target" ]; then\n'
+            '          echo "$dev"; return\n'
+            "        fi\n"
+            "      done\n"
+            "    }}\n"
+            "    DATA_DEV=$(find_nvme_dev sdf)\n"
+            '    if [ -n "$DATA_DEV" ]; then\n'
+            '      blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"\n'
+            "      mkdir -p /var/lib/troshka\n"
+            '      mount "$DATA_DEV" /var/lib/troshka\n'
+            '      grep -q /var/lib/troshka /etc/fstab || echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab\n'
+            "    fi\n"
+            "    SWAP_DEV=$(find_nvme_dev sdg)\n"
+            '    if [ -n "$SWAP_DEV" ]; then\n'
+            '      mkswap "$SWAP_DEV" 2>/dev/null || true\n'
+            '      swapon "$SWAP_DEV" 2>/dev/null || true\n'
+            '      grep -q "$SWAP_DEV" /etc/fstab || echo "$SWAP_DEV none swap defaults,nofail 0 0" >> /etc/fstab\n'
+            "    fi\n"
+            "  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp\n"
+        )
+
+    if is_pattern_buffer:
+        packages = (
+            "  - python3\n  - python3-pip\n  - nvme-cli\n  - qemu-img\n  - nfs-utils\n"
+        )
         vm_runcmd = ""
         vm_tuning = ""
     else:
@@ -409,6 +415,7 @@ def provision_host(
         packages=packages,
         vm_runcmd=vm_runcmd,
         vm_tuning=vm_tuning,
+        ebs_setup=ebs_setup,
     )
 
     # Look up instance specs before launch (need RAM size for swap volume)
@@ -451,23 +458,29 @@ def provision_host(
                             "DeleteOnTermination": True,
                         },
                     },
-                    {
-                        "DeviceName": "/dev/sdf",
-                        "Ebs": {
-                            "VolumeSize": storage_size_gb,
-                            "VolumeType": "gp3",
-                            "DeleteOnTermination": True,
+                ]
+                + (
+                    [
+                        {
+                            "DeviceName": "/dev/sdf",
+                            "Ebs": {
+                                "VolumeSize": storage_size_gb,
+                                "VolumeType": "gp3",
+                                "DeleteOnTermination": True,
+                            },
                         },
-                    },
-                    {
-                        "DeviceName": "/dev/sdg",
-                        "Ebs": {
-                            "VolumeSize": swap_size_gb,
-                            "VolumeType": "gp3",
-                            "DeleteOnTermination": True,
+                        {
+                            "DeviceName": "/dev/sdg",
+                            "Ebs": {
+                                "VolumeSize": swap_size_gb,
+                                "VolumeType": "gp3",
+                                "DeleteOnTermination": True,
+                            },
                         },
-                    },
-                ],
+                    ]
+                    if not is_pattern_buffer
+                    else []
+                ),
                 TagSpecifications=[
                     {
                         "ResourceType": "instance",
