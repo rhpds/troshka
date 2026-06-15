@@ -2,6 +2,7 @@
 Pattern service — captures VM disk snapshots to S3 for pattern storage.
 """
 import logging
+import os
 
 from app.core.database import SessionLocal
 from app.models.pattern import Pattern, PatternDisk
@@ -9,6 +10,108 @@ from app.models.pattern import Pattern, PatternDisk
 log = logging.getLogger(__name__)
 
 _capture_progress: dict[str, dict] = {}
+
+
+def _get_pattern_buffer(db, host):
+    """Get the pattern buffer host for the pool this host belongs to, if any."""
+    if not host.storage_pool_id:
+        return None
+    from app.services.pattern_buffer_service import get_pattern_buffer_host
+
+    return get_pattern_buffer_host(db, host.storage_pool_id)
+
+
+def _capture_vm_via_nbd(
+    host, worker_host, vm_id, domain_name, disks_params, creds, pattern_id, job_log_fn
+):
+    """Capture a VM's disks via NBD export (VM host) + pull-flatten (pattern buffer)."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    results = []
+    for i, disk_info in enumerate(disks_params):
+        disk_path = disk_info["disk_path"]
+        s3_url = disk_info["s3_url"]
+        cache_path = disk_info["cache_path"]
+
+        job_log_fn(f"Exporting {os.path.basename(disk_path)} via NBD...")
+        export_job_id = start_job(
+            host,
+            "/nbd/export",
+            {
+                "domain_name": domain_name,
+                "disk_path": disk_path,
+            },
+        )
+        export_job = wait_for_job(host, export_job_id, timeout=120)
+        if export_job["status"] != "completed":
+            raise RuntimeError(
+                f"NBD export failed: {export_job.get('result', {}).get('error')}"
+            )
+        nbd_port = export_job["result"]["port"]
+
+        try:
+            output_filename = f"{pattern_id[:8]}-{vm_id[:8]}-{i}.qcow2"
+            output_path = f"/var/lib/troshka/local/tmp/{output_filename}"
+
+            job_log_fn(f"Flattening via NBD from {host.private_ip}:{nbd_port}...")
+            flatten_job_id = start_job(
+                worker_host,
+                "/nbd/pull-flatten",
+                {
+                    "nbd_host": host.private_ip,
+                    "nbd_port": nbd_port,
+                    "export_name": "disk",
+                    "output_path": output_path,
+                },
+            )
+            flatten_job = wait_for_job(
+                worker_host, flatten_job_id, timeout=3600, poll_interval=10
+            )
+            if flatten_job["status"] != "completed":
+                raise RuntimeError(
+                    f"Pull-flatten failed: {flatten_job.get('result', {}).get('error')}"
+                )
+            flat_size = flatten_job["result"].get("size_bytes", 0)
+
+            job_log_fn(f"Uploading {round(flat_size / (1024**3), 1)} GB to S3...")
+            upload_job_id = start_job(
+                worker_host,
+                "/patterns/upload-and-cache",
+                {
+                    "local_path": output_path,
+                    "s3_url": s3_url,
+                    "cache_path": cache_path,
+                    "aws_access_key_id": creds.get("access_key_id", ""),
+                    "aws_secret_access_key": creds.get("secret_access_key", ""),
+                    "aws_region": creds.get("region", "us-east-1"),
+                },
+            )
+            upload_job = wait_for_job(
+                worker_host, upload_job_id, timeout=3600, poll_interval=10
+            )
+            if upload_job["status"] != "completed":
+                raise RuntimeError(
+                    f"Upload failed: {upload_job.get('result', {}).get('error')}"
+                )
+
+            results.append({"size_bytes": flat_size})
+        finally:
+            try:
+                stop_job_id = start_job(
+                    host,
+                    "/nbd/stop",
+                    {
+                        "domain_name": domain_name,
+                        "port": nbd_port,
+                    },
+                )
+                wait_for_job(host, stop_job_id, timeout=600)
+            except Exception as e:
+                log.warning(
+                    "NBD stop failed for %s port %d: %s", domain_name, nbd_port, e
+                )
+
+    return results
 
 
 def get_capture_progress(pattern_id: str) -> dict | None:
@@ -72,6 +175,8 @@ def capture_pattern_disks(
             log.error("No host found for project %s", project_id)
             return
 
+        worker_host = _get_pattern_buffer(db, host)
+
         topology = (
             project.deployed_topology or project.topology or {"nodes": [], "edges": []}
         )
@@ -116,186 +221,110 @@ def capture_pattern_disks(
 
         creds = _get_s3_config()
 
-        # Build all capture jobs upfront
-        all_jobs = []
-        all_metadata = []
-        for vm_id, vm_disk_nodes in vm_to_disks.items():
-            disks_params = []
-            disk_metadata = []
-            for disk_node in vm_disk_nodes:
-                disk_id = disk_node["id"]
-                fmt = disk_node.get("data", {}).get("format", "qcow2")
+        if worker_host:
+            # --- NBD path: offload flatten+upload to pattern buffer ---
+            log.info(
+                "Pattern %s: using pattern buffer %s for NBD capture",
+                pattern_id[:8],
+                worker_host.id[:8],
+            )
+            import time as _time
 
-                if fmt == "iso":
+            vm_count = len(vm_to_disks)
+            vm_done = 0
+            _capture_progress[pattern_id] = {
+                "step": "capturing",
+                "detail": f"0/{vm_count} VMs done (NBD)",
+                "_host_id": host.id,
+                "_job_ids": [],
+            }
+
+            for vm_id, vm_disk_nodes in vm_to_disks.items():
+                disks_params = []
+                disk_metadata = []
+                for disk_node in vm_disk_nodes:
+                    disk_id = disk_node["id"]
+                    fmt = disk_node.get("data", {}).get("format", "qcow2")
+
+                    if fmt == "iso":
+                        continue
+
+                    disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
+
+                    s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+                    bucket = s3_storage._bucket()
+                    s3_url = f"s3://{bucket}/{s3_key}"
+                    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+
+                    disks_params.append(
+                        {
+                            "disk_path": disk_path,
+                            "s3_url": s3_url,
+                            "cache_path": cache_path,
+                        }
+                    )
+
+                    disk_metadata.append(
+                        {
+                            "disk_id": disk_id,
+                            "vm_id": vm_id,
+                            "s3_key": s3_key,
+                            "format": fmt,
+                            "virtual_size_bytes": int(
+                                disk_node.get("data", {}).get("size", 0)
+                            )
+                            * 1073741824,
+                        }
+                    )
+
+                if not disks_params:
                     continue
 
-                disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
-
-                s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-                bucket = s3_storage._bucket()
-                s3_url = f"s3://{bucket}/{s3_key}"
-                cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
-
-                disks_params.append(
-                    {
-                        "disk_path": disk_path,
-                        "s3_url": s3_url,
-                        "cache_path": cache_path,
-                    }
-                )
-
-                disk_metadata.append(
-                    {
-                        "disk_id": disk_id,
-                        "vm_id": vm_id,
-                        "s3_key": s3_key,
-                        "format": fmt,
-                        "virtual_size_bytes": int(
-                            disk_node.get("data", {}).get("size", 0)
-                        )
-                        * 1073741824,
-                    }
-                )
-
-            if not disks_params:
-                continue
-
-            try:
-                domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
-                job_id = start_job(
-                    host,
-                    "/patterns/capture-direct",
-                    {
-                        "disks": disks_params,
-                        "domain_name": domain_name,
-                        "aws_access_key_id": creds.get("access_key_id", ""),
-                        "aws_secret_access_key": creds.get("secret_access_key", ""),
-                        "aws_region": creds.get("region", "us-east-1"),
-                    },
-                )
                 vm_name = (
                     vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
                 )
-                all_jobs.append(
-                    {
-                        "job_id": job_id,
-                        "vm_id": vm_id,
-                        "vm_name": vm_name,
-                        "disks_params": disks_params,
-                        "disk_metadata": disk_metadata,
+                domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+
+                def _nbd_log(
+                    msg, _vm_name=vm_name, _vm_done=vm_done, _vm_count=vm_count
+                ):
+                    progress = {
+                        "step": "capturing",
+                        "detail": f"{_vm_done}/{_vm_count} VMs done (NBD)",
+                        "vms": [f"{_vm_name}: {msg}"],
                     }
-                )
-                all_metadata.extend(disk_metadata)
-                log.info(
-                    "Pattern %s: started capture job for VM %s (%d disks)",
-                    pattern_id[:8],
-                    vm_id[:8],
-                    len(disks_params),
-                )
-            except TroshkadError as e:
-                log.error(
-                    "Failed to start capture for pattern %s VM %s: %s",
-                    pattern_id[:8],
-                    vm_id[:8],
-                    e,
-                )
-                pattern.state = "error"
-                db.commit()
-                return
+                    _capture_progress[pattern_id] = progress
+                    from app.services.ws_pubsub import notify_pattern
 
-        # Poll all jobs concurrently, update progress with per-VM status
-        import time as _time
+                    notify_pattern(pattern_id, {"type": "capture-progress", **progress})
 
-        completed_jobs = set()
-        deadline = _time.time() + 3600
-        _capture_progress[pattern_id] = {
-            "step": "capturing",
-            "detail": f"0/{len(all_jobs)} VMs done",
-            "_host_id": host.id,
-            "_job_ids": [j["job_id"] for j in all_jobs],
-        }
-
-        while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
-            if pattern_id not in _capture_progress:
-                log.info(
-                    "Pattern %s: capture cancelled, exiting poll loop", pattern_id[:8]
-                )
-                return
-            lines = []
-            for idx, jinfo in enumerate(all_jobs):
-                if jinfo["job_id"] in completed_jobs:
-                    lines.append(f"{jinfo['vm_name']}: done")
-                    continue
                 try:
-                    job = poll_job(host, jinfo["job_id"])
-                except TroshkadError:
-                    lines.append(f"{jinfo['vm_name']}: polling...")
-                    continue
-                if job["status"] in ("completed", "failed", "cancelled"):
-                    completed_jobs.add(jinfo["job_id"])
-                    jinfo["_result"] = job
-                    if job["status"] in ("failed", "cancelled"):
-                        lines.append(f"{jinfo['vm_name']}: {job['status'].upper()}")
-                    else:
-                        lines.append(f"{jinfo['vm_name']}: done")
-                else:
-                    output = job.get("output", [])
-                    last = ""
-                    for line in reversed(output):
-                        if (
-                            "Flatten" in line
-                            or "Upload" in line
-                            or "Commit" in line
-                            or "Snapshot" in line
-                            or "Trim" in line
-                            or "Cach" in line
-                        ):
-                            last = line
-                            break
-                    lines.append(
-                        f"{jinfo['vm_name']}: {last}"
-                        if last
-                        else f"{jinfo['vm_name']}: working..."
+                    nbd_results = _capture_vm_via_nbd(
+                        host,
+                        worker_host,
+                        vm_id,
+                        domain_name,
+                        disks_params,
+                        creds,
+                        pattern_id,
+                        _nbd_log,
                     )
-            progress = {
-                "step": "capturing",
-                "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
-                "vms": lines,
-            }
-            _capture_progress[pattern_id] = progress
-            from app.services.ws_pubsub import notify_pattern
-
-            notify_pattern(pattern_id, {"type": "capture-progress", **progress})
-            _time.sleep(5)
-
-        # Process results
-        for jinfo in all_jobs:
-            job = jinfo.get("_result")
-            if not job:
-                try:
-                    job = poll_job(host, jinfo["job_id"])
-                except TroshkadError:
-                    job = {"status": "failed", "result": {"error": "Job lost"}}
-            try:
-                if job["status"] == "failed":
-                    error_msg = job.get("result", {}).get(
-                        "error", "Pattern capture failed"
-                    )
+                except Exception as e:
                     log.error(
-                        "Failed to capture pattern %s VM %s: %s",
+                        "NBD capture failed for pattern %s VM %s: %s",
                         pattern_id[:8],
-                        jinfo["vm_id"][:8],
-                        error_msg,
+                        vm_id[:8],
+                        e,
                     )
                     pattern.state = "error"
                     db.commit()
                     return
 
-                disk_results = job.get("result", {}).get("disks", [])
-                for j, metadata in enumerate(jinfo["disk_metadata"]):
+                # Create PatternDisk records from NBD results
+                for j, metadata in enumerate(disk_metadata):
                     size_bytes = (
-                        disk_results[j].get("size_bytes", 0)
-                        if j < len(disk_results)
+                        nbd_results[j].get("size_bytes", 0)
+                        if j < len(nbd_results)
                         else 0
                     )
                     pd = PatternDisk(
@@ -310,20 +339,229 @@ def capture_pattern_disks(
                     )
                     db.add(pd)
                 db.commit()
+
+                vm_done += 1
                 log.info(
-                    "Pattern %s: VM %s capture done", pattern_id[:8], jinfo["vm_id"][:8]
+                    "Pattern %s: VM %s NBD capture done (%d/%d)",
+                    pattern_id[:8],
+                    vm_id[:8],
+                    vm_done,
+                    vm_count,
                 )
 
-            except TroshkadError as e:
-                log.error(
-                    "Troshkad error capturing pattern %s VM %s: %s",
-                    pattern_id[:8],
-                    jinfo["vm_id"][:8],
-                    str(e),
-                )
-                pattern.state = "error"
-                db.commit()
-                return
+        else:
+            # --- Direct path: capture on VM host (original flow) ---
+            # Build all capture jobs upfront
+            all_jobs = []
+            all_metadata = []
+            for vm_id, vm_disk_nodes in vm_to_disks.items():
+                disks_params = []
+                disk_metadata = []
+                for disk_node in vm_disk_nodes:
+                    disk_id = disk_node["id"]
+                    fmt = disk_node.get("data", {}).get("format", "qcow2")
+
+                    if fmt == "iso":
+                        continue
+
+                    disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
+
+                    s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+                    bucket = s3_storage._bucket()
+                    s3_url = f"s3://{bucket}/{s3_key}"
+                    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+
+                    disks_params.append(
+                        {
+                            "disk_path": disk_path,
+                            "s3_url": s3_url,
+                            "cache_path": cache_path,
+                        }
+                    )
+
+                    disk_metadata.append(
+                        {
+                            "disk_id": disk_id,
+                            "vm_id": vm_id,
+                            "s3_key": s3_key,
+                            "format": fmt,
+                            "virtual_size_bytes": int(
+                                disk_node.get("data", {}).get("size", 0)
+                            )
+                            * 1073741824,
+                        }
+                    )
+
+                if not disks_params:
+                    continue
+
+                try:
+                    domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+                    job_id = start_job(
+                        host,
+                        "/patterns/capture-direct",
+                        {
+                            "disks": disks_params,
+                            "domain_name": domain_name,
+                            "aws_access_key_id": creds.get("access_key_id", ""),
+                            "aws_secret_access_key": creds.get("secret_access_key", ""),
+                            "aws_region": creds.get("region", "us-east-1"),
+                        },
+                    )
+                    vm_name = (
+                        vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
+                    )
+                    all_jobs.append(
+                        {
+                            "job_id": job_id,
+                            "vm_id": vm_id,
+                            "vm_name": vm_name,
+                            "disks_params": disks_params,
+                            "disk_metadata": disk_metadata,
+                        }
+                    )
+                    all_metadata.extend(disk_metadata)
+                    log.info(
+                        "Pattern %s: started capture job for VM %s (%d disks)",
+                        pattern_id[:8],
+                        vm_id[:8],
+                        len(disks_params),
+                    )
+                except TroshkadError as e:
+                    log.error(
+                        "Failed to start capture for pattern %s VM %s: %s",
+                        pattern_id[:8],
+                        vm_id[:8],
+                        e,
+                    )
+                    pattern.state = "error"
+                    db.commit()
+                    return
+
+            # Poll all jobs concurrently, update progress with per-VM status
+            import time as _time
+
+            completed_jobs = set()
+            deadline = _time.time() + 3600
+            _capture_progress[pattern_id] = {
+                "step": "capturing",
+                "detail": f"0/{len(all_jobs)} VMs done",
+                "_host_id": host.id,
+                "_job_ids": [j["job_id"] for j in all_jobs],
+            }
+
+            while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
+                if pattern_id not in _capture_progress:
+                    log.info(
+                        "Pattern %s: capture cancelled, exiting poll loop",
+                        pattern_id[:8],
+                    )
+                    return
+                lines = []
+                for idx, jinfo in enumerate(all_jobs):
+                    if jinfo["job_id"] in completed_jobs:
+                        lines.append(f"{jinfo['vm_name']}: done")
+                        continue
+                    try:
+                        job = poll_job(host, jinfo["job_id"])
+                    except TroshkadError:
+                        lines.append(f"{jinfo['vm_name']}: polling...")
+                        continue
+                    if job["status"] in ("completed", "failed", "cancelled"):
+                        completed_jobs.add(jinfo["job_id"])
+                        jinfo["_result"] = job
+                        if job["status"] in ("failed", "cancelled"):
+                            lines.append(f"{jinfo['vm_name']}: {job['status'].upper()}")
+                        else:
+                            lines.append(f"{jinfo['vm_name']}: done")
+                    else:
+                        output = job.get("output", [])
+                        last = ""
+                        for line in reversed(output):
+                            if (
+                                "Flatten" in line
+                                or "Upload" in line
+                                or "Commit" in line
+                                or "Snapshot" in line
+                                or "Trim" in line
+                                or "Cach" in line
+                            ):
+                                last = line
+                                break
+                        lines.append(
+                            f"{jinfo['vm_name']}: {last}"
+                            if last
+                            else f"{jinfo['vm_name']}: working..."
+                        )
+                progress = {
+                    "step": "capturing",
+                    "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
+                    "vms": lines,
+                }
+                _capture_progress[pattern_id] = progress
+                from app.services.ws_pubsub import notify_pattern
+
+                notify_pattern(pattern_id, {"type": "capture-progress", **progress})
+                _time.sleep(5)
+
+            # Process results
+            for jinfo in all_jobs:
+                job = jinfo.get("_result")
+                if not job:
+                    try:
+                        job = poll_job(host, jinfo["job_id"])
+                    except TroshkadError:
+                        job = {"status": "failed", "result": {"error": "Job lost"}}
+                try:
+                    if job["status"] == "failed":
+                        error_msg = job.get("result", {}).get(
+                            "error", "Pattern capture failed"
+                        )
+                        log.error(
+                            "Failed to capture pattern %s VM %s: %s",
+                            pattern_id[:8],
+                            jinfo["vm_id"][:8],
+                            error_msg,
+                        )
+                        pattern.state = "error"
+                        db.commit()
+                        return
+
+                    disk_results = job.get("result", {}).get("disks", [])
+                    for j, metadata in enumerate(jinfo["disk_metadata"]):
+                        size_bytes = (
+                            disk_results[j].get("size_bytes", 0)
+                            if j < len(disk_results)
+                            else 0
+                        )
+                        pd = PatternDisk(
+                            pattern_id=pattern_id,
+                            source_disk_id=metadata["disk_id"],
+                            source_vm_id=metadata["vm_id"],
+                            s3_key=metadata["s3_key"],
+                            format=metadata["format"],
+                            size_bytes=size_bytes,
+                            virtual_size_bytes=metadata["virtual_size_bytes"],
+                            state="available",
+                        )
+                        db.add(pd)
+                    db.commit()
+                    log.info(
+                        "Pattern %s: VM %s capture done",
+                        pattern_id[:8],
+                        jinfo["vm_id"][:8],
+                    )
+
+                except TroshkadError as e:
+                    log.error(
+                        "Troshkad error capturing pattern %s VM %s: %s",
+                        pattern_id[:8],
+                        jinfo["vm_id"][:8],
+                        str(e),
+                    )
+                    pattern.state = "error"
+                    db.commit()
+                    return
 
         # Update pattern topology: point storage nodes to captured pattern disks
         topo = pattern.topology or {}

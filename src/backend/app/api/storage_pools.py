@@ -130,7 +130,15 @@ def create_pool(
         t.start()
 
     elif body.mode == "shared-byo":
-        pass
+        credentials = provider.get_credentials()
+        region = provider.default_region
+        storage_pool_service.add_sg_rules_for_shared_storage(
+            credentials, region, provider.security_group_id, include_nfs=False
+        )
+
+    from app.services.pattern_buffer_service import provision_pattern_buffer_async
+
+    provision_pattern_buffer_async(pool.id)
 
     resp = StoragePoolResponse.model_validate(pool)
     resp.host_count = 0
@@ -338,3 +346,21 @@ def run_pool_gc(
 
     result = reconcile_pool(pool_id, dry_run=dry_run)
     return result
+
+
+@router.post("/{pool_id}/pattern-buffer")
+def provision_or_replace_pattern_buffer(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Provision or replace the pattern buffer for a storage pool."""
+    pool = db.query(StoragePool).filter_by(id=pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    from app.services.pattern_buffer_service import replace_pattern_buffer
+
+    replace_pattern_buffer(db, pool)
+
+    return {"status": "provisioning", "pool_id": pool_id}

@@ -72,7 +72,7 @@ export default function AdminHostsPage() {
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
 
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
-  const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string}[]>([]);
+  const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string; worker_host_id: string | null; worker_instance_type: string | null}[]>([]);
   const [selectedPool, setSelectedPool] = useState("");
 
   const loadData = () => {
@@ -737,7 +737,7 @@ export default function AdminHostsPage() {
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
-                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type}</span>
+                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : h.host_type}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, fontSize: 13 }}>

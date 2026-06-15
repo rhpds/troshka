@@ -30,6 +30,8 @@ interface StoragePool {
   auto_extend_threshold_pct: number;
   auto_extend_increment_gb: number;
   auto_extend_max_gb: number | null;
+  worker_host_id: string | null;
+  worker_instance_type: string | null;
 }
 
 interface Provider {
@@ -608,14 +610,31 @@ export default function StoragePoolsPage() {
                     </>
                   )}
                 </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {editId !== pool.id && pool.status === "available" && (
-                    <Button variant="secondary" size="sm" onClick={() => startEdit(pool)}>Edit</Button>
-                  )}
-                  <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
-                          isDisabled={pool.host_count > 0 || pool.status === "creating"}>
-                    Delete
-                  </Button>
+                <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
+                  <div style={{ fontSize: 11, marginBottom: 4 }}>
+                    {pool.worker_host_id ? (
+                      <span style={{ color: "#4ade80" }}>Pattern Buffer: active</span>
+                    ) : (
+                      <span style={{ opacity: 0.5 }}>No Pattern Buffer</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {pool.status === "available" && (
+                      <Button variant="secondary" size="sm" onClick={() => {
+                        fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer`, { method: "POST" });
+                        setTimeout(loadData, 3000);
+                      }}>
+                        {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
+                      </Button>
+                    )}
+                    {editId !== pool.id && pool.status === "available" && (
+                      <Button variant="secondary" size="sm" onClick={() => startEdit(pool)}>Edit</Button>
+                    )}
+                    <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
+                            isDisabled={pool.host_count > 0 || pool.status === "creating"}>
+                      Delete
+                    </Button>
+                  </div>
                 </div>
               </div>
             </CardBody>

@@ -98,6 +98,7 @@ def find_available_host(
     query = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
+        Host.host_type != "pattern_buffer",
     )
     if storage_pool_id:
         query = query.filter(Host.storage_pool_id == storage_pool_id)

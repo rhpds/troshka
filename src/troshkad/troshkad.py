@@ -5001,5 +5001,243 @@ def handle_vm_file_pull(handler, params):
             pass
 
 
+# ── NBD export for pattern buffer ──
+
+_nbd_ports_lock = threading.Lock()
+_nbd_ports = {}  # port -> {"pid": int, "domain": str, "disk_path": str, "snapshotted": bool}
+
+NBD_PORT_START = 10809
+NBD_PORT_END = 10829
+
+
+def _allocate_nbd_port():
+    """Find the next free port in the NBD range."""
+    with _nbd_ports_lock:
+        for port in range(NBD_PORT_START, NBD_PORT_END + 1):
+            if port not in _nbd_ports:
+                return port
+    raise RuntimeError("No free NBD ports available")
+
+
+def _handle_nbd_export(job, params):
+    """Snapshot a VM disk and serve it read-only over TLS-secured NBD."""
+    domain_name = params.get("domain_name", "")
+    disk_path = _validate_path(params.get("disk_path", ""))
+
+    if not domain_name:
+        raise RuntimeError("domain_name is required")
+    if not os.path.exists(disk_path):
+        raise RuntimeError(f"Disk not found: {disk_path}")
+
+    running = _is_domain_running(domain_name)
+    snapshotted = False
+    if running:
+        snapshotted = _snapshot_domain(job, domain_name)
+
+    port = _allocate_nbd_port()
+    tls_dir = "/etc/pki/libvirt"
+
+    cmd = [
+        "qemu-nbd",
+        "--read-only",
+        "--port", str(port),
+        "--export-name", "disk",
+        "--persistent",
+        "--fork",
+    ]
+    if os.path.exists(os.path.join(tls_dir, "servercert.pem")):
+        cmd.extend(["--tls-creds", f"dir={tls_dir},endpoint=server"])
+
+    if running and not snapshotted:
+        cmd.append("-U")
+
+    cmd.append(disk_path)
+
+    _job_log(job, f"Starting NBD export on port {port}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        if snapshotted:
+            _commit_snapshot(job, domain_name)
+        raise RuntimeError(f"qemu-nbd failed: {result.stderr.strip()}")
+
+    pid = None
+    try:
+        ps = subprocess.run(
+            ["fuser", f"{port}/tcp"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pid = int(ps.stdout.strip().split()[-1]) if ps.stdout.strip() else None
+    except Exception:
+        pass
+
+    with _nbd_ports_lock:
+        _nbd_ports[port] = {
+            "pid": pid,
+            "domain": domain_name,
+            "disk_path": disk_path,
+            "snapshotted": snapshotted,
+        }
+
+    _job_log(job, f"NBD export active on port {port} (PID {pid})")
+    return {"port": port, "export_name": "disk", "snapshotted": snapshotted}
+
+
+COMMAND_HANDLERS["nbd/export"] = _handle_nbd_export
+
+
+def _handle_nbd_stop(job, params):
+    """Stop NBD export and commit snapshot overlay."""
+    domain_name = params.get("domain_name", "")
+    port = int(params.get("port", 0))
+
+    if not port:
+        raise RuntimeError("port is required")
+
+    with _nbd_ports_lock:
+        info = _nbd_ports.pop(port, None)
+
+    if info and info.get("pid"):
+        try:
+            os.kill(info["pid"], signal.SIGTERM)
+            _job_log(job, f"Killed qemu-nbd PID {info['pid']} on port {port}")
+        except ProcessLookupError:
+            _job_log(job, f"qemu-nbd PID {info['pid']} already exited")
+    else:
+        subprocess.run(["fuser", "-k", f"{port}/tcp"],
+                       capture_output=True, timeout=10)
+        _job_log(job, f"Killed process on port {port} via fuser")
+
+    if domain_name and info and info.get("snapshotted"):
+        _job_log(job, "Committing snapshot overlay...")
+        _commit_snapshot(job, domain_name)
+
+    return {"port": port, "stopped": True}
+
+
+COMMAND_HANDLERS["nbd/stop"] = _handle_nbd_stop
+
+
+def _handle_nbd_pull_flatten(job, params):
+    """Connect to remote NBD export, flatten+compress to local disk."""
+    nbd_host = params.get("nbd_host", "")
+    nbd_port = int(params.get("nbd_port", 0))
+    export_name = params.get("export_name", "disk")
+    output_path = _validate_path(params.get("output_path", ""))
+    tls_dir = params.get("tls_dir", "/etc/pki/libvirt")
+
+    if not nbd_host or not nbd_port:
+        raise RuntimeError("nbd_host and nbd_port are required")
+    if not output_path:
+        raise RuntimeError("output_path is required")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    cmd = ["qemu-img", "convert"]
+
+    if os.path.exists(os.path.join(tls_dir, "clientcert.pem")):
+        cmd.extend([
+            "--object",
+            f"tls-creds-x509,id=tls0,dir={tls_dir},endpoint=client",
+            "--image-opts",
+        ])
+        nbd_src = (
+            f"driver=nbd,host={nbd_host},port={nbd_port},"
+            f"export={export_name},tls-creds=tls0"
+        )
+    else:
+        nbd_src = f"nbd://{nbd_host}:{nbd_port}/{export_name}"
+
+    cmd.extend(["-c", "-o", "compression_type=zstd", "-O", "qcow2"])
+    cmd.append(nbd_src)
+    cmd.append(output_path)
+
+    _job_log(job, f"Pulling from {nbd_host}:{nbd_port}, flattening to {os.path.basename(output_path)}")
+
+    flatten_done = threading.Event()
+
+    def _monitor():
+        while not flatten_done.is_set():
+            try:
+                if os.path.exists(output_path):
+                    cur = os.path.getsize(output_path)
+                    cur_gb = round(cur / (1024**3), 1)
+                    _job_log(job, f"Flattening: {cur_gb} GB written")
+            except OSError:
+                pass
+            flatten_done.wait(10)
+
+    mon = threading.Thread(target=_monitor, daemon=True)
+    mon.start()
+
+    try:
+        _run_cmd(job, cmd, timeout=3600)
+    finally:
+        flatten_done.set()
+
+    size_bytes = os.path.getsize(output_path)
+    size_gb = round(size_bytes / (1024**3), 1)
+    _job_log(job, f"Flatten complete: {size_gb} GB")
+    return {"size_bytes": size_bytes, "output_path": output_path}
+
+
+COMMAND_HANDLERS["nbd/pull-flatten"] = _handle_nbd_pull_flatten
+
+
+def _handle_upload_and_cache(job, params):
+    """Upload a local file to S3 and copy to cache path."""
+    local_path = _validate_path(params["local_path"])
+    s3_url = params["s3_url"]
+    cache_path = _validate_path(params["cache_path"])
+    aws_access_key = params.get("aws_access_key_id", "")
+    aws_secret_key = params.get("aws_secret_access_key", "")
+    aws_region = params.get("aws_region", "us-east-1")
+
+    if not os.path.exists(local_path):
+        raise RuntimeError(f"File not found: {local_path}")
+
+    file_size = os.path.getsize(local_path)
+
+    cache_error = [None]
+    def _do_cache():
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            shutil.copy(local_path, cache_path)
+        except Exception as e:
+            cache_error[0] = e
+
+    cache_thread = threading.Thread(target=_do_cache, daemon=True)
+    cache_thread.start()
+
+    _job_log(job, f"Uploading {round(file_size / (1024**3), 1)} GB to S3...")
+    _s3_upload_with_cache(job, local_path, file_size, s3_url, cache_path,
+                          aws_access_key, aws_secret_key, aws_region)
+
+    _job_log(job, "Upload complete, waiting for cache...")
+    while cache_thread.is_alive():
+        try:
+            if os.path.exists(cache_path):
+                cached = os.path.getsize(cache_path)
+                cached_gb = round(cached / (1024**3), 1)
+                total_gb = round(file_size / (1024**3), 1)
+                cache_pct = min(100, int(cached * 100 / file_size)) if file_size > 0 else 0
+                _job_log(job, f"Caching: {cached_gb} of {total_gb} GB ({cache_pct}%)")
+        except OSError:
+            pass
+        cache_thread.join(timeout=5)
+
+    if cache_error[0]:
+        _job_log(job, f"Cache copy failed: {cache_error[0]}")
+
+    try:
+        os.unlink(local_path)
+    except OSError:
+        pass
+
+    return {"size_bytes": file_size, "cached": cache_error[0] is None}
+
+
+COMMAND_HANDLERS["patterns/upload-and-cache"] = _handle_upload_and_cache
+
+
 if __name__ == "__main__":
     main()
