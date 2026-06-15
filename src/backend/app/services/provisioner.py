@@ -226,23 +226,9 @@ CLOUD_INIT = """#cloud-config
 hostname: {hostname}
 
 packages:
-  - qemu-kvm
-  - libvirt
-  - libvirt-client
-  - virt-install
-  - python3
-  - python3-pip
-  - python3-libvirt
-  - dnsmasq
-  - haproxy
-  - nftables
-  - nmap-ncat
-  - nvme-cli
-
+{packages}
 runcmd:
-  - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; else systemctl enable --now libvirtd; fi'
-  - systemctl enable --now nftables
-  - systemctl disable --now dnsmasq 2>/dev/null || true
+{vm_runcmd}
   - |
     # Detect data volume (/dev/sdf) via nvme id-ctrl — NVMe ordering is not guaranteed
     find_nvme_dev() {{
@@ -272,38 +258,7 @@ runcmd:
     fi
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
 {storage_setup}  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
-  - |
-    # Kernel tuning for VM memory overcommit
-    sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true
-    cat > /etc/sysctl.d/99-troshka.conf << EOF2
-    vm.overcommit_memory = 1
-    vm.swappiness = 10
-    EOF2
-    # KSM
-    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
-    echo 5000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
-  - |
-    mkdir -p /etc/libvirt/hooks
-    cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'
-    #!/bin/bash
-    DOMAIN=$1
-    ACTION=$2
-    if [ "$ACTION" = "started" ]; then
-        PID=$(echo "$DOMAIN" | sed -n 's/^troshka-\\([a-f0-9]*\\)-.*/\\1/p')
-        [ -z "$PID" ] && exit 0
-        NS="troshka-$PID"
-        ip netns list 2>/dev/null | grep -q "^$NS " || exit 0
-        BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null | awk -F': ' '{{print $2}}' | head -1)
-        [ -z "$BRIDGE" ] && exit 0
-        for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null | awk 'NR>2 && NF>0 {{print $1}}'); do
-            ip link set "$TAP" netns "$NS" 2>/dev/null
-            ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null
-            ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null
-        done
-    fi
-    HOOKEOF
-    chmod +x /etc/libvirt/hooks/qemu
-"""
+{vm_tuning}"""
 
 
 def provision_host(
@@ -392,8 +347,68 @@ def provision_host(
             "    chmod +x /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
             "    bash /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
         )
+    is_pattern_buffer = kwargs.get("host_type") == "pattern_buffer"
+
+    if is_pattern_buffer:
+        packages = "  - python3\n  - python3-pip\n  - nvme-cli\n  - qemu-img\n"
+        vm_runcmd = ""
+        vm_tuning = ""
+    else:
+        packages = (
+            "  - qemu-kvm\n  - libvirt\n  - libvirt-client\n  - virt-install\n"
+            "  - python3\n  - python3-pip\n  - python3-libvirt\n"
+            "  - dnsmasq\n  - haproxy\n  - nftables\n  - nmap-ncat\n  - nvme-cli\n"
+        )
+        vm_runcmd = (
+            "  - bash -c 'if systemctl list-unit-files virtqemud.service &>/dev/null; "
+            "then systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket; "
+            "else systemctl enable --now libvirtd; fi'\n"
+            "  - systemctl enable --now nftables\n"
+            "  - systemctl disable --now dnsmasq 2>/dev/null || true\n"
+        )
+        vm_tuning = (
+            "  - |\n"
+            "    # Kernel tuning for VM memory overcommit\n"
+            "    sysctl -w vm.overcommit_memory=1 vm.swappiness=10 2>/dev/null || true\n"
+            "    cat > /etc/sysctl.d/99-troshka.conf << EOF2\n"
+            "    vm.overcommit_memory = 1\n"
+            "    vm.swappiness = 10\n"
+            "    EOF2\n"
+            "    # KSM\n"
+            "    echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true\n"
+            "    echo 5000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true\n"
+            "  - |\n"
+            "    mkdir -p /etc/libvirt/hooks\n"
+            "    cat > /etc/libvirt/hooks/qemu << 'HOOKEOF'\n"
+            "    #!/bin/bash\n"
+            "    DOMAIN=$1\n"
+            "    ACTION=$2\n"
+            '    if [ "$ACTION" = "started" ]; then\n'
+            "        PID=$(echo \"$DOMAIN\" | sed -n 's/^troshka-\\\\([a-f0-9]*\\\\)-.*/\\\\1/p')\n"
+            '        [ -z "$PID" ] && exit 0\n'
+            '        NS="troshka-$PID"\n'
+            '        ip netns list 2>/dev/null | grep -q "^$NS " || exit 0\n'
+            '        BRIDGE=$(ip netns exec "$NS" ip -o link show type bridge 2>/dev/null'
+            " | awk -F': ' '{{print $2}}' | head -1)\n"
+            '        [ -z "$BRIDGE" ] && exit 0\n'
+            '        for TAP in $(virsh domiflist "$DOMAIN" 2>/dev/null'
+            " | awk 'NR>2 && NF>0 {{print $1}}'); do\n"
+            '            ip link set "$TAP" netns "$NS" 2>/dev/null\n'
+            '            ip netns exec "$NS" ip link set "$TAP" master "$BRIDGE" 2>/dev/null\n'
+            '            ip netns exec "$NS" ip link set "$TAP" up 2>/dev/null\n'
+            "        done\n"
+            "    fi\n"
+            "    HOOKEOF\n"
+            "    chmod +x /etc/libvirt/hooks/qemu\n"
+        )
+
     user_data = CLOUD_INIT.format(
-        hostname=hostname, host_id=host_id, storage_setup=storage_setup
+        hostname=hostname,
+        host_id=host_id,
+        storage_setup=storage_setup,
+        packages=packages,
+        vm_runcmd=vm_runcmd,
+        vm_tuning=vm_tuning,
     )
 
     # Look up instance specs before launch (need RAM size for swap volume)
