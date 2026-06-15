@@ -465,6 +465,75 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
         os.unlink(key_path)
 
 
+PATTERN_BUFFER_INSTALL_SCRIPT = """#!/bin/bash
+set -uo pipefail
+
+echo "=== Troshka Pattern Buffer Agent Installer ==="
+cloud-init status --wait 2>/dev/null || true
+
+if ! which qemu-img &>/dev/null; then
+    dnf install -y python3 python3-pip qemu-img nvme-cli sshpass || true
+fi
+
+mkdir -p /opt/troshka/tls /opt/troshka/venv /var/lib/troshka/local/tmp /etc/troshka-agent
+python3 -m venv /opt/troshka/venv 2>/dev/null || true
+/opt/troshka/venv/bin/pip install --quiet awscli pexpect 2>/dev/null || true
+
+# TLS certs — self-signed for troshkad HTTPS
+if [ ! -f /opt/troshka/tls/server.crt ]; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout /opt/troshka/tls/server.key -out /opt/troshka/tls/server.crt \
+        -days 3650 -nodes -subj "/CN=troshka-agent" 2>/dev/null
+    chmod 600 /opt/troshka/tls/server.key
+fi
+
+if [ ! -f /opt/troshka/troshkad.conf ]; then
+    TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+    python3 -c "
+import json, sys
+json.dump({
+    'token': sys.argv[1],
+    'port': 31337,
+    'tls_cert': '/opt/troshka/tls/server.crt',
+    'tls_key': '/opt/troshka/tls/server.key',
+    'storage_mode': '{storage_mode}',
+    'local_mount': '/var/lib/troshka/local',
+}, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+" "$TROSHKAD_TOKEN"
+fi
+
+echo "host_id: {host_id}" > /etc/troshka-agent/host-id
+
+cp /tmp/troshkad.py /opt/troshka/troshkad.py
+chmod +x /opt/troshka/troshkad.py
+
+cat > /etc/systemd/system/troshkad.service << 'SVCEOF'
+[Unit]
+Description=Troshka Host Agent Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/troshka/troshkad.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable --now troshkad
+
+CERT_FP=$(openssl x509 -in /opt/troshka/tls/server.crt -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//')
+TOKEN=$(python3 -c "import json; print(json.load(open('/opt/troshka/troshkad.conf'))['token'])")
+echo "TROSHKAD_TOKEN=$TOKEN"
+echo "TROSHKAD_FINGERPRINT=$CERT_FP"
+
+echo "=== Pattern buffer agent installation complete ==="
+"""
+
+
 def deploy_agent(
     host_ip: str,
     private_key: str,
@@ -477,6 +546,7 @@ def deploy_agent(
     host_cert: str = "",
     host_key: str = "",
     console_domain: str = "",
+    host_type: str = "shared",
 ) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
@@ -488,8 +558,13 @@ def deploy_agent(
         logger.warning(
             "No external_url configured — agent will not be able to call back to the API"
         )
+    base_script = (
+        PATTERN_BUFFER_INSTALL_SCRIPT
+        if host_type == "pattern_buffer"
+        else AGENT_INSTALL_SCRIPT
+    )
     script = (
-        AGENT_INSTALL_SCRIPT.replace("{host_id}", host_id)
+        base_script.replace("{host_id}", host_id)
         .replace("{api_url}", actual_api_url)
         .replace("{storage_mode}", storage_mode)
         .replace("{nfs_server}", nfs_server)

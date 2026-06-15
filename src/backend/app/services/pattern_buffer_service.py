@@ -154,7 +154,7 @@ def _provision_pattern_buffer(pool_id: str):
             )
             ca_pem = pool.ca_cert
 
-        deploy_agent(
+        deploy_result = deploy_agent(
             host_ip=result["public_ip"],
             private_key=result["private_key"],
             host_id=host_id,
@@ -164,11 +164,24 @@ def _provision_pattern_buffer(pool_id: str):
             ca_cert=ca_pem,
             host_cert=cert_pem,
             host_key=key_pem,
+            host_type="pattern_buffer",
         )
 
+        creds = deploy_result.get("troshkad_credentials", {})
+        if creds.get("token"):
+            host.agent_token = creds["token"]
+        if creds.get("fingerprint"):
+            host.agent_cert_fingerprint = creds["fingerprint"]
+
         host.agent_status = "connected"
+        host.ip_address = result["public_ip"]
         db.commit()
-        logger.info("Pattern buffer %s ready for pool %s", host_id[:8], pool_id[:8])
+        logger.info(
+            "Pattern buffer %s ready for pool %s (using private IP %s)",
+            host_id[:8],
+            pool_id[:8],
+            host.ip_address,
+        )
 
     except Exception as e:
         logger.exception(
@@ -202,12 +215,128 @@ def replace_pattern_buffer(db: Session, pool: StoragePool):
     provision_pattern_buffer_async(pool.id)
 
 
-def get_pattern_buffer_host(db: Session, pool_id: str) -> Host | None:
-    """Get the active pattern buffer host for a pool, or None."""
+def stop_pattern_buffer(db: Session, pool: StoragePool):
+    """Stop the pattern buffer instance (EC2 stop, not terminate)."""
+    if not pool.worker_host_id:
+        return
+    host = db.query(Host).filter_by(id=pool.worker_host_id).first()
+    if not host or not host.instance_id:
+        return
+
+    provider = _find_ec2_provider(db, pool)
+    if not provider:
+        return
+    credentials = provider.get_credentials()
+
+    import boto3
+
+    ec2 = boto3.client(
+        "ec2",
+        region_name=provider.default_region,
+        aws_access_key_id=credentials["access_key_id"],
+        aws_secret_access_key=credentials["secret_access_key"],
+    )
+    ec2.stop_instances(InstanceIds=[host.instance_id])
+    waiter = ec2.get_waiter("instance_stopped")
+    waiter.wait(InstanceIds=[host.instance_id])
+    host.state = "stopped"
+    host.agent_status = "disconnected"
+    db.commit()
+    logger.info("Pattern buffer %s stopped", host.id[:8])
+
+
+def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> bool:
+    """Start a stopped pattern buffer and wait for the agent to respond.
+
+    Updates the host IP (changes on stop/start) and flushes the connection
+    pool cache. Returns True if agent is ready, False on failure.
+    """
+    if not pool.worker_host_id:
+        return False
+    host = db.query(Host).filter_by(id=pool.worker_host_id).first()
+    if not host or not host.instance_id:
+        return False
+    if host.state == "active" and host.agent_status == "connected":
+        return True
+
+    provider = _find_ec2_provider(db, pool)
+    if not provider:
+        return False
+    credentials = provider.get_credentials()
+
+    import boto3
+    import time
+
+    ec2 = boto3.client(
+        "ec2",
+        region_name=provider.default_region,
+        aws_access_key_id=credentials["access_key_id"],
+        aws_secret_access_key=credentials["secret_access_key"],
+    )
+
+    logger.info("Waking pattern buffer %s...", host.id[:8])
+    ec2.start_instances(InstanceIds=[host.instance_id])
+    waiter = ec2.get_waiter("instance_running")
+    waiter.wait(InstanceIds=[host.instance_id])
+
+    desc = ec2.describe_instances(InstanceIds=[host.instance_id])
+    inst = desc["Reservations"][0]["Instances"][0]
+    new_ip = inst.get("PublicIpAddress", "")
+    from app.services.troshkad_client import _pools as _connection_pools
+
+    if new_ip and new_ip != host.ip_address:
+        logger.info(
+            "Pattern buffer %s IP changed: %s -> %s",
+            host.id[:8],
+            host.ip_address,
+            new_ip,
+        )
+        old_keys = [
+            k
+            for k in _connection_pools
+            if host.ip_address and k.startswith(host.ip_address + ":")
+        ]
+        for k in old_keys:
+            del _connection_pools[k]
+        host.ip_address = new_ip
+
+    host.state = "active"
+    db.commit()
+
+    from app.services.troshkad_client import check_health
+
+    start = time.time()
+    while time.time() - start < timeout:
+        result = check_health(host)
+        if result:
+            host.agent_status = "connected"
+            db.commit()
+            logger.info(
+                "Pattern buffer %s awake (%.0fs)", host.id[:8], time.time() - start
+            )
+            return True
+        time.sleep(3)
+
+    logger.warning("Pattern buffer %s failed to wake after %ds", host.id[:8], timeout)
+    return False
+
+
+def get_pattern_buffer_host(
+    db: Session, pool_id: str, auto_wake: bool = True
+) -> Host | None:
+    """Get the pattern buffer host for a pool. Auto-wakes if stopped."""
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool or not pool.worker_host_id:
         return None
     host = db.query(Host).filter_by(id=pool.worker_host_id).first()
-    if host and host.state == "active" and host.agent_status == "connected":
+    if not host:
+        return None
+    if host.state == "active" and host.agent_status == "connected":
         return host
+    if host.state == "stopped" and auto_wake:
+        logger.info(
+            "Auto-waking pattern buffer %s for pool %s", host.id[:8], pool_id[:8]
+        )
+        if wake_pattern_buffer(db, pool):
+            return host
     return None

@@ -635,6 +635,8 @@ export default function StoragePoolsPage() {
                   <div style={{ fontSize: 11, marginBottom: 4 }}>
                     {pool.worker_status === "connected" ? (
                       <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""} · {pool.worker_instance_id || ""}</span>
+                    ) : pool.worker_status === "stopped" ? (
+                      <span style={{ opacity: 0.5 }}>Pattern Buffer: sleeping · {pool.worker_instance_type}</span>
                     ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
                       <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
                     ) : pool.worker_host_id ? (
@@ -644,6 +646,19 @@ export default function StoragePoolsPage() {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
+                    {pool.worker_status === "connected" && (
+                      <Button variant="secondary" size="sm" onClick={async () => {
+                        if (!window.confirm("Stop pattern buffer? It will auto-wake when needed.")) return;
+                        await fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer/stop`, { method: "POST" });
+                        loadData();
+                      }}>Sleep Pattern Buffer</Button>
+                    )}
+                    {pool.worker_status === "stopped" && (
+                      <Button variant="secondary" size="sm" onClick={async () => {
+                        await fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer/wake`, { method: "POST" });
+                        loadData();
+                      }}>Wake Pattern Buffer</Button>
+                    )}
                     {pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
                         setPbInstanceType("i4i.large");

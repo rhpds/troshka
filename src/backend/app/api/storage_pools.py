@@ -386,3 +386,39 @@ def provision_or_replace_pattern_buffer(
     replace_pattern_buffer(db, pool)
 
     return {"status": "provisioning", "pool_id": pool_id}
+
+
+@router.post("/{pool_id}/pattern-buffer/stop")
+def stop_pool_pattern_buffer(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Stop (sleep) the pattern buffer for a storage pool."""
+    pool = db.query(StoragePool).filter_by(id=pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    from app.services.pattern_buffer_service import stop_pattern_buffer
+
+    stop_pattern_buffer(db, pool)
+    return {"status": "stopped", "pool_id": pool_id}
+
+
+@router.post("/{pool_id}/pattern-buffer/wake")
+def wake_pool_pattern_buffer(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Wake the pattern buffer for a storage pool."""
+    pool = db.query(StoragePool).filter_by(id=pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+
+    from app.services.pattern_buffer_service import wake_pattern_buffer
+
+    success = wake_pattern_buffer(db, pool)
+    if not success:
+        raise HTTPException(status_code=503, detail="Pattern buffer failed to wake")
+    return {"status": "connected", "pool_id": pool_id}

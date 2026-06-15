@@ -338,6 +338,8 @@ def _match_route(method, path):
 class TroshkadHandler(BaseHTTPRequestHandler):
     """HTTPS request handler with auth and JSON routing."""
 
+    timeout = 60
+
     def log_message(self, format, *args):
         logger.info("%s %s", self.client_address[0], format % args)
 
