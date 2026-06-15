@@ -89,16 +89,24 @@ def test_list_patterns():
 
 
 def test_get_pattern():
-    list_resp = client.get("/api/v1/patterns", headers=HEADERS)
-    pattern_id = list_resp.json()[0]["id"]
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={"name": "Get Test", "topology": SAMPLE_TOPOLOGY},
+        headers=HEADERS,
+    )
+    pattern_id = create_resp.json()["id"]
     resp = client.get(f"/api/v1/patterns/{pattern_id}", headers=HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["name"] == "Test Pattern"
+    assert resp.json()["name"] == "Get Test"
 
 
 def test_update_pattern():
-    list_resp = client.get("/api/v1/patterns", headers=HEADERS)
-    pattern_id = list_resp.json()[0]["id"]
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={"name": "Update Test", "topology": SAMPLE_TOPOLOGY},
+        headers=HEADERS,
+    )
+    pattern_id = create_resp.json()["id"]
     resp = client.patch(
         f"/api/v1/patterns/{pattern_id}",
         json={
