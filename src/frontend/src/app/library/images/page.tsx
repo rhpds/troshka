@@ -45,6 +45,10 @@ export default function ImagesPage() {
   const [sourceMode, setSourceMode] = useState<"file" | "url">("file");
   const [importUrl, setImportUrl] = useState("");
   const [newName, setNewName] = useState("");
+  const [editItem, setEditItem] = useState<LibraryItem | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editUrl, setEditUrl] = useState("");
+  const [editOcpDefault, setEditOcpDefault] = useState(false);
   const [newType, setNewType] = useState("iso");
   const [newFormat, setNewFormat] = useState("iso");
   const [newOs, setNewOs] = useState("");
@@ -388,24 +392,10 @@ export default function ImagesPage() {
             </CardBody>
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
               <Button variant="secondary" onClick={() => {
-                const newName = window.prompt("Name:", item.name);
-                if (newName !== null && newName !== item.name) {
-                  fetch(`/api/v1/library/${item.id}`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ name: newName }),
-                  }).then(() => loadItems());
-                }
-                if (item.state === "error" || item.state === "pending") {
-                  const newUrl = window.prompt("Source URL:", item.source_url || "");
-                  if (newUrl !== null && newUrl !== (item.source_url || "")) {
-                    fetch(`/api/v1/library/${item.id}`, {
-                      method: "PATCH",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ source_url: newUrl }),
-                    }).then(() => loadItems());
-                  }
-                }
+                setEditItem(item);
+                setEditName(item.name);
+                setEditUrl(item.source_url || "");
+                setEditOcpDefault(item.tags?.ocp_default || false);
               }}>
                 Edit
               </Button>
@@ -418,20 +408,6 @@ export default function ImagesPage() {
                   Cancel
                 </Button>
               )}
-              {item.state === "error" && (
-                <Button variant="secondary" onClick={async () => {
-                  const url = item.source_url || window.prompt("Enter download URL to retry import:");
-                  if (!url) return;
-                  await fetch(`/api/v1/library/${item.id}/import-url`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ url }),
-                  });
-                  loadItems();
-                }}>
-                  Retry
-                </Button>
-              )}
               <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
                 Delete
               </Button>
@@ -439,6 +415,114 @@ export default function ImagesPage() {
           </Card>
         ))}
       </PageSection>
+      {editItem && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 10000,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.6)",
+        }} onClick={() => setEditItem(null)}>
+          <div style={{
+            background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 450,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)",
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 16px" }}>Edit Library Item</h3>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Name</label>
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                style={{
+                  width: "100%", padding: "6px 10px", borderRadius: 4, fontSize: 13,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--secondary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }}
+              />
+            </div>
+            {(editItem.state === "error" || editItem.state === "pending") && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "block", marginBottom: 4 }}>Source URL</label>
+                <input
+                  value={editUrl}
+                  onChange={(e) => setEditUrl(e.target.value)}
+                  placeholder="https://..."
+                  style={{
+                    width: "100%", padding: "6px 10px", borderRadius: 4, fontSize: 13,
+                    border: "1px solid var(--pf-t--global--border--color--default)",
+                    background: "var(--pf-t--global--background--color--secondary--default)",
+                    color: "var(--pf-t--global--text--color--regular)",
+                    fontFamily: "monospace",
+                  }}
+                />
+              </div>
+            )}
+            {editItem.state === "ready" && editItem.source_url && (
+              <div style={{ marginBottom: 12, fontSize: 11, color: "var(--pf-t--global--text--color--subtle)" }}>
+                Source: {editItem.source_url}
+              </div>
+            )}
+            <div style={{ marginBottom: 16 }}>
+              {editItem.format !== "iso" && (
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={editItem.tags?.ocp_default_image || false} onChange={(e) => {
+                    setEditItem({ ...editItem, tags: { ...(editItem.tags || {}), ocp_default_image: e.target.checked || undefined } });
+                  }} />
+                  Default Image for OCP Templates
+                </label>
+              )}
+              {editItem.format === "iso" && (
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={editItem.tags?.ocp_default_iso || false} onChange={(e) => {
+                    setEditItem({ ...editItem, tags: { ...(editItem.tags || {}), ocp_default_iso: e.target.checked || undefined } });
+                  }} />
+                  Default ISO for OCP Templates
+                </label>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="secondary" onClick={() => setEditItem(null)}>Cancel</Button>
+              <Button variant="primary" onClick={async () => {
+                const updates: Record<string, any> = {};
+                if (editName !== editItem.name) updates.name = editName;
+                if (editUrl !== (editItem.source_url || "")) updates.source_url = editUrl;
+                updates.tags = editItem.tags || {};
+                if (Object.keys(updates).length > 0) {
+                  await fetch(`/api/v1/library/${editItem.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(updates),
+                  });
+                }
+                setEditItem(null);
+                loadItems();
+              }}>Save</Button>
+              {(editItem.state === "error" || editItem.state === "pending") && editUrl && (
+                <Button variant="primary" style={{ background: "#3e8635" }} onClick={async () => {
+                  const updates: Record<string, string> = {};
+                  if (editName !== editItem.name) updates.name = editName;
+                  if (editUrl !== (editItem.source_url || "")) updates.source_url = editUrl;
+                  if (Object.keys(updates).length > 0) {
+                    await fetch(`/api/v1/library/${editItem.id}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(updates),
+                    });
+                  }
+                  await fetch(`/api/v1/library/${editItem.id}/import-url`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: editUrl }),
+                  });
+                  setEditItem(null);
+                  loadItems();
+                }}>Save & Retry</Button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div style={{
           position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",

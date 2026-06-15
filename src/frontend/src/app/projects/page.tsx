@@ -120,17 +120,24 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
       .then((r) => r.ok ? r.json() : [])
       .then((data) => {
         const items = Array.isArray(data) ? data : [];
-        const images = items.filter((i: any) => i.format === "qcow2" && i.state === "ready");
-        const isos = items.filter((i: any) => i.format === "iso" && i.state === "ready");
+        const addSize = (i: any) => ({ ...i, size_gb: Math.round((i.size_bytes || 0) / (1024 ** 3)) });
+        const images = items.filter((i: any) => i.format === "qcow2" && i.state === "ready").map(addSize);
+        const isos = items.filter((i: any) => i.format === "iso" && i.state === "ready").map(addSize);
         setLibraryImages(images);
         setLibraryIsos(isos);
-        const defaultImg = images.find((i: any) => /rhel\s+\d+(\.\d+)?\s+image/i.test(i.name));
+        const defaultImg = images.find((i: any) => i.tags?.ocp_default_image)
+          || images.find((i: any) => /rhel\s+\d+(\.\d+)?.*image/i.test(i.name));
         if (defaultImg) {
           setBastionImageId(defaultImg.id);
-          const verMatch = defaultImg.name.match(/(\d+\.\d+)/);
-          if (verMatch) {
-            const matchingIso = isos.find((i: any) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
-            if (matchingIso) setBastionIsoId(matchingIso.id);
+          const defaultIso = isos.find((i: any) => i.tags?.ocp_default_iso);
+          if (defaultIso) {
+            setBastionIsoId(defaultIso.id);
+          } else {
+            const verMatch = defaultImg.name.match(/(\d+\.\d+)/);
+            if (verMatch) {
+              const matchingIso = isos.find((i: any) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
+              if (matchingIso) setBastionIsoId(matchingIso.id);
+            }
           }
         }
       })

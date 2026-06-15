@@ -6,6 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
@@ -140,6 +141,7 @@ class LibraryItemUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     source_url: str | None = None
+    tags: dict | None = None
 
 
 @router.patch("/{item_id}")
@@ -159,6 +161,27 @@ def update_item(
         item.name = body.name
     if body.description is not None:
         item.description = body.description
+    if body.source_url is not None:
+        item.source_url = body.source_url
+    if body.tags is not None:
+        new_tags = body.tags
+        # Enforce only one default per type
+        if new_tags.get("ocp_default_image"):
+            for other in db.query(LibraryItem).filter(LibraryItem.id != item.id).all():
+                if other.tags and other.tags.get("ocp_default_image"):
+                    other.tags = {
+                        k: v for k, v in other.tags.items() if k != "ocp_default_image"
+                    }
+                    flag_modified(other, "tags")
+        if new_tags.get("ocp_default_iso"):
+            for other in db.query(LibraryItem).filter(LibraryItem.id != item.id).all():
+                if other.tags and other.tags.get("ocp_default_iso"):
+                    other.tags = {
+                        k: v for k, v in other.tags.items() if k != "ocp_default_iso"
+                    }
+                    flag_modified(other, "tags")
+        item.tags = new_tags
+        flag_modified(item, "tags")
     db.commit()
     return {"id": item.id, "name": item.name, "description": item.description}
 
