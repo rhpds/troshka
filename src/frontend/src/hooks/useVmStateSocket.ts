@@ -73,7 +73,9 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
         const msg = JSON.parse(e.data);
         switch (msg.type) {
           case "snapshot":
-            setVmStates(msg.vm_states || {});
+            if (msg.vm_states && Object.keys(msg.vm_states).length > 0) {
+              setVmStates(msg.vm_states);
+            }
             setVmProgress(msg.vm_progress || {});
             setProjectState(msg.project_state || null);
             setDeployError(msg.deploy_error || null);
