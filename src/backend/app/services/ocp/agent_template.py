@@ -465,32 +465,45 @@ def _build_install_config(
         "    - 172.30.0.0/16",
         "  machineNetwork:",
         "    - cidr: 10.0.0.0/24",
-        "platform:",
-        "  baremetal:",
-        "    apiVIPs:",
-        f"      - {api_vip}",
-        "    ingressVIPs:",
-        f"      - {ingress_vip}",
-        "    hosts:",
     ]
-    for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        td = node.get("data", {})
-        if not td.get("bmcEnabled") or not td.get("bmcIp"):
-            continue
-        vm_name = td.get("name", "")
-        boot_mac = td.get("nics", [{}])[0].get("mac", "")
-        if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
-            continue
-        role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+    if template_id == "ocp-sno":
         ic_lines.extend(
             [
-                f"      - name: {vm_name}",
-                f"        role: {role}",
-                f"        bootMACAddress: {boot_mac}",
+                "platform:",
+                "  none: {}",
             ]
         )
+    else:
+        ic_lines.extend(
+            [
+                "platform:",
+                "  baremetal:",
+                "    apiVIPs:",
+                f"      - {api_vip}",
+                "    ingressVIPs:",
+                f"      - {ingress_vip}",
+                "    hosts:",
+            ]
+        )
+    if template_id != "ocp-sno":
+        for node in topology.get("nodes", []):
+            if node.get("type") != "vmNode":
+                continue
+            td = node.get("data", {})
+            if not td.get("bmcEnabled") or not td.get("bmcIp"):
+                continue
+            vm_name = td.get("name", "")
+            boot_mac = td.get("nics", [{}])[0].get("mac", "")
+            if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+                continue
+            role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+            ic_lines.extend(
+                [
+                    f"      - name: {vm_name}",
+                    f"        role: {role}",
+                    f"        bootMACAddress: {boot_mac}",
+                ]
+            )
     if pull_secret_json:
         ic_lines.append(f"pullSecret: '{pull_secret_json}'")
     if ssh_pub_key:
