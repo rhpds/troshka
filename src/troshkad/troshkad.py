@@ -1952,11 +1952,17 @@ def _handle_network_full_setup(job, params):
     _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "nat", "postrouting",
                     "oifname", veth_ns, "masquerade"], timeout=10)
 
-    # Intra-bridge forwarding
+    # Intra-bridge forwarding (cluster + BMC bridges)
     for net in networks:
         bridge = net["bridge_name"]
         _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
                         "iifname", bridge, "oifname", bridge, "accept"], timeout=10)
+    bmc_bridge = f"br-bmc-{pid}"
+    try:
+        _run_cmd(job, ["ip", "netns", "exec", ns, "nft", "add", "rule", "inet", "filter", "forward",
+                        "iifname", bmc_bridge, "oifname", bmc_bridge, "accept"], timeout=10)
+    except RuntimeError:
+        pass
 
     # Router: inter-bridge forwarding
     for router in routers:
