@@ -755,6 +755,26 @@ export default function AdminProvidersPage() {
                         Setup Network
                       </Button>
                     )}
+                    {p.type === "azure" && !p.azure_vnet_id && (
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          if (!window.confirm("Create a new VNet with subnet and NSG?")) return;
+                          setAmiResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
+                          const resp = await fetch(`/api/v1/providers/${p.id}/create-network-azure`, { method: "POST" });
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `VNet created: ${data.vnet?.split("/").pop() || "ok"}` }));
+                            loadProviders();
+                          } else {
+                            const data = await resp.json();
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
+                          }
+                        }}
+                      >
+                        Setup Network
+                      </Button>
+                    )}
                     {p.type === "gcp" && (
                       <Button
                         variant="secondary"
@@ -771,6 +791,36 @@ export default function AdminProvidersPage() {
                                 ami_id: img.self_link,
                                 name: img.family,
                                 created: img.creation_timestamp,
+                              }));
+                              setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                              setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                            } else {
+                              setAmiResult((prev) => ({ ...prev, [p.id]: "No RHEL images found" }));
+                            }
+                          } else {
+                            setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED — check credentials" }));
+                          }
+                        }}
+                      >
+                        Discover Images
+                      </Button>
+                    )}
+                    {p.type === "azure" && (
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering images..." }));
+                          setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-azure`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.length > 0) {
+                              const mapped = data.map((img: Record<string, string>) => ({
+                                type: img.source,
+                                label: `${img.name} (${img.source}) — ${img.version}`,
+                                ami_id: img.urn,
+                                name: img.urn,
+                                created: "",
                               }));
                               setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
                               setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));

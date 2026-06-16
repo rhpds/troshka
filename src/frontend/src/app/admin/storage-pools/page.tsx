@@ -58,6 +58,7 @@ const modeLabels: Record<string, string> = {
   "shared-fsx": "FSx OpenZFS",
   "shared-byo": "BYO NFS",
   "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
+  "shared-azure-files": "Azure Files NFS",
 };
 
 const inputStyle = {
@@ -206,7 +207,7 @@ export default function StoragePoolsPage() {
     setNewMode(mode);
     setNewAz("");
     setAvailableAzs([]);
-    if (mode === "shared-fsx" && newProviderId) fetchAzs(newProviderId);
+    if ((mode === "shared-fsx" || mode === "shared-azure-files") && newProviderId) fetchAzs(newProviderId);
     if (mode === "shared-ceph-nfs") setNewProviderId("");
   };
 
@@ -217,8 +218,10 @@ export default function StoragePoolsPage() {
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
     if (newMode === "shared-ceph-nfs" && !newProviderId) { setError("Provider is required for Ceph-NFS pools"); return; }
+    if (newMode === "shared-azure-files" && !newProviderId) { setError("Provider is required for Azure Files pools"); return; }
+    if (newMode === "shared-azure-files" && !newAz) { setError("Location is required for Azure Files pools"); return; }
 
-    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : "ec2";
+    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : newMode === "shared-azure-files" ? "azure" : "ec2";
     const providerId = newProviderId || providers.find((p) => p.type === autoProviderType)?.id;
     if (!providerId) { setError(`No ${autoProviderType} provider configured`); return; }
 
@@ -228,8 +231,8 @@ export default function StoragePoolsPage() {
       mode: newMode,
       provider_id: providerId,
       az: newAz || null,
-      fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
-      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : null,
+      fsx_throughput_mbps: (newMode === "shared-fsx" || newMode === "shared-azure-files") ? newThroughput : null,
+      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : newMode === "shared-azure-files" ? newStorageGb : null,
       nfs_endpoint: newMode === "shared-byo" ? newNfsEndpoint : null,
     };
     const resp = await fetch("/api/v1/storage-pools", {
@@ -269,10 +272,12 @@ export default function StoragePoolsPage() {
 
   const saveEdit = async (pool: StoragePool) => {
     setError("");
-    if (pool.mode === "shared-fsx") {
-      if (editThroughput < 160) { setError("Throughput must be at least 160 MBps"); return; }
-      if (editStorageGb < (pool.fsx_storage_gb || 64)) { setError("Storage can only grow, not shrink"); return; }
-      const minGrow = Math.ceil((pool.fsx_storage_gb || 64) * 1.1);
+    if (pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") {
+      const minThroughput = pool.mode === "shared-fsx" ? 160 : 100;
+      if (editThroughput < minThroughput) { setError(`Throughput must be at least ${minThroughput} MBps`); return; }
+      const minStorage = pool.mode === "shared-fsx" ? 64 : 100;
+      if (editStorageGb < (pool.fsx_storage_gb || minStorage)) { setError("Storage can only grow, not shrink"); return; }
+      const minGrow = Math.ceil((pool.fsx_storage_gb || minStorage) * 1.1);
       if (editStorageGb > (pool.fsx_storage_gb || 0) && editStorageGb < minGrow) {
         setError(`Storage increase must be at least 10% (minimum ${minGrow} GB)`); return;
       }
@@ -283,7 +288,7 @@ export default function StoragePoolsPage() {
     }
     setSaving(true);
     const body: Record<string, unknown> = {};
-    if (pool.mode === "shared-fsx") {
+    if (pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") {
       body.fsx_throughput_mbps = editThroughput;
       body.fsx_storage_gb = editStorageGb;
     }
@@ -427,6 +432,7 @@ export default function StoragePoolsPage() {
                   <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
                   <option value="shared-byo">BYO NFS</option>
                   <option value="shared-ceph-nfs">Shared Ceph-NFS (OCP Virt)</option>
+                  <option value="shared-azure-files">Azure Files NFS</option>
                 </select>
               </div>
               <div>
@@ -434,16 +440,16 @@ export default function StoragePoolsPage() {
                 <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
                        placeholder="e.g. prod-east-1b" />
               </div>
-              {newMode === "shared-fsx" && (
+              {(newMode === "shared-fsx" || newMode === "shared-azure-files") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
                   <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => p.type === "ec2").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : p.type === "azure").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
               )}
-              {newMode === "shared-fsx" && (
+              {(newMode === "shared-fsx" || newMode === "shared-azure-files") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Availability Zone</label>
                   <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
@@ -489,6 +495,20 @@ export default function StoragePoolsPage() {
                   </div>
                 </>
               )}
+              {newMode === "shared-azure-files" && (
+                <>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
+                    <input style={inputStyle} type="number" value={newStorageGb}
+                           onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 100)} min={100} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
+                    <input style={inputStyle} type="number" value={newThroughput}
+                           onChange={(e) => setNewThroughput(parseInt(e.target.value) || 100)} min={100} />
+                  </div>
+                </>
+              )}
               <Button variant="primary" onClick={handleCreate} isLoading={creating} isDisabled={creating}>
                 Create Pool
               </Button>
@@ -522,18 +542,18 @@ export default function StoragePoolsPage() {
                   </div>
                   {editId === pool.id ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 8, maxWidth: 400 }}>
-                      {pool.mode === "shared-fsx" && (
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && (
                         <>
                           <div>
                             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Throughput (MBps)</label>
                             <input style={inputStyle} type="number" value={editThroughput}
-                                   onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={160} />
+                                   onChange={(e) => setEditThroughput(parseInt(e.target.value) || 160)} min={pool.mode === "shared-fsx" ? 160 : 100} />
                           </div>
                           <div>
                             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
                             <input style={inputStyle} type="number" value={editStorageGb}
                                    onChange={(e) => setEditStorageGb(parseInt(e.target.value) || 64)}
-                                   min={pool.fsx_storage_gb || 64} />
+                                   min={pool.fsx_storage_gb || (pool.mode === "shared-fsx" ? 64 : 100)} />
                           </div>
                         </>
                       )}
@@ -545,7 +565,7 @@ export default function StoragePoolsPage() {
                                  placeholder="10.0.1.50:/exports/troshka" />
                         </div>
                       )}
-                      {pool.mode === "shared-fsx" && (
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && (
                         <>
                           <div style={{ marginTop: 12, borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 10 }}>
                             <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Auto-Extend</label>
@@ -591,7 +611,7 @@ export default function StoragePoolsPage() {
                         {pool.fsx_storage_gb && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
                         {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
                       </div>
-                      {pool.mode === "shared-fsx" && pool.status === "available" && (
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.status === "available" && (
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                           <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                             <input
@@ -630,7 +650,7 @@ export default function StoragePoolsPage() {
                           )}
                         </div>
                       )}
-                      {pool.mode === "shared-fsx" && pool.auto_extend_enabled && expandedAutoExtend[pool.id] && (
+                      {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.auto_extend_enabled && expandedAutoExtend[pool.id] && (
                         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", maxWidth: 600, marginTop: 8 }}>
                           <div>
                             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Threshold (%)</label>
