@@ -109,6 +109,8 @@ export default function StoragePoolsPage() {
   const [pbPoolId, setPbPoolId] = useState<string | null>(null);
   const [pbAction, setPbAction] = useState<Record<string, string>>({});
   const [pbError, setPbError] = useState<string | null>(null);
+  const [pbErrorDismissed, setPbErrorDismissed] = useState<Set<string>>(new Set());
+  const [pbErrorPoolId, setPbErrorPoolId] = useState<string | null>(null);
   const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
   const [pbInstanceType, setPbInstanceType] = useState("i4i.large");
   const pbTypes = [
@@ -127,8 +129,8 @@ export default function StoragePoolsPage() {
     ]).then(([p, prov]) => {
       setPools(p);
       setProviders(prov);
-      const errPool = p.find((pp: StoragePool) => pp.worker_error);
-      if (errPool) setPbError(errPool.worker_error);
+      const errPool = p.find((pp: StoragePool) => pp.worker_error && !pbErrorDismissed.has(pp.id));
+      if (errPool) { setPbError(errPool.worker_error); setPbErrorPoolId(errPool.id); }
       setPbAction(prev => {
         const next: Record<string, string> = {};
         for (const [id, action] of Object.entries(prev)) {
@@ -848,7 +850,7 @@ export default function StoragePoolsPage() {
               <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: "#f87171" }}>Pattern Buffer Error</div>
               <div style={{ fontSize: 13, marginBottom: 16 }}>{pbError}</div>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button variant="secondary" size="sm" onClick={() => setPbError(null)}>Close</Button>
+                <Button variant="secondary" size="sm" onClick={() => { if (pbErrorPoolId) setPbErrorDismissed((prev) => new Set(prev).add(pbErrorPoolId)); setPbError(null); }}>Close</Button>
               </div>
             </CardBody>
           </Card>
