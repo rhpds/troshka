@@ -28,6 +28,13 @@ export default function SettingsPage() {
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState("");
 
+  // Red Hat Offline Token
+  const [rhTokenMasked, setRhTokenMasked] = useState("");
+  const [hasRhToken, setHasRhToken] = useState(false);
+  const [rhTokenInput, setRhTokenInput] = useState("");
+  const [rhTokenSaving, setRhTokenSaving] = useState(false);
+  const [rhTokenEdit, setRhTokenEdit] = useState(false);
+
   // OCP Pull Secret
   const [pullSecretMasked, setPullSecretMasked] = useState("");
   const [hasPullSecret, setHasPullSecret] = useState(false);
@@ -39,6 +46,10 @@ export default function SettingsPage() {
     fetch("/api/v1/api-keys/")
       .then((r) => r.json())
       .then((data) => setKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    fetch("/api/v1/auth/rh-offline-token")
+      .then((r) => r.json())
+      .then((data) => { setHasRhToken(data.has_token); setRhTokenMasked(data.masked || ""); })
       .catch(() => {});
     fetch("/api/v1/auth/ocp-pull-secret")
       .then((r) => r.json())
@@ -157,6 +168,40 @@ export default function SettingsPage() {
       </PageSection>
       <PageSection>
         <SshKeysSection />
+      </PageSection>
+      <PageSection>
+        <Title headingLevel="h2" style={{ marginBottom: 12 }}>Red Hat Offline Token</Title>
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Required for building custom host images via Image Builder. Generate a token at{" "}
+          <a href="https://access.redhat.com/management/api" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>access.redhat.com/management/api</a>.
+        </p>
+        {hasRhToken && !rhTokenEdit ? (
+          <Card>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{rhTokenMasked}</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button variant="secondary" onClick={() => setRhTokenEdit(true)}>Replace</Button>
+                <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/rh-offline-token", { method: "DELETE" }); setHasRhToken(false); setRhTokenMasked(""); }}>Delete</Button>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <Card>
+            <CardBody>
+              <input type="password" style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={rhTokenInput} onChange={(e) => setRhTokenInput(e.target.value)} placeholder="eyJhbGci..." />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                {rhTokenEdit && <Button variant="secondary" onClick={() => { setRhTokenEdit(false); setRhTokenInput(""); }}>Cancel</Button>}
+                <Button variant="primary" isDisabled={!rhTokenInput.trim() || rhTokenSaving} onClick={async () => {
+                  setRhTokenSaving(true);
+                  const resp = await fetch("/api/v1/auth/rh-offline-token", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offline_token: rhTokenInput }) });
+                  if (resp.ok) { setHasRhToken(true); setRhTokenEdit(false); setRhTokenInput(""); const data = await fetch("/api/v1/auth/rh-offline-token").then(r => r.json()); setRhTokenMasked(data.masked || ""); }
+                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
+                  setRhTokenSaving(false);
+                }}>{rhTokenSaving ? "Saving..." : "Save Token"}</Button>
+              </div>
+            </CardBody>
+          </Card>
+        )}
       </PageSection>
       <PageSection>
         <Title headingLevel="h2" style={{ marginBottom: 12 }}>OCP Pull Secret</Title>
