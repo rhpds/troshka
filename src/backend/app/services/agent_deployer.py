@@ -459,7 +459,7 @@ def wait_for_ssh(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=60,
             )
             if result.returncode == 0 and "ssh-ready" in result.stdout:
                 logger.info(
@@ -656,7 +656,7 @@ def deploy_agent(
                         "/opt/troshka",
                     ],
                     capture_output=True,
-                    timeout=10,
+                    timeout=60,
                 )
                 subprocess.run(
                     [
@@ -740,6 +740,7 @@ def deploy_agent(
                 [
                     "ssh",
                     *ssh_opts,
+                    *ssh_port_opts,
                     f"{ssh_user}@{host_ip}",
                     "sudo",
                     "mv",
@@ -752,7 +753,7 @@ def deploy_agent(
                     "/usr/local/bin/troshka-files",
                 ],
                 capture_output=True,
-                timeout=10,
+                timeout=60,
             )
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)

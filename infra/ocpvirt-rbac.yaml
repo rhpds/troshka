@@ -42,6 +42,10 @@ rules:
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
     verbs: ["create", "delete", "get", "list"]
+  # Secrets — cloud-init userdata
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete", "get"]
   # Namespace — ensure troshka namespace exists
   - apiGroups: [""]
     resources: ["namespaces"]

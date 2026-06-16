@@ -35,8 +35,12 @@ def _evaluate_partitions(health):
     partitions = health.get("partitions", [])
     if not partitions:
         return None
+    SKIP_MOUNTS = {"/mnt/iso", "/boot", "/boot/efi"}
     warnings = []
     for p in partitions:
+        mount = p.get("mount", "")
+        if mount in SKIP_MOUNTS or p.get("fstype") == "iso9660":
+            continue
         pct = p.get("used_pct", 0)
         if pct >= _CRITICAL_PCT:
             warnings.append({"mount": p["mount"], "used_pct": pct, "level": "critical"})

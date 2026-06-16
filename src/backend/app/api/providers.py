@@ -55,6 +55,7 @@ class ProviderResponse(BaseModel):
     console_base_domain: str | None = None
     console_nameservers: list | None = None
     console_configured: bool = False
+    iso_pvc: str | None = None
     state: str
     has_credentials: bool
     host_count: int
@@ -81,6 +82,7 @@ def list_providers(
             console_base_domain=p.console_base_domain,
             console_nameservers=p.console_nameservers,
             console_configured=bool(p.console_zone_id or p.console_base_domain),
+            iso_pvc=p.get_credentials().get("iso_pvc") if p.credentials else None,
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -569,6 +571,59 @@ def set_ami(
     provider.default_ami = ami_id
     db.commit()
     return {"ami_id": ami_id}
+
+
+@router.post("/{provider_id}/set-iso")
+def set_iso(
+    provider_id: str,
+    iso_pvc: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Set the install ISO PVC name for an OCP Virt provider."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    creds = provider.get_credentials()
+    creds["iso_pvc"] = iso_pvc
+    provider.set_credentials(creds)
+    db.commit()
+    return {"iso_pvc": iso_pvc}
+
+
+@router.get("/{provider_id}/discover-isos")
+def discover_isos(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """List available ISO PVCs in the troshka namespace."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type != "ocpvirt":
+        raise HTTPException(
+            status_code=400, detail="ISO discovery is only for OCP Virt"
+        )
+
+    creds = provider.get_credentials()
+    try:
+        from app.services.providers.ocpvirt import _get_k8s_clients
+
+        _, core_api = _get_k8s_clients(creds)
+        namespace = creds.get("namespace", "troshka")
+        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+        isos = []
+        for pvc in pvcs.items:
+            name = pvc.metadata.name
+            if "iso" in name.lower():
+                size = pvc.spec.resources.requests.get("storage", "")
+                isos.append({"name": name, "size": size})
+        isos.sort(key=lambda x: x["name"])
+        return {"isos": isos}
+    except Exception:
+        logger.exception("ISO discovery failed for %s", provider.name)
+        raise HTTPException(status_code=400, detail="Failed to list ISOs")
 
 
 @router.get("/{provider_id}/discover-datasources")

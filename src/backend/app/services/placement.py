@@ -187,6 +187,13 @@ def place_project(
         reqs["requested_eips"],
         storage_pool_id=storage_pool_id,
     )
+    if not host and storage_pool_id:
+        host = find_available_host(
+            db,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            reqs["requested_eips"],
+        )
     if not host:
         logger.info("No host with capacity — auto-provisioning a new one")
         try:

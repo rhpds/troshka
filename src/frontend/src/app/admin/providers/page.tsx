@@ -181,11 +181,17 @@ export default function AdminProvidersPage() {
     }
   };
 
+  const [isoSelectMode, setIsoSelectMode] = useState<Record<string, boolean>>({});
+
   const selectAmi = async (providerId: string, amiId: string) => {
-    const resp = await fetch(`/api/v1/providers/${providerId}/set-ami?ami_id=${amiId}`, { method: "POST" });
+    const endpoint = isoSelectMode[providerId]
+      ? `/api/v1/providers/${providerId}/set-iso?iso_pvc=${amiId}`
+      : `/api/v1/providers/${providerId}/set-ami?ami_id=${amiId}`;
+    const resp = await fetch(endpoint, { method: "POST" });
     if (resp.ok) {
       setAmiOptions((prev) => ({ ...prev, [providerId]: [] }));
       setAmiResult((prev) => ({ ...prev, [providerId]: "" }));
+      setIsoSelectMode((prev) => ({ ...prev, [providerId]: false }));
       loadProviders();
     }
   };
@@ -464,6 +470,11 @@ export default function AdminProvidersPage() {
                           ? <span> · Image: {p.default_ami}</span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No image selected</span>
                       )}
+                      {p.type === "ocpvirt" && (
+                        p.iso_pvc
+                          ? <span> · ISO: {p.iso_pvc}</span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No install ISO</span>
+                      )}
                       {p.type === "ec2" && (
                         p.vpc_id
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
@@ -614,6 +625,7 @@ export default function AdminProvidersPage() {
                     )}
                     {p.type === "ec2" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
+                      setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
                       setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering..." }));
                       const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
                       if (resp.ok) {
@@ -625,6 +637,18 @@ export default function AdminProvidersPage() {
                         setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover DataSources" }));
                       }
                     }}>Select Host Image</Button>}
+                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
+                      setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
+                      setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
+                      const resp = await fetch(`/api/v1/providers/${p.id}/discover-isos`);
+                      if (resp.ok) {
+                        const data = await resp.json();
+                        setAmiOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ ami_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "" })) }));
+                        setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
+                      } else {
+                        setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
+                      }
+                    }}>Select Install ISO</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     {p.type === "ec2" && !p.console_configured && (
                       <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>

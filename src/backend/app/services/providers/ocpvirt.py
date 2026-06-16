@@ -46,7 +46,17 @@ runcmd:
   - systemctl enable --now libvirtd || systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
   - systemctl enable --now nftables
   - systemctl disable --now dnsmasq 2>/dev/null || true
-  - mkdir -p /var/lib/troshka /etc/troshka-agent
+  - |
+    DATA_DEV=/dev/vdb
+    if [ -b "$DATA_DEV" ]; then
+      blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"
+      mkdir -p /var/lib/troshka
+      mount "$DATA_DEV" /var/lib/troshka
+      grep -q /var/lib/troshka /etc/fstab || echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab
+    else
+      mkdir -p /var/lib/troshka
+    fi
+  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
   - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
 """
 
@@ -199,29 +209,61 @@ class OCPVirtDriver(ProviderDriver):
                 "spec": {
                     **root_source,
                     "storage": {
+                        "resources": {"requests": {"storage": "50Gi"}},
+                        "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
+                    },
+                },
+            },
+            {
+                "metadata": {"name": f"{hostname}-data"},
+                "spec": {
+                    "source": {"blank": {}},
+                    "storage": {
                         "resources": {"requests": {"storage": f"{storage_size_gb}Gi"}},
                         "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
                     },
                 },
-            }
+            },
         ]
 
         # ISO PVC name — must exist in the same namespace
-        iso_pvc = kwargs.get("iso_pvc", "rhel-10.2-dvd-iso")
+        iso_pvc = kwargs.get("iso_pvc") or creds.get("iso_pvc", "rhel-10.2-dvd-iso")
 
         disks = [
             {"disk": {"bus": "virtio"}, "name": "rootdisk"},
+            {"disk": {"bus": "virtio"}, "name": "datadisk"},
             {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"},
             {"disk": {"bus": "virtio"}, "name": "cloudinitdisk"},
         ]
         volumes = [
             {"dataVolume": {"name": f"{hostname}-root"}, "name": "rootdisk"},
+            {"dataVolume": {"name": f"{hostname}-data"}, "name": "datadisk"},
             {
                 "persistentVolumeClaim": {"claimName": iso_pvc},
                 "name": "installiso",
             },
-            {"cloudInitNoCloud": {"userData": user_data}, "name": "cloudinitdisk"},
+            {
+                "cloudInitNoCloud": {
+                    "secretRef": {"name": f"{hostname}-userdata"},
+                },
+                "name": "cloudinitdisk",
+            },
         ]
+
+        # Create Secret with cloud-init userdata (KubeVirt enforces 2KB inline limit)
+        import base64
+
+        secret_body = client.V1Secret(
+            metadata=client.V1ObjectMeta(
+                name=f"{hostname}-userdata",
+                namespace=namespace,
+                labels={"app": "troshka", "troshka/host-id": host_id},
+            ),
+            data={
+                "userdata": base64.b64encode(user_data.encode()).decode(),
+            },
+        )
+        core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
 
         # Pattern buffer gets a scratch volume for qemu-img/NBD capture
         if host_type == "pattern_buffer":
@@ -440,6 +482,12 @@ class OCPVirtDriver(ProviderDriver):
                 core_api.delete_namespaced_service(f"{prefix}{host_short}", namespace)
             except client.ApiException:
                 pass
+
+        # Clean up userdata secret
+        try:
+            core_api.delete_namespaced_secret(f"{instance_id}-userdata", namespace)
+        except client.ApiException:
+            pass
 
         try:
             custom_api.delete_namespaced_custom_object(
