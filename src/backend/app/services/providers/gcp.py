@@ -228,6 +228,7 @@ class GCPDriver(ProviderDriver):
         private_key, public_key = _generate_ssh_keypair()
 
         # Build cloud-init
+        host_type = kwargs.get("host_type", "shared")
         nfs_server = kwargs.get("nfs_server")
         nfs_path = kwargs.get("nfs_path")
         user_data = _build_cloud_init(host_id, nfs_server, nfs_path)
