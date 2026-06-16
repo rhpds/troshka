@@ -86,7 +86,7 @@ try:
     data = json.load(sys.stdin)
     idle = {'MainThread', 'health-poller', 'ws-state-poller', 'AnyIO worker thread'}
     # Only these thread prefixes should block a restart
-    blocking = {'deploy-', 'reconfig-', 'redeploy-', 'start-', 'stop-', 'install-', 'reinstall-'}
+    blocking = {'deploy-', 'reconfig-', 'redeploy-', 'start-', 'stop-', 'install-', 'reinstall-', 'pattern-', 'capture-'}
     work = [t['name'] for t in data.get('threads', []) if any(t['name'].startswith(p) for p in blocking)]
     if work:
         print(' '.join(work))
