@@ -129,6 +129,7 @@ def create_pool(
         ca_key=ca_key,
         status="available" if body.mode in ("local", "shared-byo") else "creating",
         provider_id=body.provider_id,
+        worker_instance_type="4c-8g" if body.mode == "shared-ceph-nfs" else None,
     )
     db.add(pool)
     db.commit()
