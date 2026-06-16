@@ -350,18 +350,22 @@ def list_available_amis(
             "rhel10-access2": {
                 "pattern": "RHEL-10*x86_64*Access2-GP3",
                 "label": "RHEL 10 Access2 (Gold Image / BYOS)",
+                "source": "BYOS",
             },
             "rhel10-hourly": {
                 "pattern": "RHEL-10*x86_64*Hourly2-GP3",
                 "label": "RHEL 10 Marketplace (Hourly)",
+                "source": "PAYG",
             },
             "rhel9-access2": {
                 "pattern": "RHEL-9*x86_64*Access2-GP3",
                 "label": "RHEL 9 Access2 (Gold Image / BYOS)",
+                "source": "BYOS",
             },
             "rhel9-hourly": {
                 "pattern": "RHEL-9*x86_64*Hourly2-GP3",
                 "label": "RHEL 9 Marketplace (Hourly)",
+                "source": "PAYG",
             },
         }
 
@@ -402,7 +406,7 @@ def list_available_amis(
                 )
                 results.append(
                     {
-                        "type": ami_type,
+                        "type": info["source"],
                         "label": label,
                         "ami_id": latest["ImageId"],
                         "name": latest["Name"],
@@ -1477,7 +1481,15 @@ def discover_images_azure(
                 sku_name = sku.name or ""
                 if not any(
                     sku_name.startswith(p)
-                    for p in ["rhel-lvm9", "rhel-lvm10", "9", "9_", "10", "10_"]
+                    for p in [
+                        "rhel-lvm9",
+                        "rhel-lvm10",
+                        "rhel-lvm810",
+                        "9-lvm",
+                        "9_",
+                        "10-lvm",
+                        "10_",
+                    ]
                 ):
                     continue
                 try:
@@ -1493,6 +1505,11 @@ def discover_images_azure(
                                 "urn": urn,
                                 "version": latest.name,
                                 "source": source,
+                                "rhel_version": (
+                                    sku_name.split("-")[0]
+                                    if sku_name[0].isdigit()
+                                    else sku_name
+                                ),
                             }
                         )
                 except Exception:

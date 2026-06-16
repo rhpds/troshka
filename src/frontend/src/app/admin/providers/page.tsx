@@ -53,6 +53,8 @@ export default function AdminProvidersPage() {
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [amiResult, setAmiResult] = useState<Record<string, string>>({});
   const [amiOptions, setAmiOptions] = useState<Record<string, Array<{type: string; label: string; ami_id: string; name: string; created: string}>>>({});
+  const [imageFilter, setImageFilter] = useState<Record<string, string>>({});
+  const [imageSearch, setImageSearch] = useState<Record<string, string>>({});
   const [consoleDomain, setConsoleDomain] = useState<Record<string, string>>({});
   const [consoleSetupResult, setConsoleSetupResult] = useState<Record<string, string>>({});
   const [settingUpConsole, setSettingUpConsole] = useState<string | null>(null);
@@ -576,9 +578,26 @@ export default function AdminProvidersPage() {
                         {amiResult[p.id]}
                       </div>
                     )}
-                    {amiOptions[p.id] && amiOptions[p.id].length > 0 && (
+                    {amiOptions[p.id] && amiOptions[p.id].length > 0 && (() => {
+                      const filter = imageFilter[p.id] || "all";
+                      const search = (imageSearch[p.id] || "").toLowerCase();
+                      const filtered = amiOptions[p.id].filter((ami) => {
+                        if (filter !== "all" && ami.type !== filter) return false;
+                        if (search && !ami.label.toLowerCase().includes(search) && !ami.ami_id.toLowerCase().includes(search) && !(ami.name || "").toLowerCase().includes(search)) return false;
+                        return true;
+                      });
+                      return (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                        {amiOptions[p.id].map((ami) => (
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                            <option value="all">All</option>
+                            <option value="BYOS">BYOS</option>
+                            <option value="PAYG">PAYG</option>
+                          </select>
+                          <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
+                          <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {amiOptions[p.id].length}</span>
+                        </div>
+                        {filtered.map((ami) => (
                           <div key={ami.ami_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
                             <div>
                               <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
@@ -591,7 +610,8 @@ export default function AdminProvidersPage() {
                           </div>
                         ))}
                       </div>
-                    )}
+                      );
+                    })()}
                     {vpcOptions[p.id] && vpcOptions[p.id].length > 0 && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
