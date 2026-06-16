@@ -77,13 +77,27 @@ def _provision_pattern_buffer(pool_id: str):
             return
 
         driver = get_provider_driver(provider)
-        instance_type = pool.worker_instance_type or DEFAULT_INSTANCE_TYPE
+        if pool.worker_instance_type:
+            instance_type = pool.worker_instance_type
+        elif provider.type == "gcp":
+            instance_type = "n2-highmem-4"
+        elif provider.type == "azure":
+            instance_type = "Standard_E4s_v5"
+        else:
+            instance_type = DEFAULT_INSTANCE_TYPE
         host_id = str(uuid.uuid4())
 
         nfs_kwargs = {}
         if pool.mode == "shared-fsx" and pool.fsx_dns_name:
             nfs_kwargs["nfs_server"] = pool.fsx_dns_name
             nfs_kwargs["nfs_path"] = "/fsx"
+        elif pool.mode == "shared-filestore" and pool.filestore_ip:
+            nfs_kwargs["nfs_server"] = pool.filestore_ip
+            nfs_kwargs["nfs_path"] = f"/{pool.filestore_share_name or 'troshka'}"
+        elif pool.mode == "shared-azure-files" and pool.azure_file_share_url:
+            parts = pool.azure_file_share_url.split(":", 1)
+            nfs_kwargs["nfs_server"] = parts[0]
+            nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
         elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
             parts = pool.nfs_endpoint.split(":", 1)
             nfs_kwargs["nfs_server"] = parts[0]
