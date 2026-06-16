@@ -12,7 +12,7 @@ while true; do
     printf "%-25s %6s %6s %5s\n" "$mnt" "$used" "$avail" "$pct"
   done
   echo
-  for proj_dir in /var/lib/troshka/shared/vms/*/; do
+  for proj_dir in /var/lib/troshka/vms/*/ /var/lib/troshka/shared/vms/*/ /var/lib/troshka/local/vms/*/; do
     [ -d "$proj_dir" ] || continue
     pid=$(basename "$proj_dir")
     total=$(du -sh "$proj_dir" 2>/dev/null | cut -f1)
@@ -28,10 +28,14 @@ while true; do
     done
     echo
   done
-  if [ -d /var/lib/troshka/shared/images ]; then
-    total=$(du -sh /var/lib/troshka/shared/images 2>/dev/null | cut -f1)
-    echo "── Shared Image Cache ($total) ──"
-    for f in /var/lib/troshka/shared/images/*; do
+  IMG_DIR=""
+  for d in /var/lib/troshka/images /var/lib/troshka/shared/images; do
+    [ -d "$d" ] && [ "$(ls -A "$d" 2>/dev/null)" ] && IMG_DIR="$d" && break
+  done
+  if [ -n "$IMG_DIR" ]; then
+    total=$(du -sh "$IMG_DIR" 2>/dev/null | cut -f1)
+    echo "── Image Cache ($total) ──"
+    for f in "$IMG_DIR"/*; do
       [ -f "$f" ] || continue
       printf "  %-40s %6s\n" "$(basename "$f")" "$(ls -lh "$f" | awk '{print $5}')"
     done
