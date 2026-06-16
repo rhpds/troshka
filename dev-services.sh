@@ -172,10 +172,18 @@ case "${1:-status}" in
         echo "  API Docs:   http://localhost:$BACKEND_PORT/docs"
         ;;
     stop)
-        echo "=== Stopping Troshka ==="
-        stop_frontend
-        stop_backend "${2:-}"
-        stop_db
+        case "${2:-all}" in
+            backend) echo "=== Stopping Backend ==="; stop_backend "${3:-}" ;;
+            frontend) echo "=== Stopping Frontend ==="; stop_frontend ;;
+            db) echo "=== Stopping PostgreSQL ==="; stop_db ;;
+            all)
+                echo "=== Stopping Troshka ==="
+                stop_frontend
+                stop_backend "${3:-}"
+                stop_db
+                ;;
+            *) echo "Usage: $0 stop [backend|frontend|db]"; exit 1 ;;
+        esac
         ;;
     restart)
         case "${2:-all}" in
