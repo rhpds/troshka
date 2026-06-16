@@ -28,6 +28,10 @@ interface Host {
   total_ram_mb: number;
   used_vcpus: number;
   used_ram_mb: number;
+  running_vms: number;
+  total_vms: number;
+  running_projects: number;
+  total_projects: number;
   ip_address: string | null;
   agent_status: string;
   storage_size_gb: number;
@@ -776,7 +780,7 @@ export default function AdminHostsPage() {
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
-                  <span>{h.region ? `· ${h.region} ` : ""}· {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : <Label color="blue" isCompact>compute</Label>}</span>
+                  <span>{h.region ? `· ${h.region} ` : ""}· {h.ip_address || "no IP"}{isOcpVirtHost(h) ? ":22000" : ""} {h.host_type === "pattern_buffer" ? <> · <Label color="purple" isCompact>pattern buffer</Label></> : ""}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
@@ -797,6 +801,14 @@ export default function AdminHostsPage() {
                   {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(si.free_gb)} GB free</div>}
                   {optimizing && <div style={{ fontSize: 10, color: "#facc15" }}>Optimizing → {h.storage_size_gb} GB</div>}
                 </div>); })()}
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>VMs</div>
+                  <div><strong>{h.running_vms || 0}</strong>/{h.total_vms || 0}</div>
+                </div>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Projects</div>
+                  <div><strong>{h.running_projects || 0}</strong>/{h.total_projects || 0}</div>
+                </div>
                 {h.max_eips > 0 && (
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>EIPs</div>

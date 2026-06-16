@@ -66,10 +66,46 @@ def list_hosts(
     for host in hosts:
         sync_host_capacity(db, host)
     db.commit()
+    from app.models.project import Project
+
     results = []
     for host in hosts:
         resp = HostResponse.model_validate(host)
         resp.used_eips = get_host_eip_usage(db, host.id)
+        all_projects = (
+            db.query(Project)
+            .filter(
+                Project.host_id == host.id,
+                Project.state.in_(["deployed", "stopped", "draft"]),
+            )
+            .all()
+        )
+        deployed = [p for p in all_projects if p.state == "deployed"]
+        resp.running_projects = len(deployed)
+        resp.total_projects = len(
+            [p for p in all_projects if p.state in ("deployed", "stopped")]
+        )
+        resp.running_vms = sum(
+            len(
+                [
+                    n
+                    for n in (p.deployed_topology or {}).get("nodes", [])
+                    if n.get("type") == "vmNode"
+                ]
+            )
+            for p in deployed
+        )
+        resp.total_vms = sum(
+            len(
+                [
+                    n
+                    for n in (p.deployed_topology or {}).get("nodes", [])
+                    if n.get("type") == "vmNode"
+                ]
+            )
+            for p in all_projects
+            if p.deployed_topology
+        )
         results.append(resp)
     return results
 
@@ -322,20 +358,27 @@ def add_host(
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
 
             # Create console DNS/Route record
-            if provider_console_domain and h.instance_id and h.ip_address:
-                from app.services.console_dns import console_domain_for_host
-                from app.services.providers import get_provider_driver
-
+            if h.instance_id and h.ip_address:
                 prov_obj = s.query(Provider).get(h.provider_id)
-                fqdn = console_domain_for_host(h.instance_id, provider_console_domain)
-                try:
-                    drv = get_provider_driver(prov_obj)
-                    drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
-                    h.console_domain = fqdn
-                except Exception as e:
-                    logger.warning(
-                        "Failed to create console record for %s: %s", h.id[:8], e
+                if prov_obj and prov_obj.type == "ocpvirt":
+                    h.console_domain = h.ip_address
+                elif provider_console_domain:
+                    from app.services.console_dns import console_domain_for_host
+                    from app.services.providers import get_provider_driver
+
+                    fqdn = console_domain_for_host(
+                        h.instance_id, provider_console_domain
                     )
+                    try:
+                        drv = get_provider_driver(prov_obj)
+                        drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
+                        h.console_domain = fqdn
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to create console record for %s: %s",
+                            h.id[:8],
+                            e,
+                        )
 
             s.commit()
         except Exception:

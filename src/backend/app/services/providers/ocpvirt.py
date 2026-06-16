@@ -57,6 +57,8 @@ runcmd:
       mkdir -p /var/lib/troshka
     fi
   - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp /etc/troshka-agent
+  - semanage fcontext -a -t virt_image_t '/var/lib/troshka(/.*)?' 2>/dev/null || true
+  - restorecon -R /var/lib/troshka
   - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
 """
 
@@ -323,6 +325,7 @@ class OCPVirtDriver(ProviderDriver):
                                         "ports": [
                                             {"port": 22},
                                             {"port": 31337},
+                                            {"port": 443},
                                         ],
                                     }
                                 ],
@@ -362,6 +365,9 @@ class OCPVirtDriver(ProviderDriver):
                     ),
                     client.V1ServicePort(
                         name="agent", port=31337, target_port=31337, protocol="TCP"
+                    ),
+                    client.V1ServicePort(
+                        name="console", port=443, target_port=443, protocol="TCP"
                     ),
                 ],
             ),

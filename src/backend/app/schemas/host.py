@@ -28,6 +28,10 @@ class HostResponse(BaseModel):
     storage_size_gb: int = 500
     max_eips: int = 0
     used_eips: int = 0
+    running_vms: int = 0
+    total_vms: int = 0
+    running_projects: int = 0
+    total_projects: int = 0
     agent_version: str | None = None
     last_health_at: datetime.datetime | None = None
     created_at: datetime.datetime
