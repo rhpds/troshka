@@ -266,11 +266,6 @@ def _poll_fsx_until_available(
                         ]
                 db.commit()
                 logger.info("FSx %s is available for pool %s", filesystem_id, pool_id)
-                from app.services.pattern_buffer_service import (
-                    provision_pattern_buffer_async,
-                )
-
-                provision_pattern_buffer_async(pool_id)
                 return
             elif status in ("FAILED", "DELETING"):
                 pool = db.query(StoragePool).get(pool_id)
@@ -606,11 +601,6 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
             pool.nfs_endpoint,
             node_port,
         )
-        from app.services.pattern_buffer_service import (
-            provision_pattern_buffer_async,
-        )
-
-        provision_pattern_buffer_async(pool_id)
 
     except Exception as e:
         logger.error("Ceph-NFS provisioning failed for pool %s: %s", pool_id[:8], e)
@@ -806,11 +796,6 @@ def provision_netapp_pool(
         pool.status = "available"
         db.commit()
         logger.info("NetApp pool %s is available", pool_id[:8])
-        from app.services.pattern_buffer_service import (
-            provision_pattern_buffer_async,
-        )
-
-        provision_pattern_buffer_async(pool_id)
     except Exception as e:
         logger.error("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)
@@ -983,11 +968,6 @@ def provision_azure_files_pool(
         pool.status = "available"
         db.commit()
         logger.info("Azure Files NFS pool %s is available", pool_id[:8])
-        from app.services.pattern_buffer_service import (
-            provision_pattern_buffer_async,
-        )
-
-        provision_pattern_buffer_async(pool_id)
     except Exception as e:
         logger.error("Azure Files provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)

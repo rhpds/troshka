@@ -60,7 +60,6 @@ const modeLabels: Record<string, string> = {
   "shared-fsx": "FSx OpenZFS (AWS)",
   "shared-byo": "BYO NFS (All Providers)",
   "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
-  "shared-netapp": "NetApp Volumes (GCP)",
   "shared-azure-files": "Azure Files NFS (Azure)",
 };
 
@@ -112,15 +111,29 @@ export default function StoragePoolsPage() {
   const [pbErrorDismissed, setPbErrorDismissed] = useState<Set<string>>(new Set());
   const [pbErrorPoolId, setPbErrorPoolId] = useState<string | null>(null);
   const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
-  const [pbInstanceType, setPbInstanceType] = useState("i4i.large");
-  const pbTypes = [
-    { value: "i4i.large", label: "i4i.large — 2 vCPU / 16 GB / 468 GB NVMe — ~$0.31/hr" },
-    { value: "i4i.xlarge", label: "i4i.xlarge — 4 vCPU / 32 GB / 937 GB NVMe — ~$0.62/hr" },
-    { value: "i4i.2xlarge", label: "i4i.2xlarge — 8 vCPU / 64 GB / 1.8 TB NVMe — ~$1.25/hr" },
-    { value: "c6id.large", label: "c6id.large — 2 vCPU / 4 GB / 118 GB NVMe — ~$0.13/hr" },
-    { value: "c6id.xlarge", label: "c6id.xlarge — 4 vCPU / 8 GB / 237 GB NVMe — ~$0.25/hr" },
-    { value: "c6id.2xlarge", label: "c6id.2xlarge — 8 vCPU / 16 GB / 474 GB NVMe — ~$0.50/hr" },
-  ];
+  const [pbInstanceType, setPbInstanceType] = useState("");
+  const pbTypesByProvider: Record<string, Array<{value: string; label: string}>> = {
+    ec2: [
+      { value: "i4i.large", label: "i4i.large — 2 vCPU / 16 GB / 468 GB NVMe — ~$0.31/hr" },
+      { value: "i4i.xlarge", label: "i4i.xlarge — 4 vCPU / 32 GB / 937 GB NVMe — ~$0.62/hr" },
+      { value: "i4i.2xlarge", label: "i4i.2xlarge — 8 vCPU / 64 GB / 1.8 TB NVMe — ~$1.25/hr" },
+      { value: "c6id.large", label: "c6id.large — 2 vCPU / 4 GB / 118 GB NVMe — ~$0.13/hr" },
+      { value: "c6id.xlarge", label: "c6id.xlarge — 4 vCPU / 8 GB / 237 GB NVMe — ~$0.25/hr" },
+    ],
+    gcp: [
+      { value: "e2-standard-2", label: "e2-standard-2 — 2 vCPU / 8 GB — ~$0.07/hr" },
+      { value: "e2-standard-4", label: "e2-standard-4 — 4 vCPU / 16 GB — ~$0.13/hr" },
+      { value: "e2-standard-8", label: "e2-standard-8 — 8 vCPU / 32 GB — ~$0.27/hr" },
+    ],
+    azure: [
+      { value: "Standard_E2s_v5", label: "Standard_E2s_v5 — 2 vCPU / 16 GB — ~$0.13/hr" },
+      { value: "Standard_E4s_v5", label: "Standard_E4s_v5 — 4 vCPU / 32 GB — ~$0.25/hr" },
+    ],
+    ocpvirt: [
+      { value: "4c-8g", label: "4c-8g — 4 vCPU / 8 GB" },
+      { value: "8c-16g", label: "8c-16g — 8 vCPU / 16 GB" },
+    ],
+  };
 
   const loadData = () => {
     Promise.all([
@@ -232,6 +245,7 @@ export default function StoragePoolsPage() {
   const handleCreate = async () => {
     setError("");
     if (!newName.trim()) { setError("Name is required"); return; }
+    if (newMode === "local" && !newProviderId) { setError("Provider is required for local pools"); return; }
     if (newMode === "shared-fsx" && !newProviderId) { setError("Provider is required for FSx pools"); return; }
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
@@ -450,10 +464,10 @@ export default function StoragePoolsPage() {
               <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
                 <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
+                  <option value="local">Local — Pattern Buffer Only (All Providers)</option>
                   <option value="shared-fsx">FSx OpenZFS (AWS)</option>
                   <option value="shared-byo">BYO NFS (All Providers)</option>
                   <option value="shared-ceph-nfs">Ceph-NFS (OCP Virt)</option>
-                  <option value="shared-netapp">NetApp Volumes (GCP)</option>
                   <option value="shared-azure-files">Azure Files NFS (Azure)</option>
                 </select>
               </div>
@@ -462,12 +476,12 @@ export default function StoragePoolsPage() {
                 <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
                        placeholder="e.g. prod-east-1b" />
               </div>
-              {(newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
+              {(newMode === "local" || newMode === "shared-fsx" || newMode === "shared-netapp" || newMode === "shared-azure-files") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
                   <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : newMode === "shared-netapp" ? p.type === "gcp" : p.type === "azure").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : newMode === "shared-azure-files" ? p.type === "azure" : p.type !== "s3").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
               )}
@@ -786,7 +800,10 @@ export default function StoragePoolsPage() {
                     )}
                     {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
-                        setPbInstanceType("i4i.large");
+                        const prov = providers.find((p) => p.id === pool.provider_id);
+                        const provType = prov?.type || "ec2";
+                        const types = pbTypesByProvider[provType] || pbTypesByProvider["ec2"];
+                        setPbInstanceType(types[0]?.value || "");
                         setPbPoolId(pool.id);
                       }}>
                         {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
@@ -822,7 +839,7 @@ export default function StoragePoolsPage() {
                 value={pbInstanceType}
                 onChange={(e) => setPbInstanceType(e.target.value)}
               >
-                {pbTypes.map((t) => (
+                {(pbTypesByProvider[providers.find((p) => p.id === pools.find((pp) => pp.id === pbPoolId)?.provider_id)?.type || "ec2"] || pbTypesByProvider["ec2"]).map((t) => (
                   <option key={t.value} value={t.value}>{t.label}</option>
                 ))}
               </select>

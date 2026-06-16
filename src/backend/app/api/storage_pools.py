@@ -243,11 +243,6 @@ def create_pool(
         )
         t.start()
 
-    if pool.status == "available":
-        from app.services.pattern_buffer_service import provision_pattern_buffer_async
-
-        provision_pattern_buffer_async(pool.id)
-
     return _pool_response(pool, db)
 
 
