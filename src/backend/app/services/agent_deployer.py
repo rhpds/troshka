@@ -53,8 +53,8 @@ cat > /etc/tmpfiles.d/ksm.conf << 'KSMEOF'
 w /sys/kernel/mm/ksm/run - - - - 0
 KSMEOF
 
-# Allow ec2-user to manage libvirt without polkit agent
-usermod -aG libvirt ec2-user
+# Allow SSH user to manage libvirt without polkit agent
+usermod -aG libvirt {ssh_user}
 cat > /etc/polkit-1/rules.d/50-libvirt.rules << 'POLKITEOF'
 polkit.addRule(function(action, subject) {
     if (action.id.indexOf("org.libvirt") == 0 && subject.isInGroup("libvirt")) {
@@ -121,13 +121,23 @@ find_nvme_dev() {
     done
 }
 
-# Mount dedicated storage volume (/dev/sdf) if present and not already mounted
+# Mount dedicated storage volume if present and not already mounted
 if mountpoint -q /var/lib/troshka; then
     echo "Storage volume already mounted at /var/lib/troshka"
 else
-    DATA_DEV=$(find_nvme_dev sdf)
-    if [ -n "$DATA_DEV" ]; then
-        echo "Mounting dedicated storage volume ($DATA_DEV -> /dev/sdf)..."
+    # Provider-specific device path: {data_disk_device}
+    # EC2 uses NVMe translation (e.g., sdf -> /dev/nvme1n1)
+    # GCP uses direct path (e.g., /dev/sdb)
+    # Azure uses stable symlink (e.g., /dev/disk/azure/scsi1/lun0)
+    if [[ "{data_disk_device}" == *"/"* ]]; then
+        # Absolute path — use directly (GCP/Azure)
+        DATA_DEV="{data_disk_device}"
+    else
+        # Logical name — translate via NVMe (EC2)
+        DATA_DEV=$(find_nvme_dev {data_disk_device})
+    fi
+    if [ -n "$DATA_DEV" ] && [ -b "$DATA_DEV" ]; then
+        echo "Mounting dedicated storage volume ($DATA_DEV)..."
         blkid "$DATA_DEV" || mkfs.xfs "$DATA_DEV"
         mkdir -p /var/lib/troshka
         mount "$DATA_DEV" /var/lib/troshka
@@ -135,7 +145,7 @@ else
             echo "$DATA_DEV /var/lib/troshka xfs defaults,nofail 0 2" >> /etc/fstab
         echo "Storage volume mounted at /var/lib/troshka"
     else
-        echo "ERROR: No dedicated storage volume (/dev/sdf) found — agent install cannot continue"
+        echo "ERROR: No dedicated storage volume ({data_disk_device}) found — agent install cannot continue"
         exit 1
     fi
 fi
@@ -575,6 +585,7 @@ def deploy_agent(
     host_type: str = "shared",
     ssh_port: int = 22,
     ssh_user: str = "ec2-user",
+    data_disk_device: str = "sdf",
 ) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
@@ -612,6 +623,8 @@ def deploy_agent(
         )
         .replace("{console_domain}", console_domain)
         .replace("{vncd_no_tls}", "1" if vncd_no_tls else "")
+        .replace("{ssh_user}", ssh_user)
+        .replace("{data_disk_device}", data_disk_device)
     )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:

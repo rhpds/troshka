@@ -321,7 +321,22 @@ def add_host(
                 return
             h.agent_status = "waiting_ssh"
             s.commit()
-            _ssh_user = "cloud-user" if provider_type == "ocpvirt" else "ec2-user"
+            # Provider-specific SSH user
+            if provider_type == "ocpvirt":
+                _ssh_user = "cloud-user"
+            elif provider_type in ("gcp", "azure"):
+                _ssh_user = "troshka"
+            else:  # ec2
+                _ssh_user = "ec2-user"
+
+            # Provider-specific data disk device path
+            if provider_type == "gcp":
+                _data_disk = "/dev/sdb"
+            elif provider_type == "azure":
+                _data_disk = "/dev/disk/azure/scsi1/lun0"
+            else:  # ec2, ocpvirt (both use NVMe translation or equivalent)
+                _data_disk = "sdf"
+
             if not wait_for_ssh(
                 ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user
             ):
@@ -357,6 +372,7 @@ def add_host(
                 host_key=_host_key,
                 console_domain=h.console_domain or "",
                 vncd_no_tls=provider_type == "ocpvirt",
+                data_disk_device=_data_disk,
             )
             h.agent_status = "connected" if result["success"] else "install_failed"
 
