@@ -87,7 +87,14 @@ def create_pool(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    if body.mode not in ("local", "shared-fsx", "shared-byo", "shared-ceph-nfs"):
+    if body.mode not in (
+        "local",
+        "shared-fsx",
+        "shared-byo",
+        "shared-ceph-nfs",
+        "shared-filestore",
+        "shared-azure-files",
+    ):
         raise HTTPException(400, f"Invalid mode: {body.mode}")
 
     existing = db.query(StoragePool).filter(StoragePool.name == body.name).first()
