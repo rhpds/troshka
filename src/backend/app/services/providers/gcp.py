@@ -238,6 +238,14 @@ class GCPDriver(ProviderDriver):
             raise ValueError("No boot image specified — set ami_id or default_ami")
 
         if image_id.startswith("https://"):
+            from urllib.parse import urlparse
+
+            parsed = urlparse(image_id)
+            if parsed.hostname not in (
+                "compute.googleapis.com",
+                "www.googleapis.com",
+            ):
+                raise ValueError(f"Untrusted image URL host: {parsed.hostname!r}")
             boot_image_url = image_id
         elif image_id.startswith("projects/"):
             boot_image_url = f"https://compute.googleapis.com/compute/v1/{image_id}"
