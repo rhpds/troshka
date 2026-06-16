@@ -7,6 +7,7 @@ for the project's VMs, or fails if no host has room.
 
 import logging
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.host import Host
@@ -123,6 +124,22 @@ def find_available_host(
                 eip_used = get_host_eip_usage(db, host.id)
                 if host.max_eips - eip_used < required_eips:
                     continue
+                if host.provider_id:
+                    from app.models.elastic_ip import ElasticIp
+                    from app.models.provider import Provider as _Prov
+
+                    prov = db.query(_Prov).filter_by(id=host.provider_id).first()
+                    if prov and prov.max_eips is not None:
+                        total_provider_eips = (
+                            db.query(func.count(ElasticIp.id))
+                            .filter(
+                                ElasticIp.provider_id == prov.id,
+                                ElasticIp.state == "associated",
+                            )
+                            .scalar()
+                        )
+                        if total_provider_eips + required_eips > prov.max_eips:
+                            continue
             candidates.append((host, free_vcpus, free_ram))
 
     if not candidates:

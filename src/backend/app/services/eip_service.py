@@ -1,200 +1,122 @@
-"""EIP lifecycle management — allocate, associate, disassociate, release."""
+"""EIP lifecycle management — allocate, associate, disassociate, release.
+
+Dispatches cloud-specific operations through the ProviderDriver interface.
+No cloud SDK imports in this module.
+"""
 
 import logging
 
-import boto3
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.elastic_ip import ElasticIp
 from app.models.provider import Provider
+from app.services.providers import get_provider_driver
 
 logger = logging.getLogger(__name__)
 
-
-def _get_ec2_client(provider: Provider):
-    """Create boto3 EC2 client from provider credentials."""
-    creds = provider.get_credentials()
-    return boto3.client(
-        "ec2",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-    )
-
-
-def _get_primary_eni(ec2, instance_id: str) -> str:
-    """Get the primary ENI (device index 0) of an instance."""
-    desc = ec2.describe_instances(InstanceIds=[instance_id])
-    for eni in desc["Reservations"][0]["Instances"][0]["NetworkInterfaces"]:
-        if eni["Attachment"]["DeviceIndex"] == 0:
-            return eni["NetworkInterfaceId"]
-    raise ValueError(f"No primary ENI found for {instance_id}")
+TRANSIT_PORT_START = 40000
+TRANSIT_PORT_END = 49999
 
 
 def allocate_eip(
-    db: Session, provider: Provider, project_id: str, canvas_eip_id: str
+    db: Session, provider: Provider, project_id: str, canvas_eip_id: str, host
 ) -> ElasticIp:
-    """
-    Allocate a new EIP from AWS.
+    """Allocate a new EIP via the provider driver."""
+    import uuid
 
-    Args:
-        db: Database session
-        provider: AWS provider with credentials
-        project_id: Troshka project ID
-        canvas_eip_id: Canvas node ID for this EIP
+    eip_id = str(uuid.uuid4())
+    driver = get_provider_driver(provider)
+    result = driver.allocate_eip(provider, host, eip_id)
 
-    Returns:
-        ElasticIp database object with state="allocated"
-    """
-    ec2 = _get_ec2_client(provider)
-
-    # Allocate the EIP
-    response = ec2.allocate_address(Domain="vpc")
-    allocation_id = response["AllocationId"]
-    public_ip = response["PublicIp"]
-
-    logger.info(
-        f"Allocated EIP {public_ip} ({allocation_id}) for project {project_id[:8]}"
-    )
-
-    # Tag the EIP
-    tags = [
-        {"Key": "ManagedBy", "Value": "troshka"},
-        {"Key": "troshka-provider-id", "Value": provider.id},
-        {"Key": "troshka-project-id", "Value": project_id},
-        {"Key": "troshka-canvas-eip-id", "Value": canvas_eip_id},
-    ]
-    ec2.create_tags(Resources=[allocation_id], Tags=tags)
-
-    # Create DB row
     eip = ElasticIp(
+        id=eip_id,
         provider_id=provider.id,
         project_id=project_id,
         canvas_eip_id=canvas_eip_id,
-        allocation_id=allocation_id,
-        public_ip=public_ip,
+        allocation_id=result["allocation_id"],
+        public_ip=result["public_ip"],
         state="allocated",
-        tags={t["Key"]: t["Value"] for t in tags},
     )
     db.add(eip)
     db.commit()
     db.refresh(eip)
 
+    logger.info(
+        "Allocated EIP %s (%s) for project %s",
+        eip.public_ip,
+        eip.allocation_id,
+        project_id[:8],
+    )
     return eip
 
 
 def associate_eip(db: Session, eip: ElasticIp, host) -> None:
-    """
-    Associate an EIP with a host.
-
-    Assigns a secondary private IP to the host's primary ENI, associates the EIP
-    to that private IP, and configures the IP on the host via SSH.
-
-    Args:
-        db: Database session
-        eip: ElasticIp to associate (must be state="allocated")
-        host: Host object with instance_id, ip_address, private_key
-    """
-    # Look up provider
+    """Associate an EIP with a host via the provider driver."""
     provider = db.query(Provider).filter_by(id=eip.provider_id).first()
     if not provider:
         raise ValueError(f"Provider {eip.provider_id} not found")
 
-    ec2 = _get_ec2_client(provider)
+    driver = get_provider_driver(provider)
+    result = driver.associate_eip(provider, host, eip.allocation_id)
 
-    # Get primary ENI
-    eni_id = _get_primary_eni(ec2, host.instance_id)
-    logger.info(f"Primary ENI for {host.instance_id}: {eni_id}")
-
-    # Assign secondary private IP
-    assign_resp = ec2.assign_private_ip_addresses(
-        NetworkInterfaceId=eni_id, SecondaryPrivateIpAddressCount=1
-    )
-    private_ip = assign_resp["AssignedPrivateIpAddresses"][0]["PrivateIpAddress"]
-    logger.info(f"Assigned private IP {private_ip} to ENI {eni_id}")
-
-    # Associate EIP to the private IP
-    assoc_resp = ec2.associate_address(
-        AllocationId=eip.allocation_id,
-        NetworkInterfaceId=eni_id,
-        PrivateIpAddress=private_ip,
-    )
-    association_id = assoc_resp["AssociationId"]
-    logger.info(f"Associated EIP {eip.public_ip} to {private_ip} ({association_id})")
-
-    # Update DB
-    eip.private_ip = private_ip
+    eip.private_ip = result.get("private_ip")
+    eip.association_id = result.get("association_id")
     eip.host_id = host.id
-    eip.association_id = association_id
     eip.state = "associated"
     db.commit()
 
     logger.info(
-        f"EIP {eip.public_ip} associated to host {host.id[:8]} "
-        f"with private IP {private_ip}"
+        "EIP %s associated to host %s",
+        eip.public_ip,
+        host.id[:8],
     )
 
 
 def disassociate_eip(db: Session, eip: ElasticIp, host) -> None:
-    """
-    Disassociate an EIP from a host.
+    """Disassociate an EIP from a host.
 
-    Disassociates the EIP, unassigns the private IP from the ENI, and removes
-    the IP from the host via SSH.
-
-    Args:
-        db: Database session
-        eip: ElasticIp to disassociate (must be state="associated")
-        host: Host object the EIP is currently associated with
+    For EC2: disassociates address and unassigns private IP via driver.
+    For OCP Virt: no-op at infra level (LB Service stays, just DB update).
     """
     if eip.state != "associated":
-        logger.warning(f"EIP {eip.id} is not associated, skipping disassociation")
+        logger.warning("EIP %s is not associated, skipping", eip.id)
         return
 
-    # Look up provider
     provider = db.query(Provider).filter_by(id=eip.provider_id).first()
     if not provider:
         raise ValueError(f"Provider {eip.provider_id} not found")
 
-    ec2 = _get_ec2_client(provider)
+    if provider.type == "ec2":
+        if eip.association_id:
+            from app.services.provisioner import _get_ec2_client
 
-    # Disassociate EIP
-    if eip.association_id:
-        ec2.disassociate_address(AssociationId=eip.association_id)
-        logger.info(
-            f"Disassociated EIP {eip.public_ip} (association {eip.association_id})"
-        )
+            creds = provider.get_credentials()
+            ec2 = _get_ec2_client(credentials=creds)
+            ec2.disassociate_address(AssociationId=eip.association_id)
 
-    # Unassign private IP from ENI
-    if eip.private_ip:
-        eni_id = _get_primary_eni(ec2, host.instance_id)
-        ec2.unassign_private_ip_addresses(
-            NetworkInterfaceId=eni_id, PrivateIpAddresses=[eip.private_ip]
-        )
-        logger.info(f"Unassigned private IP {eip.private_ip} from ENI {eni_id}")
+            if eip.private_ip:
+                desc = ec2.describe_instances(InstanceIds=[host.instance_id])
+                for eni in desc["Reservations"][0]["Instances"][0]["NetworkInterfaces"]:
+                    if eni["Attachment"]["DeviceIndex"] == 0:
+                        ec2.unassign_private_ip_addresses(
+                            NetworkInterfaceId=eni["NetworkInterfaceId"],
+                            PrivateIpAddresses=[eip.private_ip],
+                        )
+                        break
 
-    # Update DB
     eip.private_ip = None
     eip.host_id = None
     eip.association_id = None
+    eip.port_map = None
     eip.state = "allocated"
     db.commit()
 
-    logger.info(f"EIP {eip.public_ip} disassociated, returned to allocated state")
+    logger.info("EIP %s disassociated", eip.public_ip)
 
 
 def release_eip(db: Session, eip: ElasticIp) -> None:
-    """
-    Release an EIP back to AWS.
-
-    If the EIP is associated, it will be disassociated first.
-
-    Args:
-        db: Database session
-        eip: ElasticIp to release
-    """
-    # Disassociate if needed
+    """Release an EIP back to the provider."""
     if eip.state == "associated" and eip.host_id:
         from app.models.host import Host
 
@@ -202,56 +124,36 @@ def release_eip(db: Session, eip: ElasticIp) -> None:
         if host:
             disassociate_eip(db, eip, host)
 
-    # Look up provider
     provider = db.query(Provider).filter_by(id=eip.provider_id).first()
     if not provider:
         raise ValueError(f"Provider {eip.provider_id} not found")
 
-    ec2 = _get_ec2_client(provider)
+    driver = get_provider_driver(provider)
+    ns = None
+    if provider.type == "ocpvirt":
+        ns = provider.get_credentials().get("namespace", "troshka")
+    driver.release_eip(provider, eip.allocation_id, namespace=ns)
 
-    # Release the EIP
-    ec2.release_address(AllocationId=eip.allocation_id)
-    logger.info(f"Released EIP {eip.public_ip} ({eip.allocation_id})")
-
-    # Delete DB row
+    logger.info("Released EIP %s (%s)", eip.public_ip, eip.allocation_id)
     db.delete(eip)
     db.commit()
 
 
 def migrate_eip(db: Session, eip: ElasticIp, from_host, to_host) -> None:
-    """
-    Migrate an EIP from one host to another.
-
-    Disassociates from the old host and associates to the new host.
-
-    Args:
-        db: Database session
-        eip: ElasticIp to migrate (must be state="associated")
-        from_host: Current host the EIP is associated with
-        to_host: Target host to associate the EIP with
-    """
+    """Migrate an EIP from one host to another."""
     logger.info(
-        f"Migrating EIP {eip.public_ip} from host {from_host.id[:8]} "
-        f"to host {to_host.id[:8]}"
+        "Migrating EIP %s from host %s to host %s",
+        eip.public_ip,
+        from_host.id[:8],
+        to_host.id[:8],
     )
-
     disassociate_eip(db, eip, from_host)
     associate_eip(db, eip, to_host)
-
-    logger.info(f"EIP {eip.public_ip} migration complete")
+    logger.info("EIP %s migration complete", eip.public_ip)
 
 
 def get_host_eip_usage(db: Session, host_id: str) -> int:
-    """
-    Get the number of EIPs currently associated with a host.
-
-    Args:
-        db: Database session
-        host_id: Host UUID
-
-    Returns:
-        Count of EIPs with state="associated" for this host
-    """
+    """Get count of EIPs associated with a host."""
     return (
         db.query(func.count(ElasticIp.id))
         .filter(ElasticIp.host_id == host_id, ElasticIp.state == "associated")
@@ -259,12 +161,48 @@ def get_host_eip_usage(db: Session, host_id: str) -> int:
     )
 
 
+def allocate_transit_ports(
+    db: Session, eip: ElasticIp, host, port_forwards: list[dict]
+) -> dict:
+    """Allocate transit ports for OCP Virt EIP port forwards.
+
+    Scans existing port_map values on the same host to avoid collisions.
+    Returns dict mapping ext_port (str) to transit_port (int).
+    """
+    used = set()
+    for other in db.query(ElasticIp).filter(
+        ElasticIp.host_id == host.id, ElasticIp.port_map.isnot(None)
+    ):
+        used.update(other.port_map.values())
+
+    port_map = {}
+    next_port = TRANSIT_PORT_START
+    for pf in port_forwards:
+        while next_port in used:
+            next_port += 1
+        if next_port > TRANSIT_PORT_END:
+            raise RuntimeError("Transit port range exhausted")
+        port_map[str(pf["extPort"])] = next_port
+        used.add(next_port)
+        next_port += 1
+
+    eip.port_map = port_map
+    db.commit()
+    return port_map
+
+
 def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) -> dict:
-    """Reconcile SG ingress rules. Only touches rules with 'troshka-pf:' description prefix."""
+    """Reconcile SG ingress rules. EC2 only — no-op for other providers."""
+    if provider.type != "ec2":
+        return {"added": 0, "removed": 0}
+
     if not provider.security_group_id:
         return {"added": 0, "removed": 0, "error": "No security group configured"}
 
-    ec2 = _get_ec2_client(provider)
+    from app.services.provisioner import _get_ec2_client
+
+    creds = provider.get_credentials()
+    ec2 = _get_ec2_client(credentials=creds)
     sg_id = provider.security_group_id
 
     sg = ec2.describe_security_groups(GroupIds=[sg_id])
@@ -304,7 +242,10 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
                         "FromPort": r["port"],
                         "ToPort": r["port"],
                         "IpRanges": [
-                            {"CidrIp": "0.0.0.0/0", "Description": r["description"]}
+                            {
+                                "CidrIp": "0.0.0.0/0",
+                                "Description": r["description"],
+                            }
                         ],
                     }
                     for r in to_add.values()
@@ -323,7 +264,10 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
                     "FromPort": r["port"],
                     "ToPort": r["port"],
                     "IpRanges": [
-                        {"CidrIp": "0.0.0.0/0", "Description": r["description"]}
+                        {
+                            "CidrIp": "0.0.0.0/0",
+                            "Description": r["description"],
+                        }
                     ],
                 }
                 for r in to_remove.values()

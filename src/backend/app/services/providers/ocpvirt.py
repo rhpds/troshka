@@ -322,11 +322,6 @@ class OCPVirtDriver(ProviderDriver):
                                         "masquerade": {},
                                         "model": "virtio",
                                         "name": "default",
-                                        "ports": [
-                                            {"port": 22},
-                                            {"port": 31337},
-                                            {"port": 443},
-                                        ],
                                     }
                                 ],
                                 "rng": {},
@@ -424,7 +419,7 @@ class OCPVirtDriver(ProviderDriver):
             "key_pair_name": None,
             "private_key": private_key,
             "storage_size_gb": storage_size_gb,
-            "max_eips": 0,
+            "max_eips": 100,
             "_ssh_host": external_ip,
             "_ssh_port": 22000,
         }
@@ -488,6 +483,21 @@ class OCPVirtDriver(ProviderDriver):
                 core_api.delete_namespaced_service(f"{prefix}{host_short}", namespace)
             except client.ApiException:
                 pass
+
+        # Clean up EIP LB services by label
+        try:
+            eip_svcs = core_api.list_namespaced_service(
+                namespace,
+                label_selector=f"troshka/host-id={host_short}",
+            )
+            for svc in eip_svcs.items:
+                if svc.metadata.name.startswith("troshka-eip-"):
+                    try:
+                        core_api.delete_namespaced_service(svc.metadata.name, namespace)
+                    except client.ApiException:
+                        pass
+        except client.ApiException:
+            pass
 
         # Clean up userdata secret
         try:

@@ -276,6 +276,10 @@ def build_host_network_config(
                 pf_entry = dict(pf)
                 ext_ip = eip_map.get(pf.get("extIpId", ""), {})
                 pf_entry["_private_ip"] = ext_ip.get("_private_ip", "")
+                transit_map = ext_ip.get("_transit_port_map")
+                if transit_map:
+                    ext_port_str = str(pf.get("extPort", ""))
+                    pf_entry["_transit_port"] = transit_map.get(ext_port_str)
                 port_forwards.append(pf_entry)
 
             gateway_config = {

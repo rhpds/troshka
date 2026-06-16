@@ -2757,6 +2757,8 @@ def _handle_network_full_setup(job, params):
             ext_port = pf.get("extPort", "")
             int_ip = pf.get("intIp", "")
             int_port = pf.get("intPort", "")
+            transit_port = pf.get("_transit_port")
+            effective_port = str(transit_port) if transit_port else str(ext_port)
             if ext_port and int_ip and int_port:
                 pf_transit_ip = f"172.30.{transit_octet3}.{10 + pf_idx}"
                 pf_transit_ips[pf_idx] = pf_transit_ip
@@ -2797,7 +2799,7 @@ def _handle_network_full_setup(job, params):
                         pf_transit_ip,
                         "tcp",
                         "dport",
-                        str(ext_port),
+                        effective_port,
                         "dnat",
                         "ip",
                         "to",
@@ -2958,6 +2960,8 @@ def _handle_network_full_setup(job, params):
                 int_ip = pf.get("intIp", "")
                 int_port = pf.get("intPort", "")
                 priv_ip = pf.get("_private_ip", "")
+                transit_port = pf.get("_transit_port")
+                effective_port = str(transit_port) if transit_port else str(ext_port)
                 pf_transit_ip = pf_transit_ips.get(pf_idx, transit_ns_ip)
                 if ext_port and int_ip and int_port:
                     if priv_ip:
@@ -2983,10 +2987,30 @@ def _handle_network_full_setup(job, params):
                             ],
                             timeout=10,
                         )
+                    elif transit_port:
+                        _run_cmd(
+                            job,
+                            [
+                                "nft",
+                                "add",
+                                "rule",
+                                "inet",
+                                "nat",
+                                pre_chain,
+                                "tcp",
+                                "dport",
+                                str(transit_port),
+                                "dnat",
+                                "ip",
+                                "to",
+                                f"{pf_transit_ip}:{effective_port}",
+                            ],
+                            timeout=10,
+                        )
                     else:
                         _job_log(
                             job,
-                            f"Skipping port forward :{ext_port} — no EIP private IP yet",
+                            f"Skipping port forward :{ext_port} — no EIP private IP or transit port",
                         )
 
         _job_log(job, "Host nftables configured")

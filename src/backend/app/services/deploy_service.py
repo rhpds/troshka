@@ -1290,9 +1290,11 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             from app.models.provider import Provider
             from app.services.eip_service import (
                 allocate_eip,
+                allocate_transit_ports,
                 associate_eip,
                 sync_security_group_rules,
             )
+            from app.services.providers import get_provider_driver
 
             provider = (
                 s.query(Provider).filter_by(id=project.provider_id).first()
@@ -1318,13 +1320,44 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 if existing:
                     eip = existing
                 else:
-                    eip = allocate_eip(s, provider, project_id, canvas_id)
+                    eip = allocate_eip(s, provider, project_id, canvas_id, host)
 
                 if eip.state != "associated":
                     associate_eip(s, eip, host)
 
                 ext_ip["ip"] = eip.public_ip
                 ext_ip["_private_ip"] = eip.private_ip
+
+                if provider.type != "ec2" and not eip.port_map:
+                    pf_for_eip = []
+                    for node in topology.get("nodes", []):
+                        node_data = node.get("data", {})
+                        if node_data.get("subtype") == "gateway":
+                            pf_for_eip = [
+                                pf
+                                for pf in node_data.get("portForwards", [])
+                                if pf.get("extIpId") == canvas_id
+                            ]
+                            break
+                    if pf_for_eip:
+                        port_map = allocate_transit_ports(s, eip, host, pf_for_eip)
+                        driver = get_provider_driver(provider)
+                        driver.update_eip_ports(
+                            provider,
+                            host,
+                            eip.allocation_id,
+                            [
+                                {
+                                    "port": int(ep),
+                                    "targetPort": tp,
+                                    "name": f"pf-{i}",
+                                }
+                                for i, (ep, tp) in enumerate(port_map.items())
+                            ],
+                        )
+
+                if eip.port_map:
+                    ext_ip["_transit_port_map"] = eip.port_map
 
             project.topology = topology
             s.commit()

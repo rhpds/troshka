@@ -66,7 +66,7 @@ def test_provision_host_creates_vm(mock_time, mock_keygen, mock_clients):
     assert result["private_key"] == "PRIVATE_KEY"
     assert result["total_vcpus"] == 64
     assert result["total_ram_mb"] == 256 * 1024
-    assert result["max_eips"] == 0
+    assert result["max_eips"] == 100
     assert result["instance_id"] == "troshka-host-aaaaaaaa"
     assert result["_ssh_host"] == "67.228.103.5"
     assert result["_ssh_port"] == 22000
