@@ -99,7 +99,8 @@ chmod +x /etc/libvirt/hooks/qemu
 # Restart libvirt to pick up hook changes
 if systemctl is-active virtqemud &>/dev/null; then
     systemctl restart virtqemud
-    echo "virtqemud restarted"
+    systemctl start virtstoraged.socket virtnetworkd.socket 2>/dev/null || true
+    echo "virtqemud restarted (modular sockets re-activated)"
 elif systemctl is-active libvirtd &>/dev/null; then
     systemctl restart libvirtd
     echo "libvirtd restarted"
@@ -227,6 +228,7 @@ LVEOF
         systemctl enable --now virtproxyd-tls.socket 2>/dev/null || true
     fi
     systemctl restart virtqemud 2>/dev/null || systemctl restart libvirtd 2>/dev/null || true
+    systemctl start virtstoraged.socket virtnetworkd.socket 2>/dev/null || true
     echo "troshkad: libvirt TLS configured with pool CA"
 fi
 

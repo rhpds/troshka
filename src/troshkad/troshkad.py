@@ -5365,9 +5365,9 @@ def main():
     _restore_bmc_services()
     _restore_dnsmasq()
 
-    # Watchdog: check dnsmasq every 30s, restart if dead
-    dnsmasq_watchdog = threading.Thread(target=_dnsmasq_watchdog_loop, daemon=True)
-    dnsmasq_watchdog.start()
+    # Watchdog: check dnsmasq + system services every 30s, restart if dead
+    watchdog = threading.Thread(target=_watchdog_loop, daemon=True)
+    watchdog.start()
 
     _start_libvirt_event_loop()
 
@@ -5562,14 +5562,49 @@ def _restore_dnsmasq():
         logger.info("dnsmasq restore: restarted %d instance(s)", restarted)
 
 
-def _dnsmasq_watchdog_loop():
-    """Periodically check dnsmasq is alive, restart if not."""
+# Services that must be running for troshkad to function.
+# Each entry: (unit_name, restart_unit, is_socket)
+_REQUIRED_SERVICES = [
+    ("virtqemud", "virtqemud.socket", True),
+    ("virtstoraged", "virtstoraged.socket", True),
+    ("virtnetworkd", "virtnetworkd.socket", True),
+    ("nftables", "nftables.service", False),
+]
+
+
+def _watchdog_loop():
+    """Periodically check dnsmasq instances + system services, restart if dead."""
+    time.sleep(10)
     while True:
-        time.sleep(5)
         try:
             _check_and_restart_dnsmasq()
         except Exception as e:
-            logger.warning("dnsmasq watchdog error: %s", e)
+            logger.warning("watchdog: dnsmasq check error: %s", e)
+
+        for service_name, unit, is_socket in _REQUIRED_SERVICES:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", unit],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.stdout.strip() == "active":
+                    continue
+                if is_socket:
+                    check_svc = subprocess.run(
+                        ["systemctl", "is-active", f"{service_name}.service"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if check_svc.stdout.strip() == "active":
+                        continue
+                logger.warning("watchdog: %s is not active, restarting", unit)
+                subprocess.run(
+                    ["systemctl", "start", unit],
+                    capture_output=True, timeout=10,
+                )
+            except Exception as e:
+                logger.warning("watchdog: %s check error: %s", service_name, e)
+
+        time.sleep(30)
 
 
 def _restore_bmc_services():
