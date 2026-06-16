@@ -290,43 +290,47 @@ class AzureDriver(ProviderDriver):
         logger.info("Created NIC %s", nic_name)
 
         # --- Accept marketplace terms if needed (BYOS images) ---
-        try:
-            from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements
+        # Skip marketplace terms entirely for managed images (Image Builder)
+        if "id" not in image_ref:
+            try:
+                from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements
 
-            credential = _get_credential(creds_dict)
-            subscription_id = _get_subscription_id(creds_dict)
-            mp_client = MarketplaceOrderingAgreements(credential, subscription_id)
-            agreement = mp_client.marketplace_agreements.get(
-                offer_type="virtualmachine",
-                publisher_id=image_ref["publisher"],
-                offer_id=image_ref["offer"],
-                plan_id=image_ref["sku"],
-            )
-            agreement.accepted = True
-            mp_client.marketplace_agreements.create(
-                offer_type="virtualmachine",
-                publisher_id=image_ref["publisher"],
-                offer_id=image_ref["offer"],
-                plan_id=image_ref["sku"],
-                parameters=agreement,
-            )
-            logger.info("Accepted marketplace terms for %s", image_urn)
-            plan_info = {
-                "name": image_ref["sku"],
-                "publisher": image_ref["publisher"],
-                "product": image_ref["offer"],
-            }
-        except Exception as e:
-            if "not found" in str(e).lower() or "no agreement" in str(e).lower():
-                # Not a marketplace image, no terms needed
-                plan_info = None
-            else:
-                logger.debug(
-                    "Marketplace terms check for %s: %s (proceeding without plan)",
-                    image_urn,
-                    e,
+                credential = _get_credential(creds_dict)
+                subscription_id = _get_subscription_id(creds_dict)
+                mp_client = MarketplaceOrderingAgreements(credential, subscription_id)
+                agreement = mp_client.marketplace_agreements.get(
+                    offer_type="virtualmachine",
+                    publisher_id=image_ref["publisher"],
+                    offer_id=image_ref["offer"],
+                    plan_id=image_ref["sku"],
                 )
-                plan_info = None
+                agreement.accepted = True
+                mp_client.marketplace_agreements.create(
+                    offer_type="virtualmachine",
+                    publisher_id=image_ref["publisher"],
+                    offer_id=image_ref["offer"],
+                    plan_id=image_ref["sku"],
+                    parameters=agreement,
+                )
+                logger.info("Accepted marketplace terms for %s", image_urn)
+                plan_info = {
+                    "name": image_ref["sku"],
+                    "publisher": image_ref["publisher"],
+                    "product": image_ref["offer"],
+                }
+            except Exception as e:
+                if "not found" in str(e).lower() or "no agreement" in str(e).lower():
+                    # Not a marketplace image, no terms needed
+                    plan_info = None
+                else:
+                    logger.debug(
+                        "Marketplace terms check for %s: %s (proceeding without plan)",
+                        image_urn,
+                        e,
+                    )
+                    plan_info = None
+        else:
+            plan_info = None
 
         # --- Create VM ---
         vm_params = {
@@ -334,12 +338,16 @@ class AzureDriver(ProviderDriver):
             "tags": {"managed-by": "troshka", "troshka-host-id": host_id[:12]},
             "hardware_profile": {"vm_size": instance_type},
             "storage_profile": {
-                "image_reference": {
-                    "publisher": image_ref["publisher"],
-                    "offer": image_ref["offer"],
-                    "sku": image_ref["sku"],
-                    "version": image_ref["version"],
-                },
+                "image_reference": (
+                    {"id": image_ref["id"]}
+                    if "id" in image_ref
+                    else {
+                        "publisher": image_ref["publisher"],
+                        "offer": image_ref["offer"],
+                        "sku": image_ref["sku"],
+                        "version": image_ref["version"],
+                    }
+                ),
                 "os_disk": {
                     "name": os_disk_name,
                     "create_option": "FromImage",

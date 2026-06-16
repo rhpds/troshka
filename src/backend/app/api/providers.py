@@ -1594,6 +1594,13 @@ def build_image(
     body = body or {}
     rhel_version = body.get("rhel_version", "rhel-10")
 
+    VALID_RHEL_VERSIONS = {"rhel-9", "rhel-10"}
+    if rhel_version not in VALID_RHEL_VERSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid RHEL version. Must be one of: {', '.join(sorted(VALID_RHEL_VERSIONS))}",
+        )
+
     threading.Thread(
         target=image_builder_service.build_host_image,
         args=(provider_id, user.id, rhel_version),

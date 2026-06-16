@@ -961,7 +961,7 @@ export default function AdminProvidersPage() {
                   >
                     Build Image
                   </Button>
-                  {buildStatus[p.id]?.status === "success" && (
+                  {(buildStatus[p.id]?.status === "success" || buildStatus[p.id]?.status === "error") && (
                     <Button variant="link" onClick={async () => {
                       await fetch(`/api/v1/providers/${p.id}/build-image/status`, { method: "DELETE" });
                       setBuildStatus((prev) => { const n = { ...prev }; delete n[p.id]; return n; });

@@ -140,7 +140,7 @@ def _extract_image_reference(
     raise ImageBuilderError(f"Unknown provider type: {provider_type}")
 
 
-def _build_upload_options(provider) -> dict:
+def _build_upload_options(provider, rhel_version: str = "rhel-10") -> dict:
     if provider.type == "gcp":
         creds = provider.get_credentials()
         sa_json = creds.get("service_account_json", {})
@@ -154,7 +154,7 @@ def _build_upload_options(provider) -> dict:
             "tenant_id": creds.get("tenant_id", provider.azure_subscription_id),
             "subscription_id": provider.azure_subscription_id,
             "resource_group": provider.azure_resource_group,
-            "image_name": f"troshka-host-rhel10-{int(time.time())}",
+            "image_name": f"troshka-host-{rhel_version}-{int(time.time())}",
         }
     raise ImageBuilderError(
         f"Unsupported provider type for image build: {provider.type}"
@@ -214,7 +214,7 @@ def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-1
 
         access_token = _exchange_token(offline_token)
 
-        upload_options = _build_upload_options(provider)
+        upload_options = _build_upload_options(provider, rhel_version)
         image_type = "gcp" if provider.type == "gcp" else "azure"
 
         _build_progress[provider_id] = {
