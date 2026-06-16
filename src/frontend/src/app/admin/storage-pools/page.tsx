@@ -54,12 +54,12 @@ const statusColors: Record<string, string> = {
 };
 
 const modeLabels: Record<string, string> = {
-  local: "Local EBS",
-  "shared-fsx": "FSx OpenZFS",
-  "shared-byo": "BYO NFS",
+  local: "Local (All Providers)",
+  "shared-fsx": "FSx OpenZFS (AWS)",
+  "shared-byo": "BYO NFS (All Providers)",
   "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
   "shared-filestore": "Filestore (GCP)",
-  "shared-azure-files": "Azure Files NFS",
+  "shared-azure-files": "Azure Files NFS (Azure)",
 };
 
 const inputStyle = {
