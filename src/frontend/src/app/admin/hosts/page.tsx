@@ -261,7 +261,7 @@ export default function AdminHostsPage() {
   };
 
   const [showKeyFor, setShowKeyFor] = useState<string | null>(null);
-  const [keyData, setKeyData] = useState<Record<string, { key_pair_name: string; private_key: string; ssh_command: string | null; public_key?: string }>>({});
+  const [keyData, setKeyData] = useState<Record<string, { key_pair_name: string; private_key: string; ssh_command: string | null; ssh_script_command?: string; public_key?: string }>>({});
 
   const showKeyPair = async (hostId: string) => {
     if (showKeyFor === hostId) { setShowKeyFor(null); return; }
@@ -1126,6 +1126,15 @@ export default function AdminHostsPage() {
             {showKeyFor === h.id && keyData[h.id] && (
               <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {keyData[h.id].ssh_script_command && (
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600 }}>SSH Script</label>
+                        <Button variant="plain" onClick={() => copyToClipboard(keyData[h.id].ssh_script_command!, "SSH script command")} style={{ padding: "2px 6px", fontSize: 11 }}>Copy</Button>
+                      </div>
+                      <code style={{ fontSize: 11, display: "block", padding: 6, background: "rgba(0,0,0,0.2)", borderRadius: 4 }}>{keyData[h.id].ssh_script_command}</code>
+                    </div>
+                  )}
                   {keyData[h.id].ssh_command && (
                     <div>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>

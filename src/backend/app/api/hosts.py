@@ -599,12 +599,23 @@ def get_ssh_key(
     if not host.private_key:
         raise HTTPException(status_code=404, detail="No SSH key stored for this host")
 
+    ssh_user = "ec2-user"
+    ssh_port = 22
+    if host.provider_id:
+        prov = db.query(Provider).filter_by(id=host.provider_id).first()
+        if prov and prov.type == "ocpvirt":
+            ssh_user = "cloud-user"
+            ssh_port = 22000
+    ssh_cmd = None
+    if host.ip_address:
+        port_flag = f" -p {ssh_port}" if ssh_port != 22 else ""
+        ssh_cmd = f"ssh -i <key-file>{port_flag} {ssh_user}@{host.ip_address}"
+
     result = {
         "key_pair_name": host.key_pair_name,
         "private_key": host.private_key,
-        "ssh_command": (
-            f"ssh -i <key-file> ec2-user@{host.ip_address}" if host.ip_address else None
-        ),
+        "ssh_command": ssh_cmd,
+        "ssh_script_command": f"scripts/host-ssh.sh {host.id[:8]}",
     }
 
     # Derive public key from private key
