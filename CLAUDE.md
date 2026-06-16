@@ -295,19 +295,23 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### GCP Provider Setup
 - Provider type `gcp` — creates nested-virt RHEL VMs on Google Compute Engine
-- **Driver**: `src/backend/app/services/providers/gcp.py` (~780 lines, self-contained)
-- **Prerequisites**: pre-create a GCP project, enable Compute Engine + Filestore + Cloud DNS APIs, create service account with required roles, download SA key JSON
+- **Driver**: `src/backend/app/services/providers/gcp.py` (~800 lines, self-contained)
+- **Dev project**: `troshka-rhdp` under `rhpds-apps` folder (809829662025), billing on RHPDS Master
+- **Prerequisites**: pre-create a GCP project, enable Compute Engine + Cloud DNS APIs, create SA with Compute Admin + DNS Admin roles
 - **Credentials**: `{"service_account_json": {...}}` — full service account key JSON
-- **Instance types**: N2-highmem series (8 GiB/vCPU, Intel, nested virt supported). Default: `n2-highmem-32` (32 vCPU / 256 GiB)
-- **Nested virt**: enabled via `advancedMachineFeatures.enableNestedVirtualization=True`
-- **Images**: RHEL BYOS from `rhel-byos-cloud` project (Red Hat Cloud Access), PAYG fallback from `rhel-cloud`
-- **Network setup**: "Setup Network" creates custom-mode VPC, subnet (`10.100.1.0/24`), firewall rules (SSH, console, agent, VXLAN)
+- **Instance types**: N2-highmem for hosts (nested virt), E2-standard for pattern buffers (no nested virt needed)
+- **Org policy constraint**: `custom.denyCostlyMachineTypes` blocks "exotic" types — E2 and N2-standard work, N2-highmem may need an exception for host provisioning
+- **Nested virt**: enabled via `advancedMachineFeatures.enableNestedVirtualization=True`, disabled for pattern buffer hosts
+- **Network tags**: instances MUST have `troshka-host` tag for firewall rules to apply (SSH, console, agent, VXLAN)
+- **Images**: currently using PAYG from `rhel-cloud` (repos work out of the box). BYOS from `rhel-byos-cloud` available but needs RHSM registration for package installs. Future: Red Hat Image Builder API for custom images with packages pre-installed.
+- **Network setup**: "Setup Network" creates custom-mode VPC, subnet (`10.100.1.0/24`), firewall rules targeting `troshka-host` tag
 - **Console**: Cloud DNS zone + `certbot-dns-google` plugin for Let's Encrypt TLS
 - **EIPs**: GCP static external IPs, associated via access config on nic0
-- **Shared storage**: Filestore Zonal (`shared-filestore` pool mode), ~$0.12/GiB/month, online resize
+- **Shared storage**: not supported yet (Filestore/NetApp blocked by org policy). Use `local` pool mode with pattern buffer for pattern save.
 - **SSH user**: `troshka` (set via instance metadata `ssh-keys`)
 - **Data disk**: `/dev/sdb` (second attached persistent SSD)
 - **Resize**: requires stop → `setMachineType()` → start (GCP limitation)
+- **Pattern buffer**: uses `e2-standard-2` (allowed by org policy, no nested virt)
 
 ### Azure Provider Setup
 - Provider type `azure` — creates nested-virt RHEL VMs on Azure
@@ -316,7 +320,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Credentials**: `{"tenant_id": "...", "client_id": "...", "client_secret": "...", "subscription_id": "..."}`
 - **Instance types**: Esv5 series (8 GiB/vCPU, Intel, nested virt supported). Default: `Standard_E32s_v5` (32 vCPU / 256 GiB)
 - **Nested virt**: supported natively on Esv5 series (no extra flag)
-- **Images**: RHEL BYOS from `redhat` publisher, `rhel-byos` offer (marketplace terms acceptance required on first use), PAYG fallback from `RHEL` offer
+- **Images**: RHEL BYOS from `redhat` publisher, `rhel-byos` offer (marketplace terms acceptance required on first use), PAYG fallback from `RHEL` offer. Same BYOS repos issue as GCP — future: Red Hat Image Builder for custom images.
 - **Network setup**: "Setup Network" creates Resource Group, VNet (`10.100.0.0/16`), subnet, NSG with rules
 - **Console**: Azure DNS zone + `certbot-dns-azure` plugin for Let's Encrypt TLS
 - **EIPs**: Azure public IPs (Standard SKU, static), associated via NIC IP config
