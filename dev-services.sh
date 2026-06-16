@@ -63,7 +63,7 @@ start_backend() {
     fi
     source venv/bin/activate
     alembic upgrade head 2>/dev/null || true
-    uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >>/tmp/troshka-backend.log 2>&1 &
+    uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --reload-dir app >>/tmp/troshka-backend.log 2>&1 &
     echo $! > "$PID_DIR/backend.pid"
     echo "  Backend:    started (port $BACKEND_PORT, PID $(cat "$PID_DIR/backend.pid"))"
 }
