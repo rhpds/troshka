@@ -28,6 +28,22 @@ class Provider(Base):
     console_nameservers: Mapped[list | None] = mapped_column(JSONB, default=None)
     state: Mapped[str] = mapped_column(String(20), default="active")
     max_eips: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # GCP-specific
+    gcp_project_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gcp_network_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gcp_subnet_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gcp_firewall_policy: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gcp_zone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Azure-specific
+    azure_subscription_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    azure_resource_group: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    azure_vnet_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    azure_subnet_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    azure_nsg_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    azure_location: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
