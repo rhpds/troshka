@@ -106,6 +106,12 @@ def list_hosts(
             for p in all_projects
             if p.deployed_topology
         )
+        if host.provider_id:
+            from app.models.provider import Provider
+
+            prov = db.query(Provider).filter_by(id=host.provider_id).first()
+            if prov:
+                resp.provider_type = prov.type
         results.append(resp)
     return results
 
@@ -347,6 +353,7 @@ def add_host(
                 host_cert=_host_cert,
                 host_key=_host_key,
                 console_domain=h.console_domain or "",
+                vncd_no_tls=provider_type == "ocpvirt",
             )
             h.agent_status = "connected" if result["success"] else "install_failed"
 
@@ -360,9 +367,7 @@ def add_host(
             # Create console DNS/Route record
             if h.instance_id and h.ip_address:
                 prov_obj = s.query(Provider).get(h.provider_id)
-                if prov_obj and prov_obj.type == "ocpvirt":
-                    h.console_domain = h.ip_address
-                elif provider_console_domain:
+                if provider_console_domain:
                     from app.services.console_dns import console_domain_for_host
                     from app.services.providers import get_provider_driver
 
@@ -371,8 +376,10 @@ def add_host(
                     )
                     try:
                         drv = get_provider_driver(prov_obj)
-                        drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
-                        h.console_domain = fqdn
+                        result = drv.create_console_record(
+                            prov_obj, h, fqdn, h.ip_address
+                        )
+                        h.console_domain = result if result else fqdn
                     except Exception as e:
                         logger.warning(
                             "Failed to create console record for %s: %s",

@@ -350,7 +350,16 @@ SYSTEMDEOF
 
 # Console TLS via Let's Encrypt (only if console_domain is set)
 CONSOLE_DOMAIN="{console_domain}"
-if [ -n "$CONSOLE_DOMAIN" ]; then
+VNCD_NO_TLS="{vncd_no_tls}"
+if [ -n "$VNCD_NO_TLS" ]; then
+    # OCP Virt: TLS terminated by OCP router, vncd runs plain on 8080
+    sed -i 's|ExecStart=.*troshka-vncd.py.*|ExecStart=/opt/troshka/venv/bin/python3 /opt/troshka/troshka-vncd.py --no-tls|' \
+        /etc/systemd/system/troshka-vncd.service
+    systemctl daemon-reload
+    systemctl enable troshka-vncd
+    systemctl restart troshka-vncd
+    echo "vncd: started in no-TLS mode (port 8080)"
+elif [ -n "$CONSOLE_DOMAIN" ]; then
     echo "=== Setting up console TLS ==="
     /opt/troshka/venv/bin/pip install $PIP_ARGS certbot certbot-dns-route53
     /opt/troshka/venv/bin/certbot certonly --dns-route53 \
@@ -554,6 +563,7 @@ def deploy_agent(
     host_cert: str = "",
     host_key: str = "",
     console_domain: str = "",
+    vncd_no_tls: bool = False,
     host_type: str = "shared",
     ssh_port: int = 22,
     ssh_user: str = "ec2-user",
@@ -592,6 +602,7 @@ def deploy_agent(
             base64.b64encode(host_key.encode()).decode() if host_key else "",
         )
         .replace("{console_domain}", console_domain)
+        .replace("{vncd_no_tls}", "1" if vncd_no_tls else "")
     )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:

@@ -42,7 +42,7 @@ runcmd:
     gpgcheck=0
     REPOEOF
     fi
-  - dnf install -y qemu-kvm libvirt libvirt-client virt-install python3 python3-libvirt dnsmasq nftables nmap-ncat nfs-utils || true
+  - dnf install -y qemu-kvm libvirt libvirt-client virt-install python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass nfs-utils || true
   - systemctl enable --now libvirtd || systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
   - systemctl enable --now nftables
   - systemctl disable --now dnsmasq 2>/dev/null || true
@@ -616,16 +616,17 @@ class OCPVirtDriver(ProviderDriver):
             if e.status != 409:
                 raise
 
-        # Create edge-terminated Route
+        # Create edge-terminated Route (omit spec.host — OCP auto-generates
+        # {route-name}-{namespace}.{apps-domain} from the wildcard cert)
+        route_name = f"troshka-console-{host_short}"
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
             "metadata": {
-                "name": f"troshka-console-{host_short}",
+                "name": route_name,
                 "namespace": namespace,
             },
             "spec": {
-                "host": hostname,
                 "to": {
                     "kind": "Service",
                     "name": f"troshka-vncd-{host_short}",
@@ -638,16 +639,18 @@ class OCPVirtDriver(ProviderDriver):
             },
         }
         try:
-            custom_api.create_namespaced_custom_object(
+            result = custom_api.create_namespaced_custom_object(
                 group="route.openshift.io",
                 version="v1",
                 namespace=namespace,
                 plural="routes",
                 body=route,
             )
+            return result.get("spec", {}).get("host", "")
         except client.ApiException as e:
-            if e.status != 409:
-                raise
+            if e.status == 409:
+                return f"{route_name}-{namespace}.{hostname}"
+            raise
 
     def delete_console_record(self, provider, host, hostname, ip_address):
         from kubernetes import client

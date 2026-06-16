@@ -53,6 +53,7 @@ export default function ProjectCanvasPage() {
 
   const [deployError, setDeployError] = useState<string | null>(null);
   const [hasDeployedTopology, setHasDeployedTopology] = useState(false);
+  const [deployHostId, setDeployHostId] = useState("");
 
   // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
   useEffect(() => {
@@ -110,7 +111,15 @@ export default function ProjectCanvasPage() {
   }, [projectId]);
 
   useEffect(() => {
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => setIsAdmin(d.role === "admin"));
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+      setIsAdmin(d.role === "admin");
+      if (d.role === "admin") {
+        fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
+          const active = hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer");
+          setAvailableHosts(active);
+        });
+      }
+    });
   }, []);
 
   const [deployProgress, setDeployProgress] = useState<{ step: string; detail: string; items?: string[] } | null>(null);
@@ -294,7 +303,7 @@ export default function ProjectCanvasPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
-  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null}[]>([]);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null; provider_type: string | null}[]>([]);
   const [migrateTarget, setMigrateTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migrateSourceHost, setMigrateSourceHost] = useState<{instance_id: string | null; ip_address: string} | null>(null);
@@ -363,7 +372,10 @@ export default function ProjectCanvasPage() {
     try {
       await saveTopology();
       setProjectState("deploying");
-      const resp = await fetch(`/api/v1/projects/${projectId}/deploy`, {
+      const deployParams = new URLSearchParams();
+      if (deployHostId) deployParams.set("host_id", deployHostId);
+      const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
+      const resp = await fetch(`/api/v1/projects/${projectId}/deploy${deployQs}`, {
         method: "POST",
       });
       const data = await resp.json();
@@ -463,9 +475,22 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {projectState === "draft" && (
-            <button className="project-publish-btn" onClick={handlePublish}>
-              ⚡ Deploy
-            </button>
+            <>
+              {isAdmin && availableHosts.length > 0 && (
+                <select style={{
+                  padding: "6px 10px", borderRadius: 6, fontSize: 12,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                  <option value="">Auto (best host)</option>
+                  {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
+                </select>
+              )}
+              <button className="project-publish-btn" onClick={handlePublish}>
+                ⚡ Deploy
+              </button>
+            </>
           )}
           {projectState === "active" && (
             <>

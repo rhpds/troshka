@@ -19,6 +19,7 @@ import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/reac
 
 interface Host {
   id: string;
+  provider_id: string | null;
   instance_id: string | null;
   instance_type: string | null;
   region: string | null;
@@ -72,6 +73,9 @@ export default function AdminHostsPage() {
   const [newRegion, setNewRegion] = useState("");
   const [error, setError] = useState("");
   const [filterRegion, setFilterRegion] = useState("");
+  const [filterProvider, setFilterProvider] = useState("");
+  const [filterProviderType, setFilterProviderType] = useState("");
+  const [filterText, setFilterText] = useState("");
   const [cpuRatio, setCpuRatio] = useState(4.0);
   const [ramRatio, setRamRatio] = useState(1.5);
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
@@ -214,7 +218,18 @@ export default function AdminHostsPage() {
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
   const selectedProviderReady = selectedProvider?.type === "ocpvirt" ? true : (selectedProviderHasAmi && selectedProviderHasVpc);
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
-  const filteredHosts = filterRegion ? hosts.filter((h) => (h.region || "unknown") === filterRegion) : hosts;
+  const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
+  const filteredHosts = hosts.filter((h) => {
+    if (filterRegion && (h.region || "unknown") !== filterRegion) return false;
+    if (filterProvider && h.provider_id !== filterProvider) return false;
+    if (filterProviderType && providerTypeById[h.provider_id || ""] !== filterProviderType) return false;
+    if (filterText) {
+      const q = filterText.toLowerCase();
+      const haystack = [h.id, h.instance_id, h.instance_type, h.ip_address, h.region, h.host_type, h.agent_status].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    return true;
+  }).slice().sort((a, b) => (a.storage_pool_id || "").localeCompare(b.storage_pool_id || "") || a.id.localeCompare(b.id));
 
   const stateColors: Record<string, string> = {
     active: "#4ade80",
@@ -430,6 +445,31 @@ export default function AdminHostsPage() {
           <ToolbarContent>
             <ToolbarItem>
               <Title headingLevel="h1">Host Pool</Title>
+            </ToolbarItem>
+            <ToolbarItem>
+              <input
+                type="text"
+                placeholder="Search hosts..."
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                style={{ ...inputStyle, width: "auto", minWidth: 180 }}
+              />
+            </ToolbarItem>
+            <ToolbarItem>
+              <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+                <option value="">All types</option>
+                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => p.type))].map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </ToolbarItem>
+            <ToolbarItem>
+              <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+                <option value="">All providers</option>
+                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
+                ))}
+              </select>
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" onClick={() => setShowAddForm(true)}>
