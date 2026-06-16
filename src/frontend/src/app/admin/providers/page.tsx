@@ -54,6 +54,7 @@ export default function AdminProvidersPage() {
   const [amiResult, setAmiResult] = useState<Record<string, string>>({});
   const [amiOptions, setAmiOptions] = useState<Record<string, Array<{type: string; label: string; ami_id: string; name: string; created: string}>>>({});
   const [imageFilter, setImageFilter] = useState<Record<string, string>>({});
+  const [imageVersionFilter, setImageVersionFilter] = useState<Record<string, string>>({});
   const [imageSearch, setImageSearch] = useState<Record<string, string>>({});
   const [consoleDomain, setConsoleDomain] = useState<Record<string, string>>({});
   const [consoleSetupResult, setConsoleSetupResult] = useState<Record<string, string>>({});
@@ -580,9 +581,17 @@ export default function AdminProvidersPage() {
                     )}
                     {amiOptions[p.id] && amiOptions[p.id].length > 0 && (() => {
                       const filter = imageFilter[p.id] || "all";
+                      const versionFilter = imageVersionFilter[p.id] || "all";
                       const search = (imageSearch[p.id] || "").toLowerCase();
+                      const detectVersion = (ami: {label: string; name: string; ami_id: string}) => {
+                        const hay = `${ami.label} ${ami.name} ${ami.ami_id}`.toLowerCase();
+                        if (/rhel.?10|10[-_.]lvm|lvm.?10[^0-9]/.test(hay)) return "10";
+                        if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
+                        return "";
+                      };
                       const filtered = amiOptions[p.id].filter((ami) => {
                         if (filter !== "all" && ami.type !== filter) return false;
+                        if (versionFilter !== "all" && detectVersion(ami) !== versionFilter) return false;
                         if (search && !ami.label.toLowerCase().includes(search) && !ami.ami_id.toLowerCase().includes(search) && !(ami.name || "").toLowerCase().includes(search)) return false;
                         return true;
                       });
@@ -593,6 +602,11 @@ export default function AdminProvidersPage() {
                             <option value="all">All</option>
                             <option value="BYOS">BYOS</option>
                             <option value="PAYG">PAYG</option>
+                          </select>
+                          <select style={{ ...inputStyle, maxWidth: 120 }} value={versionFilter} onChange={(e) => setImageVersionFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                            <option value="all">All Versions</option>
+                            <option value="10">RHEL 10</option>
+                            <option value="9">RHEL 9</option>
                           </select>
                           <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
                           <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {amiOptions[p.id].length}</span>
