@@ -31,6 +31,7 @@ export default function ProjectCanvasPage() {
   const [projectDesc, setProjectDesc] = useState("");
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("draft");
+  const [projectHostId, setProjectHostId] = useState("");
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -68,6 +69,7 @@ export default function ProjectCanvasPage() {
         setProjectDesc(data.description || "");
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
+        setProjectHostId(data.host_id || "");
         setDeployError(data.deploy_error || null);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
@@ -674,7 +676,7 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: ocpInstallElapsed != null ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster ready" } : ocpStatus === "error" ? { phase: "error", detail: "install failed" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: ocpInstallElapsed != null ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster ready" } : ocpStatus === "error" ? { phase: "error", detail: "install failed" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} />}

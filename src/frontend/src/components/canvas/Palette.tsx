@@ -170,7 +170,7 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
@@ -185,7 +185,20 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
 
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
+  const [hostInfo, setHostInfo] = useState<{ instance_id: string; ip_address: string; provider_type: string; provider_name: string } | null>(null);
   const nodes = useCanvasStore((s) => s.nodes);
+
+  useEffect(() => {
+    if (!hostId) return;
+    Promise.all([
+      fetch(`/api/v1/hosts/${hostId}`).then((r) => r.ok ? r.json() : null),
+      fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
+    ]).then(([h, providers]) => {
+      if (!h) return;
+      const prov = Array.isArray(providers) ? providers.find((p: any) => p.id === h.provider_id) : null;
+      setHostInfo({ instance_id: h.instance_id, ip_address: h.ip_address, provider_type: prov?.type || h.provider_type || "", provider_name: prov?.name || "" });
+    }).catch(() => {});
+  }, [hostId]);
 
   const createOrUpdatePortalToken = async (level: string) => {
     if (!projectId) return;
@@ -305,6 +318,18 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <span style={{ opacity: 0.4 }}>GUID:</span>
                     <code style={{ fontSize: 11 }}>{projectGuid}</code>
                   </div>
+                )}
+                {hostInfo && (
+                  <>
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ opacity: 0.4 }}>Host:</span> {hostInfo.instance_id} · {hostInfo.ip_address}
+                    </div>
+                    {hostInfo.provider_name && (
+                      <div>
+                        <span style={{ opacity: 0.4 }}>Provider:</span> {hostInfo.provider_name} ({hostInfo.provider_type})
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )

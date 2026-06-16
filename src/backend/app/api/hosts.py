@@ -787,9 +787,27 @@ def poweron_host(
             if not h:
                 return
             h.state = "active"
-            h.ip_address = inst.get("PublicIpAddress")
+            new_ip = inst.get("PublicIpAddress")
+            old_ip = h.ip_address
+            h.ip_address = new_ip
             h.agent_status = "waiting_ssh"
             s.commit()
+
+            if new_ip and new_ip != old_ip and h.console_domain:
+                try:
+                    prov = s.query(Provider).filter_by(id=h.provider_id).first()
+                    if prov:
+                        from app.services.providers import get_provider_driver
+
+                        drv = get_provider_driver(prov)
+                        drv.create_console_record(prov, h, h.console_domain, new_ip)
+                        logger.info(
+                            "Updated console DNS %s -> %s", h.console_domain, new_ip
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to update console DNS for %s: %s", h.id[:8], e
+                    )
 
             if not h.private_key or not h.ip_address:
                 return

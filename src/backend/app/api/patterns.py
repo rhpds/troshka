@@ -630,6 +630,8 @@ def deploy_pattern(
     if body.auto_deploy:
         from app.services.deploy_service import deploy_project_async
 
+        if body.host_id:
+            project.host_id = body.host_id
         project.state = "deploying"
         db.commit()
         threading.Thread(

@@ -572,10 +572,13 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 cache_path = _pattern_cache_path(
                     pattern_id, pd.source_disk_id, pd.format, pool
                 )
+                disk_name = (
+                    data.get("label") or data.get("name") or node.get("id", "")[:8]
+                )
                 items_to_cache.append(
                     {
                         "item_id": pattern_disk_id,
-                        "name": f"pattern-{pattern_id[:8]}-disk-{pattern_disk_id[:8]}",
+                        "name": disk_name,
                         "s3_key": pd.s3_key,
                         "cache_path": cache_path,
                         "expected_size": pd.size_bytes,
@@ -682,7 +685,12 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 },
             )
             active_jobs.append(
-                {"job_id": job_id, "name": ic["name"], "item_id": ic["item_id"]}
+                {
+                    "job_id": job_id,
+                    "name": ic["name"],
+                    "item_id": ic["item_id"],
+                    "expected_size": ic.get("expected_size", 0),
+                }
             )
             logger.info(
                 "  cache job started: %s (%s) -> %s",
@@ -731,30 +739,35 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
             done_count = len(completed) + len(failed)
             items = []
             for aj in active_jobs:
+                exp = aj.get("expected_size", 0)
+                size_str = f"{exp / (1024**3):.1f} GB" if exp else ""
                 if aj["job_id"] in completed:
-                    items.append(f"{aj['name']}: done")
+                    items.append(
+                        f"{aj['name']}: done{f' ({size_str})' if size_str else ''}"
+                    )
                 elif aj["job_id"] in failed:
                     items.append(f"{aj['name']}: failed")
                 else:
-                    last_line = ""
+                    progress_detail = ""
                     try:
                         job = poll_job(host, aj["job_id"])
                         for line in reversed(job.get("output", [])):
                             if (
-                                "Download" in line
+                                "%" in line
+                                or "iB" in line
                                 or "GB" in line
-                                or "MiB" in line
                                 or "cached" in line
                             ):
-                                last_line = line.strip()
+                                progress_detail = line.strip()
                                 break
                     except TroshkadError:
                         pass
-                    items.append(
-                        f"{aj['name']}: {last_line}"
-                        if last_line
-                        else f"{aj['name']}: downloading..."
-                    )
+                    if progress_detail:
+                        items.append(f"{aj['name']}: {progress_detail}")
+                    elif size_str:
+                        items.append(f"{aj['name']}: downloading {size_str}...")
+                    else:
+                        items.append(f"{aj['name']}: downloading...")
             progress_callback(f"{done_count}/{len(active_jobs)}", items)
 
         if len(completed) + len(failed) == last_completed_count:
@@ -1224,7 +1237,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             if project.host_id
             else None
         )
-        if not host:
+        if not host and not project.host_id:
             from app.services.placement import (
                 calculate_project_requirements,
                 find_available_host,

@@ -81,6 +81,7 @@ class PatternDeployRequest(BaseModel):
     auto_deploy: bool = True
     auto_start: bool = True
     inject_vars: dict | None = None
+    host_id: str | None = None
 
 
 class PatternBulkDeployRequest(BaseModel):
