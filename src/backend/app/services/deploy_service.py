@@ -2352,14 +2352,9 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
 
     # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
     _push("nodes", "waiting for nodes to be Ready")
+    api_seen = False
     last_csr_check = 0
     while _t.time() < deadline:
-        if _t.time() - last_csr_check >= 30:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check = _t.time()
-
         result = _exec_on_bastion(
             host,
             project_id,
@@ -2369,6 +2364,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             timeout=10,
         )
         if result:
+            api_seen = True
             items = []
             ready_count = 0
             for line in result.strip().split("\n"):
@@ -2384,6 +2380,13 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
                     break
         else:
             _push("nodes", "waiting for API server")
+
+        if api_seen and _t.time() - last_csr_check >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check = _t.time()
+
         _t.sleep(5)
 
     # Phase 4: Wait for cluster operators (continue CSR approval)
