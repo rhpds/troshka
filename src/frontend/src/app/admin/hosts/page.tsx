@@ -65,7 +65,7 @@ export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_ami: string | null}>>([]);
+  const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_image: string | null}>>([]);
   const [provisioning, setProvisioning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProviderId, setNewProviderId] = useState("");
@@ -214,9 +214,9 @@ export default function AdminHostsPage() {
   };
 
   const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, any> | undefined;
-  const selectedProviderHasAmi = selectedProvider ? !!selectedProvider.default_ami : false;
+  const selectedProviderHasImage = selectedProvider ? !!selectedProvider.default_image : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
-  const selectedProviderReady = selectedProvider?.type === "ocpvirt" ? true : (selectedProviderHasAmi && selectedProviderHasVpc);
+  const selectedProviderReady = selectedProvider?.type === "ocpvirt" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
   const filteredHosts = hosts.filter((h) => {
@@ -521,10 +521,10 @@ export default function AdminHostsPage() {
                 </div>
                 {newProviderId && !selectedProviderReady && selectedProvider && selectedProvider.type === "ec2" && (
                   <Alert variant="warning" title={
-                    !selectedProviderHasAmi && !selectedProviderHasVpc
-                      ? "Provider needs setup. Go to Providers and run Discover AMI and Setup VPC."
-                      : !selectedProviderHasAmi
-                        ? "No AMI set. Go to Providers and click Discover AMI."
+                    !selectedProviderHasImage && !selectedProviderHasVpc
+                      ? "Provider needs setup. Go to Providers and select an image and Setup VPC."
+                      : !selectedProviderHasImage
+                        ? "No image set. Go to Providers and select an image."
                         : "No VPC set. Go to Providers and click Setup VPC."
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}

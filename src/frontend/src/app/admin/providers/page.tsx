@@ -18,7 +18,7 @@ interface ProviderInfo {
   name: string;
   type: string;
   default_region: string | null;
-  default_ami: string | null;
+  default_image: string | null;
   vpc_id: string | null;
   subnet_id: string | null;
   security_group_id: string | null;
@@ -51,8 +51,8 @@ export default function AdminProvidersPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState<Record<string, string>>({});
-  const [amiResult, setAmiResult] = useState<Record<string, string>>({});
-  const [amiOptions, setAmiOptions] = useState<Record<string, Array<{type: string; label: string; ami_id: string; name: string; created: string}>>>({});
+  const [imageResult, setImageResult] = useState<Record<string, string>>({});
+  const [imageOptions, setImageOptions] = useState<Record<string, Array<{type: string; label: string; image_id: string; name: string; created: string}>>>({});
   const [imageFilter, setImageFilter] = useState<Record<string, string>>({});
   const [imageVersionFilter, setImageVersionFilter] = useState<Record<string, string>>({});
   const [imageSearch, setImageSearch] = useState<Record<string, string>>({});
@@ -206,33 +206,33 @@ export default function AdminProvidersPage() {
     }
   };
 
-  const discoverAmi = async (id: string) => {
-    setAmiResult((prev) => ({ ...prev, [id]: "discovering..." }));
-    setAmiOptions((prev) => ({ ...prev, [id]: [] }));
-    const resp = await fetch(`/api/v1/providers/${id}/discover-ami`);
+  const discoverImage = async (id: string) => {
+    setImageResult((prev) => ({ ...prev, [id]: "discovering..." }));
+    setImageOptions((prev) => ({ ...prev, [id]: [] }));
+    const resp = await fetch(`/api/v1/providers/${id}/discover-images`);
     if (resp.ok) {
       const data = await resp.json();
-      if (data.amis && data.amis.length > 0) {
-        setAmiOptions((prev) => ({ ...prev, [id]: data.amis }));
-        setAmiResult((prev) => ({ ...prev, [id]: `Found ${data.amis.length} AMI(s) in ${data.region}` }));
+      if (data.images && data.images.length > 0) {
+        setImageOptions((prev) => ({ ...prev, [id]: data.images }));
+        setImageResult((prev) => ({ ...prev, [id]: `Found ${data.images.length} image(s) in ${data.region}` }));
       } else {
-        setAmiResult((prev) => ({ ...prev, [id]: "No AMIs found in this region" }));
+        setImageResult((prev) => ({ ...prev, [id]: "No images found in this region" }));
       }
     } else {
-      setAmiResult((prev) => ({ ...prev, [id]: "FAILED — check credentials and region" }));
+      setImageResult((prev) => ({ ...prev, [id]: "FAILED — check credentials and region" }));
     }
   };
 
   const [isoSelectMode, setIsoSelectMode] = useState<Record<string, boolean>>({});
 
-  const selectAmi = async (providerId: string, amiId: string) => {
+  const selectImage = async (providerId: string, imageId: string) => {
     const endpoint = isoSelectMode[providerId]
-      ? `/api/v1/providers/${providerId}/set-iso?iso_pvc=${amiId}`
-      : `/api/v1/providers/${providerId}/set-ami?ami_id=${amiId}`;
+      ? `/api/v1/providers/${providerId}/set-iso?iso_pvc=${imageId}`
+      : `/api/v1/providers/${providerId}/set-image?image_id=${imageId}`;
     const resp = await fetch(endpoint, { method: "POST" });
     if (resp.ok) {
-      setAmiOptions((prev) => ({ ...prev, [providerId]: [] }));
-      setAmiResult((prev) => ({ ...prev, [providerId]: "" }));
+      setImageOptions((prev) => ({ ...prev, [providerId]: [] }));
+      setImageResult((prev) => ({ ...prev, [providerId]: "" }));
       setIsoSelectMode((prev) => ({ ...prev, [providerId]: false }));
       loadProviders();
     }
@@ -241,20 +241,20 @@ export default function AdminProvidersPage() {
   const [vpcOptions, setVpcOptions] = useState<Record<string, Array<{vpc_id: string; name: string; cidr: string; is_default: boolean; subnets: Array<{subnet_id: string; az: string; cidr: string; public: boolean}>}>>>({});
 
   const discoverVpcs = async (id: string) => {
-    setAmiResult((prev) => ({ ...prev, [id]: "Discovering VPCs..." }));
+    setImageResult((prev) => ({ ...prev, [id]: "Discovering VPCs..." }));
     const resp = await fetch(`/api/v1/providers/${id}/discover-vpcs`);
     if (resp.ok) {
       const data = await resp.json();
       const vpcs = data.vpcs || [];
       if (vpcs.length === 0) {
-        setAmiResult((prev) => ({ ...prev, [id]: "No troshka VPC found — creating one..." }));
+        setImageResult((prev) => ({ ...prev, [id]: "No troshka VPC found — creating one..." }));
         await createVpc(id, true);
         return;
       }
       setVpcOptions((prev) => ({ ...prev, [id]: vpcs }));
-      setAmiResult((prev) => ({ ...prev, [id]: `Found ${vpcs.length} VPC(s)` }));
+      setImageResult((prev) => ({ ...prev, [id]: `Found ${vpcs.length} VPC(s)` }));
     } else {
-      setAmiResult((prev) => ({ ...prev, [id]: "VPC discovery failed" }));
+      setImageResult((prev) => ({ ...prev, [id]: "VPC discovery failed" }));
     }
   };
 
@@ -271,16 +271,16 @@ export default function AdminProvidersPage() {
 
   const createVpc = async (id: string, skipConfirm = false) => {
     if (!skipConfirm && !window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
-    setAmiResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
+    setImageResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
     const resp = await fetch(`/api/v1/providers/${id}/create-vpc`, { method: "POST" });
     if (resp.ok) {
       const data = await resp.json();
       setVpcOptions((prev) => ({ ...prev, [id]: [] }));
-      setAmiResult((prev) => ({ ...prev, [id]: `VPC created: ${data.vpc_id}` }));
+      setImageResult((prev) => ({ ...prev, [id]: `VPC created: ${data.vpc_id}` }));
       loadProviders();
     } else {
       const data = await resp.json();
-      setAmiResult((prev) => ({ ...prev, [id]: `Failed: ${data.detail || "unknown error"}` }));
+      setImageResult((prev) => ({ ...prev, [id]: `Failed: ${data.detail || "unknown error"}` }));
     }
   };
 
@@ -539,13 +539,13 @@ export default function AdminProvidersPage() {
                       {p.type !== "ocpvirt" && p.default_region}
                       {p.type !== "s3" && <span>{p.type !== "ocpvirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
                       {p.type === "ec2" && (
-                        p.default_ami
-                          ? <span> · AMI: <code style={{ fontSize: 11 }}>{p.default_ami}</code></span>
-                          : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
+                        p.default_image
+                          ? <span> · Image: <code style={{ fontSize: 11 }}>{p.default_image}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No image</span>
                       )}
                       {p.type === "ocpvirt" && (
-                        p.default_ami
-                          ? <span> · Image: {p.default_ami}</span>
+                        p.default_image
+                          ? <span> · Image: {p.default_image}</span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No image selected</span>
                       )}
                       {p.type === "ocpvirt" && (
@@ -577,66 +577,66 @@ export default function AdminProvidersPage() {
                     {["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
                       <details style={{ marginTop: 12 }} onToggle={async (e) => {
                         if (!(e.target as HTMLDetailsElement).open) return;
-                        if (amiOptions[p.id]?.length) return;
-                        setAmiResult((prev) => ({ ...prev, [p.id]: "Loading..." }));
-                        setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
+                        if (imageOptions[p.id]?.length) return;
+                        setImageResult((prev) => ({ ...prev, [p.id]: "Loading..." }));
+                        setImageOptions((prev) => ({ ...prev, [p.id]: [] }));
                         if (p.type === "ec2") {
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-ami`);
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images`);
                           if (resp.ok) {
                             const data = await resp.json();
-                            setAmiOptions((prev) => ({ ...prev, [p.id]: data.amis || [] }));
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${(data.amis || []).length} image(s)` }));
-                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                            setImageOptions((prev) => ({ ...prev, [p.id]: data.images || [] }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${(data.images || []).length} image(s)` }));
+                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         } else if (p.type === "gcp") {
                           const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-gcp`);
                           if (resp.ok) {
                             const data = await resp.json();
-                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source})`, ami_id: img.self_link, name: img.family, created: img.creation_timestamp }));
-                            setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source})`, image_id: img.self_link, name: img.family, created: img.creation_timestamp }));
+                            setImageOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         } else if (p.type === "azure") {
                           const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-azure`);
                           if (resp.ok) {
                             const data = await resp.json();
-                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source}) — ${img.version}`, ami_id: img.urn, name: img.urn, created: "" }));
-                            setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source}) — ${img.version}`, image_id: img.urn, name: img.urn, created: "" }));
+                            setImageOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         } else if (p.type === "ocpvirt") {
                           setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
                           if (resp.ok) {
                             const data = await resp.json();
                             const ready = data.datasources.filter((ds: any) => ds.ready);
-                            setAmiOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ ami_id: ds.name, label: ds.name, name: ds.name, created: "", type: "" })) }));
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} image(s)` }));
-                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                            setImageOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ image_id: ds.name, label: ds.name, name: ds.name, created: "", type: "" })) }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} image(s)` }));
+                          } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         }
                       }}>
                         <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
-                          Select Image {p.default_ami ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.default_ami.length > 40 ? "..." + p.default_ami.slice(-35) : p.default_ami}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
+                          Select Image {p.default_image ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.default_image.length > 40 ? "..." + p.default_image.slice(-35) : p.default_image}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
                         </summary>
                         <div style={{ marginTop: 8 }}>
-                          {amiResult[p.id] && (
-                            <div style={{ fontSize: 11, marginBottom: 6, color: amiResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
-                              {amiResult[p.id]}
+                          {imageResult[p.id] && (
+                            <div style={{ fontSize: 11, marginBottom: 6, color: imageResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
+                              {imageResult[p.id]}
                             </div>
                           )}
-                          {amiOptions[p.id] && amiOptions[p.id].length > 0 && (() => {
+                          {imageOptions[p.id] && imageOptions[p.id].length > 0 && (() => {
                             const filter = imageFilter[p.id] || "all";
                             const versionFilter = imageVersionFilter[p.id] || "all";
                             const search = (imageSearch[p.id] || "").toLowerCase();
-                            const detectVersion = (ami: {label: string; name: string; ami_id: string}) => {
-                              const hay = `${ami.label} ${ami.name} ${ami.ami_id}`.toLowerCase();
+                            const detectVersion = (image: {label: string; name: string; image_id: string}) => {
+                              const hay = `${image.label} ${image.name} ${image.image_id}`.toLowerCase();
                               if (/rhel.?10[\.\-_ ]|(?:^|[\s\-_])10[-_.]lvm|lvm10[^0-9]/.test(hay)) return "10";
                               if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
                               return "";
                             };
-                            const filtered = amiOptions[p.id].filter((ami) => {
-                              if (filter !== "all" && ami.type !== filter) return false;
-                              if (versionFilter !== "all" && detectVersion(ami) !== versionFilter) return false;
-                              if (search && !ami.label.toLowerCase().includes(search) && !ami.ami_id.toLowerCase().includes(search) && !(ami.name || "").toLowerCase().includes(search)) return false;
+                            const filtered = imageOptions[p.id].filter((image) => {
+                              if (filter !== "all" && image.type !== filter) return false;
+                              if (versionFilter !== "all" && detectVersion(image) !== versionFilter) return false;
+                              if (search && !image.label.toLowerCase().includes(search) && !image.image_id.toLowerCase().includes(search) && !(image.name || "").toLowerCase().includes(search)) return false;
                               return true;
                             });
                             return (
@@ -655,16 +655,16 @@ export default function AdminProvidersPage() {
                                   <option value="9">RHEL 9</option>
                                 </select>
                                 <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
-                                <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {amiOptions[p.id].length}</span>
+                                <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {imageOptions[p.id].length}</span>
                               </div>
-                              {filtered.map((ami) => (
-                                <div key={ami.ami_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
+                              {filtered.map((image) => (
+                                <div key={image.image_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
                                   <div>
-                                    <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
-                                    <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{ami.ami_id}</div>
-                                    <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name}{ami.created ? ` · ${new Date(ami.created).toLocaleDateString()}` : ""}</div>
+                                    <div style={{ fontSize: 12, fontWeight: 600 }}>{image.label}</div>
+                                    <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{image.image_id}</div>
+                                    <div style={{ fontSize: 10, opacity: 0.5 }}>{image.name}{image.created ? ` · ${new Date(image.created).toLocaleDateString()}` : ""}</div>
                                   </div>
-                                  <Button variant="secondary" onClick={() => selectAmi(p.id, ami.ami_id)}>
+                                  <Button variant="secondary" onClick={() => selectImage(p.id, image.image_id)}>
                                     Select
                                   </Button>
                                 </div>
@@ -793,14 +793,14 @@ export default function AdminProvidersPage() {
                     )}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
-                      setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
+                      setImageResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
                       const resp = await fetch(`/api/v1/providers/${p.id}/discover-isos`);
                       if (resp.ok) {
                         const data = await resp.json();
-                        setAmiOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ ami_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "", type: "" })) }));
-                        setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
+                        setImageOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ image_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "", type: "" })) }));
+                        setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
                       } else {
-                        setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
+                        setImageResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
                       }
                     }}>Select Install ISO</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
@@ -809,15 +809,15 @@ export default function AdminProvidersPage() {
                         variant="secondary"
                         onClick={async () => {
                           if (!window.confirm("Create a new VPC network with subnet and firewall rules?")) return;
-                          setAmiResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
+                          setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-gcp`, { method: "POST" });
                           if (resp.ok) {
                             const data = await resp.json();
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Network created: ${data.network?.split("/").pop() || "ok"}` }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Network created: ${data.network?.split("/").pop() || "ok"}` }));
                             loadProviders();
                           } else {
                             const data = await resp.json();
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
                           }
                         }}
                       >
@@ -829,15 +829,15 @@ export default function AdminProvidersPage() {
                         variant="secondary"
                         onClick={async () => {
                           if (!window.confirm("Create a new VNet with subnet and NSG?")) return;
-                          setAmiResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
+                          setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-azure`, { method: "POST" });
                           if (resp.ok) {
                             const data = await resp.json();
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `VNet created: ${data.vnet?.split("/").pop() || "ok"}` }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `VNet created: ${data.vnet?.split("/").pop() || "ok"}` }));
                             loadProviders();
                           } else {
                             const data = await resp.json();
-                            setAmiResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
+                            setImageResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
                           }
                         }}
                       >
