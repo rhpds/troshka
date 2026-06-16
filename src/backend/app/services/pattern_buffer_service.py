@@ -1,4 +1,5 @@
 """Service for provisioning and managing pattern buffer worker hosts."""
+
 import logging
 import threading
 import uuid
@@ -49,7 +50,7 @@ def provision_pattern_buffer_async(pool_id: str):
 def _provision_pattern_buffer(pool_id: str):
     """Provision a pattern buffer host for a storage pool."""
     from app.services.agent_deployer import deploy_agent
-    from app.services.provisioner import provision_host
+    from app.services.providers import get_provider_driver
 
     _provisioning.add(pool_id)
     db = SessionLocal()
@@ -64,16 +65,12 @@ def _provision_pattern_buffer(pool_id: str):
                 logger.info("Pool %s already has an active pattern buffer", pool_id)
                 return
 
-        provider = _find_ec2_provider(db, pool)
+        provider = pool.provider
         if not provider:
-            logger.error("No EC2 provider found for pool %s", pool_id)
-            return
-        if not provider.vpc_id or not provider.security_group_id:
-            logger.error("EC2 provider %s has no VPC setup", provider.id[:8])
+            logger.error("No provider found for pool %s", pool_id)
             return
 
-        credentials = provider.get_credentials()
-        region = provider.default_region
+        driver = get_provider_driver(provider)
         instance_type = pool.worker_instance_type or DEFAULT_INSTANCE_TYPE
         host_id = str(uuid.uuid4())
 
@@ -81,7 +78,7 @@ def _provision_pattern_buffer(pool_id: str):
         if pool.mode == "shared-fsx" and pool.fsx_dns_name:
             nfs_kwargs["nfs_server"] = pool.fsx_dns_name
             nfs_kwargs["nfs_path"] = "/fsx"
-        elif pool.mode == "shared-byo" and pool.nfs_endpoint:
+        elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
             parts = pool.nfs_endpoint.split(":", 1)
             nfs_kwargs["nfs_server"] = parts[0]
             nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
@@ -93,13 +90,13 @@ def _provision_pattern_buffer(pool_id: str):
             provider.id[:8],
         )
 
-        result = provision_host(
-            instance_type=instance_type,
+        result = driver.provision_host(
+            provider=provider,
             host_id=host_id,
-            ami_id=provider.default_ami,
-            region=region,
-            credentials=credentials,
+            instance_type=instance_type,
             storage_size_gb=DEFAULT_STORAGE_GB,
+            ami_id=provider.default_ami,
+            region=provider.default_region,
             vpc_id=provider.vpc_id,
             subnet_id=pool.subnet_id or provider.subnet_id,
             security_group_id=provider.security_group_id,
@@ -112,7 +109,7 @@ def _provision_pattern_buffer(pool_id: str):
             provider_id=provider.id,
             instance_id=result["instance_id"],
             instance_type=result["instance_type"],
-            region=region,
+            region=provider.default_region,
             state="active",
             host_type="pattern_buffer",
             total_vcpus=result["total_vcpus"],
@@ -223,13 +220,12 @@ def replace_pattern_buffer(db: Session, pool: StoragePool):
     if pool.worker_host_id:
         old_host = db.query(Host).filter_by(id=pool.worker_host_id).first()
         if old_host:
-            if old_host.instance_id:
-                from app.services.provisioner import terminate_host
-
+            if old_host.instance_id and pool.provider:
                 try:
-                    provider = _find_ec2_provider(db, pool)
-                    credentials = provider.get_credentials() if provider else None
-                    terminate_host(old_host.instance_id, credentials=credentials)
+                    from app.services.providers import get_provider_driver
+
+                    drv = get_provider_driver(pool.provider)
+                    drv.terminate_host(pool.provider, old_host.instance_id)
                 except Exception as e:
                     logger.warning("Failed to terminate old pattern buffer: %s", e)
             old_host.state = "terminated"
@@ -252,22 +248,29 @@ def stop_pattern_buffer(db: Session, pool: StoragePool):
     if not host or not host.instance_id:
         return
 
-    provider = _find_ec2_provider(db, pool)
+    provider = pool.provider
     if not provider:
         return
-    credentials = provider.get_credentials()
 
-    import boto3
+    from app.services.providers import get_provider_driver
 
-    ec2 = boto3.client(
-        "ec2",
-        region_name=provider.default_region,
-        aws_access_key_id=credentials["access_key_id"],
-        aws_secret_access_key=credentials["secret_access_key"],
-    )
-    ec2.stop_instances(InstanceIds=[host.instance_id])
-    waiter = ec2.get_waiter("instance_stopped")
-    waiter.wait(InstanceIds=[host.instance_id])
+    drv = get_provider_driver(provider)
+    drv.stop_host(provider, host.instance_id)
+
+    # For EC2, wait for the instance to actually stop
+    if provider.type == "ec2":
+        import boto3
+
+        credentials = provider.get_credentials()
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=credentials["access_key_id"],
+            aws_secret_access_key=credentials["secret_access_key"],
+        )
+        waiter = ec2.get_waiter("instance_stopped")
+        waiter.wait(InstanceIds=[host.instance_id])
+
     host.state = "stopped"
     host.agent_status = "disconnected"
     db.commit()
@@ -288,30 +291,47 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
     if host.state == "active" and host.agent_status == "connected":
         return True
 
-    provider = _find_ec2_provider(db, pool)
+    provider = pool.provider
     if not provider:
         return False
-    credentials = provider.get_credentials()
 
-    import boto3
     import time
 
-    ec2 = boto3.client(
-        "ec2",
-        region_name=provider.default_region,
-        aws_access_key_id=credentials["access_key_id"],
-        aws_secret_access_key=credentials["secret_access_key"],
-    )
+    from app.services.providers import get_provider_driver
+
+    drv = get_provider_driver(provider)
 
     logger.info("Waking pattern buffer %s...", host.id[:8])
-    ec2.start_instances(InstanceIds=[host.instance_id])
-    waiter = ec2.get_waiter("instance_running")
-    waiter.wait(InstanceIds=[host.instance_id])
-    logger.info("Pattern buffer %s EC2 running", host.id[:8])
+    drv.start_host(provider, host.instance_id)
 
-    desc = ec2.describe_instances(InstanceIds=[host.instance_id])
-    inst = desc["Reservations"][0]["Instances"][0]
-    new_ip = inst.get("PublicIpAddress", "")
+    # Wait for running + get new IP
+    if provider.type == "ec2":
+        import boto3
+
+        credentials = provider.get_credentials()
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=credentials["access_key_id"],
+            aws_secret_access_key=credentials["secret_access_key"],
+        )
+        waiter = ec2.get_waiter("instance_running")
+        waiter.wait(InstanceIds=[host.instance_id])
+        desc = ec2.describe_instances(InstanceIds=[host.instance_id])
+        inst = desc["Reservations"][0]["Instances"][0]
+        new_ip = inst.get("PublicIpAddress", "")
+    else:
+        # Non-EC2: poll driver for status
+        for _ in range(60):
+            status = drv.get_host_status(provider, host.instance_id)
+            if status and status["state"] == "running":
+                break
+            time.sleep(5)
+        new_ip = (
+            status.get("public_ip") or status.get("private_ip") or "" if status else ""
+        )
+
+    logger.info("Pattern buffer %s running", host.id[:8])
     from app.services.troshkad_client import _pools as _connection_pools
 
     if new_ip and new_ip != host.ip_address:

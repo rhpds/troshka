@@ -75,6 +75,8 @@ export default function AdminHostsPage() {
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
   const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string; worker_host_id: string | null; worker_instance_type: string | null}[]>([]);
   const [selectedPool, setSelectedPool] = useState("");
+  const [newCpuCores, setNewCpuCores] = useState(64);
+  const [newMemoryGb, setNewMemoryGb] = useState(256);
 
   const loadData = () => {
     Promise.all([
@@ -121,19 +123,22 @@ export default function AdminHostsPage() {
   const addHost = async () => {
     if (!newProviderId) { setError("Select a provider"); return; }
     setError("");
+    const isOcpVirt = selectedProvider?.type === "ocpvirt";
+    const instanceType = isOcpVirt ? `${newCpuCores}c-${newMemoryGb}g` : newInstanceType;
     const placeholderId = `pending-${Date.now()}`;
-    const placeholder = { id: placeholderId, instance_type: newInstanceType, region: newRegion || "us-east-1" };
+    const placeholder = { id: placeholderId, instance_type: instanceType, region: isOcpVirt ? "ocp-virt" : (newRegion || "us-east-1") };
     setPendingHosts((prev) => [...prev, placeholder]);
     try {
+      const body: Record<string, any> = {
+        provider_id: newProviderId,
+        instance_type: instanceType,
+        storage_pool_id: selectedPool || undefined,
+      };
+      if (!isOcpVirt) body.region = newRegion || undefined;
       const resp = await fetch("/api/v1/hosts/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider_id: newProviderId,
-          instance_type: newInstanceType,
-          region: newRegion || undefined,
-          storage_pool_id: selectedPool || undefined,
-        }),
+        body: JSON.stringify(body),
       });
       if (!resp.ok) {
         const data = await resp.json();
@@ -203,7 +208,8 @@ export default function AdminHostsPage() {
   const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, any> | undefined;
   const selectedProviderHasAmi = selectedProvider ? !!selectedProvider.default_ami : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
-  const selectedProviderReady = selectedProviderHasAmi && selectedProviderHasVpc;
+  const selectedProviderReady = selectedProvider?.type === "ocpvirt" ? true : (selectedProviderHasAmi && selectedProviderHasVpc);
+  const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const filteredHosts = filterRegion ? hosts.filter((h) => (h.region || "unknown") === filterRegion) : hosts;
 
   const stateColors: Record<string, string> = {
@@ -461,12 +467,12 @@ export default function AdminHostsPage() {
                     }}
                   >
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => p.type === "ec2").map((p) => (
+                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
                 </div>
-                {newProviderId && !selectedProviderReady && (
+                {newProviderId && !selectedProviderReady && selectedProvider?.type !== "ocpvirt" && (
                   <Alert variant="warning" title={
                     !selectedProviderHasAmi && !selectedProviderHasVpc
                       ? "Provider needs setup. Go to Providers and run Discover AMI and Setup VPC."
@@ -475,30 +481,62 @@ export default function AdminHostsPage() {
                         : "No VPC set. Go to Providers and click Setup VPC."
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}
-                <div style={{ minWidth: 280 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
-                  <select
-                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
-                    value={newInstanceType}
-                    onChange={(e) => setNewInstanceType(e.target.value)}
-                  >
-                    {instanceTypes.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ minWidth: 200 }}>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
-                  <select
-                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
-                    value={newRegion}
-                    onChange={(e) => setNewRegion(e.target.value)}
-                  >
-                    {awsRegions.map((r) => (
-                      <option key={r.value} value={r.value}>{r.label}</option>
-                    ))}
-                  </select>
-                </div>
+                {selectedProvider?.type === "ocpvirt" ? (
+                  <>
+                    <div style={{ minWidth: 120 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>CPU Cores</label>
+                      <input
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                        type="number"
+                        value={newCpuCores}
+                        onChange={(e) => setNewCpuCores(parseInt(e.target.value) || 1)}
+                        min={1}
+                      />
+                    </div>
+                    <div style={{ minWidth: 120 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Memory GB</label>
+                      <input
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                        type="number"
+                        value={newMemoryGb}
+                        onChange={(e) => setNewMemoryGb(parseInt(e.target.value) || 1)}
+                        min={1}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
+                      <Button variant="tertiary" size="sm" onClick={() => { setNewCpuCores(8); setNewMemoryGb(32); }}>8c / 32G</Button>
+                      <Button variant="tertiary" size="sm" onClick={() => { setNewCpuCores(64); setNewMemoryGb(256); }}>64c / 256G</Button>
+                      <Button variant="tertiary" size="sm" onClick={() => { setNewCpuCores(128); setNewMemoryGb(512); }}>128c / 512G</Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ minWidth: 280 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Instance Type</label>
+                      <select
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                        value={newInstanceType}
+                        onChange={(e) => setNewInstanceType(e.target.value)}
+                      >
+                        {instanceTypes.map((t) => (
+                          <option key={t.value} value={t.value}>{t.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ minWidth: 200 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
+                      <select
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                        value={newRegion}
+                        onChange={(e) => setNewRegion(e.target.value)}
+                      >
+                        {awsRegions.map((r) => (
+                          <option key={r.value} value={r.value}>{r.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                )}
                 <div style={{ minWidth: 220 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
                   <select
@@ -725,7 +763,7 @@ export default function AdminHostsPage() {
                   )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                  {h.state === "stopped" ? (
+                  {h.state === "stopped" && !isOcpVirtHost(h) ? (
                     <select
                       style={{ padding: "2px 6px", borderRadius: 4, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 12 }}
                       value={resizeType[h.id] || h.instance_type || ""}
@@ -943,7 +981,7 @@ export default function AdminHostsPage() {
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
                 {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
-              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && (
+              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && !isOcpVirtHost(h) && (
                 <>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>

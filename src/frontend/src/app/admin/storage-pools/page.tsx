@@ -52,6 +52,7 @@ const modeLabels: Record<string, string> = {
   local: "Local EBS",
   "shared-fsx": "FSx OpenZFS",
   "shared-byo": "BYO NFS",
+  "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
 };
 
 const inputStyle = {
@@ -77,6 +78,7 @@ export default function StoragePoolsPage() {
   const [newThroughput, setNewThroughput] = useState(160);
   const [newStorageGb, setNewStorageGb] = useState(128);
   const [newNfsEndpoint, setNewNfsEndpoint] = useState("");
+  const [newStorageQuotaGb, setNewStorageQuotaGb] = useState(500);
   const [creating, setCreating] = useState(false);
   const [availableAzs, setAvailableAzs] = useState<string[]>([]);
 
@@ -185,6 +187,7 @@ export default function StoragePoolsPage() {
     setNewAz("");
     setAvailableAzs([]);
     if (mode === "shared-fsx" && newProviderId) fetchAzs(newProviderId);
+    if (mode === "shared-ceph-nfs") setNewProviderId("");
   };
 
   const handleCreate = async () => {
@@ -193,24 +196,26 @@ export default function StoragePoolsPage() {
     if (newMode === "shared-fsx" && !newProviderId) { setError("Provider is required for FSx pools"); return; }
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
+    if (newMode === "shared-ceph-nfs" && !newProviderId) { setError("Provider is required for Ceph-NFS pools"); return; }
 
-    // BYO NFS: auto-select first EC2 provider (needed for SG rules)
-    const providerId = newProviderId || providers.find((p) => p.type === "ec2")?.id;
-    if (!providerId) { setError("No EC2 provider configured"); return; }
+    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : "ec2";
+    const providerId = newProviderId || providers.find((p) => p.type === autoProviderType)?.id;
+    if (!providerId) { setError(`No ${autoProviderType} provider configured`); return; }
 
     setCreating(true);
+    const body: Record<string, unknown> = {
+      name: newName.trim(),
+      mode: newMode,
+      provider_id: providerId,
+      az: newAz || null,
+      fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
+      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : null,
+      nfs_endpoint: newMode === "shared-byo" ? newNfsEndpoint : null,
+    };
     const resp = await fetch("/api/v1/storage-pools", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: newName.trim(),
-        mode: newMode,
-        provider_id: providerId,
-        az: newAz || null,
-        fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
-        fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : null,
-        nfs_endpoint: newMode === "shared-byo" ? newNfsEndpoint : null,
-      }),
+      body: JSON.stringify(body),
     });
     setCreating(false);
 
@@ -401,6 +406,7 @@ export default function StoragePoolsPage() {
                 <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
                   <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
                   <option value="shared-byo">BYO NFS</option>
+                  <option value="shared-ceph-nfs">Shared Ceph-NFS (OCP Virt)</option>
                 </select>
               </div>
               <div>
@@ -446,6 +452,22 @@ export default function StoragePoolsPage() {
                   <input style={inputStyle} value={newNfsEndpoint} onChange={(e) => setNewNfsEndpoint(e.target.value)}
                          placeholder="10.0.1.50:/exports/troshka" />
                 </div>
+              )}
+              {newMode === "shared-ceph-nfs" && (
+                <>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Quota (GB)</label>
+                    <input style={inputStyle} type="number" value={newStorageQuotaGb}
+                           onChange={(e) => setNewStorageQuotaGb(parseInt(e.target.value) || 500)} min={100} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
+                    <select style={inputStyle} value={newProviderId} onChange={(e) => setNewProviderId(e.target.value)}>
+                      <option value="">Select provider...</option>
+                      {providers.filter((p) => p.type === "ocpvirt").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  </div>
+                </>
               )}
               <Button variant="primary" onClick={handleCreate} isLoading={creating} isDisabled={creating}>
                 Create Pool

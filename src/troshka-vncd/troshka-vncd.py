@@ -46,9 +46,13 @@ def _verify_jwt(token: str, secret: str) -> dict | None:
         if len(parts) != 3:
             return None
         sig_input = f"{parts[0]}.{parts[1]}".encode()
-        expected = base64.urlsafe_b64encode(
-            hmac.new(secret.encode(), sig_input, hashlib.sha256).digest()
-        ).rstrip(b"=").decode()
+        expected = (
+            base64.urlsafe_b64encode(
+                hmac.new(secret.encode(), sig_input, hashlib.sha256).digest()
+            )
+            .rstrip(b"=")
+            .decode()
+        )
         if not hmac.compare_digest(expected, parts[2]):
             return None
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
@@ -64,11 +68,14 @@ def _get_vnc_port(domain_name: str) -> int | None:
     try:
         result = subprocess.run(
             ["virsh", "dumpxml", domain_name],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             return None
         import xml.etree.ElementTree as ET
+
         root = ET.fromstring(result.stdout)
         for gfx in root.iter("graphics"):
             if gfx.get("type") == "vnc":
@@ -199,16 +206,42 @@ async def _prune_loop():
 
 
 async def main():
+    import argparse
+
     import websockets
+
+    parser = argparse.ArgumentParser(description="troshka-vncd WebSocket-to-VNC relay")
+    parser.add_argument(
+        "--no-tls",
+        action="store_true",
+        help="Listen for plain WebSocket (TLS handled externally by OCP router)",
+    )
+    parser.add_argument(
+        "--plain-port",
+        type=int,
+        default=8080,
+        help="Port for plain WebSocket when --no-tls is set (default: 8080)",
+    )
+    args = parser.parse_args()
 
     conf = _load_config()
     bind_ip = conf.get("bind_ip", "0.0.0.0")
-    port = 443
 
-    ssl_ctx = _build_ssl_context(conf)
-    ssl_holder = [ssl_ctx]
-
-    logger.info("troshka-vncd %s starting on %s:%d", VERSION, bind_ip, port)
+    if args.no_tls:
+        port = args.plain_port
+        ssl_ctx = None
+        ssl_holder = [None]
+        logger.info(
+            "troshka-vncd %s starting on %s:%d (plain, TLS handled externally)",
+            VERSION,
+            bind_ip,
+            port,
+        )
+    else:
+        port = 443
+        ssl_ctx = _build_ssl_context(conf)
+        ssl_holder = [ssl_ctx]
+        logger.info("troshka-vncd %s starting on %s:%d", VERSION, bind_ip, port)
 
     async def handler(websocket):
         await _handle_connection(websocket, conf)
@@ -228,7 +261,8 @@ async def main():
         ping_timeout=10,
     ):
         asyncio.create_task(_prune_loop())
-        asyncio.create_task(_cert_reload_loop(ssl_holder, conf))
+        if not args.no_tls:
+            asyncio.create_task(_cert_reload_loop(ssl_holder, conf))
         logger.info("troshka-vncd ready")
         await stop.wait()
 

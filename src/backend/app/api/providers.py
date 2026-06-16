@@ -17,13 +17,18 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 class ProviderCreate(BaseModel):
     name: str
     type: str
-    default_region: str
+    default_region: str = ""
     default_ami: str = ""
     vpc_id: str = ""
     subnet_id: str = ""
-    access_key_id: str
-    secret_access_key: str
+    access_key_id: str = ""
+    secret_access_key: str = ""
     bucket: str | None = None
+    # OCP Virt fields
+    api_url: str = ""
+    token: str = ""
+    namespace: str = "troshka"
+    verify_ssl: bool = False
 
 
 class ProviderUpdate(BaseModel):
@@ -98,18 +103,31 @@ def create_provider(
     provider = Provider(
         name=body.name,
         type=body.type,
-        default_region=body.default_region,
+        default_region=body.default_region or None,
         default_ami=body.default_ami or None,
         vpc_id=body.vpc_id or None,
         subnet_id=body.subnet_id or None,
         created_by=user.email,
     )
-    creds = {
-        "access_key_id": body.access_key_id,
-        "secret_access_key": body.secret_access_key,
-    }
-    if body.bucket:
-        creds["bucket"] = body.bucket
+    if body.type == "ocpvirt":
+        if not body.api_url or not body.token:
+            raise HTTPException(
+                status_code=400,
+                detail="OCP Virt providers require api_url and token",
+            )
+        creds = {
+            "api_url": body.api_url,
+            "token": body.token,
+            "namespace": body.namespace,
+            "verify_ssl": body.verify_ssl,
+        }
+    else:
+        creds = {
+            "access_key_id": body.access_key_id,
+            "secret_access_key": body.secret_access_key,
+        }
+        if body.bucket:
+            creds["bucket"] = body.bucket
     provider.set_credentials(creds)
     db.add(provider)
     db.commit()
@@ -709,17 +727,27 @@ def setup_console(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Create Route53 hosted zone and IAM resources for direct console proxy."""
-    import boto3
-
+    """Set up console infrastructure for direct VNC proxy."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
 
-    creds = provider.get_credentials()
     base_domain = req.base_domain.strip().lower()
     if not base_domain or "." not in base_domain:
         raise HTTPException(status_code=400, detail="Invalid domain name")
+
+    if provider.type == "ocpvirt":
+        provider.console_base_domain = base_domain
+        db.commit()
+        return {
+            "zone_id": None,
+            "base_domain": base_domain,
+            "nameservers": [],
+        }
+
+    import boto3
+
+    creds = provider.get_credentials()
 
     try:
         r53 = boto3.client(

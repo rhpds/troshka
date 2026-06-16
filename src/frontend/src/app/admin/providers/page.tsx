@@ -54,6 +54,10 @@ export default function AdminProvidersPage() {
   const [s3Bucket, setS3Bucket] = useState("troshka-images");
   const [editAccessKey, setEditAccessKey] = useState("");
   const [editSecretKey, setEditSecretKey] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [namespace, setNamespace] = useState("troshka");
+  const [verifySsl, setVerifySsl] = useState(true);
 
   const loadProviders = () => {
     fetch("/api/v1/providers/")
@@ -69,23 +73,34 @@ export default function AdminProvidersPage() {
   }, []);
 
   const createProvider = async () => {
-    if (!name.trim() || !accessKey.trim() || !secretKey.trim()) {
-      setError("All fields are required");
-      return;
+    if (type === "ocpvirt") {
+      if (!name.trim() || !apiUrl.trim() || !token.trim()) {
+        setError("Name, API URL, and Token are required");
+        return;
+      }
+    } else {
+      if (!name.trim() || !accessKey.trim() || !secretKey.trim()) {
+        setError("All fields are required");
+        return;
+      }
     }
     setError("");
+    const body = type === "ocpvirt"
+      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl }
+      : {
+          name, type, default_region: region,
+          access_key_id: accessKey, secret_access_key: secretKey,
+          ...(type === "s3" ? { bucket: s3Bucket } : {}),
+        };
     const resp = await fetch("/api/v1/providers/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name, type, default_region: region,
-        access_key_id: accessKey, secret_access_key: secretKey,
-        ...(type === "s3" ? { bucket: s3Bucket } : {}),
-      }),
+      body: JSON.stringify(body),
     });
     if (resp.ok) {
       setShowAdd(false);
       setName(""); setAccessKey(""); setSecretKey("");
+      setApiUrl(""); setToken(""); setNamespace("troshka"); setVerifySsl(true);
       loadProviders();
     } else {
       const data = await resp.json();
@@ -113,18 +128,25 @@ export default function AdminProvidersPage() {
   const startEdit = (p: ProviderInfo) => {
     setEditId(p.id);
     setEditName(p.name);
-    setEditRegion(p.default_region || "us-east-1");
+    setEditRegion(p.type === "ocpvirt" ? (p.default_region || "troshka") : (p.default_region || "us-east-1"));
     setEditAccessKey("");
     setEditSecretKey("");
   };
 
   const saveEdit = async () => {
     if (!editId) return;
+    const editProvider = providers.find((p) => p.id === editId);
     const body: Record<string, string> = {};
     if (editName) body.name = editName;
-    if (editRegion) body.default_region = editRegion;
-    if (editAccessKey) body.access_key_id = editAccessKey;
-    if (editSecretKey) body.secret_access_key = editSecretKey;
+    if (editProvider?.type === "ocpvirt") {
+      if (editAccessKey) body.api_url = editAccessKey;
+      if (editSecretKey) body.token = editSecretKey;
+      if (editRegion) body.namespace = editRegion;
+    } else {
+      if (editRegion) body.default_region = editRegion;
+      if (editAccessKey) body.access_key_id = editAccessKey;
+      if (editSecretKey) body.secret_access_key = editSecretKey;
+    }
 
     const resp = await fetch(`/api/v1/providers/${editId}`, {
       method: "PATCH",
@@ -306,16 +328,18 @@ export default function AdminProvidersPage() {
                       if (e.target.value === "s3") setRegion("us-east-1");
                     }}>
                       <option value="ec2">AWS EC2</option>
-                      <option value="ocp_virt">OCP Virtualization</option>
+                      <option value="ocpvirt">OCP Virtualization</option>
                       <option value="s3">S3 Storage</option>
                     </select>
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
-                    <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
-                      {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                    </select>
-                  </div>
+                  {type !== "ocpvirt" && (
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
+                      <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
+                        {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                      </select>
+                    </div>
+                  )}
                 </div>
                 {type === "s3" && (
                   <div>
@@ -323,14 +347,37 @@ export default function AdminProvidersPage() {
                     <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" />
                   </div>
                 )}
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID</label>
-                  <input style={{ ...inputStyle, fontFamily: "monospace" }} value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="AKIA..." />
-                </div>
-                <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key</label>
-                  <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} placeholder="Secret key" />
-                </div>
+                {type === "ocpvirt" ? (
+                  <>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} placeholder="https://api.cluster.example.com:6443" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sha256~..." />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="troshka" />
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
+                      <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={accessKey} onChange={(e) => setAccessKey(e.target.value)} placeholder="AKIA..." />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={secretKey} onChange={(e) => setSecretKey(e.target.value)} placeholder="Secret key" />
+                    </div>
+                  </>
+                )}
                 <Button variant="primary" onClick={createProvider} style={{ alignSelf: "flex-start" }}>Create Provider</Button>
               </div>
             </CardBody>
@@ -351,20 +398,39 @@ export default function AdminProvidersPage() {
                     <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
                     <input style={inputStyle} value={editName} onChange={(e) => setEditName(e.target.value)} />
                   </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
-                    <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
-                      {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                    <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
-                    <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
-                  </div>
+                  {p.type === "ocpvirt" ? (
+                    <>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder="troshka" />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
+                        <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
+                          {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
+                      </div>
+                    </>
+                  )}
                   <div style={{ display: "flex", gap: 8 }}>
                     <Button variant="primary" onClick={saveEdit}>Save</Button>
                     <Button variant="secondary" onClick={() => setEditId(null)}>Cancel</Button>
@@ -384,14 +450,14 @@ export default function AdminProvidersPage() {
                       {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                      {p.default_region}
-                      {p.type !== "s3" && <span> · {p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
-                      {p.type !== "s3" && (
+                      {p.type !== "ocpvirt" && p.default_region}
+                      {p.type !== "s3" && <span>{p.type !== "ocpvirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
+                      {p.type === "ec2" && (
                         p.default_ami
                           ? <span> · AMI: <code style={{ fontSize: 11 }}>{p.default_ami}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
                       )}
-                      {p.type !== "s3" && (
+                      {p.type === "ec2" && (
                         p.vpc_id
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
@@ -534,9 +600,9 @@ export default function AdminProvidersPage() {
                         }
                       }}>Scan S3</Button>
                     )}
-                    {p.type !== "s3" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
-                    {p.type !== "s3" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
-                    {p.type !== "s3" && p.vpc_id && !p.console_configured && (
+                    {p.type === "ec2" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
+                    {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
+                    {p.type !== "s3" && !p.console_configured && (
                       <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>
                         Setup Console
                       </Button>

@@ -65,3 +65,4 @@ uvloop==0.22.1
 watchfiles==1.2.0
 websockets==16.0
 websockify==0.13.0
+kubernetes>=29.0.0

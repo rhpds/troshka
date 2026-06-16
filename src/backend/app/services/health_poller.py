@@ -7,6 +7,7 @@ Periodically calls GET /health on each connected host to:
 - Detect disconnected hosts (mark as disconnected after timeout)
 - Auto-reconnect hosts that come back online
 """
+
 import logging
 import threading
 import time
@@ -147,16 +148,17 @@ def _poll_hosts():
                     host.storage_warnings = _evaluate_partitions(health)
                     if host.storage_warnings:
                         try:
-                            from app.services.storage_extend import (
-                                extend_host_ebs,
-                                should_extend_host,
-                            )
+                            from app.services.storage_extend import should_extend_host
 
-                            if should_extend_host(host):
+                            if should_extend_host(host) and host.provider:
+                                from app.services.providers import get_provider_driver
+
+                                drv = get_provider_driver(host.provider)
                                 logger.info(
-                                    "Auto-extending EBS for host %s", host.id[:8]
+                                    "Auto-extending storage for host %s",
+                                    host.id[:8],
                                 )
-                                extend_host_ebs(host, db)
+                                drv.extend_host_storage(host.provider, host, db)
                         except Exception:
                             logger.warning(
                                 "Auto-extend failed for host %s",

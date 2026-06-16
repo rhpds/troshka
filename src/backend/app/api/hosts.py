@@ -11,7 +11,7 @@ from app.models.host import Host
 from app.models.provider import Provider
 from app.models.user import User
 from app.schemas.host import HostResponse
-from app.services.provisioner import provision_host, resize_instance, terminate_host
+from app.services.provisioner import resize_instance
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosts", tags=["hosts"])
@@ -152,22 +152,23 @@ def add_host(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Provision a new EC2 host and add it to the pool."""
+    """Provision a new host and add it to the pool."""
     provider = db.query(Provider).filter_by(id=body.provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.state != "active":
         raise HTTPException(status_code=400, detail="Provider is not active")
-    if not provider.default_ami and not body.ami_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No AMI configured — run Discover AMI on the provider first",
-        )
-    if not provider.vpc_id or not provider.subnet_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No VPC configured — run Setup VPC on the provider first",
-        )
+    if provider.type == "ec2":
+        if not provider.default_ami and not body.ami_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No AMI configured — run Discover AMI on the provider first",
+            )
+        if not provider.vpc_id or not provider.subnet_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No VPC configured — run Setup VPC on the provider first",
+            )
 
     pool = None
     subnet_override = None
@@ -193,7 +194,7 @@ def add_host(
     nfs_kwargs = {}
     if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
         nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
-    elif pool and pool.mode == "shared-byo" and pool.nfs_endpoint:
+    elif pool and pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
         parts = pool.nfs_endpoint.split(":", 1)
         nfs_kwargs = {
             "nfs_server": parts[0],
@@ -201,16 +202,23 @@ def add_host(
         }
 
     try:
-        result = provision_host(
+        import uuid as _uuid
+
+        from app.services.providers import get_provider_driver
+
+        driver = get_provider_driver(provider)
+        result = driver.provision_host(
+            provider=provider,
+            host_id=str(_uuid.uuid4()),
             instance_type=body.instance_type,
-            ami_id=body.ami_id or provider.default_ami,
+            storage_size_gb=500,
+            ami_id=body.ami_id,
             region=region,
-            credentials=creds,
             vpc_id=provider.vpc_id,
             subnet_id=subnet_override or provider.subnet_id,
             security_group_id=provider.security_group_id,
             subnet_override=subnet_override,
-            console_zone_id=provider.console_zone_id,
+            host_type="shared",
             **nfs_kwargs,
         )
     except Exception as e:
@@ -302,30 +310,20 @@ def add_host(
                 h.agent_cert_fingerprint = creds["fingerprint"]
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
 
-            # Create console DNS record
-            if (
-                provider_console_domain
-                and provider_console_zone
-                and h.instance_id
-                and h.ip_address
-            ):
-                from app.services.console_dns import (
-                    console_domain_for_host,
-                    upsert_dns_record,
-                )
+            # Create console DNS/Route record
+            if provider_console_domain and h.instance_id and h.ip_address:
+                from app.services.console_dns import console_domain_for_host
+                from app.services.providers import get_provider_driver
 
+                prov_obj = s.query(Provider).get(h.provider_id)
                 fqdn = console_domain_for_host(h.instance_id, provider_console_domain)
                 try:
-                    upsert_dns_record(
-                        fqdn,
-                        h.ip_address,
-                        provider_console_zone,
-                        credentials=provider_creds,
-                    )
+                    drv = get_provider_driver(prov_obj)
+                    drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
                     h.console_domain = fqdn
                 except Exception as e:
                     logger.warning(
-                        "Failed to create console DNS for %s: %s", h.id[:8], e
+                        "Failed to create console record for %s: %s", h.id[:8], e
                     )
 
             s.commit()
@@ -535,9 +533,9 @@ def get_ssh_key(
     result = {
         "key_pair_name": host.key_pair_name,
         "private_key": host.private_key,
-        "ssh_command": f"ssh -i <key-file> ec2-user@{host.ip_address}"
-        if host.ip_address
-        else None,
+        "ssh_command": (
+            f"ssh -i <key-file> ec2-user@{host.ip_address}" if host.ip_address else None
+        ),
     }
 
     # Derive public key from private key
@@ -610,10 +608,16 @@ def poweroff_host(
         if provider:
             creds = provider.get_credentials()
 
-    from app.services.provisioner import _get_ec2_client
+    if host.provider:
+        from app.services.providers import get_provider_driver
 
-    client = _get_ec2_client(credentials=creds)
-    client.stop_instances(InstanceIds=[host.instance_id])
+        drv = get_provider_driver(host.provider)
+        drv.stop_host(host.provider, host.instance_id)
+    else:
+        from app.services.provisioner import _get_ec2_client
+
+        client = _get_ec2_client(credentials=creds)
+        client.stop_instances(InstanceIds=[host.instance_id])
 
     host.state = "stopped"
     host.agent_status = "disconnected"
@@ -657,7 +661,10 @@ def poweron_host(
                 status_code=409, detail="Host must be stopped to resize"
             )
         try:
-            result = resize_instance(host.instance_id, new_type, credentials=creds)
+            from app.services.providers import get_provider_driver
+
+            drv = get_provider_driver(host.provider)
+            result = drv.resize_host(host.provider, host.instance_id, new_type)
         except Exception:
             logger.exception("Failed to resize host %s before power on", host_id[:8])
             raise HTTPException(status_code=500, detail="Failed to resize instance")
@@ -942,18 +949,27 @@ def extend_storage(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Auto-extend the host's EBS data volume by the configured increment."""
+    """Auto-extend the host's storage volume by the configured increment."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
     if not host.instance_id:
-        raise HTTPException(status_code=400, detail="No EC2 instance associated")
+        raise HTTPException(status_code=400, detail="No instance associated")
 
     increment_gb = (body or {}).get("increment_gb")
-    from app.services.storage_extend import extend_host_ebs
 
     try:
-        result = extend_host_ebs(host, db, increment_gb=increment_gb)
+        if host.provider:
+            from app.services.providers import get_provider_driver
+
+            drv = get_provider_driver(host.provider)
+            result = drv.extend_host_storage(
+                host.provider, host, db, increment_gb=increment_gb
+            )
+        else:
+            from app.services.storage_extend import extend_host_ebs
+
+            result = extend_host_ebs(host, db, increment_gb=increment_gb)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
@@ -1047,29 +1063,40 @@ def remove_host(
     host.state = "terminating"
     db.commit()
 
-    # Clean up console DNS record
+    # Clean up console DNS/Route record
     if host.console_domain and host.ip_address:
         try:
-            from app.services.console_dns import delete_dns_record
-
             prov = (
                 db.query(Provider).filter_by(id=host.provider_id).first()
                 if host.provider_id
                 else None
             )
-            if prov and prov.console_zone_id:
-                delete_dns_record(
-                    host.console_domain,
-                    host.ip_address,
-                    prov.console_zone_id,
-                    credentials=prov.get_credentials(),
+            if prov:
+                from app.services.providers import get_provider_driver
+
+                drv = get_provider_driver(prov)
+                drv.delete_console_record(
+                    prov, host, host.console_domain, host.ip_address
                 )
         except Exception as e:
-            logger.warning("Failed to delete console DNS for %s: %s", host_id[:8], e)
+            logger.warning("Failed to delete console record for %s: %s", host_id[:8], e)
 
     if host.instance_id:
         try:
-            terminate_host(host.instance_id, credentials=creds)
+            prov = (
+                db.query(Provider).filter_by(id=host.provider_id).first()
+                if host.provider_id
+                else None
+            )
+            if prov:
+                from app.services.providers import get_provider_driver
+
+                drv = get_provider_driver(prov)
+                drv.terminate_host(prov, host.instance_id)
+            else:
+                from app.services.provisioner import terminate_host
+
+                terminate_host(host.instance_id, credentials=creds)
         except Exception as e:
             logger.exception("Failed to terminate host %s: %s", host_id, e)
             host.state = "active"
@@ -1087,26 +1114,36 @@ def remove_host(
 
     import threading
 
+    provider_id = host.provider_id
+    provider_type = provider.type if provider else "ec2"
+
     def _wait_terminated():
         import time
 
         from app.core.database import SessionLocal
-        from app.services.provisioner import _get_ec2_client, get_host_status
 
         s = SessionLocal()
         try:
+            prov = s.query(Provider).get(provider_id) if provider_id else None
+            if prov:
+                from app.services.providers import get_provider_driver
+
+                drv = get_provider_driver(prov)
+            else:
+                drv = None
+
             for _ in range(60):
                 time.sleep(5)
-                status = get_host_status(instance_id, credentials=creds)
+                status = (
+                    drv.get_host_status(prov, instance_id) if drv and prov else None
+                )
                 h = s.query(Host).filter_by(id=host_id).first()
                 if not h:
                     return
                 if not status or status["state"] == "terminated":
-                    # Clean up key pair
-                    if h.key_pair_name:
+                    if h.key_pair_name and prov:
                         try:
-                            client = _get_ec2_client(credentials=creds)
-                            client.delete_key_pair(KeyName=h.key_pair_name)
+                            drv.delete_key_pair(prov, h.key_pair_name)
                         except Exception:
                             pass
                     h.state = "terminated"
