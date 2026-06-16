@@ -1957,7 +1957,7 @@ def maybe_start_ocp_health_monitor(project_id: str):
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
-            args=(project_id, host_copy, topo, deploy_start),
+            args=(project_id, host_copy.id, topo, deploy_start),
             daemon=True,
             name=f"ocp-health-{project_id[:8]}",
         ).start()
@@ -2041,8 +2041,19 @@ def _approve_pending_csrs(host, project_id, bastion_ip, password):
     return pending
 
 
-def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: float = 0):
+def _monitor_ocp_health(
+    project_id: str, host_id: str, topology: dict, deploy_start: float = 0
+):
     import time as _t
+
+    from app.core.database import SessionLocal as _SL2
+    from app.models.host import Host as _Host2
+
+    _mon_db = _SL2()
+    host = _mon_db.query(_Host2).filter_by(id=host_id).first()
+    if not host:
+        _mon_db.close()
+        return
 
     start = deploy_start or _t.time()
 
@@ -2569,6 +2580,7 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
     except Exception:
         pass
     _active_health_monitors.discard(project_id)
+    _mon_db.close()
     logger.info("OCP health monitor complete for %s (%s)", project_id[:8], _elapsed())
 
 
