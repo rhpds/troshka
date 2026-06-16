@@ -311,6 +311,7 @@ class GCPDriver(ProviderDriver):
                     compute_v1.Items(key="user-data", value=user_data),
                 ]
             ),
+            tags=compute_v1.Tags(items=["troshka-host"]),
             labels={
                 "managed-by": "troshka",
                 "troshka-host-id": host_id[:12],
