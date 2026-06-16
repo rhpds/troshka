@@ -201,7 +201,7 @@ def create_pool(
 
     elif body.mode == "shared-netapp":
         credentials = provider.get_credentials()
-        zone = body.az or provider.gcp_zone or (provider.default_region + "-a")
+        region = provider.default_region or "us-central1"
         network = provider.gcp_network_id
         if not network:
             raise HTTPException(400, "GCP provider has no network configured")
@@ -211,11 +211,11 @@ def create_pool(
                 pool.id,
                 credentials,
                 provider.gcp_project_id,
-                zone,
+                region,
                 network,
                 body.netapp_capacity_gb,
                 "troshka",
-                body.netapp_service_level or "ZONAL",
+                body.netapp_service_level or "FLEX",
             ),
             daemon=True,
         )

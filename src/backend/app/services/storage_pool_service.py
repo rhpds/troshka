@@ -689,99 +689,107 @@ def delete_ceph_nfs_pool(
 def create_netapp_pool_and_volume(
     credentials: dict,
     project: str,
-    zone: str,
+    region: str,
     network: str,
     capacity_gb: int,
-    share_name: str = "troshka",
-    service_level: str = "ZONAL",
+    volume_name: str = "troshka",
+    service_level: str = "FLEX",
 ) -> dict:
-    from google.cloud import filestore_v1
+    from google.cloud import netapp_v1
     from google.oauth2 import service_account
 
     sa_json = credentials.get("service_account_json", {})
     cred = service_account.Credentials.from_service_account_info(sa_json)
-    client = filestore_v1.CloudFilestoreManagerClient(credentials=cred)
+    client = netapp_v1.NetAppClient(credentials=cred)
 
-    instance = filestore_v1.Instance(
-        tier=getattr(
-            filestore_v1.Instance.Tier, service_level, filestore_v1.Instance.Tier.ZONAL
-        ),
-        file_shares=[
-            filestore_v1.FileShareConfig(
-                name=share_name,
-                capacity_gb=capacity_gb,
-            )
-        ],
-        networks=[
-            filestore_v1.NetworkConfig(
-                network=network,
-                modes=[filestore_v1.NetworkConfig.AddressMode.MODE_IPV4],
-            )
-        ],
-        labels={"managed-by": "troshka"},
+    network_name = network.split("/")[-1] if "/" in network else network
+    parent = f"projects/{project}/locations/{region}"
+
+    pool = netapp_v1.StoragePool(
+        service_level=netapp_v1.ServiceLevel.FLEX,
+        capacity_gib=capacity_gb,
+        network=f"projects/{project}/global/networks/{network_name}",
     )
-
-    parent = f"projects/{project}/locations/{zone}"
-    instance_id = f"troshka-fs-{zone}"
-    operation = client.create_instance(
-        parent=parent, instance_id=instance_id, instance=instance
+    op = client.create_storage_pool(
+        parent=parent,
+        storage_pool_id="troshka-pool",
+        storage_pool=pool,
     )
-    result = operation.result()
+    pool_result = op.result()
+    logger.info("NetApp storage pool created: %s", pool_result.name)
 
-    ip_address = None
-    if result.networks:
-        ip_addresses = result.networks[0].ip_addresses
-        if ip_addresses:
-            ip_address = ip_addresses[0]
+    volume = netapp_v1.Volume(
+        share_name=volume_name,
+        storage_pool=pool_result.name,
+        capacity_gib=capacity_gb,
+        protocols=[netapp_v1.Protocols.NFSV4],
+    )
+    op = client.create_volume(
+        parent=parent,
+        volume_id=volume_name,
+        volume=volume,
+    )
+    vol_result = op.result()
+    logger.info("NetApp volume created: %s", vol_result.name)
+
+    mount_ip = None
+    if vol_result.mount_options:
+        for mo in vol_result.mount_options:
+            if mo.export:
+                parts = mo.export.split(":")
+                mount_ip = parts[0] if parts else mo.export
+                break
 
     return {
-        "instance_name": result.name,
-        "ip_address": ip_address,
-        "share_name": share_name,
+        "pool_name": pool_result.name,
+        "volume_name": vol_result.name,
+        "mount_ip": mount_ip,
+        "share_name": volume_name,
     }
 
 
-def update_netapp_capacity(credentials: dict, pool_id: str, new_capacity_gb: int):
-    from google.cloud import filestore_v1
+def update_netapp_capacity(credentials: dict, volume_name: str, new_capacity_gb: int):
+    from google.cloud import netapp_v1
     from google.oauth2 import service_account
     from google.protobuf import field_mask_pb2
 
     sa_json = credentials.get("service_account_json", {})
     cred = service_account.Credentials.from_service_account_info(sa_json)
-    client = filestore_v1.CloudFilestoreManagerClient(credentials=cred)
+    client = netapp_v1.NetAppClient(credentials=cred)
 
-    instance = filestore_v1.Instance(
-        name=pool_id,
-        file_shares=[
-            filestore_v1.FileShareConfig(
-                name="troshka",
-                capacity_gb=new_capacity_gb,
-            )
-        ],
+    volume = netapp_v1.Volume(
+        name=volume_name,
+        capacity_gib=new_capacity_gb,
     )
-    update_mask = field_mask_pb2.FieldMask(paths=["file_shares"])
-    operation = client.update_instance(instance=instance, update_mask=update_mask)
-    operation.result()
+    update_mask = field_mask_pb2.FieldMask(paths=["capacity_gib"])
+    op = client.update_volume(volume=volume, update_mask=update_mask)
+    op.result()
 
 
 def provision_netapp_pool(
     pool_id: str,
     credentials: dict,
     project: str,
-    zone: str,
+    region: str,
     network: str,
     capacity_gb: int,
-    share_name: str = "troshka",
-    service_level: str = "ZONAL",
+    volume_name: str = "troshka",
+    service_level: str = "FLEX",
 ):
     db = SessionLocal()
     try:
         result = create_netapp_pool_and_volume(
-            credentials, project, zone, network, capacity_gb, share_name, service_level
+            credentials,
+            project,
+            region,
+            network,
+            capacity_gb,
+            volume_name,
+            service_level,
         )
         pool = db.query(StoragePool).get(pool_id)
-        pool.netapp_pool_id = result["instance_name"]
-        pool.netapp_mount_ip = result["ip_address"]
+        pool.netapp_pool_id = result["pool_name"]
+        pool.netapp_mount_ip = result["mount_ip"]
         pool.netapp_volume_name = result["share_name"]
         pool.netapp_capacity_gb = capacity_gb
         pool.netapp_service_level = service_level
