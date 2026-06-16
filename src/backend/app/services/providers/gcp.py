@@ -315,10 +315,12 @@ class GCPDriver(ProviderDriver):
                 "troshka-host-id": host_id[:12],
             },
             advanced_machine_features=compute_v1.AdvancedMachineFeatures(
-                enable_nested_virtualization=True,
+                enable_nested_virtualization=host_type != "pattern_buffer",
             ),
             scheduling=compute_v1.Scheduling(
-                on_host_maintenance="TERMINATE",
+                on_host_maintenance="TERMINATE"
+                if host_type != "pattern_buffer"
+                else "MIGRATE",
             ),
         )
 
