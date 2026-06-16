@@ -69,7 +69,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
       .then(r => r.ok ? r.json() : [])
       .then(data => setDnsProviders(Array.isArray(data) ? data : []))
       .catch(() => {});
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
       setUserRole(d.role || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
@@ -380,7 +380,7 @@ export default function PatternsPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {certWarning && (
                         <Tooltip content={`This OCP pattern is ${Math.floor(ageMonths)} months old. OpenShift certificates expire after ~1 year. CSRs will be auto-approved at deploy time.`}>
-                          <Label color="gold">cert age: {Math.floor(ageMonths)}mo</Label>
+                          <Label color="orange">cert age: {Math.floor(ageMonths)}mo</Label>
                         </Tooltip>
                       )}
                       {saving ? (

@@ -1442,7 +1442,7 @@ export default function PropertiesPanel() {
             )}
 
             {/* Load Balancer properties */}
-            {(subtype === "loadbalancer" || (data as Record<string, any>).networkType === "loadbalancer") && (
+            {(data as Record<string, any>).networkType === "loadbalancer" && (
               <>
                 <div className="props-divider" />
                 <div className="props-section">

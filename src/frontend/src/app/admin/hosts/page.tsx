@@ -99,7 +99,7 @@ export default function AdminHostsPage() {
       setPools(Array.isArray(pools) ? pools : []);
       setLoading(false);
     }).catch(() => setLoading(false));
-    fetch("/api/v1/hosts/expected-agent-version").then((r) => r.ok ? r.json() : {}).then((d) => setExpectedVersion(d.version || ""));
+    fetch("/api/v1/hosts/expected-agent-version").then((r) => r.ok ? r.json() : {}).then((d: { version?: string }) => setExpectedVersion(d.version || ""));
     // Storage fetched separately — SSH calls can be slow and shouldn't block the page
     fetch("/api/v1/hosts/storage").then((r) => r.ok ? r.json() : {}).then((d) => {
       if (d && typeof d === "object") {
@@ -1004,13 +1004,13 @@ export default function AdminHostsPage() {
               )}
               </>); })()}
               {h.state === "active" && (
-                <Button variant="secondary" isDisabled={installing === h.id || updating === h.id} onClick={() => {
+                <Button variant="secondary" onClick={() => {
                   const msg = h.used_vcpus > 0
                     ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
                     : `Power off ${h.instance_id}?`;
                   if (!window.confirm(msg)) return;
                   powerHost(h.id, "poweroff");
-                }} isDisabled={poweringHost === h.id} isLoading={poweringHost === h.id}>
+                }} isDisabled={installing === h.id || updating === h.id || poweringHost === h.id} isLoading={poweringHost === h.id}>
                   Power Off
                 </Button>
               )}

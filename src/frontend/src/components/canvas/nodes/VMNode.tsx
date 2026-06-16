@@ -17,7 +17,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
   const isRedeploying = d.status === "redeploying";
-  const isNotFound = d.status === "not_found";
+  const isNotFound = (d as any).status === "not_found";
 
   const nicCount = (d.nics || []).length;
   const dcCount = (d.diskControllers || []).length;
@@ -191,7 +191,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           style={{
             background: isRunning
               ? "var(--troshka-green)"
-              : d.status === "not_found"
+              : (d as any).status === "not_found"
                 ? "#6b7280"
                 : isDeployed
                   ? "var(--troshka-red)"

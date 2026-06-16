@@ -29,6 +29,7 @@ interface ProviderInfo {
   console_base_domain?: string;
   console_nameservers?: string[];
   console_configured?: boolean;
+  iso_pvc?: string | null;
   // GCP
   gcp_project_id?: string | null;
   gcp_network_id?: string | null;
@@ -734,6 +735,56 @@ export default function AdminProvidersPage() {
                       }
                     }}>Select Install ISO</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
+                    {p.type === "gcp" && !p.gcp_network_id && (
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          if (!window.confirm("Create a new VPC network with subnet and firewall rules?")) return;
+                          setAmiResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
+                          const resp = await fetch(`/api/v1/providers/${p.id}/create-network-gcp`, { method: "POST" });
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Network created: ${data.network?.split("/").pop() || "ok"}` }));
+                            loadProviders();
+                          } else {
+                            const data = await resp.json();
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
+                          }
+                        }}
+                      >
+                        Setup Network
+                      </Button>
+                    )}
+                    {p.type === "gcp" && (
+                      <Button
+                        variant="secondary"
+                        onClick={async () => {
+                          setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering images..." }));
+                          setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-gcp`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.length > 0) {
+                              const mapped = data.map((img: Record<string, string>) => ({
+                                type: img.source,
+                                label: `${img.name} (${img.source})`,
+                                ami_id: img.self_link,
+                                name: img.family,
+                                created: img.creation_timestamp,
+                              }));
+                              setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                              setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                            } else {
+                              setAmiResult((prev) => ({ ...prev, [p.id]: "No RHEL images found" }));
+                            }
+                          } else {
+                            setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED — check credentials" }));
+                          }
+                        }}
+                      >
+                        Discover Images
+                      </Button>
+                    )}
                     {p.type === "ec2" && !p.console_configured && (
                       <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>
                         Setup Console

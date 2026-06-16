@@ -61,6 +61,7 @@ interface TemplateSummary {
   name: string;
   description: string;
   category: string;
+  deploy_time?: string;
 }
 
 function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
@@ -155,7 +156,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
       .catch(() => {});
     fetch(`${API_BASE}/api/v1/auth/ocp-pull-secret`)
       .then((r) => r.ok ? r.json() : {})
-      .then((data) => setHasPullSecret(data.has_secret || false))
+      .then((data: { has_secret?: boolean }) => setHasPullSecret(data.has_secret || false))
       .catch(() => {});
   }, []);
 
@@ -741,7 +742,7 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
       setUserRole(d.role || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {

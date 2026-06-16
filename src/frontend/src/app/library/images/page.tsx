@@ -24,8 +24,13 @@ interface LibraryItem {
   size_bytes: number;
   os_variant: string;
   state: string;
-  tags: string[] | null;
+  tags: {
+    ocp_default_iso?: boolean;
+    ocp_default_image?: boolean;
+    user_tags?: string[];
+  } | null;
   created_at: string;
+  source_url?: string | null;
 }
 
 export default function ImagesPage() {

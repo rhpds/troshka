@@ -35,6 +35,9 @@ interface StoragePool {
   worker_instance_type: string | null;
   worker_status: string | null;
   worker_error: string | null;
+  worker_ip: string | null;
+  worker_instance_id: string | null;
+  worker_agent_version: string | null;
 }
 
 interface Provider {

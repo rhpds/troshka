@@ -55,7 +55,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
           loadbalancer: { bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.6)", glow: "rgba(59,130,246,0.2)", selected: "#3b82f6" },
         };
-        const isLb = d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer";
+        const isLb = (d as any).networkType === "loadbalancer";
         const c = isBmc ? colors.bmc : isLb ? colors.loadbalancer : (colors[d.subtype as keyof typeof colors] || colors.network);
         return {
           background: c.bg,
@@ -75,7 +75,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             <line x1="10" y1="12" x2="20" y2="12" />
             <line x1="10" y1="15" x2="20" y2="15" />
           </svg>
-        ) : d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer" ? (
+        ) : (d as any).networkType === "loadbalancer" ? (
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="4" cy="12" r="2" />
             <circle cx="20" cy="6" r="2" />
@@ -173,7 +173,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
             </div>
           );
         })()}
-        {(d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer") && (() => {
+        {(d as any).networkType === "loadbalancer" && (() => {
           const frontends = ((d as any).frontends as Array<{name: string; bindPort: number}>) || [];
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -228,7 +228,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         </>
       )}
       {/* Load Balancers: top/bottom for VM connections */}
-      {(d.subtype === "loadbalancer" || (d as any).networkType === "loadbalancer") && (
+      {(d as any).networkType === "loadbalancer" && (
         <>
           <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
           <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />

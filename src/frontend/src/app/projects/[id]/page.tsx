@@ -113,7 +113,7 @@ export default function ProjectCanvasPage() {
   }, [projectId]);
 
   useEffect(() => {
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
       setIsAdmin(d.role === "admin");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
