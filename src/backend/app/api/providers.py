@@ -18,7 +18,7 @@ class ProviderCreate(BaseModel):
     name: str
     type: str
     default_region: str = ""
-    default_ami: str = ""
+    default_image: str = ""
     vpc_id: str = ""
     subnet_id: str = ""
     access_key_id: str = ""
@@ -45,7 +45,7 @@ class ProviderCreate(BaseModel):
 class ProviderUpdate(BaseModel):
     name: str | None = None
     default_region: str | None = None
-    default_ami: str | None = None
+    default_image: str | None = None
     vpc_id: str | None = None
     subnet_id: str | None = None
     security_group_id: str | None = None
@@ -59,7 +59,7 @@ class ProviderResponse(BaseModel):
     name: str
     type: str
     default_region: str | None
-    default_ami: str | None
+    default_image: str | None
     vpc_id: str | None
     subnet_id: str | None
     security_group_id: str | None
@@ -102,7 +102,7 @@ def list_providers(
             name=p.name,
             type=p.type,
             default_region=p.default_region,
-            default_ami=p.default_ami,
+            default_image=p.default_image,
             vpc_id=p.vpc_id,
             subnet_id=p.subnet_id,
             security_group_id=p.security_group_id,
@@ -144,7 +144,7 @@ def create_provider(
         name=body.name,
         type=body.type,
         default_region=body.default_region or None,
-        default_ami=body.default_ami or None,
+        default_image=body.default_image or None,
         vpc_id=body.vpc_id or None,
         subnet_id=body.subnet_id or None,
         created_by=user.email,
@@ -202,13 +202,15 @@ def create_provider(
         }
         provider.azure_subscription_id = body.azure_subscription_id
         provider.azure_location = body.azure_location or body.default_region or None
-    else:
+    elif body.type in ("ec2", "s3"):
         creds = {
             "access_key_id": body.access_key_id,
             "secret_access_key": body.secret_access_key,
         }
         if body.bucket:
             creds["bucket"] = body.bucket
+    else:
+        raise HTTPException(400, f"Unknown provider type: {body.type}")
     provider.set_credentials(creds)
     db.add(provider)
     db.commit()
@@ -219,7 +221,7 @@ def create_provider(
         name=provider.name,
         type=provider.type,
         default_region=provider.default_region,
-        default_ami=provider.default_ami,
+        default_image=provider.default_image,
         vpc_id=provider.vpc_id,
         subnet_id=provider.subnet_id,
         security_group_id=provider.security_group_id,
@@ -256,8 +258,8 @@ def update_provider(
         provider.name = body.name
     if body.default_region is not None:
         provider.default_region = body.default_region
-    if body.default_ami is not None:
-        provider.default_ami = body.default_ami
+    if body.default_image is not None:
+        provider.default_image = body.default_image
     if body.vpc_id is not None:
         provider.vpc_id = body.vpc_id
     if body.subnet_id is not None:
@@ -283,7 +285,7 @@ def update_provider(
         name=provider.name,
         type=provider.type,
         default_region=provider.default_region,
-        default_ami=provider.default_ami,
+        default_image=provider.default_image,
         vpc_id=provider.vpc_id,
         subnet_id=provider.subnet_id,
         security_group_id=provider.security_group_id,
@@ -322,13 +324,13 @@ def delete_provider(
     db.commit()
 
 
-@router.get("/{provider_id}/discover-ami")
-def list_available_amis(
+@router.get("/{provider_id}/discover-images")
+def discover_images(
     provider_id: str,
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """List available RHEL 9 and 10 AMIs (both Access2/Gold and Hourly/Marketplace)."""
+    """List available RHEL 9 and 10 images (both Access2/Gold and Hourly/Marketplace)."""
     import re
 
     import boto3
@@ -346,7 +348,7 @@ def list_available_amis(
             aws_secret_access_key=creds.get("secret_access_key"),
         )
 
-        ami_types = {
+        image_types = {
             "rhel10-access2": {
                 "pattern": "RHEL-10*x86_64*Access2-GP3",
                 "label": "RHEL 10 Access2 (Gold Image / BYOS)",
@@ -370,7 +372,7 @@ def list_available_amis(
         }
 
         results = []
-        for ami_type, info in ami_types.items():
+        for image_type, info in image_types.items():
             response = ec2.describe_images(
                 Owners=["309956199498"],
                 Filters=[
@@ -394,8 +396,8 @@ def list_available_amis(
             if images:
                 latest = images[-1]
                 # Extract version from name like "RHEL-10.2.0_HVM..." or "RHEL-9.7.0_HVM..."
-                ami_name = latest["Name"]
-                version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", ami_name)
+                image_name = latest["Name"]
+                version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", image_name)
                 version = version_match.group(1) if version_match else ""
                 label = (
                     info["label"]
@@ -408,18 +410,29 @@ def list_available_amis(
                     {
                         "type": info["source"],
                         "label": label,
-                        "ami_id": latest["ImageId"],
+                        "image_id": latest["ImageId"],
                         "name": latest["Name"],
                         "created": latest["CreationDate"],
                     }
                 )
 
-        return {"region": provider.default_region, "amis": results}
+        return {"region": provider.default_region, "images": results}
     except Exception:
-        logger.exception("AMI discovery failed for %s", provider.name)
+        logger.exception("Image discovery failed for %s", provider.name)
         raise HTTPException(
-            status_code=500, detail="AMI discovery failed. Check server logs."
+            status_code=500, detail="Image discovery failed. Check server logs."
         )
+
+
+# Backward-compatible alias for old endpoint name
+@router.get("/{provider_id}/discover-ami")
+def list_available_amis(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Deprecated: use /discover-images instead."""
+    return discover_images(provider_id, user, db)
 
 
 @router.get("/{provider_id}/discover-vpcs")
@@ -658,6 +671,23 @@ def setup_infrastructure(
         )
 
 
+@router.post("/{provider_id}/set-image")
+def set_image(
+    provider_id: str,
+    image_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Set the default image for a provider."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    provider.default_image = image_id
+    db.commit()
+    return {"image_id": image_id}
+
+
+# Backward-compatible alias for old endpoint name
 @router.post("/{provider_id}/set-ami")
 def set_ami(
     provider_id: str,
@@ -665,13 +695,8 @@ def set_ami(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Set the default AMI for a provider."""
-    provider = db.query(Provider).filter_by(id=provider_id).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    provider.default_ami = ami_id
-    db.commit()
-    return {"ami_id": ami_id}
+    """Deprecated: use /set-image instead."""
+    return set_image(provider_id, ami_id, user, db)
 
 
 @router.post("/{provider_id}/set-iso")
@@ -874,7 +899,7 @@ def test_provider(
                 "status": "ok",
                 "message": f"OK — Resource Group: {rg} ({rg_info.location})",
             }
-        else:
+        elif provider.type == "ec2":
             sts = boto3.client(
                 "sts",
                 region_name=provider.default_region,
@@ -887,6 +912,8 @@ def test_provider(
                 "account": identity["Account"],
                 "arn": identity["Arn"],
             }
+        else:
+            raise HTTPException(400, f"Unknown provider type: {provider.type}")
     except Exception:
         logger.exception("Provider test failed for %s", provider.name)
         raise HTTPException(status_code=400, detail="Credentials test failed")

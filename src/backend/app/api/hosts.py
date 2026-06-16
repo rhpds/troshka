@@ -21,7 +21,7 @@ class ProvisionRequest(BaseModel):
     provider_id: str
     instance_type: str | None = None
     region: str | None = None
-    ami_id: str | None = None
+    image_id: str | None = None
     storage_pool_id: str | None = None
 
 
@@ -201,10 +201,10 @@ def add_host(
     if provider.state != "active":
         raise HTTPException(status_code=400, detail="Provider is not active")
     if provider.type == "ec2":
-        if not provider.default_ami and not body.ami_id:
+        if not provider.default_image and not body.image_id:
             raise HTTPException(
                 status_code=400,
-                detail="No AMI configured — run Discover AMI on the provider first",
+                detail="No image configured — select an image on the provider first",
             )
         if not provider.vpc_id or not provider.subnet_id:
             raise HTTPException(
@@ -258,7 +258,7 @@ def add_host(
             host_id=str(_uuid.uuid4()),
             instance_type=body.instance_type,
             storage_size_gb=500,
-            ami_id=body.ami_id or provider.default_ami,
+            image_id=body.image_id or provider.default_image,
             region=region,
             vpc_id=provider.vpc_id,
             subnet_id=subnet_override or provider.subnet_id,
@@ -312,7 +312,12 @@ def add_host(
 
     def _auto_install():
         from app.core.database import SessionLocal
-        from app.services.agent_deployer import deploy_agent, wait_for_ssh
+        from app.services.agent_deployer import (
+            deploy_agent,
+            get_provider_data_disk,
+            get_provider_ssh_user,
+            wait_for_ssh,
+        )
 
         s = SessionLocal()
         try:
@@ -321,21 +326,8 @@ def add_host(
                 return
             h.agent_status = "waiting_ssh"
             s.commit()
-            # Provider-specific SSH user
-            if provider_type == "ocpvirt":
-                _ssh_user = "cloud-user"
-            elif provider_type in ("gcp", "azure"):
-                _ssh_user = "troshka"
-            else:  # ec2
-                _ssh_user = "ec2-user"
-
-            # Provider-specific data disk device path
-            if provider_type == "gcp":
-                _data_disk = "/dev/sdb"
-            elif provider_type == "azure":
-                _data_disk = "/dev/disk/azure/scsi1/lun0"
-            else:  # ec2, ocpvirt (both use NVMe translation or equivalent)
-                _data_disk = "sdf"
+            _ssh_user = get_provider_ssh_user(provider_type)
+            _data_disk = get_provider_data_disk(provider_type)
 
             if not wait_for_ssh(
                 ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user
@@ -457,7 +449,12 @@ def install_agent(
 
     def _install():
         from app.core.database import SessionLocal
-        from app.services.agent_deployer import deploy_agent, wait_for_ssh
+        from app.services.agent_deployer import (
+            deploy_agent,
+            get_provider_data_disk,
+            get_provider_ssh_user,
+            wait_for_ssh,
+        )
 
         s = SessionLocal()
         try:
@@ -474,13 +471,8 @@ def install_agent(
                 if _prov:
                     _provider_type = _prov.type
 
-            # Provider-specific SSH user
-            if _provider_type == "ocpvirt":
-                _ssh_user = "cloud-user"
-            elif _provider_type in ("gcp", "azure"):
-                _ssh_user = "troshka"
-            else:  # ec2
-                _ssh_user = "ec2-user"
+            _ssh_user = get_provider_ssh_user(_provider_type)
+            _data_disk = get_provider_data_disk(_provider_type)
 
             ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user)
             if not ssh_ok:
@@ -489,14 +481,6 @@ def install_agent(
                 return
             h.agent_status = "installing"
             s.commit()
-
-            # Provider-specific data disk device path
-            if _provider_type == "gcp":
-                _data_disk = "/dev/sdb"
-            elif _provider_type == "azure":
-                _data_disk = "/dev/disk/azure/scsi1/lun0"
-            else:  # ec2, ocpvirt
-                _data_disk = "sdf"
 
             _install_kwargs = {
                 "ssh_user": _ssh_user,
@@ -837,7 +821,12 @@ def poweron_host(
 
     def _wait_and_reinstall():
         from app.core.database import SessionLocal
-        from app.services.agent_deployer import deploy_agent, wait_for_ssh
+        from app.services.agent_deployer import (
+            deploy_agent,
+            get_provider_data_disk,
+            get_provider_ssh_user,
+            wait_for_ssh,
+        )
         from app.services.provisioner import _get_ec2_client as get_client
 
         s = SessionLocal()
@@ -887,13 +876,8 @@ def poweron_host(
                 if _prov2:
                     _provider_type = _prov2.type
 
-            # Provider-specific SSH user
-            if _provider_type == "ocpvirt":
-                _ssh_user2 = "cloud-user"
-            elif _provider_type in ("gcp", "azure"):
-                _ssh_user2 = "troshka"
-            else:  # ec2
-                _ssh_user2 = "ec2-user"
+            _ssh_user2 = get_provider_ssh_user(_provider_type)
+            _data_disk2 = get_provider_data_disk(_provider_type)
 
             if not wait_for_ssh(h.ip_address, h.private_key, ssh_user=_ssh_user2):
                 h.agent_status = "install_failed"
@@ -901,14 +885,6 @@ def poweron_host(
                 return
             h.agent_status = "installing"
             s.commit()
-
-            # Provider-specific data disk device path
-            if _provider_type == "gcp":
-                _data_disk2 = "/dev/sdb"
-            elif _provider_type == "azure":
-                _data_disk2 = "/dev/disk/azure/scsi1/lun0"
-            else:  # ec2, ocpvirt
-                _data_disk2 = "sdf"
 
             _kwargs = {
                 "ssh_user": _ssh_user2,
