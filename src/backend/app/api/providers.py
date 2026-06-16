@@ -838,6 +838,37 @@ def test_provider(
                 "namespace": ns,
                 "nodes": node_count,
             }
+        elif provider.type == "gcp":
+            from google.cloud import compute_v1
+            from google.oauth2 import service_account
+
+            sa_json = creds.get("service_account_json", {})
+            credential = service_account.Credentials.from_service_account_info(sa_json)
+            client = compute_v1.ProjectsClient(credentials=credential)
+            project_info = client.get(project=provider.gcp_project_id)
+            return {
+                "status": "ok",
+                "project": provider.gcp_project_id,
+                "message": f"OK — Project: {provider.gcp_project_id}",
+            }
+        elif provider.type == "azure":
+            from azure.identity import ClientSecretCredential
+            from azure.mgmt.resource import ResourceManagementClient
+
+            credential = ClientSecretCredential(
+                tenant_id=creds["tenant_id"],
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+            )
+            resource_client = ResourceManagementClient(
+                credential, creds["subscription_id"]
+            )
+            rg = provider.azure_resource_group or "troshka-rg"
+            rg_info = resource_client.resource_groups.get(rg)
+            return {
+                "status": "ok",
+                "message": f"OK — Resource Group: {rg} ({rg_info.location})",
+            }
         else:
             sts = boto3.client(
                 "sts",
