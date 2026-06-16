@@ -38,6 +38,27 @@ class StoragePool(Base):
     nfs_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ceph_subvolume_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # GCP Filestore
+    filestore_instance_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    filestore_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    filestore_share_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    filestore_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    filestore_capacity_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Azure Files NFS
+    azure_storage_account: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    azure_file_share_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    azure_file_share_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    azure_files_capacity_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    azure_files_iops: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    azure_files_throughput: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     ca_cert: Mapped[str | None] = mapped_column(Text)
     ca_key: Mapped[str | None] = mapped_column(Text)
 

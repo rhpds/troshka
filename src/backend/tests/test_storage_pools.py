@@ -149,3 +149,53 @@ def test_host_without_pool():
     assert host.storage_pool_id is None
     assert host.storage_pool is None
     db.close()
+
+
+def test_create_filestore_pool():
+    db = Session()
+    provider = db.query(Provider).first()
+    pool = StoragePool(
+        name="gcp-filestore-pool",
+        mode="shared-filestore",
+        az="us-central1-a",
+        filestore_instance_id="projects/my-proj/locations/us-central1-a/instances/troshka-fs",
+        filestore_ip="10.0.1.100",
+        filestore_share_name="troshka",
+        filestore_tier="ZONAL",
+        filestore_capacity_gb=1024,
+        status="available",
+        provider_id=provider.id,
+    )
+    db.add(pool)
+    db.commit()
+    db.refresh(pool)
+
+    assert pool.mode == "shared-filestore"
+    assert pool.filestore_ip == "10.0.1.100"
+    assert pool.filestore_capacity_gb == 1024
+    db.close()
+
+
+def test_create_azure_files_pool():
+    db = Session()
+    provider = db.query(Provider).first()
+    pool = StoragePool(
+        name="azure-files-pool",
+        mode="shared-azure-files",
+        azure_storage_account="troshkasa",
+        azure_file_share_name="troshka",
+        azure_file_share_url="troshkasa.file.core.windows.net:/troshkasa/troshka",
+        azure_files_capacity_gb=256,
+        azure_files_iops=3000,
+        azure_files_throughput=125,
+        status="available",
+        provider_id=provider.id,
+    )
+    db.add(pool)
+    db.commit()
+    db.refresh(pool)
+
+    assert pool.mode == "shared-azure-files"
+    assert pool.azure_storage_account == "troshkasa"
+    assert pool.azure_files_iops == 3000
+    db.close()
