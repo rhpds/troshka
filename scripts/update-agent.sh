@@ -56,7 +56,8 @@ if os.path.exists(vncd_path):
 db = SessionLocal()
 try:
     if prefix:
-        hosts = db.query(Host).filter(Host.agent_status == 'connected', Host.id.like(prefix + '%')).all()
+        from sqlalchemy import cast, String
+        hosts = db.query(Host).filter(Host.agent_status == 'connected', cast(Host.id, String).like(prefix + '%')).all()
     else:
         hosts = db.query(Host).filter(Host.agent_status == 'connected').all()
 

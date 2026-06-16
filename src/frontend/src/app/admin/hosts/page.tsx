@@ -81,7 +81,7 @@ export default function AdminHostsPage() {
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
 
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
-  const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string; worker_host_id: string | null; worker_instance_type: string | null}[]>([]);
+  const [pools, setPools] = useState<{id: string; name: string; mode: string; az: string | null; status: string; provider_id: string; worker_host_id: string | null; worker_instance_type: string | null}[]>([]);
   const [selectedPool, setSelectedPool] = useState("");
   const [newCpuCores, setNewCpuCores] = useState(64);
   const [newMemoryGb, setNewMemoryGb] = useState(256);
@@ -274,9 +274,8 @@ export default function AdminHostsPage() {
     setShowKeyFor(hostId);
   };
 
-  const copyToClipboard = (text: string, label: string) => {
+  const copyToClipboard = (text: string, _label: string) => {
     navigator.clipboard.writeText(text);
-    alert(`${label} copied to clipboard`);
   };
 
   const [resizeType, setResizeType] = useState<Record<string, string>>({});
@@ -508,9 +507,9 @@ export default function AdminHostsPage() {
                       setNewProviderId(e.target.value);
                       const p = providers.find((p) => p.id === e.target.value);
                       if (p) setNewRegion(p.default_region || "");
-                      if (p?.type === "ocpvirt") {
-                        const currentPool = pools.find((pl) => pl.id === selectedPool);
-                        if (currentPool?.mode === "shared-fsx") setSelectedPool("");
+                      if (p) {
+                        const matchingPool = pools.find((pl) => pl.status === "available" && pl.provider_id === e.target.value && (p.type !== "ocpvirt" || pl.mode !== "shared-fsx"));
+                        setSelectedPool(matchingPool?.id || "");
                       }
                     }}
                   >
@@ -864,7 +863,7 @@ export default function AdminHostsPage() {
             {/* Row 2: Action buttons */}
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
               <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
-                {showKeyFor === h.id ? "Hide Private Key" : "Show Private Key"}
+                {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
               </Button>
               {(() => {
                 const hostBusy = installing === h.id || updating === h.id || h.agent_status === "waiting_ssh" || h.agent_status === "installing";

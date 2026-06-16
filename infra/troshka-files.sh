@@ -7,9 +7,9 @@ while true; do
   output=$(
   echo "=== Troshka Storage — $(date) ==="
   echo
-  printf "%-25s %6s %6s %5s\n" Mount Used Free Use%
-  df -h /var/lib/troshka /var/lib/troshka/shared /var/lib/troshka/local 2>/dev/null | tail -n+2 | awk '!seen[$6]++' | while read fs sz used avail pct mnt; do
-    printf "%-25s %6s %6s %5s\n" "$mnt" "$used" "$avail" "$pct"
+  printf "%-28s %6s %6s %5s\n" Mount Used Free Use%
+  df -h / /var/lib/troshka /var/lib/troshka/* 2>/dev/null | tail -n+2 | awk '!seen[$6]++' | while read fs sz used avail pct mnt; do
+    printf "%-28s %6s %6s %5s\n" "$mnt" "$used" "$avail" "$pct"
   done
   echo
   for proj_dir in /var/lib/troshka/vms/*/ /var/lib/troshka/shared/vms/*/ /var/lib/troshka/local/vms/*/; do
@@ -98,8 +98,6 @@ while true; do
     done
     echo
   fi
-  root_info=$(df -h / | tail -1)
-  echo "Root FS: $(echo $root_info | awk '{print $4}') free ($(echo $root_info | awk '{print $5}') used)"
   )
   clear
   echo "$output"
