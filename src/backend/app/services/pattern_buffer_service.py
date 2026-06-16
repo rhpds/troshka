@@ -137,11 +137,21 @@ def _provision_pattern_buffer(pool_id: str):
         db.commit()
         db.refresh(host)
 
+        ssh_port = result.get("_ssh_port", 22)
+        ssh_user = "cloud-user" if provider.type == "ocpvirt" else "ec2-user"
+        ssh_host = result.get("_ssh_host") or result["public_ip"]
+
         logger.info("Pattern buffer %s provisioned, waiting for SSH...", host_id[:8])
 
         from app.services.agent_deployer import wait_for_ssh
 
-        if not wait_for_ssh(result["public_ip"], result["private_key"], timeout=300):
+        if not wait_for_ssh(
+            ssh_host,
+            result["private_key"],
+            port=ssh_port,
+            ssh_user=ssh_user,
+            timeout=300,
+        ):
             logger.error("Pattern buffer %s SSH never became available", host_id[:8])
             return
 
@@ -161,16 +171,20 @@ def _provision_pattern_buffer(pool_id: str):
             ca_pem = pool.ca_cert
 
         deploy_result = deploy_agent(
-            host_ip=result["public_ip"],
+            host_ip=ssh_host,
             private_key=result["private_key"],
             host_id=host_id,
             storage_mode=storage_mode,
             nfs_server=nfs_kwargs.get("nfs_server", ""),
             nfs_path=nfs_kwargs.get("nfs_path", ""),
+            nfs_port=nfs_kwargs.get("nfs_port", 0),
             ca_cert=ca_pem,
             host_cert=cert_pem,
             host_key=key_pem,
             host_type="pattern_buffer",
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            vncd_no_tls=provider.type == "ocpvirt",
         )
 
         creds = deploy_result.get("troshkad_credentials", {})
