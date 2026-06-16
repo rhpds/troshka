@@ -277,7 +277,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 ### OCP Virt Provider Setup
 - Provider type `ocpvirt` — creates nested-virt RHEL VMs on OpenShift Virtualization
 - Troshkad runs identically inside KubeVirt VMs as in EC2 instances
-- **Provider driver abstraction**: `src/backend/app/services/providers/` — `base.py` interface, `ec2.py` delegate, `ocpvirt.py` KubeVirt driver
+- **Provider driver abstraction**: `src/backend/app/services/providers/` — `base.py` interface (16 methods), `ec2.py`, `ocpvirt.py`, `gcp.py`, `azure.py`
 - All provisioner calls go through `get_provider_driver(provider)` dispatcher
 - **Dev cluster**: `ocpvdev01.dal13.infra.demo.redhat.com` (AMD EPYC 7763, 256 vCPU / 1TB RAM per worker, nested virt enabled)
 - **Service account**: `troshka` SA in `troshka` namespace with `troshka-provider` ClusterRole
@@ -292,6 +292,39 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Networking**: identical to AWS (VXLAN, nftables, netns) — all inside the host VM
 - **EIPs**: not supported on OCP Virt — `externalAccess` toggle disabled for ocpvirt hosts
 - **Resize**: not supported (KubeVirt requires stop → modify → start, disabled for now)
+
+### GCP Provider Setup
+- Provider type `gcp` — creates nested-virt RHEL VMs on Google Compute Engine
+- **Driver**: `src/backend/app/services/providers/gcp.py` (~780 lines, self-contained)
+- **Prerequisites**: pre-create a GCP project, enable Compute Engine + Filestore + Cloud DNS APIs, create service account with required roles, download SA key JSON
+- **Credentials**: `{"service_account_json": {...}}` — full service account key JSON
+- **Instance types**: N2-highmem series (8 GiB/vCPU, Intel, nested virt supported). Default: `n2-highmem-32` (32 vCPU / 256 GiB)
+- **Nested virt**: enabled via `advancedMachineFeatures.enableNestedVirtualization=True`
+- **Images**: RHEL BYOS from `rhel-byos-cloud` project (Red Hat Cloud Access), PAYG fallback from `rhel-cloud`
+- **Network setup**: "Setup Network" creates custom-mode VPC, subnet (`10.100.1.0/24`), firewall rules (SSH, console, agent, VXLAN)
+- **Console**: Cloud DNS zone + `certbot-dns-google` plugin for Let's Encrypt TLS
+- **EIPs**: GCP static external IPs, associated via access config on nic0
+- **Shared storage**: Filestore Zonal (`shared-filestore` pool mode), ~$0.12/GiB/month, online resize
+- **SSH user**: `troshka` (set via instance metadata `ssh-keys`)
+- **Data disk**: `/dev/sdb` (second attached persistent SSD)
+- **Resize**: requires stop → `setMachineType()` → start (GCP limitation)
+
+### Azure Provider Setup
+- Provider type `azure` — creates nested-virt RHEL VMs on Azure
+- **Driver**: `src/backend/app/services/providers/azure.py` (~880 lines, self-contained)
+- **Prerequisites**: create service principal in Azure subscription, assign Contributor role on resource group
+- **Credentials**: `{"tenant_id": "...", "client_id": "...", "client_secret": "...", "subscription_id": "..."}`
+- **Instance types**: Esv5 series (8 GiB/vCPU, Intel, nested virt supported). Default: `Standard_E32s_v5` (32 vCPU / 256 GiB)
+- **Nested virt**: supported natively on Esv5 series (no extra flag)
+- **Images**: RHEL BYOS from `redhat` publisher, `rhel-byos` offer (marketplace terms acceptance required on first use), PAYG fallback from `RHEL` offer
+- **Network setup**: "Setup Network" creates Resource Group, VNet (`10.100.0.0/16`), subnet, NSG with rules
+- **Console**: Azure DNS zone + `certbot-dns-azure` plugin for Let's Encrypt TLS
+- **EIPs**: Azure public IPs (Standard SKU, static), associated via NIC IP config
+- **Shared storage**: Azure Files NFS Premium v2 (`shared-azure-files` pool mode), ~$0.10/GiB/month, online resize, network ACL deny-all + mandatory private endpoint
+- **SSH user**: `troshka` (set via `admin_username`)
+- **Data disk**: `/dev/disk/azure/scsi1/lun0` (stable symlink for LUN 0)
+- **Terminate cleanup**: must delete VM → OS disk → data disk → NIC → public IP in order (Azure doesn't auto-delete dependents)
+- **Stop vs deallocate**: always use `begin_deallocate()` not `begin_power_off()` — deallocate releases compute billing
 
 ### Dev Database
 - PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
