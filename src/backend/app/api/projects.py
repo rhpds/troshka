@@ -101,6 +101,7 @@ def list_projects(
             prov = provs_by_id.get(h.provider_id) if h.provider_id else None
             if prov:
                 resp.host_provider_name = prov.name
+                resp.host_provider_type = prov.type
         results.append(resp)
     return results
 
