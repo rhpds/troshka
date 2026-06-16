@@ -154,12 +154,25 @@ class OCPVirtDriver(ProviderDriver):
                 f"\n"
             )
 
-        # Build VM spec
+        # Build VM spec — use DataSource ref (preferred) or HTTP URL fallback
+        rhel_image_url = kwargs.get("rhel_image_url", "")
+        datasource_name = kwargs.get("ami_id") or "rhel9"
+        if rhel_image_url:
+            root_source = {"source": {"http": {"url": rhel_image_url}}}
+        else:
+            root_source = {
+                "sourceRef": {
+                    "kind": "DataSource",
+                    "name": datasource_name,
+                    "namespace": "openshift-virtualization-os-images",
+                }
+            }
+
         data_volumes = [
             {
                 "metadata": {"name": f"{hostname}-root"},
                 "spec": {
-                    "source": {"http": {"url": kwargs.get("rhel_image_url", "")}},
+                    **root_source,
                     "storage": {
                         "resources": {"requests": {"storage": f"{storage_size_gb}Gi"}},
                         "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",

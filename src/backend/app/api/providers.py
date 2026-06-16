@@ -567,6 +567,49 @@ def set_ami(
     return {"ami_id": ami_id}
 
 
+@router.get("/{provider_id}/discover-datasources")
+def discover_datasources(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """List available VM base images (DataSources) on an OCP Virt cluster."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type != "ocpvirt":
+        raise HTTPException(
+            status_code=400,
+            detail="DataSource discovery is only for OCP Virt providers",
+        )
+
+    creds = provider.get_credentials()
+    try:
+        from app.services.providers.ocpvirt import _get_k8s_clients
+
+        custom_api, _ = _get_k8s_clients(creds)
+        ds_list = custom_api.list_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace="openshift-virtualization-os-images",
+            plural="datasources",
+        )
+        results = []
+        for ds in ds_list.get("items", []):
+            name = ds["metadata"]["name"]
+            conditions = ds.get("status", {}).get("conditions", [])
+            ready = any(
+                c.get("type") == "Ready" and c.get("status") == "True"
+                for c in conditions
+            )
+            results.append({"name": name, "ready": ready})
+        results.sort(key=lambda x: x["name"])
+        return {"datasources": results}
+    except Exception:
+        logger.exception("DataSource discovery failed for %s", provider.name)
+        raise HTTPException(status_code=400, detail="Failed to list DataSources")
+
+
 @router.post("/{provider_id}/test")
 def test_provider(
     provider_id: str,

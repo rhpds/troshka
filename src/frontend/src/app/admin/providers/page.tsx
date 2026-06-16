@@ -459,6 +459,11 @@ export default function AdminProvidersPage() {
                           ? <span> · AMI: <code style={{ fontSize: 11 }}>{p.default_ami}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No AMI</span>
                       )}
+                      {p.type === "ocpvirt" && (
+                        p.default_ami
+                          ? <span> · Image: {p.default_ami}</span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No image selected</span>
+                      )}
                       {p.type === "ec2" && (
                         p.vpc_id
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
@@ -482,7 +487,7 @@ export default function AdminProvidersPage() {
                             <div>
                               <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
                               <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{ami.ami_id}</div>
-                              <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name} · {new Date(ami.created).toLocaleDateString()}</div>
+                              <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name}{ami.created ? ` · ${new Date(ami.created).toLocaleDateString()}` : ""}</div>
                             </div>
                             <Button variant="secondary" onClick={() => selectAmi(p.id, ami.ami_id)}>
                               Select
@@ -603,6 +608,18 @@ export default function AdminProvidersPage() {
                       }}>Scan S3</Button>
                     )}
                     {p.type === "ec2" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
+                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
+                      setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering..." }));
+                      const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
+                      if (resp.ok) {
+                        const data = await resp.json();
+                        const ready = data.datasources.filter((ds: any) => ds.ready);
+                        setAmiOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ ami_id: ds.name, label: ds.name, name: ds.name, created: "" })) }));
+                        setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} ready images` }));
+                      } else {
+                        setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover DataSources" }));
+                      }
+                    }}>Discover Images</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     {p.type !== "s3" && !p.console_configured && (
                       <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>
