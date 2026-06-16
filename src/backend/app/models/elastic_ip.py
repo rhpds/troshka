@@ -28,6 +28,7 @@ class ElasticIp(Base):
     association_id: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(20), default="allocated")
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    port_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
