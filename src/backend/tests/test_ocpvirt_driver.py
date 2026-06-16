@@ -45,20 +45,12 @@ def test_provision_host_creates_vm(mock_time, mock_keygen, mock_clients):
             "interfaces": [{"ipAddress": "10.128.2.50"}],
         }
     }
-    # NodePort services
-    ssh_svc = MagicMock()
-    ssh_svc.spec.ports = [MagicMock(node_port=32100)]
-    agent_svc = MagicMock()
-    agent_svc.spec.ports = [MagicMock(node_port=32101)]
-    mock_core.read_namespaced_service.side_effect = [ssh_svc, agent_svc]
-
-    # Node IP
-    node = MagicMock()
-    addr = MagicMock()
-    addr.type = "InternalIP"
-    addr.address = "192.168.1.10"
-    node.status.addresses = [addr]
-    mock_core.list_node.return_value = MagicMock(items=[node])
+    # LoadBalancer service with external IP
+    lb_svc = MagicMock()
+    lb_ingress = MagicMock()
+    lb_ingress.ip = "67.228.103.5"
+    lb_svc.status.load_balancer.ingress = [lb_ingress]
+    mock_core.read_namespaced_service.return_value = lb_svc
 
     driver = OCPVirtDriver()
     provider = _make_provider()
@@ -76,8 +68,9 @@ def test_provision_host_creates_vm(mock_time, mock_keygen, mock_clients):
     assert result["total_ram_mb"] == 256 * 1024
     assert result["max_eips"] == 0
     assert result["instance_id"] == "troshka-host-aaaaaaaa"
-    assert result["_ssh_host"] == "192.168.1.10"
-    assert result["_ssh_port"] == 32100
+    assert result["_ssh_host"] == "67.228.103.5"
+    assert result["_ssh_port"] == 22000
+    assert result["public_ip"] == "67.228.103.5"
 
     # Should have created the VM
     mock_custom.create_namespaced_custom_object.assert_called_once()
@@ -85,8 +78,8 @@ def test_provision_host_creates_vm(mock_time, mock_keygen, mock_clients):
     assert call_kwargs[1]["group"] == "kubevirt.io"
     assert call_kwargs[1]["plural"] == "virtualmachines"
 
-    # Should have created 2 services (SSH + agent)
-    assert mock_core.create_namespaced_service.call_count == 2
+    # Should have created 1 LoadBalancer service (SSH + agent ports)
+    assert mock_core.create_namespaced_service.call_count == 1
 
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
@@ -99,8 +92,10 @@ def test_terminate_host_deletes_vm(mock_clients):
     provider = _make_provider()
     driver.terminate_host(provider, "troshka-host-aaaaaaaa")
 
-    assert mock_custom.delete_namespaced_custom_object.call_count == 2  # VM + Route
-    assert mock_core.delete_namespaced_service.call_count == 3  # ssh, agent, vncd
+    assert (
+        mock_custom.delete_namespaced_custom_object.call_count == 3
+    )  # VMI + VM + Route
+    assert mock_core.delete_namespaced_service.call_count == 2  # lb, vncd
 
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")

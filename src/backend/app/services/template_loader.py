@@ -139,7 +139,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip="", tags=
             "name": f"{name}-disk",
             "size": disk_gb,
             "format": "qcow2",
-            "icon": "\U0001F6E2",
+            "icon": "\U0001f6e2",
         },
     }
     vm_data = {
@@ -148,7 +148,7 @@ def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip="", tags=
         "vcpus": vcpus,
         "ram": ram,
         "os": "rhcos",
-        "icon": "\U0001F5A5",
+        "icon": "\U0001f5a5",
         "nics": [nic],
         "diskControllers": [dc, dc_cdrom],
         "bmcEnabled": True,
@@ -211,7 +211,7 @@ def _bastion_node(x, y, bastion_cfg, cluster_ip="10.0.0.50"):
             "name": "bastion-disk",
             "size": bastion_cfg.get("disk_gb", 20),
             "format": "qcow2",
-            "icon": "\U0001F6E2",
+            "icon": "\U0001f6e2",
         },
     }
     vm_node = {
@@ -224,7 +224,7 @@ def _bastion_node(x, y, bastion_cfg, cluster_ip="10.0.0.50"):
             "vcpus": bastion_cfg.get("vcpus", 2),
             "ram": bastion_cfg.get("ram_gb", 4),
             "os": bastion_cfg.get("image", "rhel-10"),
-            "icon": "\U0001F5A5",
+            "icon": "\U0001f5a5",
             "nics": [nic_cluster, nic_bmc],
             "diskControllers": [dc],
             "firmware": "uefi",
@@ -366,7 +366,7 @@ def generate_topology_from_template(
             "subtype": "network",
             "cidr": cluster_net.get("cidr", "10.0.0.0/24"),
             "dhcp": cluster_net.get("dhcp", True),
-            "icon": "\U0001F310",
+            "icon": "\U0001f310",
         },
     }
     bmc = {
@@ -382,7 +382,7 @@ def generate_topology_from_template(
             "networkType": "bmc",
             "bmcUsername": "admin",
             "bmcPassword": bmc_password,
-            "icon": "\U0001F310",
+            "icon": "\U0001f310",
         },
     }
     gw = {
@@ -397,7 +397,7 @@ def generate_topology_from_template(
             "portForwards": ocp_port_forwards,
             "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
             "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
-            "icon": "\U0001F310",
+            "icon": "\U0001f310",
         },
     }
     nodes.extend([net, bmc, gw])

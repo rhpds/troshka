@@ -1,4 +1,5 @@
 """Console DNS management and JWT token signing for direct VNC proxy."""
+
 import base64
 import hashlib
 import hmac

@@ -80,7 +80,7 @@ def list_providers(
             security_group_id=p.security_group_id,
             console_base_domain=p.console_base_domain,
             console_nameservers=p.console_nameservers,
-            console_configured=p.console_zone_id is not None,
+            console_configured=bool(p.console_zone_id or p.console_base_domain),
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -121,6 +121,10 @@ def create_provider(
             "namespace": body.namespace,
             "verify_ssl": body.verify_ssl,
         }
+        api_host = (
+            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+        )
+        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
     else:
         creds = {
             "access_key_id": body.access_key_id,

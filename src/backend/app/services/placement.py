@@ -4,6 +4,7 @@ Placement service — assigns a project's VMs to available hosts.
 Called when a user clicks Deploy. Finds a host with enough capacity
 for the project's VMs, or fails if no host has room.
 """
+
 import logging
 
 from sqlalchemy.orm import Session

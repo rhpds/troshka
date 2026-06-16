@@ -4,6 +4,7 @@ Cloud-init metadata service.
 Generates user-data and meta-data for VMs, and creates a lightweight
 HTTP metadata service script to run on the host bridge.
 """
+
 import json
 import logging
 

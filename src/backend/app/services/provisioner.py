@@ -4,6 +4,7 @@ Host provisioning and pool management.
 Admins use this to add/remove EC2 hosts to the pool.
 The placement service (separate) assigns projects to available hosts.
 """
+
 import logging
 import math
 import uuid

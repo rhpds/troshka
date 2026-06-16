@@ -1,4 +1,5 @@
 """WebSocket endpoints for real-time project state updates and console proxy."""
+
 import asyncio
 import logging
 

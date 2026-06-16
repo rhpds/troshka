@@ -1,4 +1,5 @@
 """Tests for health_poller — mocks troshkad client and DB."""
+
 # Need to set up test DB env before importing
 import os
 import unittest

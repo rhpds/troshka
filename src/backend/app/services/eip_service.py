@@ -1,4 +1,5 @@
 """EIP lifecycle management — allocate, associate, disassociate, release."""
+
 import logging
 
 import boto3

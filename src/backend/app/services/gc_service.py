@@ -1,4 +1,5 @@
 """Host garbage collector — reconcile DB state with host reality."""
+
 import logging
 from datetime import UTC
 

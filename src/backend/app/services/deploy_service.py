@@ -4,6 +4,7 @@ Deploy service — creates VMs and networks on hosts via troshkad.
 Translates canvas topology into libvirt VMs and VXLAN networks,
 then sends structured commands to the troshkad agent on the host.
 """
+
 import logging
 import threading
 import time as _time
@@ -672,9 +673,9 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     "s3_url": s3_url,
                     "dest_path": ic["cache_path"],
                     "expected_size": ic.get("expected_size", 0),
-                    "expected_format": "qcow2"
-                    if ic["cache_path"].endswith(".qcow2")
-                    else None,
+                    "expected_format": (
+                        "qcow2" if ic["cache_path"].endswith(".qcow2") else None
+                    ),
                     "aws_access_key_id": s3_creds.get("access_key_id", ""),
                     "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
                     "aws_region": s3_creds.get("region", "us-east-1"),

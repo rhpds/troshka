@@ -185,7 +185,7 @@ export default function AdminProvidersPage() {
     const resp = await fetch(`/api/v1/providers/${providerId}/set-ami?ami_id=${amiId}`, { method: "POST" });
     if (resp.ok) {
       setAmiOptions((prev) => ({ ...prev, [providerId]: [] }));
-      setAmiResult((prev) => ({ ...prev, [providerId]: `Set to ${amiId}` }));
+      setAmiResult((prev) => ({ ...prev, [providerId]: "" }));
       loadProviders();
     }
   };
@@ -555,7 +555,12 @@ export default function AdminProvidersPage() {
                         </CardBody>
                       </Card>
                     )}
-                    {p.console_configured && p.console_nameservers && (
+                    {p.console_configured && p.console_base_domain && p.type === "ocpvirt" && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)" }}>
+                        Console Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
+                      </div>
+                    )}
+                    {p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && (
                       <details style={{ marginTop: 12 }}>
                         <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
                           Console DNS Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
@@ -619,9 +624,9 @@ export default function AdminProvidersPage() {
                       } else {
                         setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover DataSources" }));
                       }
-                    }}>Discover Images</Button>}
+                    }}>Select Host Image</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
-                    {p.type !== "s3" && !p.console_configured && (
+                    {p.type === "ec2" && !p.console_configured && (
                       <Button variant="secondary" onClick={() => setConsoleDomain((prev) => ({ ...prev, [p.id]: prev[p.id] || "" }))}>
                         Setup Console
                       </Button>

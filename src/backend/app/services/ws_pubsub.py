@@ -5,6 +5,7 @@ Manages subscriber sets keyed by project_id. Sync callers (background threads,
 deploy service) use notify_project() which bridges into the async event loop
 via asyncio.run_coroutine_threadsafe().
 """
+
 import asyncio
 import json
 import logging

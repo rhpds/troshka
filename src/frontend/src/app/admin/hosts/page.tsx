@@ -481,7 +481,7 @@ export default function AdminHostsPage() {
                         : "No VPC set. Go to Providers and click Setup VPC."
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}
-                {selectedProvider?.type === "ocpvirt" ? (
+                {!newProviderId ? null : selectedProvider?.type === "ocpvirt" ? (
                   <>
                     <div style={{ minWidth: 120 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>CPU Cores</label>
@@ -537,7 +537,7 @@ export default function AdminHostsPage() {
                     </div>
                   </>
                 )}
-                <div style={{ minWidth: 220 }}>
+                {newProviderId && <div style={{ minWidth: 220 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
                   <select
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
@@ -549,10 +549,10 @@ export default function AdminHostsPage() {
                       <option key={p.id} value={p.id}>{p.name} ({p.mode}{p.az ? `, ${p.az}` : ""})</option>
                     ))}
                   </select>
-                </div>
-                <Button variant="primary" onClick={addHost} isDisabled={!newProviderId || !selectedProviderReady}>
+                </div>}
+                {newProviderId && <Button variant="primary" onClick={addHost} isDisabled={!selectedProviderReady}>
                   Provision Host
-                </Button>
+                </Button>}
               </div>
             </CardBody>
           </Card>
@@ -623,7 +623,7 @@ export default function AdminHostsPage() {
                   </span>
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {ph.instance_type} · {ph.region} · waiting for EC2
+                  {ph.instance_type} · {ph.region} · provisioning...
                 </div>
               </div>
               <Button variant="plain" isDisabled isLoading>Provisioning...</Button>
@@ -776,7 +776,7 @@ export default function AdminHostsPage() {
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
-                  <span>· {h.region} · {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : <Label color="blue" isCompact>compute</Label>}</span>
+                  <span>{h.region ? `· ${h.region} ` : ""}· {h.ip_address || "no IP"} · {h.host_type === "pattern_buffer" ? <Label color="purple" isCompact>pattern buffer</Label> : <Label color="blue" isCompact>compute</Label>}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, fontSize: 13 }}>

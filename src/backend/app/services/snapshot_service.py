@@ -1,4 +1,5 @@
 """VM snapshot disk capture — upload a single VM's disks to S3."""
+
 import logging
 
 log = logging.getLogger(__name__)

@@ -11,6 +11,7 @@ Flow:
 4. Nodes discover each other, form cluster
 5. openshift-install agent wait-for install-complete
 """
+
 import ipaddress
 import re
 import uuid
@@ -160,9 +161,11 @@ def _attach_bastion_iso(topology, bastion_iso):
         "data": {
             "label": "rhel-dvd",
             "name": "rhel-dvd",
-            "size": bastion_iso["size_bytes"] // (1024**3)
-            if bastion_iso.get("size_bytes")
-            else 10,
+            "size": (
+                bastion_iso["size_bytes"] // (1024**3)
+                if bastion_iso.get("size_bytes")
+                else 10
+            ),
             "format": "iso",
             "icon": "\U0001f4bf",
             "source": "library",

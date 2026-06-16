@@ -189,6 +189,8 @@ def add_host(
         subnet_override = pool.subnet_id
 
     region = body.region or provider.default_region
+    if not region and provider.type == "ocpvirt":
+        region = provider.name
     creds = provider.get_credentials()
 
     nfs_kwargs = {}
@@ -212,7 +214,7 @@ def add_host(
             host_id=str(_uuid.uuid4()),
             instance_type=body.instance_type,
             storage_size_gb=500,
-            ami_id=body.ami_id,
+            ami_id=body.ami_id or provider.default_ami,
             region=region,
             vpc_id=provider.vpc_id,
             subnet_id=subnet_override or provider.subnet_id,
@@ -259,6 +261,10 @@ def add_host(
     provider_creds = creds  # Capture for use in thread
     provider_console_domain = provider.console_base_domain if provider else None
     provider_console_zone = provider.console_zone_id if provider else None
+    provider_type = provider.type
+    ssh_host = result.get("_ssh_host") or result.get("public_ip")
+    ssh_port = result.get("_ssh_port", 22)
+    agent_port = result.get("_agent_port", 31337)
 
     def _auto_install():
         from app.core.database import SessionLocal
@@ -267,11 +273,14 @@ def add_host(
         s = SessionLocal()
         try:
             h = s.query(Host).filter_by(id=host.id).first()
-            if not h or not h.private_key or not h.ip_address:
+            if not h or not h.private_key or not (h.ip_address or ssh_host):
                 return
             h.agent_status = "waiting_ssh"
             s.commit()
-            if not wait_for_ssh(h.ip_address, h.private_key):
+            _ssh_user = "cloud-user" if provider_type == "ocpvirt" else "ec2-user"
+            if not wait_for_ssh(
+                ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user
+            ):
                 h.agent_status = "install_failed"
                 s.commit()
                 return
@@ -290,12 +299,14 @@ def add_host(
                     )
                     _ca_cert = _pool.ca_cert
             result = deploy_agent(
-                h.ip_address,
+                ssh_host or h.ip_address,
                 h.private_key,
                 h.id,
                 storage_mode=_sm,
                 nfs_server=nfs_kwargs.get("nfs_server", ""),
                 nfs_path=nfs_kwargs.get("nfs_path", ""),
+                ssh_port=ssh_port,
+                ssh_user=_ssh_user,
                 ca_cert=_ca_cert,
                 host_cert=_host_cert,
                 host_key=_host_key,
@@ -1108,6 +1119,18 @@ def remove_host(
     host.state = "shutting_down"
     host.agent_status = "disconnected"
     db.commit()
+
+    # OCP Virt: force-delete is immediate, just clean up the DB record
+    if provider and provider.type == "ocpvirt":
+        import time
+
+        time.sleep(2)
+        host.state = "terminated"
+        db.commit()
+        db.delete(host)
+        db.commit()
+        logger.info("Host %s terminated and removed (ocpvirt)", host_id[:8])
+        return {"status": "terminated"}
 
     # Capture values before spawning thread (avoid DetachedInstanceError)
     instance_id = host.instance_id

@@ -2251,9 +2251,9 @@ def import_vm_from_snapshot(
                 "format": disk_info.get("format", "qcow2"),
                 "source": "snapshot",
                 "snapshotItemId": item.id,
-                "icon": "\U0001f6e2"
-                if disk_info.get("format") != "iso"
-                else "\U0001f4bf",
+                "icon": (
+                    "\U0001f6e2" if disk_info.get("format") != "iso" else "\U0001f4bf"
+                ),
             },
         }
         topology["nodes"].append(disk_node)

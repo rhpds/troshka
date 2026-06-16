@@ -3,6 +3,7 @@ Agent deployer — installs the troshka agent on a remote host via SSH.
 
 Uses the host's stored private key to connect and deploy.
 """
+
 import logging
 import os
 import subprocess
@@ -418,7 +419,13 @@ echo "KVM: $(ls /dev/kvm 2>/dev/null && echo 'available' || echo 'NOT available'
 """
 
 
-def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
+def wait_for_ssh(
+    host_ip: str,
+    private_key: str,
+    timeout: int = 300,
+    port: int = 22,
+    ssh_user: str = "ec2-user",
+) -> bool:
     """Wait for SSH to become available on the host."""
     import time
 
@@ -430,25 +437,26 @@ def wait_for_ssh(host_ip: str, private_key: str, timeout: int = 300) -> bool:
     try:
         start = time.time()
         while time.time() - start < timeout:
+            cmd = [
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "IdentitiesOnly=yes",
+                "-i",
+                key_path,
+            ]
+            if port != 22:
+                cmd.extend(["-p", str(port)])
+            cmd.extend([f"{ssh_user}@{host_ip}", "echo", "ssh-ready"])
             result = subprocess.run(
-                [
-                    "ssh",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    "-o",
-                    "UserKnownHostsFile=/dev/null",
-                    "-o",
-                    "ConnectTimeout=5",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "IdentitiesOnly=yes",
-                    "-i",
-                    key_path,
-                    f"ec2-user@{host_ip}",
-                    "echo",
-                    "ssh-ready",
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -547,6 +555,8 @@ def deploy_agent(
     host_key: str = "",
     console_domain: str = "",
     host_type: str = "shared",
+    ssh_port: int = 22,
+    ssh_user: str = "ec2-user",
 ) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
@@ -602,6 +612,8 @@ def deploy_agent(
             "-i",
             key_path,
         ]
+        ssh_port_opts = ["-p", str(ssh_port)] if ssh_port != 22 else []
+        scp_port_opts = ["-P", str(ssh_port)] if ssh_port != 22 else []
 
         logger.info("Deploying agent to %s", host_ip)
 
@@ -620,9 +632,10 @@ def deploy_agent(
             scp_result = subprocess.run(
                 [
                     "scp",
+                    *scp_port_opts,
                     *ssh_opts,
                     troshkad_path,
-                    f"ec2-user@{host_ip}:/tmp/troshkad.py",
+                    f"{ssh_user}@{host_ip}:/tmp/troshkad.py",
                 ],
                 capture_output=True,
                 text=True,
@@ -635,7 +648,8 @@ def deploy_agent(
                     [
                         "ssh",
                         *ssh_opts,
-                        f"ec2-user@{host_ip}",
+                        *ssh_port_opts,
+                        f"{ssh_user}@{host_ip}",
                         "sudo",
                         "mkdir",
                         "-p",
@@ -648,7 +662,8 @@ def deploy_agent(
                     [
                         "ssh",
                         *ssh_opts,
-                        f"ec2-user@{host_ip}",
+                        *ssh_port_opts,
+                        f"{ssh_user}@{host_ip}",
                         "sudo",
                         "mv",
                         "/tmp/troshkad.py",
@@ -675,9 +690,10 @@ def deploy_agent(
             scp_result = subprocess.run(
                 [
                     "scp",
+                    *scp_port_opts,
                     *ssh_opts,
                     vncd_path,
-                    f"ec2-user@{host_ip}:/tmp/troshka-vncd.py",
+                    f"{ssh_user}@{host_ip}:/tmp/troshka-vncd.py",
                 ],
                 capture_output=True,
                 text=True,
@@ -690,7 +706,8 @@ def deploy_agent(
                     [
                         "ssh",
                         *ssh_opts,
-                        f"ec2-user@{host_ip}",
+                        *ssh_port_opts,
+                        f"{ssh_user}@{host_ip}",
                         "sudo",
                         "mv",
                         "/tmp/troshka-vncd.py",
@@ -710,9 +727,10 @@ def deploy_agent(
             subprocess.run(
                 [
                     "scp",
+                    *scp_port_opts,
                     *ssh_opts,
                     troshka_files,
-                    f"ec2-user@{host_ip}:/tmp/troshka-files.sh",
+                    f"{ssh_user}@{host_ip}:/tmp/troshka-files.sh",
                 ],
                 capture_output=True,
                 text=True,
@@ -722,7 +740,7 @@ def deploy_agent(
                 [
                     "ssh",
                     *ssh_opts,
-                    f"ec2-user@{host_ip}",
+                    f"{ssh_user}@{host_ip}",
                     "sudo",
                     "mv",
                     "/tmp/troshka-files.sh",
@@ -739,7 +757,15 @@ def deploy_agent(
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
         result = subprocess.run(
-            ["ssh", *ssh_opts, f"ec2-user@{host_ip}", "sudo", "bash", "-s"],
+            [
+                "ssh",
+                *ssh_opts,
+                *ssh_port_opts,
+                f"{ssh_user}@{host_ip}",
+                "sudo",
+                "bash",
+                "-s",
+            ],
             input=script,
             capture_output=True,
             text=True,

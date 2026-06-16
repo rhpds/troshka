@@ -4,6 +4,7 @@ S3 storage service for the image library.
 Handles upload, download, delete, and presigned URL generation
 for ISOs and disk images stored in S3.
 """
+
 import logging
 
 import boto3

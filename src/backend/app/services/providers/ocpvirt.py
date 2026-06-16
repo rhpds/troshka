@@ -12,20 +12,9 @@ from app.services.providers.base import ProviderDriver
 logger = logging.getLogger(__name__)
 
 CLOUD_INIT_TEMPLATE = """#cloud-config
-user: ec2-user
+user: cloud-user
 ssh_authorized_keys:
   - {ssh_pubkey}
-packages:
-  - qemu-kvm
-  - libvirt
-  - libvirt-client
-  - virt-install
-  - python3
-  - python3-libvirt
-  - dnsmasq
-  - nftables
-  - nmap-ncat
-  - nfs-utils
 write_files:
   - path: /etc/resolv.conf
     content: |
@@ -34,6 +23,26 @@ write_files:
       options ndots:5
     permissions: '0644'
 runcmd:
+  - |
+    mkdir -p /mnt/iso
+    mount /dev/sr0 /mnt/iso || mount /dev/cdrom /mnt/iso || true
+    if [ -d /mnt/iso/BaseOS ]; then
+      cat > /etc/yum.repos.d/local-baseos.repo << 'REPOEOF'
+    [local-baseos]
+    name=Local BaseOS
+    baseurl=file:///mnt/iso/BaseOS
+    enabled=1
+    gpgcheck=0
+    REPOEOF
+      cat > /etc/yum.repos.d/local-appstream.repo << 'REPOEOF'
+    [local-appstream]
+    name=Local AppStream
+    baseurl=file:///mnt/iso/AppStream
+    enabled=1
+    gpgcheck=0
+    REPOEOF
+    fi
+  - dnf install -y qemu-kvm libvirt libvirt-client virt-install python3 python3-libvirt dnsmasq nftables nmap-ncat nfs-utils || true
   - systemctl enable --now libvirtd || systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
   - systemctl enable --now nftables
   - systemctl disable --now dnsmasq 2>/dev/null || true
@@ -42,13 +51,9 @@ runcmd:
 """
 
 CLOUD_INIT_PATTERN_BUFFER = """#cloud-config
-user: ec2-user
+user: cloud-user
 ssh_authorized_keys:
   - {ssh_pubkey}
-packages:
-  - python3
-  - qemu-img
-  - nfs-utils
 write_files:
   - path: /etc/resolv.conf
     content: |
@@ -57,6 +62,26 @@ write_files:
       options ndots:5
     permissions: '0644'
 runcmd:
+  - |
+    mkdir -p /mnt/iso
+    mount /dev/sr0 /mnt/iso || mount /dev/cdrom /mnt/iso || true
+    if [ -d /mnt/iso/BaseOS ]; then
+      cat > /etc/yum.repos.d/local-baseos.repo << 'REPOEOF'
+    [local-baseos]
+    name=Local BaseOS
+    baseurl=file:///mnt/iso/BaseOS
+    enabled=1
+    gpgcheck=0
+    REPOEOF
+      cat > /etc/yum.repos.d/local-appstream.repo << 'REPOEOF'
+    [local-appstream]
+    name=Local AppStream
+    baseurl=file:///mnt/iso/AppStream
+    enabled=1
+    gpgcheck=0
+    REPOEOF
+    fi
+  - dnf install -y python3 qemu-img nfs-utils || true
   - mkdir -p /var/lib/troshka /etc/troshka-agent
   - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
 """
@@ -181,12 +206,20 @@ class OCPVirtDriver(ProviderDriver):
             }
         ]
 
+        # ISO PVC name — must exist in the same namespace
+        iso_pvc = kwargs.get("iso_pvc", "rhel-10.2-dvd-iso")
+
         disks = [
             {"disk": {"bus": "virtio"}, "name": "rootdisk"},
+            {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"},
             {"disk": {"bus": "virtio"}, "name": "cloudinitdisk"},
         ]
         volumes = [
             {"dataVolume": {"name": f"{hostname}-root"}, "name": "rootdisk"},
+            {
+                "persistentVolumeClaim": {"claimName": iso_pvc},
+                "name": "installiso",
+            },
             {"cloudInitNoCloud": {"userData": user_data}, "name": "cloudinitdisk"},
         ]
 
@@ -235,8 +268,6 @@ class OCPVirtDriver(ProviderDriver):
                         "domain": {
                             "cpu": {
                                 "cores": cores,
-                                "sockets": 1,
-                                "threads": 1,
                                 "model": "host-passthrough",
                             },
                             "memory": {"guest": f"{memory_gi}Gi"},
@@ -247,11 +278,14 @@ class OCPVirtDriver(ProviderDriver):
                                         "masquerade": {},
                                         "model": "virtio",
                                         "name": "default",
+                                        "ports": [
+                                            {"port": 22},
+                                            {"port": 31337},
+                                        ],
                                     }
                                 ],
                                 "rng": {},
                             },
-                            "features": {"kvm": {"hidden": False}},
                         },
                         "networks": [{"name": "default", "pod": {}}],
                         "volumes": volumes,
@@ -270,24 +304,27 @@ class OCPVirtDriver(ProviderDriver):
         )
         logger.info("Created VirtualMachine %s in namespace %s", hostname, namespace)
 
-        # Create NodePort services for SSH (temporary) and troshkad (persistent)
-        for svc_name, port, target_port in [
-            (f"troshka-ssh-{host_id[:8]}", 22, 22),
-            (f"troshka-agent-{host_id[:8]}", 31337, 31337),
-        ]:
-            svc = client.V1Service(
-                metadata=client.V1ObjectMeta(
-                    name=svc_name,
-                    namespace=namespace,
-                    labels={"app": "troshka", "troshka/host-id": host_id},
-                ),
-                spec=client.V1ServiceSpec(
-                    type="NodePort",
-                    selector={"kubevirt.io/domain": hostname},
-                    ports=[client.V1ServicePort(port=port, target_port=target_port)],
-                ),
-            )
-            core_api.create_namespaced_service(namespace=namespace, body=svc)
+        # Create LoadBalancer service for SSH + troshkad (MetalLB assigns external IP)
+        svc = client.V1Service(
+            metadata=client.V1ObjectMeta(
+                name=f"troshka-lb-{host_id[:8]}",
+                namespace=namespace,
+                labels={"app": "troshka", "troshka/host-id": host_id},
+            ),
+            spec=client.V1ServiceSpec(
+                type="LoadBalancer",
+                selector={"kubevirt.io/domain": hostname},
+                ports=[
+                    client.V1ServicePort(
+                        name="ssh", port=22000, target_port=22, protocol="TCP"
+                    ),
+                    client.V1ServicePort(
+                        name="agent", port=31337, target_port=31337, protocol="TCP"
+                    ),
+                ],
+            ),
+        )
+        core_api.create_namespaced_service(namespace=namespace, body=svc)
 
         # Wait for VMI to reach Running
         pod_ip = None
@@ -314,33 +351,25 @@ class OCPVirtDriver(ProviderDriver):
                 f"VM {hostname} did not reach Running state within 10 minutes"
             )
 
-        # Get NodePort numbers for SSH and agent access
-        ssh_svc = core_api.read_namespaced_service(
-            f"troshka-ssh-{host_id[:8]}", namespace
-        )
-        ssh_nodeport = ssh_svc.spec.ports[0].node_port
-
-        agent_svc = core_api.read_namespaced_service(
-            f"troshka-agent-{host_id[:8]}", namespace
-        )
-        agent_nodeport = agent_svc.spec.ports[0].node_port
-
-        # Get a worker node IP for NodePort access
-        nodes = core_api.list_node()
-        node_ip = None
-        for node in nodes.items:
-            for addr in node.status.addresses:
-                if addr.type == "InternalIP":
-                    node_ip = addr.address
-                    break
-            if node_ip:
+        # Wait for LoadBalancer external IP assignment (MetalLB)
+        external_ip = None
+        for _ in range(60):
+            lb_svc = core_api.read_namespaced_service(
+                f"troshka-lb-{host_id[:8]}", namespace
+            )
+            ingress = (lb_svc.status.load_balancer or {}).ingress
+            if ingress and ingress[0].ip:
+                external_ip = ingress[0].ip
                 break
+            time.sleep(2)
+        if not external_ip:
+            logger.warning("No external IP assigned for host %s", host_id[:8])
 
         return {
             "host_id": host_id,
             "instance_id": hostname,
             "instance_type": instance_type or f"{cores}c-{memory_gi}g",
-            "public_ip": f"{node_ip}:{agent_nodeport}" if node_ip else None,
+            "public_ip": external_ip,
             "private_ip": pod_ip,
             "total_vcpus": cores,
             "total_ram_mb": memory_gi * 1024,
@@ -348,8 +377,8 @@ class OCPVirtDriver(ProviderDriver):
             "private_key": private_key,
             "storage_size_gb": storage_size_gb,
             "max_eips": 0,
-            "_ssh_host": node_ip,
-            "_ssh_port": ssh_nodeport,
+            "_ssh_host": external_ip,
+            "_ssh_port": 22000,
         }
 
     def terminate_host(self, provider, instance_id):
@@ -359,6 +388,36 @@ class OCPVirtDriver(ProviderDriver):
         namespace = creds.get("namespace", "troshka")
         custom_api, core_api = _get_k8s_clients(creds)
 
+        # Force stop: set running=false, then force-delete VMI (like virtctl stop --force)
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=instance_id,
+                body={"spec": {"running": False}},
+            )
+        except client.ApiException:
+            pass
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+                name=instance_id,
+                grace_period_seconds=0,
+                body=client.V1DeleteOptions(grace_period_seconds=0),
+            )
+        except client.ApiException:
+            pass
+
+        import time
+
+        time.sleep(3)
+
+        # Then delete the VM
         try:
             custom_api.delete_namespaced_custom_object(
                 group="kubevirt.io",
@@ -374,8 +433,7 @@ class OCPVirtDriver(ProviderDriver):
         # Clean up all associated services and routes
         host_short = instance_id.replace("troshka-host-", "")
         for prefix in [
-            "troshka-ssh-",
-            "troshka-agent-",
+            "troshka-lb-",
             "troshka-vncd-",
         ]:
             try:

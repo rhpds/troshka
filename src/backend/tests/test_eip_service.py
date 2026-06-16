@@ -1,4 +1,5 @@
 """Tests for EIP service lifecycle operations."""
+
 import uuid
 from unittest.mock import MagicMock, patch
 

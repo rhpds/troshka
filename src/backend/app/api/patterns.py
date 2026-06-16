@@ -1,6 +1,7 @@
 """
 Pattern API — create, share, deploy, and manage reusable VM topology patterns.
 """
+
 import copy
 import logging
 import random
@@ -114,9 +115,11 @@ def _remap_topology(topology: dict) -> dict:
         {
             **entry,
             "vmId": id_map.get(entry["vmId"], entry["vmId"]),
-            "waitForVm": id_map.get(entry["waitForVm"], entry["waitForVm"])
-            if entry.get("waitForVm")
-            else None,
+            "waitForVm": (
+                id_map.get(entry["waitForVm"], entry["waitForVm"])
+                if entry.get("waitForVm")
+                else None
+            ),
         }
         for entry in topo.get("startOrder", [])
     ]
@@ -164,9 +167,9 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "owner_id": p.owner_id,
         "visibility": p.visibility,
         "state": p.state,
-        "capture_progress": get_capture_progress(p.id)
-        if p.state == "capturing"
-        else None,
+        "capture_progress": (
+            get_capture_progress(p.id) if p.state == "capturing" else None
+        ),
         "total_size_bytes": p.total_size_bytes,
         "tags": p.tags,
         "created_at": p.created_at,
@@ -189,9 +192,9 @@ def _pattern_to_detail_dict(p: Pattern) -> dict:
         "source_project_id": p.source_project_id,
         "topology": p.topology,
         "state": p.state,
-        "capture_progress": get_capture_progress(p.id)
-        if p.state == "capturing"
-        else None,
+        "capture_progress": (
+            get_capture_progress(p.id) if p.state == "capturing" else None
+        ),
         "total_size_bytes": p.total_size_bytes,
         "tags": p.tags,
         "created_at": p.created_at,

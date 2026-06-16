@@ -1,4 +1,5 @@
 """Tests for BMC configuration extraction from topology."""
+
 from app.services.deploy_service import _extract_bmc_config
 
 
