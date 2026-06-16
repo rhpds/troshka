@@ -37,13 +37,13 @@ def should_extend_host(host) -> bool:
 
 
 def should_extend_pool(pool, current_used_pct: float) -> bool:
-    if pool.mode not in ("shared-fsx", "shared-filestore", "shared-azure-files"):
+    if pool.mode not in ("shared-fsx", "shared-netapp", "shared-azure-files"):
         return False
     if not pool.auto_extend_enabled:
         return False
     current_gb = (
         pool.fsx_storage_gb
-        or pool.filestore_capacity_gb
+        or pool.netapp_capacity_gb
         or pool.azure_files_capacity_gb
         or 0
     )
@@ -162,16 +162,16 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
     }
 
 
-def extend_pool_filestore(pool, db, increment_gb: int | None = None):
-    """Extend a GCP Filestore instance. Returns new size or raises."""
+def extend_pool_netapp(pool, db, increment_gb: int | None = None):
+    """Extend a GCP NetApp Volumes pool. Returns new size or raises."""
     increment = increment_gb or pool.auto_extend_increment_gb
-    new_size = (pool.filestore_capacity_gb or 0) + increment
+    new_size = (pool.netapp_capacity_gb or 0) + increment
 
     if pool.auto_extend_max_gb:
         new_size = min(new_size, pool.auto_extend_max_gb)
-    if new_size <= (pool.filestore_capacity_gb or 0):
+    if new_size <= (pool.netapp_capacity_gb or 0):
         raise ValueError(
-            f"Cannot extend: already at max ({pool.filestore_capacity_gb} GB)"
+            f"Cannot extend: already at max ({pool.netapp_capacity_gb} GB)"
         )
 
     from app.models.provider import Provider
@@ -181,17 +181,17 @@ def extend_pool_filestore(pool, db, increment_gb: int | None = None):
         raise ValueError("No provider associated with pool")
     creds = provider.get_credentials()
 
-    from app.services.storage_pool_service import update_filestore_capacity
+    from app.services.storage_pool_service import update_netapp_capacity
 
-    old_size = pool.filestore_capacity_gb or 0
-    update_filestore_capacity(creds, pool.filestore_instance_id, new_size)
+    old_size = pool.netapp_capacity_gb or 0
+    update_netapp_capacity(creds, pool.netapp_pool_id, new_size)
 
-    pool.filestore_capacity_gb = new_size
+    pool.netapp_capacity_gb = new_size
     db.commit()
     _mark_extended(f"pool:{pool.id}")
     logger.info(
-        "Extended Filestore %s from %d to %d GB for pool %s",
-        pool.filestore_instance_id,
+        "Extended NetApp pool %s from %d to %d GB for pool %s",
+        pool.netapp_pool_id,
         old_size,
         new_size,
         pool.name,
@@ -199,7 +199,7 @@ def extend_pool_filestore(pool, db, increment_gb: int | None = None):
     return {
         "old_size_gb": old_size,
         "new_size_gb": new_size,
-        "filestore_instance_id": pool.filestore_instance_id,
+        "netapp_pool_id": pool.netapp_pool_id,
     }
 
 

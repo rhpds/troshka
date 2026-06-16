@@ -686,14 +686,14 @@ def delete_ceph_nfs_pool(
 # ---------------------------------------------------------------------------
 
 
-def create_filestore_instance(
+def create_netapp_pool_and_volume(
     credentials: dict,
     project: str,
     zone: str,
     network: str,
     capacity_gb: int,
     share_name: str = "troshka",
-    tier: str = "ZONAL",
+    service_level: str = "ZONAL",
 ) -> dict:
     from google.cloud import filestore_v1
     from google.oauth2 import service_account
@@ -704,7 +704,7 @@ def create_filestore_instance(
 
     instance = filestore_v1.Instance(
         tier=getattr(
-            filestore_v1.Instance.Tier, tier, filestore_v1.Instance.Tier.ZONAL
+            filestore_v1.Instance.Tier, service_level, filestore_v1.Instance.Tier.ZONAL
         ),
         file_shares=[
             filestore_v1.FileShareConfig(
@@ -741,9 +741,7 @@ def create_filestore_instance(
     }
 
 
-def update_filestore_capacity(
-    credentials: dict, instance_name: str, new_capacity_gb: int
-):
+def update_netapp_capacity(credentials: dict, pool_id: str, new_capacity_gb: int):
     from google.cloud import filestore_v1
     from google.oauth2 import service_account
     from google.protobuf import field_mask_pb2
@@ -753,7 +751,7 @@ def update_filestore_capacity(
     client = filestore_v1.CloudFilestoreManagerClient(credentials=cred)
 
     instance = filestore_v1.Instance(
-        name=instance_name,
+        name=pool_id,
         file_shares=[
             filestore_v1.FileShareConfig(
                 name="troshka",
@@ -766,7 +764,7 @@ def update_filestore_capacity(
     operation.result()
 
 
-def provision_filestore_pool(
+def provision_netapp_pool(
     pool_id: str,
     credentials: dict,
     project: str,
@@ -774,24 +772,24 @@ def provision_filestore_pool(
     network: str,
     capacity_gb: int,
     share_name: str = "troshka",
-    tier: str = "ZONAL",
+    service_level: str = "ZONAL",
 ):
     db = SessionLocal()
     try:
-        result = create_filestore_instance(
-            credentials, project, zone, network, capacity_gb, share_name, tier
+        result = create_netapp_pool_and_volume(
+            credentials, project, zone, network, capacity_gb, share_name, service_level
         )
         pool = db.query(StoragePool).get(pool_id)
-        pool.filestore_instance_id = result["instance_name"]
-        pool.filestore_ip = result["ip_address"]
-        pool.filestore_share_name = result["share_name"]
-        pool.filestore_capacity_gb = capacity_gb
-        pool.filestore_tier = tier
+        pool.netapp_pool_id = result["instance_name"]
+        pool.netapp_mount_ip = result["ip_address"]
+        pool.netapp_volume_name = result["share_name"]
+        pool.netapp_capacity_gb = capacity_gb
+        pool.netapp_service_level = service_level
         pool.status = "available"
         db.commit()
-        logger.info("Filestore pool %s is available", pool_id[:8])
+        logger.info("NetApp pool %s is available", pool_id[:8])
     except Exception as e:
-        logger.error("Filestore provisioning failed for pool %s: %s", pool_id[:8], e)
+        logger.error("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)
         pool.status = "error"
         db.commit()

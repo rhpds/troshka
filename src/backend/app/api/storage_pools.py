@@ -92,7 +92,7 @@ def create_pool(
         "shared-fsx",
         "shared-byo",
         "shared-ceph-nfs",
-        "shared-filestore",
+        "shared-netapp",
         "shared-azure-files",
     ):
         raise HTTPException(400, f"Invalid mode: {body.mode}")
@@ -121,11 +121,11 @@ def create_pool(
         if provider.type != "ocpvirt":
             raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
 
-    if body.mode == "shared-filestore":
+    if body.mode == "shared-netapp":
         if provider.type != "gcp":
-            raise HTTPException(400, "Filestore pools require a GCP provider")
-        if not body.filestore_capacity_gb:
-            raise HTTPException(400, "filestore_capacity_gb is required")
+            raise HTTPException(400, "NetApp Volumes pools require a GCP provider")
+        if not body.netapp_capacity_gb:
+            raise HTTPException(400, "netapp_capacity_gb is required")
 
     if body.mode == "shared-azure-files":
         if provider.type != "azure":
@@ -199,23 +199,23 @@ def create_pool(
         )
         t.start()
 
-    elif body.mode == "shared-filestore":
+    elif body.mode == "shared-netapp":
         credentials = provider.get_credentials()
         zone = body.az or provider.gcp_zone or (provider.default_region + "-a")
         network = provider.gcp_network_id
         if not network:
             raise HTTPException(400, "GCP provider has no network configured")
         t = threading.Thread(
-            target=storage_pool_service.provision_filestore_pool,
+            target=storage_pool_service.provision_netapp_pool,
             args=(
                 pool.id,
                 credentials,
                 provider.gcp_project_id,
                 zone,
                 network,
-                body.filestore_capacity_gb,
+                body.netapp_capacity_gb,
                 "troshka",
-                body.filestore_tier or "ZONAL",
+                body.netapp_service_level or "ZONAL",
             ),
             daemon=True,
         )

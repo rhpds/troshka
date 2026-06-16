@@ -68,7 +68,7 @@ websockify==0.13.0
 kubernetes>=29.0.0
 # GCP provider
 google-cloud-compute>=1.20.0
-google-cloud-filestore>=1.10.0
+google-cloud-netapp>=0.3.0
 google-cloud-dns>=0.35.0
 # Azure provider
 azure-identity>=1.17.0

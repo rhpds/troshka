@@ -5,16 +5,16 @@ from pydantic import BaseModel
 
 class StoragePoolCreate(BaseModel):
     name: str
-    mode: str  # "local", "shared-fsx", "shared-byo", "shared-ceph-nfs", "shared-filestore", "shared-azure-files"
+    mode: str  # "local", "shared-fsx", "shared-byo", "shared-ceph-nfs", "shared-netapp", "shared-azure-files"
     provider_id: str
     az: str | None = None
     instance_types: list[str] | None = None  # for AZ probing
     fsx_throughput_mbps: int | None = None
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
-    # GCP Filestore
-    filestore_capacity_gb: int | None = None
-    filestore_tier: str | None = None
+    # GCP NetApp Volumes
+    netapp_capacity_gb: int | None = None
+    netapp_service_level: str | None = None
     # Azure Files NFS
     azure_files_capacity_gb: int | None = None
     azure_files_iops: int | None = None
@@ -44,12 +44,12 @@ class StoragePoolResponse(BaseModel):
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
     nfs_port: int | None = None
-    # GCP Filestore
-    filestore_instance_id: str | None = None
-    filestore_ip: str | None = None
-    filestore_share_name: str | None = None
-    filestore_tier: str | None = None
-    filestore_capacity_gb: int | None = None
+    # GCP NetApp Volumes
+    netapp_pool_id: str | None = None
+    netapp_mount_ip: str | None = None
+    netapp_volume_name: str | None = None
+    netapp_service_level: str | None = None
+    netapp_capacity_gb: int | None = None
     # Azure Files NFS
     azure_storage_account: str | None = None
     azure_file_share_name: str | None = None

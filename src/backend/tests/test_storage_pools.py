@@ -151,18 +151,18 @@ def test_host_without_pool():
     db.close()
 
 
-def test_create_filestore_pool():
+def test_create_netapp_pool():
     db = Session()
     provider = db.query(Provider).first()
     pool = StoragePool(
-        name="gcp-filestore-pool",
-        mode="shared-filestore",
+        name="gcp-netapp-pool",
+        mode="shared-netapp",
         az="us-central1-a",
-        filestore_instance_id="projects/my-proj/locations/us-central1-a/instances/troshka-fs",
-        filestore_ip="10.0.1.100",
-        filestore_share_name="troshka",
-        filestore_tier="ZONAL",
-        filestore_capacity_gb=1024,
+        netapp_pool_id="projects/my-proj/locations/us-central1-a/instances/troshka-netapp",
+        netapp_mount_ip="10.0.1.100",
+        netapp_volume_name="troshka",
+        netapp_service_level="ZONAL",
+        netapp_capacity_gb=1024,
         status="available",
         provider_id=provider.id,
     )
@@ -170,9 +170,9 @@ def test_create_filestore_pool():
     db.commit()
     db.refresh(pool)
 
-    assert pool.mode == "shared-filestore"
-    assert pool.filestore_ip == "10.0.1.100"
-    assert pool.filestore_capacity_gb == 1024
+    assert pool.mode == "shared-netapp"
+    assert pool.netapp_mount_ip == "10.0.1.100"
+    assert pool.netapp_capacity_gb == 1024
     db.close()
 
 

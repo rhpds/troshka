@@ -319,9 +319,9 @@ class GCPDriver(ProviderDriver):
                 enable_nested_virtualization=host_type != "pattern_buffer",
             ),
             scheduling=compute_v1.Scheduling(
-                on_host_maintenance="TERMINATE"
-                if host_type != "pattern_buffer"
-                else "MIGRATE",
+                on_host_maintenance=(
+                    "TERMINATE" if host_type != "pattern_buffer" else "MIGRATE"
+                ),
             ),
         )
 

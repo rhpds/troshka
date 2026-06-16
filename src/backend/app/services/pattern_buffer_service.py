@@ -91,9 +91,9 @@ def _provision_pattern_buffer(pool_id: str):
         if pool.mode == "shared-fsx" and pool.fsx_dns_name:
             nfs_kwargs["nfs_server"] = pool.fsx_dns_name
             nfs_kwargs["nfs_path"] = "/fsx"
-        elif pool.mode == "shared-filestore" and pool.filestore_ip:
-            nfs_kwargs["nfs_server"] = pool.filestore_ip
-            nfs_kwargs["nfs_path"] = f"/{pool.filestore_share_name or 'troshka'}"
+        elif pool.mode == "shared-netapp" and pool.netapp_mount_ip:
+            nfs_kwargs["nfs_server"] = pool.netapp_mount_ip
+            nfs_kwargs["nfs_path"] = f"/{pool.netapp_volume_name or 'troshka'}"
         elif pool.mode == "shared-azure-files" and pool.azure_file_share_url:
             parts = pool.azure_file_share_url.split(":", 1)
             nfs_kwargs["nfs_server"] = parts[0]

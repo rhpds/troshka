@@ -38,14 +38,12 @@ class StoragePool(Base):
     nfs_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ceph_subvolume_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # GCP Filestore
-    filestore_instance_id: Mapped[str | None] = mapped_column(
-        String(255), nullable=True
-    )
-    filestore_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
-    filestore_share_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    filestore_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    filestore_capacity_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # GCP NetApp Volumes
+    netapp_pool_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    netapp_mount_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    netapp_volume_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    netapp_service_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    netapp_capacity_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Azure Files NFS
     azure_storage_account: Mapped[str | None] = mapped_column(
