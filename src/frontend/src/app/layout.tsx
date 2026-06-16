@@ -103,6 +103,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isAuthenticated = !!user && !isLoginPage;
   const isAdmin = user?.role === "admin";
 
+  const [backendDown, setBackendDown] = useState(false);
+  useEffect(() => {
+    let failures = 0;
+    const check = () => {
+      fetch("/api/v1/auth/me", { signal: AbortSignal.timeout(5000) })
+        .then((r) => { failures = r.ok || r.status === 401 ? 0 : failures + 1; setBackendDown(failures >= 2); })
+        .catch(() => { failures++; setBackendDown(failures >= 2); });
+    };
+    check();
+    const iv = setInterval(check, 5000);
+    return () => clearInterval(iv);
+  }, []);
+
   const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean }>({ hosts: false, pools: false });
   useEffect(() => {
     if (!isAdmin) return;
@@ -277,6 +290,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <Page masthead={masthead} sidebar={sidebar} isManagedSidebar>
+          {backendDown && (
+            <div style={{
+              background: "rgba(220, 38, 38, 0.15)",
+              border: "1px solid rgba(220, 38, 38, 0.4)",
+              color: "#fca5a5",
+              padding: "8px 16px",
+              fontSize: 13,
+              textAlign: "center",
+              fontWeight: 500,
+            }}>
+              Backend is unreachable — the server may be restarting
+            </div>
+          )}
           {children}
         </Page>
       </body>
