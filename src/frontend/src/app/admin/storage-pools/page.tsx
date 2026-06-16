@@ -58,6 +58,7 @@ const modeLabels: Record<string, string> = {
   "shared-fsx": "FSx OpenZFS",
   "shared-byo": "BYO NFS",
   "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
+  "shared-filestore": "Filestore (GCP)",
   "shared-azure-files": "Azure Files NFS",
 };
 
@@ -207,7 +208,7 @@ export default function StoragePoolsPage() {
     setNewMode(mode);
     setNewAz("");
     setAvailableAzs([]);
-    if ((mode === "shared-fsx" || mode === "shared-azure-files") && newProviderId) fetchAzs(newProviderId);
+    if ((mode === "shared-fsx" || mode === "shared-filestore" || mode === "shared-azure-files") && newProviderId) fetchAzs(newProviderId);
     if (mode === "shared-ceph-nfs") setNewProviderId("");
   };
 
@@ -218,10 +219,12 @@ export default function StoragePoolsPage() {
     if (newMode === "shared-fsx" && !newAz) { setError("AZ is required for FSx pools"); return; }
     if (newMode === "shared-byo" && !newNfsEndpoint) { setError("NFS endpoint is required"); return; }
     if (newMode === "shared-ceph-nfs" && !newProviderId) { setError("Provider is required for Ceph-NFS pools"); return; }
+    if (newMode === "shared-filestore" && !newProviderId) { setError("Provider is required for Filestore pools"); return; }
+    if (newMode === "shared-filestore" && !newAz) { setError("Zone is required for Filestore pools"); return; }
     if (newMode === "shared-azure-files" && !newProviderId) { setError("Provider is required for Azure Files pools"); return; }
     if (newMode === "shared-azure-files" && !newAz) { setError("Location is required for Azure Files pools"); return; }
 
-    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : newMode === "shared-azure-files" ? "azure" : "ec2";
+    const autoProviderType = newMode === "shared-ceph-nfs" ? "ocpvirt" : newMode === "shared-filestore" ? "gcp" : newMode === "shared-azure-files" ? "azure" : "ec2";
     const providerId = newProviderId || providers.find((p) => p.type === autoProviderType)?.id;
     if (!providerId) { setError(`No ${autoProviderType} provider configured`); return; }
 
