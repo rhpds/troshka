@@ -11,6 +11,29 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
+
+def get_provider_ssh_user(provider_type: str) -> str:
+    """Return the SSH username for a given provider type."""
+    if provider_type == "ec2":
+        return "ec2-user"
+    elif provider_type == "ocpvirt":
+        return "cloud-user"
+    elif provider_type in ("gcp", "azure"):
+        return "troshka"
+    raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+def get_provider_data_disk(provider_type: str) -> str:
+    """Return the data disk device path for a given provider type."""
+    if provider_type in ("ec2", "ocpvirt"):
+        return "sdf"
+    elif provider_type == "gcp":
+        return "/dev/sdb"
+    elif provider_type == "azure":
+        return "/dev/disk/azure/scsi1/lun0"
+    raise ValueError(f"Unknown provider type: {provider_type}")
+
+
 AGENT_INSTALL_SCRIPT = """#!/bin/bash
 set -uo pipefail
 

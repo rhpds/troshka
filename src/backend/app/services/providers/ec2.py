@@ -21,7 +21,7 @@ class EC2Driver(ProviderDriver):
             region=kwargs.get("region") or provider.default_region,
             credentials=creds,
             storage_size_gb=storage_size_gb,
-            ami_id=kwargs.get("ami_id") or provider.default_ami,
+            ami_id=kwargs.get("image_id") or provider.default_image,
             vpc_id=kwargs.get("vpc_id") or provider.vpc_id,
             subnet_id=kwargs.get("subnet_id") or provider.subnet_id,
             security_group_id=kwargs.get("security_group_id")

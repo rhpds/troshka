@@ -118,7 +118,7 @@ def _provision_pattern_buffer(pool_id: str):
             host_id=host_id,
             instance_type=instance_type,
             storage_size_gb=DEFAULT_STORAGE_GB,
-            ami_id=provider.default_ami,
+            image_id=provider.default_image,
             region=provider.default_region,
             vpc_id=provider.vpc_id,
             subnet_id=pool.subnet_id or provider.subnet_id,
@@ -154,21 +154,13 @@ def _provision_pattern_buffer(pool_id: str):
         ssh_port = result.get("_ssh_port", 22)
         ssh_host = result.get("_ssh_host") or result["public_ip"]
 
-        # Provider-specific SSH user
-        if provider.type == "ocpvirt":
-            ssh_user = "cloud-user"
-        elif provider.type in ("gcp", "azure"):
-            ssh_user = "troshka"
-        else:  # ec2
-            ssh_user = "ec2-user"
+        from app.services.agent_deployer import (
+            get_provider_ssh_user,
+            get_provider_data_disk,
+        )
 
-        # Provider-specific data disk device path
-        if provider.type == "gcp":
-            data_disk = "/dev/sdb"
-        elif provider.type == "azure":
-            data_disk = "/dev/disk/azure/scsi1/lun0"
-        else:  # ec2, ocpvirt
-            data_disk = "sdf"
+        ssh_user = get_provider_ssh_user(provider.type)
+        data_disk = get_provider_data_disk(provider.type)
 
         logger.info("Pattern buffer %s provisioned, waiting for SSH...", host_id[:8])
 

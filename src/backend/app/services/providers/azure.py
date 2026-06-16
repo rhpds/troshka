@@ -235,10 +235,10 @@ class AzureDriver(ProviderDriver):
         custom_data_b64 = base64.b64encode(user_data.encode()).decode()
 
         # Resolve boot image URN
-        image_urn = kwargs.get("ami_id") or provider.default_ami
+        image_urn = kwargs.get("image_id") or provider.default_image
         if not image_urn:
             raise ValueError(
-                "No boot image specified — set ami_id or default_ami "
+                "No boot image specified — set image_id or default_image "
                 "(format: Publisher:Offer:Sku:Version)"
             )
         image_ref = _parse_image_urn(image_urn)

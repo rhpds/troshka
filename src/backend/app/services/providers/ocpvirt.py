@@ -197,7 +197,7 @@ class OCPVirtDriver(ProviderDriver):
 
         # Build VM spec — use DataSource ref (preferred) or HTTP URL fallback
         rhel_image_url = kwargs.get("rhel_image_url", "")
-        datasource_name = kwargs.get("ami_id") or "rhel9"
+        datasource_name = kwargs.get("image_id") or "rhel9"
         if rhel_image_url:
             root_source = {"source": {"http": {"url": rhel_image_url}}}
         else:

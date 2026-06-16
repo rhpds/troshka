@@ -19,7 +19,7 @@ class Provider(Base):
     type: Mapped[str] = mapped_column(String(20))
     credentials: Mapped[str | None] = mapped_column(Text)
     default_region: Mapped[str | None] = mapped_column(String(100))
-    default_ami: Mapped[str | None] = mapped_column(String(500))
+    default_image: Mapped[str | None] = mapped_column(String(500))
     vpc_id: Mapped[str | None] = mapped_column(String(50))
     subnet_id: Mapped[str | None] = mapped_column(String(50))
     security_group_id: Mapped[str | None] = mapped_column(String(50))

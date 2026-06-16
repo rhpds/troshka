@@ -233,9 +233,9 @@ class GCPDriver(ProviderDriver):
         user_data = _build_cloud_init(host_id, nfs_server, nfs_path)
 
         # Resolve boot image
-        image_id = kwargs.get("ami_id") or provider.default_ami
+        image_id = kwargs.get("image_id") or provider.default_image
         if not image_id:
-            raise ValueError("No boot image specified — set ami_id or default_ami")
+            raise ValueError("No boot image specified — set image_id or default_image")
 
         if image_id.startswith("https://"):
             from urllib.parse import urlparse
