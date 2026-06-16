@@ -508,6 +508,10 @@ export default function AdminHostsPage() {
                       setNewProviderId(e.target.value);
                       const p = providers.find((p) => p.id === e.target.value);
                       if (p) setNewRegion(p.default_region || "");
+                      if (p?.type === "ocpvirt") {
+                        const currentPool = pools.find((pl) => pl.id === selectedPool);
+                        if (currentPool?.mode === "shared-fsx") setSelectedPool("");
+                      }
                     }}
                   >
                     <option value="">Select provider...</option>
@@ -589,7 +593,7 @@ export default function AdminHostsPage() {
                     onChange={(e) => setSelectedPool(e.target.value)}
                   >
                     <option value="">None (local storage)</option>
-                    {pools.filter(p => p.status === "available").map((p) => (
+                    {pools.filter(p => p.status === "available" && (selectedProvider?.type !== "ocpvirt" || p.mode !== "shared-fsx")).map((p) => (
                       <option key={p.id} value={p.id}>{p.name} ({p.mode}{p.az ? `, ${p.az}` : ""})</option>
                     ))}
                   </select>
