@@ -104,20 +104,8 @@ except:
 stop_backend() {
     local force="${1:-}"
     if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
-        if [ "$force" != "--force" ]; then
-            if ! check_backend_idle; then
-                echo "  Backend:    waiting for in-flight work to finish..."
-                for i in $(seq 1 30); do
-                    sleep 2
-                    if check_backend_idle 2>/dev/null; then
-                        break
-                    fi
-                    if [ "$i" -eq 30 ]; then
-                        echo "  Backend:    still busy after 60s. Use --force to kill anyway."
-                        exit 1
-                    fi
-                done
-            fi
+        if ! check_backend_idle 2>/dev/null; then
+            echo "  Backend:    in-flight work detected — will resume after restart"
         fi
         kill "$(cat "$PID_DIR/backend.pid")" 2>/dev/null || true
         rm -f "$PID_DIR/backend.pid"

@@ -19,7 +19,19 @@ from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
-# In-memory deploy progress tracking: project_id -> {"step": ..., "detail": ..., "items": [...]}
+# Ordered deploy steps — used for checkpoint-based resume
+DEPLOY_STEPS = [
+    "eips",
+    "networks",
+    "seeds",
+    "images",
+    "disks",
+    "vms",
+    "starting",
+    "dns",
+    "done",
+]
+
 _active_health_monitors: set = set()
 _deploy_progress: dict[str, dict] = {}
 
@@ -32,6 +44,46 @@ def _update_deploy_progress(
         progress["items"] = items
     _deploy_progress[project_id] = progress
     notify_project(project_id, {"type": "deploy-progress", "progress": progress})
+
+
+def get_deploy_progress(project_id: str) -> dict | None:
+    """Get deploy progress — in-memory first, fall back to DB."""
+    if project_id in _deploy_progress:
+        return _deploy_progress[project_id]
+    from app.core.database import SessionLocal as _SL
+    from app.models.project import Project
+
+    db = _SL()
+    try:
+        project = db.query(Project).filter_by(id=project_id).first()
+        if project and project.deploy_progress:
+            return project.deploy_progress
+    finally:
+        db.close()
+    return None
+
+
+def _checkpoint(session, project_id: str, step: str):
+    """Persist deploy step to DB so deploy can resume after restart."""
+    from app.models.project import Project
+
+    project = session.query(Project).filter_by(id=project_id).first()
+    if project:
+        project.deploy_step = step
+        progress = _deploy_progress.get(project_id)
+        if progress:
+            project.deploy_progress = progress
+        session.commit()
+
+
+def _should_skip(resume_from: str | None, step: str) -> bool:
+    """Return True if this step was already completed before the restart."""
+    if not resume_from:
+        return False
+    try:
+        return DEPLOY_STEPS.index(step) < DEPLOY_STEPS.index(resume_from)
+    except ValueError:
+        return False
 
 
 # Serializes nftables-touching network setup across concurrent deploys
@@ -1229,7 +1281,9 @@ def _project_deleted(project_id: str) -> bool:
         check_s.close()
 
 
-def deploy_project_async(project_id: str, auto_start: bool = True):
+def deploy_project_async(
+    project_id: str, auto_start: bool = True, resume_from: str | None = None
+):
     """Background thread: deploy a project's topology to a host."""
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -1240,6 +1294,10 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
         project = s.query(Project).filter_by(id=project_id).first()
         if not project or project.state != "deploying":
             return
+        if resume_from:
+            logger.info(
+                "Deploy %s: resuming from step '%s'", project_id[:8], resume_from
+            )
 
         host = (
             s.query(Host).filter_by(id=project.host_id).first()
@@ -1303,7 +1361,8 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         # Step 0: Allocate and associate EIPs (before networking so DNAT rules have private IPs)
         external_ips = topology.get("externalIps", [])
-        if external_ips:
+        if external_ips and not _should_skip(resume_from, "eips"):
+            _checkpoint(s, project_id, "eips")
             _update_deploy_progress(project_id, "eips", "allocating elastic IPs")
             logger.info(
                 "Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips)
@@ -1385,6 +1444,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             s.commit()
 
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
+        _checkpoint(s, project_id, "networks")
         _update_deploy_progress(project_id, "networking", "waiting for lock")
         with _network_lock:
             _update_deploy_progress(project_id, "networking", "configuring VXLAN")
@@ -1499,6 +1559,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 2: Create cloud-init seed ISOs
+        _checkpoint(s, project_id, "seeds")
         _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
         _create_seed_isos_via_troshkad(host, project_id, topology, pool)
@@ -1516,6 +1577,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 3: Cache library images on host
+        _checkpoint(s, project_id, "images")
         _update_deploy_progress(project_id, "downloading images", "0%")
         logger.info("Deploy %s: caching library images", project_id[:8])
 
@@ -1596,6 +1658,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             return
 
         # Step 4: Create VM disks and definitions (parallel)
+        _checkpoint(s, project_id, "disks")
         _update_deploy_progress(project_id, "creating", "VMs")
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vms = _extract_vms(topology)
@@ -1624,6 +1687,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 raise
 
         # Create VM definitions sequentially (virt-install storage pool race condition)
+        _checkpoint(s, project_id, "vms")
         for vi, vm in enumerate(vms):
             vm_name = vm.get("name", vm["node_id"][:8])
             items = []
@@ -1638,6 +1702,20 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
             _update_deploy_progress(
                 project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
             )
+            domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
+            try:
+                dom_check = start_job(host, "/vm/info", {"name": domain_name})
+                dom_result = wait_for_job(host, dom_check, timeout=10)
+                if dom_result.get("result", {}).get("state"):
+                    logger.info(
+                        "Deploy %s: VM %s already defined, skipping",
+                        project_id[:8],
+                        domain_name,
+                    )
+                    continue
+            except TroshkadError:
+                pass
+
             job_id = _create_vm_via_troshkad(
                 host, project_id, vm, topology, vni_map, pool, disk_cache
             )
@@ -1677,6 +1755,7 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
                 return
 
         # Step 5: Start VMs (unless auto_start is disabled)
+        _checkpoint(s, project_id, "starting")
         if auto_start:
             _update_deploy_progress(project_id, "starting", "VMs")
             notify_project(
@@ -1709,6 +1788,8 @@ def deploy_project_async(project_id: str, auto_start: bool = True):
 
         project.state = "active" if auto_start else "stopped"
         project.deploy_error = None
+        project.deploy_step = None
+        project.deploy_progress = None
         project.deployed_topology = project.topology
 
         # Create DNS records if DNS provider configured

@@ -37,6 +37,8 @@ async def lifespan(app):
     from app.core.database import SessionLocal
     from app.models.project import Project
 
+    import threading
+
     s = SessionLocal()
     try:
         stuck = (
@@ -50,22 +52,60 @@ async def lifespan(app):
         )
         for p in stuck:
             old_state = p.state
-            logger.warning(
-                "Startup: resetting stuck project %s (%s) from %s to error",
-                p.name,
-                p.id[:8],
-                old_state,
-            )
-            p.state = "error"
-            p.deploy_error = f"Server restarted while project was {old_state}"
+            if old_state == "deploying" and p.deploy_step:
+                logger.info(
+                    "Startup: resuming deploy for %s (%s) from step '%s'",
+                    p.name,
+                    p.id[:8],
+                    p.deploy_step,
+                )
+                from app.services.deploy_service import deploy_project_async
+
+                threading.Thread(
+                    target=deploy_project_async,
+                    args=(p.id,),
+                    kwargs={"resume_from": p.deploy_step},
+                    name=f"deploy-{p.id[:8]}",
+                    daemon=True,
+                ).start()
+            else:
+                logger.warning(
+                    "Startup: resetting stuck project %s (%s) from %s to error",
+                    p.name,
+                    p.id[:8],
+                    old_state,
+                )
+                p.state = "error"
+                p.deploy_error = f"Server restarted while project was {old_state}"
         if stuck:
             s.commit()
     finally:
         s.close()
 
-    # Resume polling for storage pools stuck in "creating" (poller thread died on restart)
-    import threading
+    # Resume stuck pattern captures
+    from app.models.pattern import Pattern
 
+    s = SessionLocal()
+    try:
+        stuck_patterns = s.query(Pattern).filter(Pattern.state == "capturing").all()
+        for pat in stuck_patterns:
+            logger.info(
+                "Startup: resuming pattern capture %s (%s)",
+                pat.name,
+                pat.id[:8],
+            )
+            from app.services.pattern_service import capture_pattern_disks
+
+            threading.Thread(
+                target=capture_pattern_disks,
+                args=(pat.id, pat.source_project_id, False),
+                name=f"capture-{pat.id[:8]}",
+                daemon=True,
+            ).start()
+    finally:
+        s.close()
+
+    # Resume polling for storage pools stuck in "creating" (poller thread died on restart)
     from app.models.provider import Provider
     from app.models.storage_pool import StoragePool
 

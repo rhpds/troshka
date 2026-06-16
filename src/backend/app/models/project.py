@@ -38,6 +38,8 @@ class Project(Base):
     vni_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deployed_topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deploy_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deploy_step: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    deploy_progress: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ocp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     ocp_install_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

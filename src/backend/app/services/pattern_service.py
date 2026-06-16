@@ -234,6 +234,18 @@ def capture_pattern_disks(
                 vm_to_disks[vm_id] = []
             vm_to_disks[vm_id].append(disk_node)
 
+        existing_disks = {
+            pd.source_disk_id
+            for pd in db.query(PatternDisk).filter_by(pattern_id=pattern_id).all()
+        }
+        if existing_disks:
+            log.info(
+                "Pattern %s: %d disk(s) already captured, skipping",
+                pattern_id[:8],
+                len(existing_disks),
+            )
+            disk_nodes = [d for d in disk_nodes if d["id"] not in existing_disks]
+
         total = len(disk_nodes)
         processed = 0
 

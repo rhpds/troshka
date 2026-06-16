@@ -330,9 +330,9 @@ def get_deploy_progress(
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
-    from app.services.deploy_service import _deploy_progress
+    from app.services.deploy_service import get_deploy_progress as _get_dp
 
-    progress = _deploy_progress.get(project_id)
+    progress = _get_dp(project_id)
     return {"state": project.state, "progress": progress}
 
 
