@@ -80,9 +80,9 @@ def _provision_pattern_buffer(pool_id: str):
         if pool.worker_instance_type:
             instance_type = pool.worker_instance_type
         elif provider.type == "gcp":
-            instance_type = "n2-highmem-4"
+            instance_type = "n2-standard-2"
         elif provider.type == "azure":
-            instance_type = "Standard_E4s_v5"
+            instance_type = "Standard_E2s_v5"
         else:
             instance_type = DEFAULT_INSTANCE_TYPE
         host_id = str(uuid.uuid4())
