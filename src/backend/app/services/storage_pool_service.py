@@ -797,3 +797,165 @@ def provision_filestore_pool(
         db.commit()
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Azure Files NFS provisioning
+# ---------------------------------------------------------------------------
+
+
+def create_azure_files_nfs(
+    credentials: dict,
+    resource_group: str,
+    location: str,
+    subnet_id: str,
+    capacity_gb: int,
+    share_name: str = "troshka",
+    account_name: str | None = None,
+) -> dict:
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.storage import StorageManagementClient
+    from azure.mgmt.network import NetworkManagementClient
+
+    credential = ClientSecretCredential(
+        tenant_id=credentials["tenant_id"],
+        client_id=credentials["client_id"],
+        client_secret=credentials["client_secret"],
+    )
+    subscription_id = credentials["subscription_id"]
+
+    if not account_name:
+        import hashlib
+
+        suffix = hashlib.md5(resource_group.encode()).hexdigest()[:8]
+        account_name = f"troshkasa{suffix}"
+
+    storage_client = StorageManagementClient(credential, subscription_id)
+
+    # Create storage account with NFS enabled
+    sa_params = {
+        "location": location,
+        "sku": {"name": "Premium_LRS"},
+        "kind": "FileStorage",
+        "properties": {
+            "supportsHttpsTrafficOnly": False,
+            "enableNfsV3": True,
+        },
+    }
+    poller = storage_client.storage_accounts.begin_create(
+        resource_group, account_name, sa_params
+    )
+    poller.result()
+
+    # Create private endpoint for VNet access
+    network_client = NetworkManagementClient(credential, subscription_id)
+    sa_resource_id = f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Storage/storageAccounts/{account_name}"
+
+    pe_params = {
+        "location": location,
+        "properties": {
+            "subnet": {"id": subnet_id},
+            "privateLinkServiceConnections": [
+                {
+                    "name": f"{account_name}-pe-conn",
+                    "properties": {
+                        "privateLinkServiceId": sa_resource_id,
+                        "groupIds": ["file"],
+                    },
+                }
+            ],
+        },
+    }
+    try:
+        pe_poller = network_client.private_endpoints.begin_create_or_update(
+            resource_group, f"{account_name}-pe", pe_params
+        )
+        pe_poller.result()
+    except Exception as e:
+        logger.warning(
+            "Private endpoint creation failed (may need manual setup): %s", e
+        )
+
+    # Create NFS file share
+    share_params = {
+        "properties": {
+            "shareQuota": capacity_gb,
+            "enabledProtocols": "NFS",
+        }
+    }
+    storage_client.file_shares.create(
+        resource_group, account_name, share_name, share_params
+    )
+
+    mount_url = f"{account_name}.file.core.windows.net:/{account_name}/{share_name}"
+
+    return {
+        "storage_account": account_name,
+        "share_name": share_name,
+        "mount_url": mount_url,
+    }
+
+
+def update_azure_files_capacity(
+    credentials: dict,
+    resource_group: str,
+    account_name: str,
+    share_name: str,
+    new_capacity_gb: int,
+):
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.storage import StorageManagementClient
+
+    credential = ClientSecretCredential(
+        tenant_id=credentials["tenant_id"],
+        client_id=credentials["client_id"],
+        client_secret=credentials["client_secret"],
+    )
+    subscription_id = credentials["subscription_id"]
+
+    storage_client = StorageManagementClient(credential, subscription_id)
+    share_params = {
+        "properties": {
+            "shareQuota": new_capacity_gb,
+        }
+    }
+    storage_client.file_shares.update(
+        resource_group, account_name, share_name, share_params
+    )
+
+
+def provision_azure_files_pool(
+    pool_id: str,
+    credentials: dict,
+    resource_group: str,
+    location: str,
+    subnet_id: str,
+    capacity_gb: int,
+    iops: int | None = None,
+    throughput: int | None = None,
+    share_name: str = "troshka",
+):
+    db = SessionLocal()
+    try:
+        result = create_azure_files_nfs(
+            credentials, resource_group, location, subnet_id, capacity_gb, share_name
+        )
+        pool = db.query(StoragePool).get(pool_id)
+        pool.azure_storage_account = result["storage_account"]
+        pool.azure_file_share_name = result["share_name"]
+        pool.azure_file_share_url = result["mount_url"]
+        pool.azure_files_capacity_gb = capacity_gb
+        if iops:
+            pool.azure_files_iops = iops
+        if throughput:
+            pool.azure_files_throughput = throughput
+        pool.status = "available"
+        db.commit()
+        logger.info("Azure Files NFS pool %s is available", pool_id[:8])
+    except Exception as e:
+        logger.error("Azure Files provisioning failed for pool %s: %s", pool_id[:8], e)
+        pool = db.query(StoragePool).get(pool_id)
+        pool.status = "error"
+        db.commit()
+    finally:
+        db.close()
