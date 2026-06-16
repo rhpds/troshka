@@ -117,6 +117,8 @@ export default function AdminProvidersPage() {
         setTestResult((prev) => ({ ...prev, [id]: data.message }));
       } else if (data.bucket) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
+      } else if (data.nodes !== undefined) {
+        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
       } else {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
       }

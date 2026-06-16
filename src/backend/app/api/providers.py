@@ -625,6 +625,20 @@ def test_provider(
                         "message": f"Credentials OK but no access to bucket '{bucket}'.",
                     }
                 raise
+        elif provider.type == "ocpvirt":
+            from app.services.providers.ocpvirt import _get_k8s_clients
+
+            custom_api, core_api = _get_k8s_clients(creds)
+            ns = creds.get("namespace", "troshka")
+            core_api.read_namespace(ns)
+            nodes = core_api.list_node()
+            node_count = len(nodes.items)
+            return {
+                "status": "ok",
+                "cluster": creds.get("api_url", ""),
+                "namespace": ns,
+                "nodes": node_count,
+            }
         else:
             sts = boto3.client(
                 "sts",

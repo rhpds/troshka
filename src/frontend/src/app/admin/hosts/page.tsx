@@ -472,7 +472,7 @@ export default function AdminHostsPage() {
                     ))}
                   </select>
                 </div>
-                {newProviderId && !selectedProviderReady && selectedProvider?.type !== "ocpvirt" && (
+                {newProviderId && !selectedProviderReady && selectedProvider && selectedProvider.type === "ec2" && (
                   <Alert variant="warning" title={
                     !selectedProviderHasAmi && !selectedProviderHasVpc
                       ? "Provider needs setup. Go to Providers and run Discover AMI and Setup VPC."

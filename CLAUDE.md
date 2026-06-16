@@ -274,6 +274,25 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Provider credentials mapping: use `_boto_client()` helper — `get_credentials()` returns `access_key_id` which must be mapped to `aws_access_key_id` for boto3
 - **Placement**: auto-selects pool with most free RAM, syncs capacity before placing, sorts by least-loaded host. Admins can override pool at deploy time.
 
+### OCP Virt Provider Setup
+- Provider type `ocpvirt` — creates nested-virt RHEL VMs on OpenShift Virtualization
+- Troshkad runs identically inside KubeVirt VMs as in EC2 instances
+- **Provider driver abstraction**: `src/backend/app/services/providers/` — `base.py` interface, `ec2.py` delegate, `ocpvirt.py` KubeVirt driver
+- All provisioner calls go through `get_provider_driver(provider)` dispatcher
+- **Dev cluster**: `ocpvdev01.dal13.infra.demo.redhat.com` (AMD EPYC 7763, 256 vCPU / 1TB RAM per worker, nested virt enabled)
+- **Service account**: `troshka` SA in `troshka` namespace with `troshka-provider` ClusterRole
+- **Token**: `oc create token troshka -n troshka --duration=8760h` (1 year)
+- **ClusterRole permissions** (least-privilege):
+  - `kubevirt.io`: virtualmachines (CRUD + patch), virtualmachineinstances (get, list)
+  - `cdi.kubevirt.io`: datavolumes (CRUD)
+  - Core: services, PVCs (CRUD + patch), PVs (get, list), namespaces (get, create), nodes (get, list)
+  - `route.openshift.io`: routes (CRUD)
+- **Storage**: Ceph-NFS via `ocs-storagecluster-ceph-nfs` storage class, ~2.7 TiB available on CephFS
+- **Console**: OCP edge Routes (TLS terminated by OCP router), vncd runs with `--no-tls` flag
+- **Networking**: identical to AWS (VXLAN, nftables, netns) — all inside the host VM
+- **EIPs**: not supported on OCP Virt — `externalAccess` toggle disabled for ocpvirt hosts
+- **Resize**: not supported (KubeVirt requires stop → modify → start, disabled for now)
+
 ### Dev Database
 - PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
 - `--restart=always` ensures container restarts after crashes
