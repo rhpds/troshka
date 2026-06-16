@@ -237,9 +237,10 @@ class GCPDriver(ProviderDriver):
         if not image_id:
             raise ValueError("No boot image specified — set ami_id or default_ami")
 
-        # If image_id is a full URL (projects/*/global/images/*), use directly
-        if image_id.startswith("projects/"):
-            boot_image_url = f"https://compute.googleapis.com/{image_id}"
+        if image_id.startswith("https://"):
+            boot_image_url = image_id
+        elif image_id.startswith("projects/"):
+            boot_image_url = f"https://compute.googleapis.com/compute/v1/{image_id}"
         else:
             boot_image_url = (
                 f"https://compute.googleapis.com/compute/v1/"
