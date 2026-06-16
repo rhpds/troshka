@@ -44,6 +44,8 @@ interface Provider {
   id: string;
   name: string;
   type: string;
+  gcp_zone?: string | null;
+  azure_location?: string | null;
 }
 
 const statusColors: Record<string, string> = {
@@ -192,6 +194,17 @@ export default function StoragePoolsPage() {
 
   const fetchAzs = async (providerId: string) => {
     if (!providerId) { setAvailableAzs([]); return; }
+    const prov = providers.find((p) => p.id === providerId);
+    if (prov?.type === "gcp" && prov.gcp_zone) {
+      setAvailableAzs([prov.gcp_zone]);
+      setNewAz(prov.gcp_zone);
+      return;
+    }
+    if (prov?.type === "azure" && prov.azure_location) {
+      setAvailableAzs([prov.azure_location]);
+      setNewAz(prov.azure_location);
+      return;
+    }
     const resp = await fetch(`/api/v1/providers/${providerId}/availability-zones`);
     if (resp.ok) {
       setAvailableAzs(await resp.json());
@@ -236,6 +249,7 @@ export default function StoragePoolsPage() {
       az: newAz || null,
       fsx_throughput_mbps: (newMode === "shared-fsx" || newMode === "shared-azure-files") ? newThroughput : null,
       fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : newMode === "shared-azure-files" ? newStorageGb : null,
+      filestore_capacity_gb: newMode === "shared-filestore" ? newStorageGb : null,
       nfs_endpoint: newMode === "shared-byo" ? newNfsEndpoint : null,
     };
     const resp = await fetch("/api/v1/storage-pools", {
@@ -444,18 +458,18 @@ export default function StoragePoolsPage() {
                 <input style={inputStyle} value={newName} onChange={(e) => setNewName(e.target.value)}
                        placeholder="e.g. prod-east-1b" />
               </div>
-              {(newMode === "shared-fsx" || newMode === "shared-azure-files") && (
+              {(newMode === "shared-fsx" || newMode === "shared-filestore" || newMode === "shared-azure-files") && (
                 <div>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Provider</label>
                   <select style={inputStyle} value={newProviderId} onChange={(e) => handleProviderChange(e.target.value)}>
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : p.type === "azure").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {providers.filter((p) => newMode === "shared-fsx" ? p.type === "ec2" : newMode === "shared-filestore" ? p.type === "gcp" : p.type === "azure").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </div>
               )}
-              {(newMode === "shared-fsx" || newMode === "shared-azure-files") && (
+              {(newMode === "shared-fsx" || newMode === "shared-filestore" || newMode === "shared-azure-files") && (
                 <div>
-                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Availability Zone</label>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{newMode === "shared-filestore" ? "Zone" : "Availability Zone"}</label>
                   <select style={inputStyle} value={newAz} onChange={(e) => setNewAz(e.target.value)}>
                     <option value="">{availableAzs.length ? "Select AZ..." : "Select a provider first"}</option>
                     {availableAzs.map((az) => <option key={az} value={az}>{az}</option>)}
@@ -475,6 +489,13 @@ export default function StoragePoolsPage() {
                            onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 64)} min={64} />
                   </div>
                 </>
+              )}
+              {newMode === "shared-filestore" && (
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
+                  <input style={inputStyle} type="number" value={newStorageGb}
+                         onChange={(e) => setNewStorageGb(parseInt(e.target.value) || 1024)} min={1024} />
+                </div>
               )}
               {newMode === "shared-byo" && (
                 <div>
