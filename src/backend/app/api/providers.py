@@ -1484,7 +1484,6 @@ def discover_images_azure(
                     for p in [
                         "rhel-lvm9",
                         "rhel-lvm10",
-                        "rhel-lvm810",
                         "9-lvm",
                         "9_",
                         "10-lvm",

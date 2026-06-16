@@ -574,58 +574,107 @@ export default function AdminProvidersPage() {
                         {testResult[p.id]}
                       </div>
                     )}
-                    {amiResult[p.id] && (
-                      <div style={{ fontSize: 11, marginTop: 4, color: amiResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
-                        {amiResult[p.id]}
-                      </div>
-                    )}
-                    {amiOptions[p.id] && amiOptions[p.id].length > 0 && (() => {
-                      const filter = imageFilter[p.id] || "all";
-                      const versionFilter = imageVersionFilter[p.id] || "all";
-                      const search = (imageSearch[p.id] || "").toLowerCase();
-                      const detectVersion = (ami: {label: string; name: string; ami_id: string}) => {
-                        const hay = `${ami.label} ${ami.name} ${ami.ami_id}`.toLowerCase();
-                        if (/rhel.?10|10[-_.]lvm|lvm.?10[^0-9]/.test(hay)) return "10";
-                        if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
-                        return "";
-                      };
-                      const filtered = amiOptions[p.id].filter((ami) => {
-                        if (filter !== "all" && ami.type !== filter) return false;
-                        if (versionFilter !== "all" && detectVersion(ami) !== versionFilter) return false;
-                        if (search && !ami.label.toLowerCase().includes(search) && !ami.ami_id.toLowerCase().includes(search) && !(ami.name || "").toLowerCase().includes(search)) return false;
-                        return true;
-                      });
-                      return (
-                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
-                            <option value="all">All</option>
-                            <option value="BYOS">BYOS</option>
-                            <option value="PAYG">PAYG</option>
-                          </select>
-                          <select style={{ ...inputStyle, maxWidth: 120 }} value={versionFilter} onChange={(e) => setImageVersionFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
-                            <option value="all">All Versions</option>
-                            <option value="10">RHEL 10</option>
-                            <option value="9">RHEL 9</option>
-                          </select>
-                          <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
-                          <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {amiOptions[p.id].length}</span>
-                        </div>
-                        {filtered.map((ami) => (
-                          <div key={ami.ami_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
-                            <div>
-                              <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
-                              <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{ami.ami_id}</div>
-                              <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name}{ami.created ? ` · ${new Date(ami.created).toLocaleDateString()}` : ""}</div>
+                    {["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
+                      <details style={{ marginTop: 12 }} onToggle={async (e) => {
+                        if (!(e.target as HTMLDetailsElement).open) return;
+                        if (amiOptions[p.id]?.length) return;
+                        setAmiResult((prev) => ({ ...prev, [p.id]: "Loading..." }));
+                        setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
+                        if (p.type === "ec2") {
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-ami`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            setAmiOptions((prev) => ({ ...prev, [p.id]: data.amis || [] }));
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${(data.amis || []).length} image(s)` }));
+                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                        } else if (p.type === "gcp") {
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-gcp`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source})`, ami_id: img.self_link, name: img.family, created: img.creation_timestamp }));
+                            setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                        } else if (p.type === "azure") {
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-azure`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            const mapped = data.map((img: Record<string, string>) => ({ type: img.source, label: `${img.name} (${img.source}) — ${img.version}`, ami_id: img.urn, name: img.urn, created: "" }));
+                            setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
+                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                        } else if (p.type === "ocpvirt") {
+                          setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
+                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            const ready = data.datasources.filter((ds: any) => ds.ready);
+                            setAmiOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ ami_id: ds.name, label: ds.name, name: ds.name, created: "", type: "" })) }));
+                            setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} image(s)` }));
+                          } else { setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
+                        }
+                      }}>
+                        <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
+                          Select Image {p.default_ami ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.default_ami.length > 40 ? "..." + p.default_ami.slice(-35) : p.default_ami}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
+                        </summary>
+                        <div style={{ marginTop: 8 }}>
+                          {amiResult[p.id] && (
+                            <div style={{ fontSize: 11, marginBottom: 6, color: amiResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
+                              {amiResult[p.id]}
                             </div>
-                            <Button variant="secondary" onClick={() => selectAmi(p.id, ami.ami_id)}>
-                              Select
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                      );
-                    })()}
+                          )}
+                          {amiOptions[p.id] && amiOptions[p.id].length > 0 && (() => {
+                            const filter = imageFilter[p.id] || "all";
+                            const versionFilter = imageVersionFilter[p.id] || "all";
+                            const search = (imageSearch[p.id] || "").toLowerCase();
+                            const detectVersion = (ami: {label: string; name: string; ami_id: string}) => {
+                              const hay = `${ami.label} ${ami.name} ${ami.ami_id}`.toLowerCase();
+                              if (/rhel.?10[\.\-_ ]|(?:^|[\s\-_])10[-_.]lvm|lvm10[^0-9]/.test(hay)) return "10";
+                              if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
+                              return "";
+                            };
+                            const filtered = amiOptions[p.id].filter((ami) => {
+                              if (filter !== "all" && ami.type !== filter) return false;
+                              if (versionFilter !== "all" && detectVersion(ami) !== versionFilter) return false;
+                              if (search && !ami.label.toLowerCase().includes(search) && !ami.ami_id.toLowerCase().includes(search) && !(ami.name || "").toLowerCase().includes(search)) return false;
+                              return true;
+                            });
+                            return (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                {p.type !== "ocpvirt" && (
+                                  <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                                    <option value="all">All</option>
+                                    <option value="BYOS">BYOS</option>
+                                    <option value="PAYG">PAYG</option>
+                                  </select>
+                                )}
+                                <select style={{ ...inputStyle, maxWidth: 120 }} value={versionFilter} onChange={(e) => setImageVersionFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                                  <option value="all">All Versions</option>
+                                  <option value="10">RHEL 10</option>
+                                  <option value="9">RHEL 9</option>
+                                </select>
+                                <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
+                                <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {amiOptions[p.id].length}</span>
+                              </div>
+                              {filtered.map((ami) => (
+                                <div key={ami.ami_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
+                                  <div>
+                                    <div style={{ fontSize: 12, fontWeight: 600 }}>{ami.label}</div>
+                                    <div style={{ fontSize: 11, opacity: 0.7, fontFamily: "monospace" }}>{ami.ami_id}</div>
+                                    <div style={{ fontSize: 10, opacity: 0.5 }}>{ami.name}{ami.created ? ` · ${new Date(ami.created).toLocaleDateString()}` : ""}</div>
+                                  </div>
+                                  <Button variant="secondary" onClick={() => selectAmi(p.id, ami.ami_id)}>
+                                    Select
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                            );
+                          })()}
+                        </div>
+                      </details>
+                    )}
                     {vpcOptions[p.id] && vpcOptions[p.id].length > 0 && (
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -742,27 +791,13 @@ export default function AdminProvidersPage() {
                         }
                       }}>Scan S3</Button>
                     )}
-                    {p.type === "ec2" && <Button variant="secondary" onClick={() => discoverAmi(p.id)}>Discover AMI</Button>}
-                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
-                      setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
-                      setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering..." }));
-                      const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
-                      if (resp.ok) {
-                        const data = await resp.json();
-                        const ready = data.datasources.filter((ds: any) => ds.ready);
-                        setAmiOptions((prev) => ({ ...prev, [p.id]: ready.map((ds: any) => ({ ami_id: ds.name, label: ds.name, name: ds.name, created: "" })) }));
-                        setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${ready.length} ready images` }));
-                      } else {
-                        setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover DataSources" }));
-                      }
-                    }}>Select Host Image</Button>}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
                       setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
                       const resp = await fetch(`/api/v1/providers/${p.id}/discover-isos`);
                       if (resp.ok) {
                         const data = await resp.json();
-                        setAmiOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ ami_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "" })) }));
+                        setAmiOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ ami_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "", type: "" })) }));
                         setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
                       } else {
                         setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
@@ -807,66 +842,6 @@ export default function AdminProvidersPage() {
                         }}
                       >
                         Setup Network
-                      </Button>
-                    )}
-                    {p.type === "gcp" && (
-                      <Button
-                        variant="secondary"
-                        onClick={async () => {
-                          setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering images..." }));
-                          setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-gcp`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            if (data.length > 0) {
-                              const mapped = data.map((img: Record<string, string>) => ({
-                                type: img.source,
-                                label: `${img.name} (${img.source})`,
-                                ami_id: img.self_link,
-                                name: img.family,
-                                created: img.creation_timestamp,
-                              }));
-                              setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                              setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                            } else {
-                              setAmiResult((prev) => ({ ...prev, [p.id]: "No RHEL images found" }));
-                            }
-                          } else {
-                            setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED — check credentials" }));
-                          }
-                        }}
-                      >
-                        Discover Images
-                      </Button>
-                    )}
-                    {p.type === "azure" && (
-                      <Button
-                        variant="secondary"
-                        onClick={async () => {
-                          setAmiResult((prev) => ({ ...prev, [p.id]: "Discovering images..." }));
-                          setAmiOptions((prev) => ({ ...prev, [p.id]: [] }));
-                          const resp = await fetch(`/api/v1/providers/${p.id}/discover-images-azure`);
-                          if (resp.ok) {
-                            const data = await resp.json();
-                            if (data.length > 0) {
-                              const mapped = data.map((img: Record<string, string>) => ({
-                                type: img.source,
-                                label: `${img.name} (${img.source}) — ${img.version}`,
-                                ami_id: img.urn,
-                                name: img.urn,
-                                created: "",
-                              }));
-                              setAmiOptions((prev) => ({ ...prev, [p.id]: mapped }));
-                              setAmiResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
-                            } else {
-                              setAmiResult((prev) => ({ ...prev, [p.id]: "No RHEL images found" }));
-                            }
-                          } else {
-                            setAmiResult((prev) => ({ ...prev, [p.id]: "FAILED — check credentials" }));
-                          }
-                        }}
-                      >
-                        Discover Images
                       </Button>
                     )}
                     {p.type === "ec2" && !p.console_configured && (
