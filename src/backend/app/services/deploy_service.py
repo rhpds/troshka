@@ -1944,20 +1944,11 @@ def maybe_start_ocp_health_monitor(project_id: str):
         topo = project.deployed_topology or project.topology or {}
         if not _is_ocp_topology(topo):
             return
-        host_copy = type(
-            "H",
-            (),
-            {
-                "ip_address": host.ip_address,
-                "agent_token": host.agent_token,
-                "agent_cert_fingerprint": host.agent_cert_fingerprint,
-            },
-        )()
         deploy_start = project.updated_at.timestamp() if project.updated_at else 0
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
-            args=(project_id, host_copy.id, topo, deploy_start),
+            args=(project_id, host.id, topo, deploy_start),
             daemon=True,
             name=f"ocp-health-{project_id[:8]}",
         ).start()
@@ -2044,15 +2035,25 @@ def _approve_pending_csrs(host, project_id, bastion_ip, password):
 def _monitor_ocp_health(
     project_id: str, host_id: str, topology: dict, deploy_start: float = 0
 ):
-    import time as _t
-
     from app.core.database import SessionLocal as _SL2
-    from app.models.host import Host as _Host2
 
     _mon_db = _SL2()
+    try:
+        _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db)
+    except Exception as e:
+        logger.exception("OCP health monitor %s failed: %s", project_id[:8], e)
+    finally:
+        _active_health_monitors.discard(project_id)
+        _mon_db.close()
+
+
+def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
+    import time as _t
+
+    from app.models.host import Host as _Host2
+
     host = _mon_db.query(_Host2).filter_by(id=host_id).first()
     if not host:
-        _mon_db.close()
         return
 
     start = deploy_start or _t.time()
@@ -2579,8 +2580,6 @@ def _monitor_ocp_health(
         db.close()
     except Exception:
         pass
-    _active_health_monitors.discard(project_id)
-    _mon_db.close()
     logger.info("OCP health monitor complete for %s (%s)", project_id[:8], _elapsed())
 
 
