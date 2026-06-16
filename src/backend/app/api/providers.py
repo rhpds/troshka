@@ -839,13 +839,14 @@ def test_provider(
                 "nodes": node_count,
             }
         elif provider.type == "gcp":
-            from google.cloud import compute_v1
+            import google.auth.transport.requests
             from google.oauth2 import service_account
 
             sa_json = creds.get("service_account_json", {})
-            credential = service_account.Credentials.from_service_account_info(sa_json)
-            client = compute_v1.ProjectsClient(credentials=credential)
-            project_info = client.get(project=provider.gcp_project_id)
+            credential = service_account.Credentials.from_service_account_info(
+                sa_json, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            credential.refresh(google.auth.transport.requests.Request())
             return {
                 "status": "ok",
                 "project": provider.gcp_project_id,
