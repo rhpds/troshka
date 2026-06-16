@@ -65,3 +65,25 @@ class ProviderDriver:
     def delete_key_pair(self, provider, key_pair_name):
         """Delete an SSH key pair. No-op if provider doesn't manage key pairs."""
         pass
+
+    def allocate_eip(self, provider, host, eip_id):
+        """Allocate an external IP.
+        Returns dict with keys: public_ip, allocation_id."""
+        raise NotImplementedError
+
+    def associate_eip(self, provider, host, allocation_id):
+        """Associate an EIP with a host.
+        Returns dict with optional keys: private_ip, association_id.
+        Empty dict if no association step needed (e.g. OCP Virt)."""
+        raise NotImplementedError
+
+    def release_eip(self, provider, allocation_id, namespace=None):
+        """Release an external IP and clean up infra resources.
+        namespace is provider-specific context (k8s namespace for OCP Virt)."""
+        raise NotImplementedError
+
+    def update_eip_ports(self, provider, host, allocation_id, ports):
+        """Update port mappings on an EIP infra resource.
+        ports is a list of dicts: [{port, targetPort, name}].
+        No-op for providers that don't need it."""
+        pass
