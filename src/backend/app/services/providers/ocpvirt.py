@@ -691,3 +691,95 @@ class OCPVirtDriver(ProviderDriver):
             name=instance_id,
             body={"spec": {"running": False}},
         )
+
+    def allocate_eip(self, provider, host, eip_id):
+        from kubernetes import client
+
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        _, core_api = _get_k8s_clients(creds)
+
+        svc_name = f"troshka-eip-{eip_id[:8]}"
+        svc = client.V1Service(
+            metadata=client.V1ObjectMeta(
+                name=svc_name,
+                namespace=namespace,
+                labels={
+                    "app": "troshka",
+                    "troshka/eip-id": eip_id,
+                    "troshka/host-id": host.instance_id.replace("troshka-host-", ""),
+                },
+            ),
+            spec=client.V1ServiceSpec(
+                type="LoadBalancer",
+                selector={"kubevirt.io/domain": host.instance_id},
+                ports=[
+                    client.V1ServicePort(
+                        name="placeholder",
+                        port=1,
+                        target_port=1,
+                        protocol="TCP",
+                    )
+                ],
+            ),
+        )
+        core_api.create_namespaced_service(namespace=namespace, body=svc)
+
+        external_ip = None
+        for _ in range(60):
+            time.sleep(2)
+            lb_svc = core_api.read_namespaced_service(svc_name, namespace)
+            ingress = (lb_svc.status.load_balancer or {}).ingress
+            if ingress and ingress[0].ip:
+                external_ip = ingress[0].ip
+                break
+        if not external_ip:
+            raise RuntimeError(f"MetalLB did not assign IP for {svc_name}")
+
+        logger.info(
+            "Allocated EIP %s (%s) for host %s",
+            external_ip,
+            svc_name,
+            host.instance_id,
+        )
+        return {"public_ip": external_ip, "allocation_id": svc_name}
+
+    def associate_eip(self, provider, host, allocation_id):
+        return {}
+
+    def release_eip(self, provider, allocation_id, namespace=None):
+        from kubernetes import client
+
+        creds = provider.get_credentials()
+        ns = namespace or creds.get("namespace", "troshka")
+        _, core_api = _get_k8s_clients(creds)
+
+        try:
+            core_api.delete_namespaced_service(allocation_id, ns)
+            logger.info("Deleted EIP LB Service %s", allocation_id)
+        except client.ApiException as e:
+            if e.status != 404:
+                raise
+
+    def update_eip_ports(self, provider, host, allocation_id, ports):
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        _, core_api = _get_k8s_clients(creds)
+
+        svc_ports = [
+            {
+                "port": p["port"],
+                "targetPort": p["targetPort"],
+                "name": p["name"],
+                "protocol": "TCP",
+            }
+            for p in ports
+        ]
+        core_api.patch_namespaced_service(
+            allocation_id, namespace, {"spec": {"ports": svc_ports}}
+        )
+        logger.info(
+            "Updated EIP %s ports: %s",
+            allocation_id,
+            [p["port"] for p in ports],
+        )

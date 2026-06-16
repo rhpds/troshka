@@ -154,3 +154,78 @@ def test_resize_raises():
     provider = _make_provider()
     with pytest.raises(NotImplementedError):
         driver.resize_host(provider, "test", "128c-512g")
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+@patch("app.services.providers.ocpvirt.time")
+def test_allocate_eip_creates_lb_service(mock_time, mock_clients):
+    mock_custom = MagicMock()
+    mock_core = MagicMock()
+    mock_clients.return_value = (mock_custom, mock_core)
+
+    lb_svc = MagicMock()
+    lb_ingress = MagicMock()
+    lb_ingress.ip = "67.228.103.10"
+    lb_svc.status.load_balancer.ingress = [lb_ingress]
+    mock_core.read_namespaced_service.return_value = lb_svc
+
+    driver = OCPVirtDriver()
+    provider = _make_provider()
+    host = MagicMock()
+    host.instance_id = "troshka-host-aaaaaaaa"
+
+    result = driver.allocate_eip(provider, host, "eip-uuid-1234")
+
+    assert result["public_ip"] == "67.228.103.10"
+    assert result["allocation_id"] == "troshka-eip-eip-uuid"
+    mock_core.create_namespaced_service.assert_called_once()
+
+    svc_call = mock_core.create_namespaced_service.call_args
+    svc_body = svc_call[1]["body"]
+    assert svc_body.spec.type == "LoadBalancer"
+    assert svc_body.spec.selector == {"kubevirt.io/domain": "troshka-host-aaaaaaaa"}
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_release_eip_deletes_lb_service(mock_clients):
+    mock_custom = MagicMock()
+    mock_core = MagicMock()
+    mock_clients.return_value = (mock_custom, mock_core)
+
+    driver = OCPVirtDriver()
+    provider = _make_provider()
+    driver.release_eip(provider, "troshka-eip-abcdefgh", namespace="troshka")
+
+    mock_core.delete_namespaced_service.assert_called_once_with(
+        "troshka-eip-abcdefgh", "troshka"
+    )
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_update_eip_ports_patches_service(mock_clients):
+    mock_custom = MagicMock()
+    mock_core = MagicMock()
+    mock_clients.return_value = (mock_custom, mock_core)
+
+    driver = OCPVirtDriver()
+    provider = _make_provider()
+    host = MagicMock()
+    host.instance_id = "troshka-host-aaaaaaaa"
+
+    ports = [
+        {"port": 443, "targetPort": 40001, "name": "pf-0"},
+        {"port": 8080, "targetPort": 40002, "name": "pf-1"},
+    ]
+    driver.update_eip_ports(provider, host, "troshka-eip-abcdefgh", ports)
+
+    mock_core.patch_namespaced_service.assert_called_once()
+    patch_call = mock_core.patch_namespaced_service.call_args
+    assert patch_call[0][0] == "troshka-eip-abcdefgh"
+
+
+def test_associate_eip_is_noop():
+    driver = OCPVirtDriver()
+    provider = _make_provider()
+    host = MagicMock()
+    result = driver.associate_eip(provider, host, "troshka-eip-abcdefgh")
+    assert result == {}
