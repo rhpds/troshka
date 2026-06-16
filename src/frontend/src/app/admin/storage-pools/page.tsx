@@ -432,10 +432,11 @@ export default function StoragePoolsPage() {
               <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Mode</label>
                 <select style={inputStyle} value={newMode} onChange={(e) => handleModeChange(e.target.value)}>
-                  <option value="shared-fsx">FSx OpenZFS (Managed NFS)</option>
-                  <option value="shared-byo">BYO NFS</option>
-                  <option value="shared-ceph-nfs">Shared Ceph-NFS (OCP Virt)</option>
-                  <option value="shared-azure-files">Azure Files NFS</option>
+                  <option value="shared-fsx">FSx OpenZFS (AWS)</option>
+                  <option value="shared-byo">BYO NFS (All Providers)</option>
+                  <option value="shared-ceph-nfs">Ceph-NFS (OCP Virt)</option>
+                  <option value="shared-filestore">Filestore (GCP)</option>
+                  <option value="shared-azure-files">Azure Files NFS (Azure)</option>
                 </select>
               </div>
               <div>
