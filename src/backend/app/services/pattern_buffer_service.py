@@ -17,10 +17,15 @@ DEFAULT_INSTANCE_TYPE = "i4i.large"
 DEFAULT_STORAGE_GB = 200
 
 _provisioning: set[str] = set()
+_provision_errors: dict[str, str] = {}
 
 
 def is_provisioning(pool_id: str) -> bool:
     return pool_id in _provisioning
+
+
+def get_provision_error(pool_id: str) -> str | None:
+    return _provision_errors.get(pool_id)
 
 
 def _find_ec2_provider(db: Session, pool: StoragePool) -> Provider | None:
@@ -53,6 +58,7 @@ def _provision_pattern_buffer(pool_id: str):
     from app.services.providers import get_provider_driver
 
     _provisioning.add(pool_id)
+    _provision_errors.pop(pool_id, None)
     db = SessionLocal()
     try:
         pool = db.query(StoragePool).filter_by(id=pool_id).first()
@@ -83,6 +89,7 @@ def _provision_pattern_buffer(pool_id: str):
             nfs_kwargs["nfs_server"] = parts[0]
             nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
 
+        result = None
         logger.info(
             "Provisioning pattern buffer for pool %s: %s (provider %s)",
             pool_id[:8],
@@ -123,7 +130,7 @@ def _provision_pattern_buffer(pool_id: str):
             storage_pool_id=pool_id,
         )
         db.add(host)
-        db.commit()
+        db.flush()
         pool.worker_host_id = host_id
         db.commit()
         db.refresh(host)
@@ -184,6 +191,18 @@ def _provision_pattern_buffer(pool_id: str):
         logger.exception(
             "Failed to provision pattern buffer for pool %s: %s", pool_id, e
         )
+        _provision_errors[
+            pool_id
+        ] = f"Provisioning failed ({type(e).__name__}). Check server logs for details."
+        db.rollback()
+        try:
+            if result and result.get("instance_id") and provider:
+                from app.services.providers import get_provider_driver as _get_drv
+
+                _get_drv(provider).terminate_host(provider, result["instance_id"])
+                logger.info("Cleaned up orphaned instance %s", result["instance_id"])
+        except Exception:
+            logger.warning("Failed to clean up instance after error", exc_info=True)
     finally:
         _provisioning.discard(pool_id)
         db.close()

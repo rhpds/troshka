@@ -59,7 +59,7 @@ interface TemplateSummary {
   category: string;
 }
 
-function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
   const [mode, setMode] = useState<"choose" | "blank" | "pattern" | "template">("choose");
   const [name, setName] = useState("");
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
@@ -89,6 +89,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
   const [externalAccess, setExternalAccess] = useState(false);
   const [blockOutbound, setBlockOutbound] = useState(true);
+  const [deployHostId, setDeployHostId] = useState("");
   const [customVersion, setCustomVersion] = useState(false);
   const [customVersionText, setCustomVersionText] = useState("");
   const [loadingVersions, setLoadingVersions] = useState(true);
@@ -223,7 +224,10 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             }
           }
           if (autoDeploy) {
-            const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy`, { method: "POST" });
+            const deployParams = new URLSearchParams();
+            if (deployHostId) deployParams.set("host_id", deployHostId);
+            const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
+            const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
             if (!deployResp.ok) {
               const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
               alert(err.detail || "Deploy failed");
@@ -496,6 +500,24 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     </div>
                   </div>
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
+                    {userRole === "admin" && availableHosts.length > 0 && (
+                      <div style={{ marginBottom: 6 }}>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                        <select style={{
+                          padding: "4px 8px", borderRadius: 6, fontSize: 12, width: "100%",
+                          border: "1px solid var(--pf-t--global--border--color--default)",
+                          background: "var(--pf-t--global--background--color--primary--default)",
+                          color: "var(--pf-t--global--text--color--regular)",
+                        }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                          <option value="">Auto (best host)</option>
+                          {availableHosts.map((h) => (
+                            <option key={h.id} value={h.id}>
+                              {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
                       Deploy immediately after creation
@@ -607,10 +629,30 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
                   Deploy immediately
                 </label>
                 {autoDeploy && (
-                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
-                    <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-                    Start VMs after deploy
-                  </label>
+                  <>
+                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
+                      <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+                      Start VMs after deploy
+                    </label>
+                    {userRole === "admin" && availableHosts.length > 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                        <select style={{
+                          padding: "4px 8px", borderRadius: 6, fontSize: 12, width: "100%",
+                          border: "1px solid var(--pf-t--global--border--color--default)",
+                          background: "var(--pf-t--global--background--color--primary--default)",
+                          color: "var(--pf-t--global--text--color--regular)",
+                        }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                          <option value="">Auto (best host)</option>
+                          {availableHosts.map((h) => (
+                            <option key={h.id} value={h.id}>
+                              {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -654,6 +696,8 @@ export default function ProjectsPage() {
   const [userRole, setUserRole] = useState("");
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
   const [deployPoolId, setDeployPoolId] = useState("");
+  const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
+  const [deployHostId, setDeployHostId] = useState("");
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -693,7 +737,14 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => setUserRole(d.role || ""));
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+      setUserRole(d.role || "");
+      if (d.role === "admin") {
+        fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
+          setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer"));
+        });
+      }
+    });
     fetch("/api/v1/storage-pools/").then(r => r.ok ? r.json() : []).then(d => setPools(d.filter((p: any) => p.status === "available")));
     const interval = setInterval(fetchProjects, 10000);
     return () => clearInterval(interval);
@@ -722,7 +773,7 @@ export default function ProjectsPage() {
           </Button>
         </EmptyState>
         {showNewModal && (
-          <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />
+          <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} />
         )}
       </PageSection>
     );
@@ -912,11 +963,25 @@ export default function ProjectsPage() {
                         {pools.map((pl) => <option key={pl.id} value={pl.id}>{pl.name} ({pl.mode})</option>)}
                       </select>
                     )}
+                    {userRole === "admin" && availableHosts.length > 0 && (
+                      <select style={{
+                        padding: "4px 8px", borderRadius: 6, fontSize: 12,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                        <option value="">Auto (best host)</option>
+                        {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
+                      </select>
+                    )}
                     <Button variant="primary" onClick={() => {
                       if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
                       setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-                      const poolParam = deployPoolId ? `?storage_pool_id=${deployPoolId}` : "";
-                      fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy${poolParam}`, { method: "POST" }).then(r => r.json()).then(d => {
+                      const params = new URLSearchParams();
+                      if (deployPoolId) params.set("storage_pool_id", deployPoolId);
+                      if (deployHostId) params.set("host_id", deployHostId);
+                      const qs = params.toString() ? `?${params.toString()}` : "";
+                      fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy${qs}`, { method: "POST" }).then(r => r.json()).then(d => {
                         if (d.status === "deploying") { pollUntilSettled(); }
                         else { alert(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
                       });
@@ -964,7 +1029,7 @@ export default function ProjectsPage() {
         })()}
       </PageSection>
       {showNewModal && (
-        <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} />
+        <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} />
       )}
     </>
   );

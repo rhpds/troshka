@@ -183,7 +183,10 @@ def _auto_select_pool(db: Session) -> str | None:
 
 
 def place_project(
-    db: Session, project: Project, storage_pool_id: str | None = None
+    db: Session,
+    project: Project,
+    storage_pool_id: str | None = None,
+    host_id: str | None = None,
 ) -> dict:
     """Assign a project to a host. Returns placement result."""
     if not project.topology:
@@ -193,24 +196,34 @@ def place_project(
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
-    # Auto-select pool if not specified
-    if not storage_pool_id:
-        storage_pool_id = _auto_select_pool(db)
+    # Admin-specified host override
+    if host_id:
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host:
+            return {"error": f"Host {host_id[:8]} not found"}
+        if host.state != "active" or host.agent_status != "connected":
+            return {"error": f"Host {host_id[:8]} is not available"}
+        if not storage_pool_id and host.storage_pool_id:
+            storage_pool_id = host.storage_pool_id
+    else:
+        # Auto-select pool if not specified
+        if not storage_pool_id:
+            storage_pool_id = _auto_select_pool(db)
 
-    host = find_available_host(
-        db,
-        reqs["total_vcpus"],
-        reqs["total_ram_mb"],
-        reqs["requested_eips"],
-        storage_pool_id=storage_pool_id,
-    )
-    if not host and storage_pool_id:
         host = find_available_host(
             db,
             reqs["total_vcpus"],
             reqs["total_ram_mb"],
             reqs["requested_eips"],
+            storage_pool_id=storage_pool_id,
         )
+        if not host and storage_pool_id:
+            host = find_available_host(
+                db,
+                reqs["total_vcpus"],
+                reqs["total_ram_mb"],
+                reqs["requested_eips"],
+            )
     if not host:
         logger.info("No host with capacity — auto-provisioning a new one")
         try:

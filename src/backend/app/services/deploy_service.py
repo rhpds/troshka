@@ -1907,6 +1907,37 @@ def _exec_on_bastion(
     return None
 
 
+def _approve_pending_csrs(host, project_id, bastion_ip, password):
+    """Approve any pending OCP CSRs on the cluster. Returns count approved."""
+    result = _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        "oc get csr --no-headers 2>/dev/null | grep -c Pending || echo 0",
+        timeout=10,
+    )
+    pending = 0
+    if result:
+        try:
+            pending = int(result.strip())
+        except ValueError:
+            pass
+    if pending > 0:
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get csr -o name 2>/dev/null | xargs oc adm certificate approve 2>/dev/null",
+            timeout=30,
+        )
+        logger.info(
+            "Approved %d pending CSR(s) for project %s", pending, project_id[:8]
+        )
+    return pending
+
+
 def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: float = 0):
     import time as _t
 
@@ -2319,9 +2350,16 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             break
         _t.sleep(5)
 
-    # Phase 3: Wait for nodes Ready
+    # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
     _push("nodes", "waiting for nodes to be Ready")
+    last_csr_check = 0
     while _t.time() < deadline:
+        if _t.time() - last_csr_check >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check = _t.time()
+
         result = _exec_on_bastion(
             host,
             project_id,
@@ -2348,9 +2386,16 @@ def _monitor_ocp_health(project_id: str, host, topology: dict, deploy_start: flo
             _push("nodes", "waiting for API server")
         _t.sleep(5)
 
-    # Phase 4: Wait for cluster operators
+    # Phase 4: Wait for cluster operators (continue CSR approval)
     _push("operators", "waiting for cluster operators")
+    last_csr_check_ops = 0
     while _t.time() < deadline:
+        if _t.time() - last_csr_check_ops >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check_ops = _t.time()
+
         result = _exec_on_bastion(
             host,
             project_id,

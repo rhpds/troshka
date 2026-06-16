@@ -42,5 +42,6 @@ class HostResponse(BaseModel):
     auto_extend_increment_gb: int = 100
     auto_extend_max_gb: int | None = None
     console_domain: str | None = None
+    provider_type: str | None = None
 
     model_config = {"from_attributes": True}

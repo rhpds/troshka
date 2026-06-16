@@ -335,6 +335,7 @@ def update_project(
 def deploy_project(
     project_id: str,
     storage_pool_id: str | None = None,
+    host_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -379,10 +380,10 @@ def deploy_project(
 
     _check_library_items_ready(project.topology, db)
 
-    # Pool selection: admin can specify, otherwise auto-select
-    if storage_pool_id and user.role != "admin":
+    # Pool/host selection: admin can specify, otherwise auto-select
+    if (storage_pool_id or host_id) and user.role != "admin":
         raise HTTPException(
-            status_code=403, detail="Only admins can select a storage pool"
+            status_code=403, detail="Only admins can select a storage pool or host"
         )
     if storage_pool_id:
         from app.models.storage_pool import StoragePool
@@ -394,8 +395,21 @@ def deploy_project(
             raise HTTPException(
                 status_code=400, detail=f"Pool is not available (status: {pool.status})"
             )
+    if host_id:
+        from app.models.host import Host as _Host
 
-    result = place_project(db, project, storage_pool_id=storage_pool_id)
+        target_host = db.query(_Host).filter_by(id=host_id).first()
+        if not target_host:
+            raise HTTPException(status_code=404, detail="Host not found")
+        if target_host.state != "active" or target_host.agent_status != "connected":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Host is not available (state={target_host.state}, agent={target_host.agent_status})",
+            )
+
+    result = place_project(
+        db, project, storage_pool_id=storage_pool_id, host_id=host_id
+    )
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 

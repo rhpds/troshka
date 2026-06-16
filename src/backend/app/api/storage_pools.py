@@ -46,10 +46,18 @@ def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
         else:
             resp.worker_status = "error"
     elif pool.worker_instance_type:
-        from app.services.pattern_buffer_service import is_provisioning
+        from app.services.pattern_buffer_service import (
+            is_provisioning,
+            get_provision_error,
+        )
 
         if is_provisioning(pool.id):
             resp.worker_status = "provisioning"
+        else:
+            err = get_provision_error(pool.id)
+            if err:
+                resp.worker_status = "error"
+                resp.worker_error = err
     return resp
 
 

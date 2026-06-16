@@ -9,6 +9,7 @@ import {
   CardBody,
   Alert,
   Switch,
+  Spinner,
 } from "@patternfly/react-core";
 
 interface StoragePool {
@@ -33,6 +34,7 @@ interface StoragePool {
   worker_host_id: string | null;
   worker_instance_type: string | null;
   worker_status: string | null;
+  worker_error: string | null;
 }
 
 interface Provider {
@@ -98,6 +100,8 @@ export default function StoragePoolsPage() {
   const [poolUsage, setPoolUsage] = useState<Record<string, { used_gb: number; total_gb: number; used_pct: number }>>({});
 
   const [pbPoolId, setPbPoolId] = useState<string | null>(null);
+  const [pbAction, setPbAction] = useState<Record<string, string>>({});
+  const [pbError, setPbError] = useState<string | null>(null);
   const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
   const [pbInstanceType, setPbInstanceType] = useState("i4i.large");
   const pbTypes = [
@@ -116,6 +120,19 @@ export default function StoragePoolsPage() {
     ]).then(([p, prov]) => {
       setPools(p);
       setProviders(prov);
+      const errPool = p.find((pp: StoragePool) => pp.worker_error);
+      if (errPool) setPbError(errPool.worker_error);
+      setPbAction(prev => {
+        const next: Record<string, string> = {};
+        for (const [id, action] of Object.entries(prev)) {
+          const pool = p.find((pp: StoragePool) => pp.id === id);
+          if (pool && ((action === "waking" && pool.worker_status === "stopped") ||
+                       (action === "sleeping" && pool.worker_status === "connected"))) {
+            next[id] = action;
+          }
+        }
+        return next;
+      });
     });
     fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []).then((hosts: any[]) => {
       const versions = hosts.map((h: any) => h.agent_version).filter(Boolean);
@@ -664,6 +681,8 @@ export default function StoragePoolsPage() {
                       <span style={{ opacity: 0.5 }}>Pattern Buffer: sleeping · {pool.worker_instance_type}</span>
                     ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
                       <span style={{ color: "#f0ab00" }}>Pattern Buffer: {pool.worker_status}...{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
+                    ) : pool.worker_status === "error" ? (
+                      <span style={{ color: "#f87171" }}>Pattern Buffer failed: {pool.worker_error || "unknown error"}</span>
                     ) : pool.worker_host_id ? (
                       <span style={{ color: "#f87171" }}>Pattern Buffer: {pool.worker_status || "disconnected"}{pool.worker_ip ? ` · ${pool.worker_ip}` : ""}</span>
                     ) : (
@@ -671,7 +690,7 @@ export default function StoragePoolsPage() {
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
-                    {pool.worker_status === "connected" && (
+                    {!pbAction[pool.id] && pool.worker_status === "connected" && (
                       <Button variant="secondary" size="sm"
                         isLoading={extending[`gc-${pool.id}`]}
                         isDisabled={extending[`gc-${pool.id}`]}
@@ -691,26 +710,29 @@ export default function StoragePoolsPage() {
                           }
                         }}>Clean</Button>
                     )}
-                    {pool.worker_status === "connected" && expectedAgentVersion && pool.worker_agent_version && pool.worker_agent_version !== expectedAgentVersion && (
-                      <Button variant="primary" size="sm" onClick={async () => {
+                    {(!pbAction[pool.id] || pbAction[pool.id] === "updating") && pool.worker_status === "connected" && expectedAgentVersion && pool.worker_agent_version && pool.worker_agent_version !== expectedAgentVersion && (
+                      <Button variant="primary" size="sm" isLoading={pbAction[pool.id] === "updating"} isDisabled={!!pbAction[pool.id]} onClick={async () => {
+                        setPbAction(prev => ({ ...prev, [pool.id]: "updating" }));
                         await fetch(`/api/v1/hosts/${pool.worker_host_id}/update-agent`, { method: "POST" });
-                        setTimeout(loadData, 5000);
+                        setTimeout(() => { setPbAction(prev => { const next = { ...prev }; delete next[pool.id]; return next; }); loadData(); }, 5000);
                       }}>Update Pattern Buffer Agent</Button>
                     )}
                     {pool.worker_status === "connected" && (
-                      <Button variant="secondary" size="sm" onClick={async () => {
+                      <Button variant="secondary" size="sm" isLoading={pbAction[pool.id] === "sleeping"} isDisabled={!!pbAction[pool.id]} onClick={async () => {
                         if (!window.confirm("Stop pattern buffer? It will auto-wake when needed.")) return;
+                        setPbAction(prev => ({ ...prev, [pool.id]: "sleeping" }));
                         await fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer/stop`, { method: "POST" });
                         loadData();
                       }}>Sleep Pattern Buffer</Button>
                     )}
                     {pool.worker_status === "stopped" && (
-                      <Button variant="secondary" size="sm" onClick={async () => {
+                      <Button variant="secondary" size="sm" isLoading={pbAction[pool.id] === "waking"} isDisabled={!!pbAction[pool.id]} onClick={async () => {
+                        setPbAction(prev => ({ ...prev, [pool.id]: "waking" }));
                         await fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer/wake`, { method: "POST" });
                         loadData();
                       }}>Wake Pattern Buffer</Button>
                     )}
-                    {pool.status === "available" && (
+                    {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
                         setPbInstanceType("i4i.large");
                         setPbPoolId(pool.id);
@@ -718,13 +740,15 @@ export default function StoragePoolsPage() {
                         {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
                       </Button>
                     )}
-                    {editId !== pool.id && pool.status === "available" && (
+                    {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && editId !== pool.id && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => startEdit(pool)}>Edit</Button>
                     )}
-                    <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
-                            isDisabled={pool.host_count > 0 || pool.status === "creating"}>
-                      Delete
-                    </Button>
+                    {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && (
+                      <Button variant="danger" size="sm" onClick={() => handleDelete(pool)}
+                              isDisabled={pool.host_count > 0 || pool.status === "creating"}>
+                        Delete
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -761,6 +785,22 @@ export default function StoragePoolsPage() {
                   setPbPoolId(null);
                   loadData();
                 }}>Provision</Button>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
+      {pbError && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
+        }} onClick={() => setPbError(null)}>
+          <Card style={{ width: 500 }} onClick={(e) => e.stopPropagation()}>
+            <CardBody>
+              <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: "#f87171" }}>Pattern Buffer Error</div>
+              <div style={{ fontSize: 13, marginBottom: 16 }}>{pbError}</div>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <Button variant="secondary" size="sm" onClick={() => setPbError(null)}>Close</Button>
               </div>
             </CardBody>
           </Card>

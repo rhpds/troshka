@@ -148,6 +148,7 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
     """Serialize a Pattern for list responses (lightweight)."""
     nodes = (p.topology or {}).get("nodes", [])
     vms = [n for n in nodes if n.get("type") == "vmNode"]
+    is_ocp = any(vm.get("data", {}).get("os") == "rhcos" for vm in vms)
     total_vcpus = 0
     total_ram_gb = 0
     total_disk_gb = 0
@@ -178,6 +179,7 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "total_vcpus": total_vcpus,
         "total_ram_gb": total_ram_gb,
         "total_disk_gb": total_disk_gb,
+        "is_ocp": is_ocp,
     }
 
 

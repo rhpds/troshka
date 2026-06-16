@@ -207,8 +207,8 @@ def _poll_hosts():
                                         exc_info=True,
                                     )
 
-                    # Auto-reconnect if was disconnected
-                    if host.agent_status == "disconnected":
+                    # Auto-reconnect if was disconnected or install_failed
+                    if host.agent_status in ("disconnected", "install_failed"):
                         host.agent_status = "connected"
                         logger.info(
                             "Host %s reconnected (troshkad %s)",

@@ -16,6 +16,7 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Tooltip,
 } from "@patternfly/react-core";
 import BulkDeployModal from "@/components/canvas/BulkDeployModal";
 import PatternPreviewModal from "@/components/canvas/PatternPreviewModal";
@@ -44,11 +45,12 @@ interface Pattern {
   total_ram_gb?: number;
   total_disk_gb?: number;
   vm_count?: number;
+  is_ocp?: boolean;
 }
 
 function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
   patternName: string; deploying: boolean;
-  onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean) => void;
+  onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => void;
   onClose: () => void;
 }) {
   const [name, setName] = useState(patternName);
@@ -58,12 +60,23 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
   const [dnsProviders, setDnsProviders] = useState<Array<{id: string; name: string}>>([]);
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [autoStart, setAutoStart] = useState(true);
+  const [userRole, setUserRole] = useState("");
+  const [availableHosts, setAvailableHosts] = useState<Array<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}>>([]);
+  const [deployHostId, setDeployHostId] = useState("");
 
   useEffect(() => {
     fetch("/api/v1/dns-providers")
       .then(r => r.ok ? r.json() : [])
       .then(data => setDnsProviders(Array.isArray(data) ? data : []))
       .catch(() => {});
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then(d => {
+      setUserRole(d.role || "");
+      if (d.role === "admin") {
+        fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
+          setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer"));
+        });
+      }
+    });
   }, []);
 
   const inputStyle = {
@@ -93,7 +106,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             onChange={(e) => setName(e.target.value)}
             placeholder="Project name"
             autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined); }}
           />
         </div>
         <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
@@ -124,10 +137,25 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             Deploy immediately
           </label>
           {autoDeploy && (
-            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
-              <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
-              Start VMs after deploy
-            </label>
+            <>
+              <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
+                <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
+                Start VMs after deploy
+              </label>
+              {userRole === "admin" && availableHosts.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                  <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                    <option value="">Auto (best host)</option>
+                    {availableHosts.map((h) => (
+                      <option key={h.id} value={h.id}>
+                        {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </>
           )}
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
@@ -135,7 +163,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
             Cancel
           </button>
-          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart)} disabled={!name.trim() || deploying}
+          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined)} disabled={!name.trim() || deploying}
             style={{
               ...inputStyle, width: "auto", cursor: deploying ? "wait" : "pointer",
               padding: "6px 16px", background: "rgba(74,222,128,0.15)",
@@ -192,13 +220,14 @@ export default function PatternsPage() {
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
 
-  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean) => {
+  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => {
     setDeploying(patternId);
     try {
       const body: Record<string, any> = { name: projectName, auto_deploy: autoDeploy ?? true, auto_start: autoStart ?? true };
       if (guid) body.guid = guid;
       if (domain) body.domain = domain;
       if (dnsProviderId) body.dns_provider_id = dnsProviderId;
+      if (hostId) body.host_id = hostId;
       const resp = await fetch(`/api/v1/patterns/${patternId}/deploy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,6 +319,8 @@ export default function PatternsPage() {
           <div>
             {filtered.map((pattern) => {
               const saving = pattern.state === "creating" || pattern.state === "capturing";
+              const ageMonths = (Date.now() - new Date(pattern.created_at).getTime()) / (1000 * 60 * 60 * 24 * 30);
+              const certWarning = pattern.is_ocp && ageMonths >= 6;
               return (
               <Card key={pattern.id} isCompact style={{ cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1, marginBottom: 8 }} onClick={() => { if (!saving) setPreviewPattern({ id: pattern.id, name: pattern.name }); }}>
                 <CardTitle>
@@ -347,6 +378,11 @@ export default function PatternsPage() {
                       )}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {certWarning && (
+                        <Tooltip content={`This OCP pattern is ${Math.floor(ageMonths)} months old. OpenShift certificates expire after ~1 year. CSRs will be auto-approved at deploy time.`}>
+                          <Label color="gold">cert age: {Math.floor(ageMonths)}mo</Label>
+                        </Tooltip>
+                      )}
                       {saving ? (
                         <Label color="orange">saving…</Label>
                       ) : pattern.state === "error" ? (
@@ -452,7 +488,7 @@ export default function PatternsPage() {
       {deployPattern && <DeployNameModal
         patternName={deployPattern.name}
         deploying={deploying === deployPattern.id}
-        onDeploy={(name, guid, domain, dnsProviderId, ad, as_) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_)}
+        onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
     </>
