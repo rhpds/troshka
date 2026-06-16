@@ -832,7 +832,8 @@ def create_azure_files_nfs(
 
     storage_client = StorageManagementClient(credential, subscription_id)
 
-    # Create storage account with NFS enabled
+    # NFS v3 requires supportsHttpsTrafficOnly=False; network ACL + private
+    # endpoint below are the compensating controls (no public access).
     sa_params = {
         "location": location,
         "sku": {"name": "Premium_LRS"},
@@ -847,7 +848,21 @@ def create_azure_files_nfs(
     )
     poller.result()
 
-    # Create private endpoint for VNet access
+    # Lock down: deny all public access, only reachable via private endpoint
+    storage_client.storage_accounts.update(
+        resource_group,
+        account_name,
+        {
+            "properties": {
+                "networkAcls": {
+                    "defaultAction": "Deny",
+                    "bypass": "None",
+                }
+            }
+        },
+    )
+
+    # Private endpoint is mandatory — account is deny-all without it
     network_client = NetworkManagementClient(credential, subscription_id)
     sa_resource_id = f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/providers/Microsoft.Storage/storageAccounts/{account_name}"
 
@@ -866,15 +881,10 @@ def create_azure_files_nfs(
             ],
         },
     }
-    try:
-        pe_poller = network_client.private_endpoints.begin_create_or_update(
-            resource_group, f"{account_name}-pe", pe_params
-        )
-        pe_poller.result()
-    except Exception as e:
-        logger.warning(
-            "Private endpoint creation failed (may need manual setup): %s", e
-        )
+    pe_poller = network_client.private_endpoints.begin_create_or_update(
+        resource_group, f"{account_name}-pe", pe_params
+    )
+    pe_poller.result()
 
     # Create NFS file share
     share_params = {
