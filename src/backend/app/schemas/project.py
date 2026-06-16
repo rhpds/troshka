@@ -40,6 +40,9 @@ class ProjectResponse(BaseModel):
     run_timer_hours: int | None = None
     poweroff_mode: str
     host_id: str | None = None
+    host_instance_id: str | None = None
+    host_ip: str | None = None
+    host_provider_name: str | None = None
     topology: dict | None = None
     deployed_topology: dict | None = None
     deploy_error: str | None = None

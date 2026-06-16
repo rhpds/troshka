@@ -73,7 +73,36 @@ def list_projects(
     query = db.query(Project).filter(Project.owner_id == user.id)
     if guid is not None:
         query = query.filter(Project.guid == guid)
-    return query.offset(skip).limit(limit).all()
+    projects = query.offset(skip).limit(limit).all()
+
+    host_ids = {p.host_id for p in projects if p.host_id}
+    hosts_by_id = {}
+    provs_by_id = {}
+    if host_ids:
+        from app.models.host import Host
+        from app.models.provider import Provider
+
+        hosts = db.query(Host).filter(Host.id.in_(host_ids)).all()
+        hosts_by_id = {h.id: h for h in hosts}
+        prov_ids = {h.provider_id for h in hosts if h.provider_id}
+        if prov_ids:
+            provs_by_id = {
+                pv.id: pv
+                for pv in db.query(Provider).filter(Provider.id.in_(prov_ids)).all()
+            }
+
+    results = []
+    for p in projects:
+        resp = ProjectResponse.model_validate(p)
+        h = hosts_by_id.get(p.host_id) if p.host_id else None
+        if h:
+            resp.host_instance_id = h.instance_id
+            resp.host_ip = h.ip_address
+            prov = provs_by_id.get(h.provider_id) if h.provider_id else None
+            if prov:
+                resp.host_provider_name = prov.name
+        results.append(resp)
+    return results
 
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
