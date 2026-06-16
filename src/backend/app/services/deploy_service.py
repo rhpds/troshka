@@ -748,24 +748,33 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 elif aj["job_id"] in failed:
                     items.append(f"{aj['name']}: failed")
                 else:
-                    progress_detail = ""
+                    downloaded_gb = 0.0
                     try:
                         job = poll_job(host, aj["job_id"])
                         for line in reversed(job.get("output", [])):
-                            if (
-                                "%" in line
-                                or "iB" in line
-                                or "GB" in line
-                                or "cached" in line
-                            ):
-                                progress_detail = line.strip()
+                            line = line.strip()
+                            if "Downloading:" in line and "GB" in line:
+                                try:
+                                    downloaded_gb = float(
+                                        line.split("Downloading:")[1]
+                                        .strip()
+                                        .replace("GB", "")
+                                        .strip()
+                                    )
+                                except (ValueError, IndexError):
+                                    pass
                                 break
                     except TroshkadError:
                         pass
-                    if progress_detail:
-                        items.append(f"{aj['name']}: {progress_detail}")
-                    elif size_str:
-                        items.append(f"{aj['name']}: downloading {size_str}...")
+                    exp = aj.get("expected_size", 0)
+                    total_gb = exp / (1024**3) if exp else 0
+                    if downloaded_gb > 0 and total_gb > 0:
+                        pct = min(99, int(downloaded_gb / total_gb * 100))
+                        items.append(
+                            f"{aj['name']}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
+                        )
+                    elif total_gb > 0:
+                        items.append(f"{aj['name']}: 0 / {total_gb:.1f} GB (0%)")
                     else:
                         items.append(f"{aj['name']}: downloading...")
             progress_callback(f"{done_count}/{len(active_jobs)}", items)
