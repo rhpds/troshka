@@ -1290,33 +1290,46 @@ def discover_images_gcp(
     credential = service_account.Credentials.from_service_account_info(sa_json)
 
     images_client = compute_v1.ImagesClient(credentials=credential)
-    results = []
+    skip = ("arm64", "eus", "sap", "baremetal")
+    latest_by_prefix: dict[str, dict] = {}
 
     for image_project in ["rhel-byos-cloud", "rhel-cloud"]:
         source = "BYOS" if "byos" in image_project else "PAYG"
         try:
             for img in images_client.list(project=image_project):
                 name = img.name or ""
-                if not any(
-                    name.startswith(p)
-                    for p in ["rhel-byos-9", "rhel-byos-10", "rhel-9", "rhel-10"]
-                ):
+                if not name.startswith(("rhel-9", "rhel-10")):
+                    continue
+                if "lvm" not in name:
+                    continue
+                if any(s in name for s in skip):
                     continue
                 if img.deprecated and img.deprecated.state == "DEPRECATED":
                     continue
-                results.append(
-                    {
+                parts = name.rsplit("-v", 1)
+                prefix = (
+                    f"{source}:{parts[0]}" if len(parts) == 2 else f"{source}:{name}"
+                )
+                ts = img.creation_timestamp or ""
+                if (
+                    prefix not in latest_by_prefix
+                    or ts > latest_by_prefix[prefix]["creation_timestamp"]
+                ):
+                    latest_by_prefix[prefix] = {
                         "name": name,
                         "self_link": img.self_link,
                         "family": img.family or "",
                         "source": source,
-                        "creation_timestamp": img.creation_timestamp or "",
+                        "creation_timestamp": ts,
                     }
-                )
         except Exception as e:
             logger.warning("Failed to list images from %s: %s", image_project, e)
 
-    results.sort(key=lambda x: x["creation_timestamp"], reverse=True)
+    results = sorted(
+        latest_by_prefix.values(),
+        key=lambda x: x["creation_timestamp"],
+        reverse=True,
+    )
     return results
 
 
@@ -1489,6 +1502,12 @@ def discover_images_azure(
                         "10-lvm",
                         "10_",
                     ]
+                ):
+                    continue
+                if "lvm" not in sku_name:
+                    continue
+                if not sku_name.endswith("-gen2") and any(
+                    (sku_name + "-gen2") == s.name for s in skus
                 ):
                     continue
                 try:
