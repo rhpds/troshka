@@ -29,6 +29,19 @@ interface ProviderInfo {
   console_base_domain?: string;
   console_nameservers?: string[];
   console_configured?: boolean;
+  // GCP
+  gcp_project_id?: string | null;
+  gcp_network_id?: string | null;
+  gcp_subnet_id?: string | null;
+  gcp_firewall_policy?: string | null;
+  gcp_zone?: string | null;
+  // Azure
+  azure_subscription_id?: string | null;
+  azure_resource_group?: string | null;
+  azure_vnet_id?: string | null;
+  azure_subnet_id?: string | null;
+  azure_nsg_id?: string | null;
+  azure_location?: string | null;
 }
 
 export default function AdminProvidersPage() {
@@ -58,6 +71,15 @@ export default function AdminProvidersPage() {
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
   const [verifySsl, setVerifySsl] = useState(true);
+  // GCP fields
+  const [gcpProjectId, setGcpProjectId] = useState("");
+  const [serviceAccountJson, setServiceAccountJson] = useState("");
+  // Azure fields
+  const [azureTenantId, setAzureTenantId] = useState("");
+  const [azureClientId, setAzureClientId] = useState("");
+  const [azureClientSecret, setAzureClientSecret] = useState("");
+  const [azureSubscriptionId, setAzureSubscriptionId] = useState("");
+  const [azureLocation, setAzureLocation] = useState("");
 
   const loadProviders = () => {
     fetch("/api/v1/providers/")
@@ -73,7 +95,17 @@ export default function AdminProvidersPage() {
   }, []);
 
   const createProvider = async () => {
-    if (type === "ocpvirt") {
+    if (type === "gcp") {
+      if (!name.trim() || !gcpProjectId.trim() || !serviceAccountJson.trim()) {
+        setError("Name, GCP Project ID, and Service Account JSON are required");
+        return;
+      }
+    } else if (type === "azure") {
+      if (!name.trim() || !azureTenantId.trim() || !azureClientId.trim() || !azureClientSecret.trim() || !azureSubscriptionId.trim()) {
+        setError("Name, Tenant ID, Client ID, Client Secret, and Subscription ID are required");
+        return;
+      }
+    } else if (type === "ocpvirt") {
       if (!name.trim() || !apiUrl.trim() || !token.trim()) {
         setError("Name, API URL, and Token are required");
         return;
@@ -85,7 +117,11 @@ export default function AdminProvidersPage() {
       }
     }
     setError("");
-    const body = type === "ocpvirt"
+    const body = type === "gcp"
+      ? { name, type, default_region: region, gcp_project_id: gcpProjectId, service_account_json: serviceAccountJson }
+      : type === "azure"
+      ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
+      : type === "ocpvirt"
       ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl }
       : {
           name, type, default_region: region,
@@ -101,6 +137,8 @@ export default function AdminProvidersPage() {
       setShowAdd(false);
       setName(""); setAccessKey(""); setSecretKey("");
       setApiUrl(""); setToken(""); setNamespace("troshka"); setVerifySsl(true);
+      setGcpProjectId(""); setServiceAccountJson("");
+      setAzureTenantId(""); setAzureClientId(""); setAzureClientSecret(""); setAzureSubscriptionId(""); setAzureLocation("");
       loadProviders();
     } else {
       const data = await resp.json();
@@ -338,6 +376,8 @@ export default function AdminProvidersPage() {
                       <option value="ec2">AWS EC2</option>
                       <option value="ocpvirt">OCP Virtualization</option>
                       <option value="s3">S3 Storage</option>
+                      <option value="gcp">GCP</option>
+                      <option value="azure">Azure</option>
                     </select>
                   </div>
                   {type !== "ocpvirt" && (
@@ -372,6 +412,40 @@ export default function AdminProvidersPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
                       <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
+                    </div>
+                  </>
+                ) : type === "gcp" ? (
+                  <>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GCP Project ID</label>
+                      <input style={inputStyle} value={gcpProjectId} onChange={(e) => setGcpProjectId(e.target.value)} placeholder="my-project-id" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Service Account JSON</label>
+                      <textarea style={{ ...inputStyle, fontFamily: "monospace", minHeight: 120 }} value={serviceAccountJson} onChange={(e) => setServiceAccountJson(e.target.value)} placeholder='{"type": "service_account", "project_id": "...", ...}' />
+                    </div>
+                  </>
+                ) : type === "azure" ? (
+                  <>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Tenant ID</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureTenantId} onChange={(e) => setAzureTenantId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Client ID</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureClientId} onChange={(e) => setAzureClientId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Client Secret</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={azureClientSecret} onChange={(e) => setAzureClientSecret(e.target.value)} placeholder="Secret value" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Subscription ID</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={azureSubscriptionId} onChange={(e) => setAzureSubscriptionId(e.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Location (optional)</label>
+                      <input style={inputStyle} value={azureLocation} onChange={(e) => setAzureLocation(e.target.value)} placeholder="e.g. eastus" />
                     </div>
                   </>
                 ) : (
@@ -449,8 +523,8 @@ export default function AdminProvidersPage() {
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
-                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : "#a78bfa" }}>
-                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : "OCP Virt"}
+                      <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : p.type === "gcp" ? "rgba(96,165,250,0.15)" : p.type === "azure" ? "rgba(34,211,238,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : p.type === "gcp" ? "#60a5fa" : p.type === "azure" ? "#22d3ee" : "#a78bfa" }}>
+                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : "OCP Virt"}
                       </span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
                         {p.state}
@@ -479,6 +553,16 @@ export default function AdminProvidersPage() {
                         p.vpc_id
                           ? <span> · VPC: <code style={{ fontSize: 11 }}>{p.vpc_id}</code></span>
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No VPC</span>
+                      )}
+                      {p.type === "gcp" && (
+                        p.gcp_network_id
+                          ? <span> · Network: <code style={{ fontSize: 11 }}>{p.gcp_network_id.split("/").pop()}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No network</span>
+                      )}
+                      {p.type === "azure" && (
+                        p.azure_vnet_id
+                          ? <span> · VNet: <code style={{ fontSize: 11 }}>{p.azure_vnet_id.split("/").pop()}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No VNet</span>
                       )}
                     </div>
                     {testResult[p.id] && (
