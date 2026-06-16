@@ -1282,3 +1282,202 @@ def discover_images_gcp(
 
     results.sort(key=lambda x: x["creation_timestamp"], reverse=True)
     return results
+
+
+@router.post("/{provider_id}/create-network-azure")
+def create_network_azure(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Create a Resource Group, VNet, subnet, and NSG for an Azure provider."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider or provider.type != "azure":
+        raise HTTPException(status_code=404, detail="Azure provider not found")
+
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.network import NetworkManagementClient
+    from azure.mgmt.resource import ResourceManagementClient
+
+    creds = provider.get_credentials()
+    credential = ClientSecretCredential(
+        tenant_id=creds["tenant_id"],
+        client_id=creds["client_id"],
+        client_secret=creds["client_secret"],
+    )
+    subscription_id = creds["subscription_id"]
+    location = provider.azure_location or provider.default_region or "eastus"
+    rg_name = "troshka-rg"
+
+    # Create Resource Group
+    resource_client = ResourceManagementClient(credential, subscription_id)
+    resource_client.resource_groups.create_or_update(rg_name, {"location": location})
+
+    network_client = NetworkManagementClient(credential, subscription_id)
+
+    # Create NSG with rules
+    nsg_params = {
+        "location": location,
+        "security_rules": [
+            {
+                "name": "troshka-allow-ssh",
+                "properties": {
+                    "priority": 100,
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "protocol": "Tcp",
+                    "source_address_prefix": "*",
+                    "source_port_range": "*",
+                    "destination_address_prefix": "*",
+                    "destination_port_range": "22",
+                },
+            },
+            {
+                "name": "troshka-allow-console",
+                "properties": {
+                    "priority": 110,
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "protocol": "Tcp",
+                    "source_address_prefix": "*",
+                    "source_port_range": "*",
+                    "destination_address_prefix": "*",
+                    "destination_port_range": "443",
+                },
+            },
+            {
+                "name": "troshka-allow-agent",
+                "properties": {
+                    "priority": 120,
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "protocol": "Tcp",
+                    "source_address_prefix": "*",
+                    "source_port_range": "*",
+                    "destination_address_prefix": "*",
+                    "destination_port_range": "31337",
+                },
+            },
+            {
+                "name": "troshka-allow-vxlan",
+                "properties": {
+                    "priority": 130,
+                    "direction": "Inbound",
+                    "access": "Allow",
+                    "protocol": "Udp",
+                    "source_address_prefix": "VirtualNetwork",
+                    "source_port_range": "*",
+                    "destination_address_prefix": "VirtualNetwork",
+                    "destination_port_range": "4789",
+                },
+            },
+        ],
+    }
+    nsg_poller = network_client.network_security_groups.begin_create_or_update(
+        rg_name, "troshka-nsg", nsg_params
+    )
+    nsg = nsg_poller.result()
+
+    # Create VNet with subnet
+    vnet_params = {
+        "location": location,
+        "address_space": {"address_prefixes": ["10.100.0.0/16"]},
+        "subnets": [
+            {
+                "name": "troshka-subnet",
+                "properties": {
+                    "address_prefix": "10.100.1.0/24",
+                    "network_security_group": {"id": nsg.id},
+                },
+            }
+        ],
+    }
+    vnet_poller = network_client.virtual_networks.begin_create_or_update(
+        rg_name, "troshka-vnet", vnet_params
+    )
+    vnet = vnet_poller.result()
+
+    subnet = network_client.subnets.get(rg_name, "troshka-vnet", "troshka-subnet")
+
+    # Store results on provider
+    provider.azure_resource_group = rg_name
+    provider.azure_vnet_id = vnet.id
+    provider.azure_subnet_id = subnet.id
+    provider.azure_nsg_id = nsg.id
+    provider.azure_location = location
+    db.commit()
+
+    return {
+        "status": "ok",
+        "resource_group": rg_name,
+        "vnet": vnet.id,
+        "subnet": subnet.id,
+        "nsg": nsg.id,
+    }
+
+
+@router.get("/{provider_id}/discover-images-azure")
+def discover_images_azure(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Discover RHEL BYOS and PAYG images on Azure."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider or provider.type != "azure":
+        raise HTTPException(status_code=404, detail="Azure provider not found")
+
+    from azure.identity import ClientSecretCredential
+    from azure.mgmt.compute import ComputeManagementClient
+
+    creds = provider.get_credentials()
+    credential = ClientSecretCredential(
+        tenant_id=creds["tenant_id"],
+        client_id=creds["client_id"],
+        client_secret=creds["client_secret"],
+    )
+    subscription_id = creds["subscription_id"]
+    location = provider.azure_location or provider.default_region or "eastus"
+
+    compute_client = ComputeManagementClient(credential, subscription_id)
+    results = []
+
+    offers = [
+        ("redhat", "rhel-byos", "BYOS"),
+        ("redhat", "RHEL", "PAYG"),
+    ]
+    for publisher, offer, source in offers:
+        try:
+            skus = compute_client.virtual_machine_images.list_skus(
+                location, publisher, offer
+            )
+            for sku in skus:
+                sku_name = sku.name or ""
+                if not any(
+                    sku_name.startswith(p)
+                    for p in ["rhel-lvm9", "rhel-lvm10", "9", "9_", "10", "10_"]
+                ):
+                    continue
+                try:
+                    images = compute_client.virtual_machine_images.list(
+                        location, publisher, offer, sku_name
+                    )
+                    if images:
+                        latest = images[-1]
+                        urn = f"{publisher}:{offer}:{sku_name}:{latest.name}"
+                        results.append(
+                            {
+                                "name": sku_name,
+                                "urn": urn,
+                                "version": latest.name,
+                                "source": source,
+                            }
+                        )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(
+                "Failed to list Azure images for %s/%s: %s", publisher, offer, e
+            )
+
+    return results
