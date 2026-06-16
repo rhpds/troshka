@@ -679,3 +679,121 @@ def delete_ceph_nfs_pool(
 
     except Exception as e:
         logger.error("Ceph-NFS cleanup failed for pool %s: %s", short_id, e)
+
+
+# ---------------------------------------------------------------------------
+# GCP Filestore provisioning
+# ---------------------------------------------------------------------------
+
+
+def create_filestore_instance(
+    credentials: dict,
+    project: str,
+    zone: str,
+    network: str,
+    capacity_gb: int,
+    share_name: str = "troshka",
+    tier: str = "ZONAL",
+) -> dict:
+    from google.cloud import filestore_v1
+    from google.oauth2 import service_account
+
+    sa_json = credentials.get("service_account_json", {})
+    cred = service_account.Credentials.from_service_account_info(sa_json)
+    client = filestore_v1.CloudFilestoreManagerClient(credentials=cred)
+
+    instance = filestore_v1.Instance(
+        tier=getattr(
+            filestore_v1.Instance.Tier, tier, filestore_v1.Instance.Tier.ZONAL
+        ),
+        file_shares=[
+            filestore_v1.FileShareConfig(
+                name=share_name,
+                capacity_gb=capacity_gb,
+            )
+        ],
+        networks=[
+            filestore_v1.NetworkConfig(
+                network=network,
+                modes=[filestore_v1.NetworkConfig.AddressMode.MODE_IPV4],
+            )
+        ],
+        labels={"managed-by": "troshka"},
+    )
+
+    parent = f"projects/{project}/locations/{zone}"
+    instance_id = f"troshka-fs-{zone}"
+    operation = client.create_instance(
+        parent=parent, instance_id=instance_id, instance=instance
+    )
+    result = operation.result()
+
+    ip_address = None
+    if result.networks:
+        ip_addresses = result.networks[0].ip_addresses
+        if ip_addresses:
+            ip_address = ip_addresses[0]
+
+    return {
+        "instance_name": result.name,
+        "ip_address": ip_address,
+        "share_name": share_name,
+    }
+
+
+def update_filestore_capacity(
+    credentials: dict, instance_name: str, new_capacity_gb: int
+):
+    from google.cloud import filestore_v1
+    from google.oauth2 import service_account
+    from google.protobuf import field_mask_pb2
+
+    sa_json = credentials.get("service_account_json", {})
+    cred = service_account.Credentials.from_service_account_info(sa_json)
+    client = filestore_v1.CloudFilestoreManagerClient(credentials=cred)
+
+    instance = filestore_v1.Instance(
+        name=instance_name,
+        file_shares=[
+            filestore_v1.FileShareConfig(
+                name="troshka",
+                capacity_gb=new_capacity_gb,
+            )
+        ],
+    )
+    update_mask = field_mask_pb2.FieldMask(paths=["file_shares"])
+    operation = client.update_instance(instance=instance, update_mask=update_mask)
+    operation.result()
+
+
+def provision_filestore_pool(
+    pool_id: str,
+    credentials: dict,
+    project: str,
+    zone: str,
+    network: str,
+    capacity_gb: int,
+    share_name: str = "troshka",
+    tier: str = "ZONAL",
+):
+    db = SessionLocal()
+    try:
+        result = create_filestore_instance(
+            credentials, project, zone, network, capacity_gb, share_name, tier
+        )
+        pool = db.query(StoragePool).get(pool_id)
+        pool.filestore_instance_id = result["instance_name"]
+        pool.filestore_ip = result["ip_address"]
+        pool.filestore_share_name = result["share_name"]
+        pool.filestore_capacity_gb = capacity_gb
+        pool.filestore_tier = tier
+        pool.status = "available"
+        db.commit()
+        logger.info("Filestore pool %s is available", pool_id[:8])
+    except Exception as e:
+        logger.error("Filestore provisioning failed for pool %s: %s", pool_id[:8], e)
+        pool = db.query(StoragePool).get(pool_id)
+        pool.status = "error"
+        db.commit()
+    finally:
+        db.close()

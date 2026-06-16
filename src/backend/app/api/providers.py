@@ -1149,3 +1149,136 @@ def delete_console(
     db.commit()
 
     return {"status": "removed"}
+
+
+@router.post("/{provider_id}/create-network-gcp")
+def create_network_gcp(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Create a VPC network, subnet, and firewall rules for a GCP provider."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider or provider.type != "gcp":
+        raise HTTPException(status_code=404, detail="GCP provider not found")
+
+    from google.cloud import compute_v1
+    from google.oauth2 import service_account
+
+    creds = provider.get_credentials()
+    sa_json = creds.get("service_account_json", {})
+    credential = service_account.Credentials.from_service_account_info(sa_json)
+    project = provider.gcp_project_id
+    region = provider.default_region or "us-central1"
+
+    # Create VPC network (custom mode — no auto-subnets)
+    networks_client = compute_v1.NetworksClient(credentials=credential)
+    network = compute_v1.Network(
+        name="troshka-vpc",
+        auto_create_subnetworks=False,
+    )
+    op = networks_client.insert(project=project, network_resource=network)
+    op.result()
+    created_network = networks_client.get(project=project, network="troshka-vpc")
+
+    # Create subnet
+    subnets_client = compute_v1.SubnetworksClient(credentials=credential)
+    subnet = compute_v1.Subnetwork(
+        name="troshka-subnet",
+        ip_cidr_range="10.100.1.0/24",
+        network=created_network.self_link,
+        region=region,
+    )
+    op = subnets_client.insert(
+        project=project, region=region, subnetwork_resource=subnet
+    )
+    op.result()
+    created_subnet = subnets_client.get(
+        project=project, region=region, subnetwork="troshka-subnet"
+    )
+
+    # Create firewall rules
+    firewalls_client = compute_v1.FirewallsClient(credentials=credential)
+    fw_rules = [
+        ("troshka-allow-ssh", "tcp", ["22"]),
+        ("troshka-allow-console", "tcp", ["443"]),
+        ("troshka-allow-agent", "tcp", ["31337"]),
+        ("troshka-allow-vxlan", "udp", ["4789"]),
+    ]
+    for fw_name, protocol, ports in fw_rules:
+        fw = compute_v1.Firewall(
+            name=fw_name,
+            network=created_network.self_link,
+            allowed=[compute_v1.Allowed(I_p_protocol=protocol, ports=ports)],
+            source_ranges=["0.0.0.0/0"],
+            target_tags=["troshka-host"],
+        )
+        try:
+            op = firewalls_client.insert(project=project, firewall_resource=fw)
+            op.result()
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                raise
+
+    # Store results on provider
+    provider.gcp_network_id = created_network.self_link
+    provider.gcp_subnet_id = created_subnet.self_link
+    provider.gcp_firewall_policy = "troshka-fw"
+    provider.gcp_zone = region + "-a"
+    db.commit()
+
+    return {
+        "status": "ok",
+        "network": created_network.self_link,
+        "subnet": created_subnet.self_link,
+        "zone": region + "-a",
+    }
+
+
+@router.get("/{provider_id}/discover-images-gcp")
+def discover_images_gcp(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Discover RHEL BYOS and PAYG images on GCP."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider or provider.type != "gcp":
+        raise HTTPException(status_code=404, detail="GCP provider not found")
+
+    from google.cloud import compute_v1
+    from google.oauth2 import service_account
+
+    creds = provider.get_credentials()
+    sa_json = creds.get("service_account_json", {})
+    credential = service_account.Credentials.from_service_account_info(sa_json)
+
+    images_client = compute_v1.ImagesClient(credentials=credential)
+    results = []
+
+    for image_project in ["rhel-byos-cloud", "rhel-cloud"]:
+        source = "BYOS" if "byos" in image_project else "PAYG"
+        try:
+            for img in images_client.list(project=image_project):
+                name = img.name or ""
+                if not any(
+                    name.startswith(p)
+                    for p in ["rhel-byos-9", "rhel-byos-10", "rhel-9", "rhel-10"]
+                ):
+                    continue
+                if img.deprecated and img.deprecated.state == "DEPRECATED":
+                    continue
+                results.append(
+                    {
+                        "name": name,
+                        "self_link": img.self_link,
+                        "family": img.family or "",
+                        "source": source,
+                        "creation_timestamp": img.creation_timestamp or "",
+                    }
+                )
+        except Exception as e:
+            logger.warning("Failed to list images from %s: %s", image_project, e)
+
+    results.sort(key=lambda x: x["creation_timestamp"], reverse=True)
+    return results
