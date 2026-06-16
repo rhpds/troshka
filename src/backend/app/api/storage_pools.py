@@ -114,6 +114,18 @@ def create_pool(
         if provider.type != "ocpvirt":
             raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
 
+    if body.mode == "shared-filestore":
+        if provider.type != "gcp":
+            raise HTTPException(400, "Filestore pools require a GCP provider")
+        if not body.filestore_capacity_gb:
+            raise HTTPException(400, "filestore_capacity_gb is required")
+
+    if body.mode == "shared-azure-files":
+        if provider.type != "azure":
+            raise HTTPException(400, "Azure Files pools require an Azure provider")
+        if not body.azure_files_capacity_gb:
+            raise HTTPException(400, "azure_files_capacity_gb is required")
+
     ca_cert, ca_key = None, None
     if body.mode.startswith("shared"):
         ca_cert, ca_key = storage_pool_service.generate_pool_ca(body.name)
@@ -176,6 +188,50 @@ def create_pool(
         t = threading.Thread(
             target=storage_pool_service.provision_ceph_nfs_pool,
             args=(pool.id, credentials),
+            daemon=True,
+        )
+        t.start()
+
+    elif body.mode == "shared-filestore":
+        credentials = provider.get_credentials()
+        zone = body.az or provider.gcp_zone or (provider.default_region + "-a")
+        network = provider.gcp_network_id
+        if not network:
+            raise HTTPException(400, "GCP provider has no network configured")
+        t = threading.Thread(
+            target=storage_pool_service.provision_filestore_pool,
+            args=(
+                pool.id,
+                credentials,
+                provider.gcp_project_id,
+                zone,
+                network,
+                body.filestore_capacity_gb,
+                "troshka",
+                body.filestore_tier or "ZONAL",
+            ),
+            daemon=True,
+        )
+        t.start()
+
+    elif body.mode == "shared-azure-files":
+        credentials = provider.get_credentials()
+        location = provider.azure_location or provider.default_region
+        subnet_id = provider.azure_subnet_id
+        if not subnet_id:
+            raise HTTPException(400, "Azure provider has no subnet configured")
+        t = threading.Thread(
+            target=storage_pool_service.provision_azure_files_pool,
+            args=(
+                pool.id,
+                credentials,
+                provider.azure_resource_group,
+                location,
+                subnet_id,
+                body.azure_files_capacity_gb,
+                body.azure_files_iops,
+                body.azure_files_throughput,
+            ),
             daemon=True,
         )
         t.start()

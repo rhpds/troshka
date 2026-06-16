@@ -5,13 +5,20 @@ from pydantic import BaseModel
 
 class StoragePoolCreate(BaseModel):
     name: str
-    mode: str  # "local", "shared-fsx", "shared-byo", "shared-ceph-nfs"
+    mode: str  # "local", "shared-fsx", "shared-byo", "shared-ceph-nfs", "shared-filestore", "shared-azure-files"
     provider_id: str
     az: str | None = None
     instance_types: list[str] | None = None  # for AZ probing
     fsx_throughput_mbps: int | None = None
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
+    # GCP Filestore
+    filestore_capacity_gb: int | None = None
+    filestore_tier: str | None = None
+    # Azure Files NFS
+    azure_files_capacity_gb: int | None = None
+    azure_files_iops: int | None = None
+    azure_files_throughput: int | None = None
 
 
 class StoragePoolUpdate(BaseModel):
@@ -37,6 +44,19 @@ class StoragePoolResponse(BaseModel):
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
     nfs_port: int | None = None
+    # GCP Filestore
+    filestore_instance_id: str | None = None
+    filestore_ip: str | None = None
+    filestore_share_name: str | None = None
+    filestore_tier: str | None = None
+    filestore_capacity_gb: int | None = None
+    # Azure Files NFS
+    azure_storage_account: str | None = None
+    azure_file_share_name: str | None = None
+    azure_file_share_url: str | None = None
+    azure_files_capacity_gb: int | None = None
+    azure_files_iops: int | None = None
+    azure_files_throughput: int | None = None
     status: str
     provider_id: str
     host_count: int = 0
