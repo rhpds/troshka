@@ -190,3 +190,39 @@ def delete_ocp_pull_secret(
 ):
     user.ocp_pull_secret = None
     db.commit()
+
+
+# ── Red Hat Offline Token ──
+
+
+@router.get("/rh-offline-token")
+def get_rh_offline_token(user: User = Depends(get_current_user)):
+    if not user.rh_offline_token:
+        return {"has_token": False, "masked": ""}
+    from app.core.encryption import decrypt
+
+    raw = decrypt(user.rh_offline_token)
+    masked = raw[:20] + "..." if len(raw) > 20 else raw
+    return {"has_token": True, "masked": masked}
+
+
+@router.put("/rh-offline-token")
+def set_rh_offline_token(
+    body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    token = body.get("offline_token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Offline token is required")
+    from app.core.encryption import encrypt
+
+    user.rh_offline_token = encrypt(token)
+    db.commit()
+    return {"status": "saved"}
+
+
+@router.delete("/rh-offline-token", status_code=204)
+def delete_rh_offline_token(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    user.rh_offline_token = None
+    db.commit()
