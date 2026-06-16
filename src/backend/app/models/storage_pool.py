@@ -71,9 +71,7 @@ class StoragePool(Base):
     worker_host_id: Mapped[str | None] = mapped_column(
         ForeignKey("hosts.id", ondelete="SET NULL", use_alter=True), nullable=True
     )
-    worker_instance_type: Mapped[str | None] = mapped_column(
-        String(50), default="c6id.xlarge"
-    )
+    worker_instance_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

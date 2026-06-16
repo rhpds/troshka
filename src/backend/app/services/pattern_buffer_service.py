@@ -107,9 +107,12 @@ def _provision_pattern_buffer(pool_id: str):
 
         result = None
         logger.info(
-            "Provisioning pattern buffer for pool %s: %s (provider %s)",
+            "Provisioning pattern buffer for pool %s: type=%s instance=%s image=%s provider=%s(%s)",
             pool_id[:8],
+            provider.type,
             instance_type,
+            (provider.default_image or "none")[:40],
+            provider.name,
             provider.id[:8],
         )
 
