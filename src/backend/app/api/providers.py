@@ -30,6 +30,17 @@ class ProviderCreate(BaseModel):
     namespace: str = "troshka"
     verify_ssl: bool = False
 
+    # GCP fields
+    gcp_project_id: str = ""
+    service_account_json: str = ""
+
+    # Azure fields
+    azure_tenant_id: str = ""
+    azure_client_id: str = ""
+    azure_client_secret: str = ""
+    azure_subscription_id: str = ""
+    azure_location: str = ""
+
 
 class ProviderUpdate(BaseModel):
     name: str | None = None
@@ -56,6 +67,22 @@ class ProviderResponse(BaseModel):
     console_nameservers: list | None = None
     console_configured: bool = False
     iso_pvc: str | None = None
+
+    # GCP
+    gcp_project_id: str | None = None
+    gcp_network_id: str | None = None
+    gcp_subnet_id: str | None = None
+    gcp_firewall_policy: str | None = None
+    gcp_zone: str | None = None
+
+    # Azure
+    azure_subscription_id: str | None = None
+    azure_resource_group: str | None = None
+    azure_vnet_id: str | None = None
+    azure_subnet_id: str | None = None
+    azure_nsg_id: str | None = None
+    azure_location: str | None = None
+
     state: str
     has_credentials: bool
     host_count: int
@@ -83,6 +110,17 @@ def list_providers(
             console_nameservers=p.console_nameservers,
             console_configured=bool(p.console_zone_id or p.console_base_domain),
             iso_pvc=p.get_credentials().get("iso_pvc") if p.credentials else None,
+            gcp_project_id=p.gcp_project_id,
+            gcp_network_id=p.gcp_network_id,
+            gcp_subnet_id=p.gcp_subnet_id,
+            gcp_firewall_policy=p.gcp_firewall_policy,
+            gcp_zone=p.gcp_zone,
+            azure_subscription_id=p.azure_subscription_id,
+            azure_resource_group=p.azure_resource_group,
+            azure_vnet_id=p.azure_vnet_id,
+            azure_subnet_id=p.azure_subnet_id,
+            azure_nsg_id=p.azure_nsg_id,
+            azure_location=p.azure_location,
             state=p.state,
             has_credentials=bool(p.credentials),
             host_count=len(p.hosts),
@@ -127,6 +165,43 @@ def create_provider(
             body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
         )
         provider.console_base_domain = api_host.replace("api.", "apps.", 1)
+    elif body.type == "gcp":
+        if not body.gcp_project_id or not body.service_account_json:
+            raise HTTPException(
+                status_code=400,
+                detail="GCP providers require gcp_project_id and service_account_json",
+            )
+        import json as json_mod
+
+        try:
+            sa_json = json_mod.loads(body.service_account_json)
+        except json_mod.JSONDecodeError:
+            raise HTTPException(
+                status_code=400, detail="service_account_json must be valid JSON"
+            )
+        creds = {"service_account_json": sa_json}
+        provider.gcp_project_id = body.gcp_project_id
+    elif body.type == "azure":
+        if not all(
+            [
+                body.azure_tenant_id,
+                body.azure_client_id,
+                body.azure_client_secret,
+                body.azure_subscription_id,
+            ]
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Azure providers require tenant_id, client_id, client_secret, subscription_id",
+            )
+        creds = {
+            "tenant_id": body.azure_tenant_id,
+            "client_id": body.azure_client_id,
+            "client_secret": body.azure_client_secret,
+            "subscription_id": body.azure_subscription_id,
+        }
+        provider.azure_subscription_id = body.azure_subscription_id
+        provider.azure_location = body.azure_location or body.default_region or None
     else:
         creds = {
             "access_key_id": body.access_key_id,
@@ -148,6 +223,17 @@ def create_provider(
         vpc_id=provider.vpc_id,
         subnet_id=provider.subnet_id,
         security_group_id=provider.security_group_id,
+        gcp_project_id=provider.gcp_project_id,
+        gcp_network_id=provider.gcp_network_id,
+        gcp_subnet_id=provider.gcp_subnet_id,
+        gcp_firewall_policy=provider.gcp_firewall_policy,
+        gcp_zone=provider.gcp_zone,
+        azure_subscription_id=provider.azure_subscription_id,
+        azure_resource_group=provider.azure_resource_group,
+        azure_vnet_id=provider.azure_vnet_id,
+        azure_subnet_id=provider.azure_subnet_id,
+        azure_nsg_id=provider.azure_nsg_id,
+        azure_location=provider.azure_location,
         state=provider.state,
         has_credentials=True,
         host_count=0,
@@ -201,6 +287,17 @@ def update_provider(
         vpc_id=provider.vpc_id,
         subnet_id=provider.subnet_id,
         security_group_id=provider.security_group_id,
+        gcp_project_id=provider.gcp_project_id,
+        gcp_network_id=provider.gcp_network_id,
+        gcp_subnet_id=provider.gcp_subnet_id,
+        gcp_firewall_policy=provider.gcp_firewall_policy,
+        gcp_zone=provider.gcp_zone,
+        azure_subscription_id=provider.azure_subscription_id,
+        azure_resource_group=provider.azure_resource_group,
+        azure_vnet_id=provider.azure_vnet_id,
+        azure_subnet_id=provider.azure_subnet_id,
+        azure_nsg_id=provider.azure_nsg_id,
+        azure_location=provider.azure_location,
         state=provider.state,
         has_credentials=bool(provider.credentials),
         host_count=len(provider.hosts),

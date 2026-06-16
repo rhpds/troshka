@@ -37,14 +37,17 @@ def should_extend_host(host) -> bool:
 
 
 def should_extend_pool(pool, current_used_pct: float) -> bool:
-    if pool.mode != "shared-fsx":
+    if pool.mode not in ("shared-fsx", "shared-filestore", "shared-azure-files"):
         return False
     if not pool.auto_extend_enabled:
         return False
-    if (
-        pool.auto_extend_max_gb
-        and (pool.fsx_storage_gb or 0) >= pool.auto_extend_max_gb
-    ):
+    current_gb = (
+        pool.fsx_storage_gb
+        or pool.filestore_capacity_gb
+        or pool.azure_files_capacity_gb
+        or 0
+    )
+    if pool.auto_extend_max_gb and current_gb >= pool.auto_extend_max_gb:
         return False
     if _on_cooldown(f"pool:{pool.id}"):
         return False
@@ -156,4 +159,93 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
         "old_size_gb": old_size,
         "new_size_gb": new_size,
         "filesystem_id": pool.fsx_filesystem_id,
+    }
+
+
+def extend_pool_filestore(pool, db, increment_gb: int | None = None):
+    """Extend a GCP Filestore instance. Returns new size or raises."""
+    increment = increment_gb or pool.auto_extend_increment_gb
+    new_size = (pool.filestore_capacity_gb or 0) + increment
+
+    if pool.auto_extend_max_gb:
+        new_size = min(new_size, pool.auto_extend_max_gb)
+    if new_size <= (pool.filestore_capacity_gb or 0):
+        raise ValueError(
+            f"Cannot extend: already at max ({pool.filestore_capacity_gb} GB)"
+        )
+
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).get(pool.provider_id)
+    if not provider:
+        raise ValueError("No provider associated with pool")
+    creds = provider.get_credentials()
+
+    from app.services.storage_pool_service import update_filestore_capacity
+
+    old_size = pool.filestore_capacity_gb or 0
+    update_filestore_capacity(creds, pool.filestore_instance_id, new_size)
+
+    pool.filestore_capacity_gb = new_size
+    db.commit()
+    _mark_extended(f"pool:{pool.id}")
+    logger.info(
+        "Extended Filestore %s from %d to %d GB for pool %s",
+        pool.filestore_instance_id,
+        old_size,
+        new_size,
+        pool.name,
+    )
+    return {
+        "old_size_gb": old_size,
+        "new_size_gb": new_size,
+        "filestore_instance_id": pool.filestore_instance_id,
+    }
+
+
+def extend_pool_azure_files(pool, db, increment_gb: int | None = None):
+    """Extend an Azure Files NFS share. Returns new size or raises."""
+    increment = increment_gb or pool.auto_extend_increment_gb
+    new_size = (pool.azure_files_capacity_gb or 0) + increment
+
+    if pool.auto_extend_max_gb:
+        new_size = min(new_size, pool.auto_extend_max_gb)
+    if new_size <= (pool.azure_files_capacity_gb or 0):
+        raise ValueError(
+            f"Cannot extend: already at max ({pool.azure_files_capacity_gb} GB)"
+        )
+
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).get(pool.provider_id)
+    if not provider:
+        raise ValueError("No provider associated with pool")
+    creds = provider.get_credentials()
+
+    from app.services.storage_pool_service import update_azure_files_capacity
+
+    old_size = pool.azure_files_capacity_gb or 0
+    update_azure_files_capacity(
+        creds,
+        provider.azure_resource_group,
+        pool.azure_storage_account,
+        pool.azure_file_share_name,
+        new_size,
+    )
+
+    pool.azure_files_capacity_gb = new_size
+    db.commit()
+    _mark_extended(f"pool:{pool.id}")
+    logger.info(
+        "Extended Azure Files share %s/%s from %d to %d GB for pool %s",
+        pool.azure_storage_account,
+        pool.azure_file_share_name,
+        old_size,
+        new_size,
+        pool.name,
+    )
+    return {
+        "old_size_gb": old_size,
+        "new_size_gb": new_size,
+        "storage_account": pool.azure_storage_account,
     }
