@@ -464,14 +464,45 @@ def install_agent(
             h = s.query(Host).filter_by(id=h_id).first()
             if not h:
                 return
-            ssh_ok = wait_for_ssh(h_ip, h_key)
+
+            # Determine provider type for SSH user and disk device
+            _provider_type = "ec2"  # default
+            if h.provider_id:
+                from app.models.provider import Provider as _Prov
+
+                _prov = s.query(_Prov).get(h.provider_id)
+                if _prov:
+                    _provider_type = _prov.type
+
+            # Provider-specific SSH user
+            if _provider_type == "ocpvirt":
+                _ssh_user = "cloud-user"
+            elif _provider_type in ("gcp", "azure"):
+                _ssh_user = "troshka"
+            else:  # ec2
+                _ssh_user = "ec2-user"
+
+            ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user)
             if not ssh_ok:
                 h.agent_status = "disconnected"
                 s.commit()
                 return
             h.agent_status = "installing"
             s.commit()
-            _install_kwargs = {}
+
+            # Provider-specific data disk device path
+            if _provider_type == "gcp":
+                _data_disk = "/dev/sdb"
+            elif _provider_type == "azure":
+                _data_disk = "/dev/disk/azure/scsi1/lun0"
+            else:  # ec2, ocpvirt
+                _data_disk = "sdf"
+
+            _install_kwargs = {
+                "ssh_user": _ssh_user,
+                "data_disk_device": _data_disk,
+                "vncd_no_tls": _provider_type == "ocpvirt",
+            }
             if h.console_domain:
                 _install_kwargs["console_domain"] = h.console_domain
             if h.storage_pool_id:
@@ -846,13 +877,44 @@ def poweron_host(
 
             if not h.private_key or not h.ip_address:
                 return
-            if not wait_for_ssh(h.ip_address, h.private_key):
+
+            # Determine provider type for SSH user and disk device
+            _provider_type = "ec2"  # default
+            if h.provider_id:
+                from app.models.provider import Provider as _Prov2
+
+                _prov2 = s.query(_Prov2).get(h.provider_id)
+                if _prov2:
+                    _provider_type = _prov2.type
+
+            # Provider-specific SSH user
+            if _provider_type == "ocpvirt":
+                _ssh_user2 = "cloud-user"
+            elif _provider_type in ("gcp", "azure"):
+                _ssh_user2 = "troshka"
+            else:  # ec2
+                _ssh_user2 = "ec2-user"
+
+            if not wait_for_ssh(h.ip_address, h.private_key, ssh_user=_ssh_user2):
                 h.agent_status = "install_failed"
                 s.commit()
                 return
             h.agent_status = "installing"
             s.commit()
-            _kwargs = {}
+
+            # Provider-specific data disk device path
+            if _provider_type == "gcp":
+                _data_disk2 = "/dev/sdb"
+            elif _provider_type == "azure":
+                _data_disk2 = "/dev/disk/azure/scsi1/lun0"
+            else:  # ec2, ocpvirt
+                _data_disk2 = "sdf"
+
+            _kwargs = {
+                "ssh_user": _ssh_user2,
+                "data_disk_device": _data_disk2,
+                "vncd_no_tls": _provider_type == "ocpvirt",
+            }
             if h.console_domain:
                 _kwargs["console_domain"] = h.console_domain
             if h.storage_pool_id:
