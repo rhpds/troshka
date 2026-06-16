@@ -170,12 +170,19 @@ def _build_cloud_init(host_id, nfs_server=None, nfs_path=None):
 
 
 def _parse_image_urn(image_urn):
-    """Parse an Azure image URN 'Publisher:Offer:Sku:Version' into a dict."""
+    """Parse an Azure image reference.
+
+    Accepts either:
+    - URN format: 'Publisher:Offer:Sku:Version' (marketplace images)
+    - Resource ID: '/subscriptions/.../images/name' (managed images from Image Builder)
+    """
+    if image_urn.startswith("/subscriptions/"):
+        return {"id": image_urn}
     parts = image_urn.split(":")
     if len(parts) != 4:
         raise ValueError(
-            f"Invalid Azure image URN '{image_urn}' — "
-            f"expected format Publisher:Offer:Sku:Version"
+            f"Invalid Azure image reference '{image_urn}' — "
+            f"expected URN (Publisher:Offer:Sku:Version) or resource ID (/subscriptions/...)"
         )
     return {
         "publisher": parts[0],

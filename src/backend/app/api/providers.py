@@ -1565,3 +1565,60 @@ def discover_images_azure(
             )
 
     return results
+
+
+@router.post("/{provider_id}/build-image")
+def build_image(
+    provider_id: str,
+    body: dict = None,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    import threading
+
+    from app.services import image_builder_service
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type not in ("gcp", "azure"):
+        raise HTTPException(
+            status_code=400,
+            detail="Image Builder only supports GCP or Azure providers",
+        )
+
+    current = image_builder_service.get_build_status(provider_id)
+    if current.get("status") in ("authenticating", "building"):
+        raise HTTPException(status_code=409, detail="A build is already in progress")
+
+    body = body or {}
+    rhel_version = body.get("rhel_version", "rhel-10")
+
+    threading.Thread(
+        target=image_builder_service.build_host_image,
+        args=(provider_id, user.id, rhel_version),
+        daemon=True,
+        name=f"image-build-{provider_id[:8]}",
+    ).start()
+
+    return {"status": "started", "message": f"Building {rhel_version} image..."}
+
+
+@router.get("/{provider_id}/build-image/status")
+def build_image_status(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+):
+    from app.services import image_builder_service
+
+    return image_builder_service.get_build_status(provider_id)
+
+
+@router.delete("/{provider_id}/build-image/status", status_code=204)
+def clear_build_image_status(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+):
+    from app.services import image_builder_service
+
+    image_builder_service.clear_build_status(provider_id)
