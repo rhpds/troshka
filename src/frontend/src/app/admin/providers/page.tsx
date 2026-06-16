@@ -59,6 +59,9 @@ export default function AdminProvidersPage() {
   const [consoleDomain, setConsoleDomain] = useState<Record<string, string>>({});
   const [consoleSetupResult, setConsoleSetupResult] = useState<Record<string, string>>({});
   const [settingUpConsole, setSettingUpConsole] = useState<string | null>(null);
+  const [buildStatus, setBuildStatus] = useState<Record<string, { status: string; message?: string; image?: string; elapsed_seconds?: number }>>({});
+  const [buildingProvider, setBuildingProvider] = useState<string | null>(null);
+  const [rhelVersion, setRhelVersion] = useState<Record<string, string>>({});
 
   const [name, setName] = useState("");
   const [type, setType] = useState("ec2");
@@ -88,7 +91,27 @@ export default function AdminProvidersPage() {
   const loadProviders = () => {
     fetch("/api/v1/providers/")
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => { setProviders(Array.isArray(data) ? data : []); setLoading(false); })
+      .then((data) => {
+        setProviders(Array.isArray(data) ? data : []);
+        setLoading(false);
+        // Load build status for GCP/Azure providers
+        const gcpAzureProviders = (Array.isArray(data) ? data : []).filter(
+          (pr: { type: string }) => pr.type === "gcp" || pr.type === "azure"
+        );
+        for (const p of gcpAzureProviders) {
+          fetch(`/api/v1/providers/${p.id}/build-image/status`)
+            .then((r) => r.json())
+            .then((s) => {
+              if (s.status !== "idle") {
+                setBuildStatus((prev) => ({ ...prev, [p.id]: s }));
+                if (s.status === "authenticating" || s.status === "building") {
+                  setBuildingProvider(p.id);
+                }
+              }
+            })
+            .catch(() => {});
+        }
+      })
       .catch(() => setLoading(false));
   };
 
@@ -97,6 +120,30 @@ export default function AdminProvidersPage() {
     const interval = setInterval(loadProviders, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const activeBuilds = Object.entries(buildStatus).filter(
+      ([, s]) => s.status === "authenticating" || s.status === "building"
+    );
+    if (activeBuilds.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const [pid] of activeBuilds) {
+        try {
+          const resp = await fetch(`/api/v1/providers/${pid}/build-image/status`);
+          const data = await resp.json();
+          setBuildStatus((prev) => ({ ...prev, [pid]: data }));
+          if (data.status === "success") {
+            loadProviders();
+          }
+          if (data.status === "success" || data.status === "error") {
+            setBuildingProvider(null);
+          }
+        } catch { /* ignore */ }
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [buildStatus]);
 
   const createProvider = async () => {
     if (type === "gcp") {
@@ -314,6 +361,27 @@ export default function AdminProvidersPage() {
       const resp = await fetch(`/api/v1/providers/${providerId}/console`, { method: "DELETE" });
       if (resp.ok) loadProviders();
     } catch { /* ignore */ }
+  };
+
+  const startBuild = async (providerId: string) => {
+    setBuildingProvider(providerId);
+    setBuildStatus((prev) => ({ ...prev, [providerId]: { status: "authenticating", message: "Starting..." } }));
+    try {
+      const version = rhelVersion[providerId] || "rhel-10";
+      const resp = await fetch(`/api/v1/providers/${providerId}/build-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rhel_version: version }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: "Failed" }));
+        setBuildStatus((prev) => ({ ...prev, [providerId]: { status: "error", message: err.detail || "Failed" } }));
+        setBuildingProvider(null);
+      }
+    } catch {
+      setBuildStatus((prev) => ({ ...prev, [providerId]: { status: "error", message: "Connection failed" } }));
+      setBuildingProvider(null);
+    }
   };
 
   const deleteProvider = async (id: string) => {
@@ -871,6 +939,47 @@ export default function AdminProvidersPage() {
                     <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
                       {p.host_count > 0 ? "Has Hosts" : "Delete"}
                     </Button>
+              </CardBody>
+            )}
+            {editId !== p.id && (p.type === "gcp" || p.type === "azure") && (
+              <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, paddingBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>Build Host Image</span>
+                  <select
+                    value={rhelVersion[p.id] || "rhel-10"}
+                    onChange={(e) => setRhelVersion((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    style={{ padding: "4px 8px", borderRadius: 4, fontSize: 12, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                  >
+                    <option value="rhel-10">RHEL 10</option>
+                    <option value="rhel-9">RHEL 9</option>
+                  </select>
+                  <Button
+                    variant="secondary"
+                    isLoading={buildingProvider === p.id}
+                    isDisabled={buildingProvider === p.id}
+                    onClick={() => startBuild(p.id)}
+                  >
+                    Build Image
+                  </Button>
+                  {buildStatus[p.id]?.status === "success" && (
+                    <Button variant="link" onClick={async () => {
+                      await fetch(`/api/v1/providers/${p.id}/build-image/status`, { method: "DELETE" });
+                      setBuildStatus((prev) => { const n = { ...prev }; delete n[p.id]; return n; });
+                    }}>Dismiss</Button>
+                  )}
+                </div>
+                {buildStatus[p.id] && buildStatus[p.id].status !== "idle" && (
+                  <div style={{
+                    marginTop: 8, fontSize: 12, padding: "6px 10px", borderRadius: 4,
+                    background: buildStatus[p.id].status === "error" ? "var(--pf-t--global--color--status--danger--default)" :
+                                buildStatus[p.id].status === "success" ? "var(--pf-t--global--color--status--success--default)" :
+                                "var(--pf-t--global--color--status--info--default)",
+                    color: "#fff",
+                  }}>
+                    {buildStatus[p.id].message}
+                    {buildStatus[p.id].elapsed_seconds ? ` (${Math.round(buildStatus[p.id].elapsed_seconds! / 60)}m)` : ""}
+                  </div>
+                )}
               </CardBody>
             )}
           </Card>
