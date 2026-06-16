@@ -54,6 +54,14 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
+  # Pods — find Rook toolbox for ceph commands
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Pod exec — run ceph CLI in Rook toolbox (NFS export management)
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

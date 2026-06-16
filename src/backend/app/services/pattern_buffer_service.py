@@ -88,6 +88,8 @@ def _provision_pattern_buffer(pool_id: str):
             parts = pool.nfs_endpoint.split(":", 1)
             nfs_kwargs["nfs_server"] = parts[0]
             nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+            if pool.nfs_port:
+                nfs_kwargs["nfs_port"] = pool.nfs_port
 
         result = None
         logger.info(

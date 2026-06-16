@@ -235,13 +235,18 @@ if [ "{storage_mode}" = "shared" ] && [ -n "{nfs_server}" ]; then
     mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds
     NFS_SRC="{nfs_server}:{nfs_path}"
     NFS_DST="/var/lib/troshka/shared"
+    NFS_PORT="{nfs_port}"
+    NFS_OPTS="nfsvers=4.1,nconnect=16,hard,_netdev"
+    if [ -n "$NFS_PORT" ] && [ "$NFS_PORT" != "0" ]; then
+        NFS_OPTS="port=$NFS_PORT,$NFS_OPTS"
+    fi
     if ! mountpoint -q "$NFS_DST" 2>/dev/null; then
-        echo "troshkad: mounting NFS $NFS_SRC -> $NFS_DST"
-        mount -t nfs -o nfsvers=4.1,nconnect=16,hard,_netdev "$NFS_SRC" "$NFS_DST"
+        echo "troshkad: mounting NFS $NFS_SRC -> $NFS_DST (opts: $NFS_OPTS)"
+        mount -t nfs -o "$NFS_OPTS" "$NFS_SRC" "$NFS_DST"
     else
         echo "troshkad: NFS already mounted at $NFS_DST"
     fi
-    grep -q "$NFS_DST" /etc/fstab || echo "$NFS_SRC $NFS_DST nfs4 nfsvers=4.1,nconnect=16,hard,_netdev 0 0" >> /etc/fstab
+    grep -q "$NFS_DST" /etc/fstab || echo "$NFS_SRC $NFS_DST nfs4 $NFS_OPTS 0 0" >> /etc/fstab
     setsebool -P virt_use_nfs 1 2>/dev/null || true
 fi
 
@@ -559,6 +564,7 @@ def deploy_agent(
     storage_mode: str = "local",
     nfs_server: str = "",
     nfs_path: str = "",
+    nfs_port: int = 0,
     ca_cert: str = "",
     host_cert: str = "",
     host_key: str = "",
@@ -589,6 +595,7 @@ def deploy_agent(
         .replace("{storage_mode}", storage_mode)
         .replace("{nfs_server}", nfs_server)
         .replace("{nfs_path}", nfs_path)
+        .replace("{nfs_port}", str(nfs_port))
         .replace(
             "{ca_cert_b64}",
             base64.b64encode(ca_cert.encode()).decode() if ca_cert else "",

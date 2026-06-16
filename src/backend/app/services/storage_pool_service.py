@@ -408,3 +408,274 @@ def add_sg_rules_for_shared_storage(
             IpPermissions=rules_to_add,
         )
         logger.info("Added NFS/migration SG rules to %s", security_group_id)
+
+
+# ---------------------------------------------------------------------------
+# Ceph-NFS provisioning (OCP Virt)
+# ---------------------------------------------------------------------------
+
+CEPH_FS_NAME = "ocs-storagecluster-cephfilesystem"
+CEPH_NFS_CLUSTER = "ocs-storagecluster-cephnfs"
+CEPH_NFS_POD_SELECTOR = "app=rook-ceph-tools"
+CEPH_NFS_SVC_SELECTOR = {
+    "app": "rook-ceph-nfs",
+    "app.kubernetes.io/instance": f"{CEPH_NFS_CLUSTER}-a",
+}
+ODF_NAMESPACE = "openshift-storage"
+
+
+def _get_k8s_clients(credentials):
+    from kubernetes import client
+
+    configuration = client.Configuration()
+    configuration.host = credentials["api_url"]
+    configuration.api_key = {"authorization": f"Bearer {credentials['token']}"}
+    configuration.verify_ssl = credentials.get("verify_ssl", False)
+    api_client = client.ApiClient(configuration)
+    core_api = client.CoreV1Api(api_client)
+    return core_api, api_client
+
+
+def _find_toolbox_pod(core_api) -> str:
+    pods = core_api.list_namespaced_pod(
+        ODF_NAMESPACE, label_selector=CEPH_NFS_POD_SELECTOR
+    )
+    for pod in pods.items:
+        if pod.status.phase == "Running":
+            return pod.metadata.name
+    raise RuntimeError("No running Rook toolbox pod found in openshift-storage")
+
+
+def _ceph_exec(core_api, toolbox_pod: str, command: list[str]) -> str:
+    from kubernetes import stream
+
+    resp = stream.stream(
+        core_api.connect_get_namespaced_pod_exec,
+        toolbox_pod,
+        ODF_NAMESPACE,
+        command=command,
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+    )
+    return resp.strip()
+
+
+def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
+    db = SessionLocal()
+    try:
+        pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
+
+        short_id = pool_id[:8]
+        group_name = f"troshka-pool-{short_id}"
+        vol_name = f"troshka-{short_id}"
+        pseudo_path = f"/troshka-{short_id}"
+        quota_bytes = (pool.fsx_storage_gb or 500) * 1073741824
+
+        core_api, api_client = _get_k8s_clients(credentials)
+        toolbox = _find_toolbox_pod(core_api)
+
+        _ceph_exec(
+            core_api,
+            toolbox,
+            [
+                "ceph",
+                "fs",
+                "subvolumegroup",
+                "create",
+                CEPH_FS_NAME,
+                group_name,
+            ],
+        )
+        logger.info("Ceph subvolumegroup %s created", group_name)
+
+        _ceph_exec(
+            core_api,
+            toolbox,
+            [
+                "ceph",
+                "fs",
+                "subvolume",
+                "create",
+                CEPH_FS_NAME,
+                vol_name,
+                group_name,
+                f"--size={quota_bytes}",
+            ],
+        )
+        logger.info(
+            "Ceph subvolume %s created (%d GB)", vol_name, quota_bytes // 1073741824
+        )
+
+        subvol_path = _ceph_exec(
+            core_api,
+            toolbox,
+            [
+                "ceph",
+                "fs",
+                "subvolume",
+                "getpath",
+                CEPH_FS_NAME,
+                vol_name,
+                group_name,
+            ],
+        )
+        logger.info("Ceph subvolume path: %s", subvol_path)
+
+        _ceph_exec(
+            core_api,
+            toolbox,
+            [
+                "ceph",
+                "nfs",
+                "export",
+                "create",
+                "cephfs",
+                CEPH_NFS_CLUSTER,
+                pseudo_path,
+                CEPH_FS_NAME,
+                f"--path={subvol_path}",
+                "--squash=no_root_squash",
+            ],
+        )
+        logger.info("Ceph NFS export %s created with no_root_squash", pseudo_path)
+
+        from kubernetes import client
+
+        svc_name = f"troshka-nfs-{short_id}"
+        svc = client.V1Service(
+            metadata=client.V1ObjectMeta(
+                name=svc_name,
+                namespace=ODF_NAMESPACE,
+                labels={"app": "troshka", "troshka/pool-id": pool_id},
+            ),
+            spec=client.V1ServiceSpec(
+                type="NodePort",
+                selector=CEPH_NFS_SVC_SELECTOR,
+                ports=[
+                    client.V1ServicePort(
+                        name="nfs", port=2049, target_port=2049, protocol="TCP"
+                    )
+                ],
+            ),
+        )
+        created_svc = core_api.create_namespaced_service(ODF_NAMESPACE, body=svc)
+        node_port = created_svc.spec.ports[0].node_port
+        logger.info("NodePort service %s created, port %d", svc_name, node_port)
+
+        nfs_pod = core_api.list_namespaced_pod(
+            ODF_NAMESPACE,
+            label_selector=",".join(
+                f"{k}={v}" for k, v in CEPH_NFS_SVC_SELECTOR.items()
+            ),
+        )
+        nfs_node_name = nfs_pod.items[0].spec.node_name if nfs_pod.items else None
+        node_ip = None
+        if nfs_node_name:
+            node = core_api.read_node(nfs_node_name)
+            for addr in node.status.addresses:
+                if addr.type == "InternalIP":
+                    node_ip = addr.address
+                    break
+        if not node_ip:
+            nodes = core_api.list_node()
+            for n in nodes.items:
+                for addr in n.status.addresses:
+                    if addr.type == "InternalIP":
+                        node_ip = addr.address
+                        break
+                if node_ip:
+                    break
+
+        pool.nfs_endpoint = f"{node_ip}:{pseudo_path}"
+        pool.nfs_port = node_port
+        pool.ceph_subvolume_group = group_name
+        pool.status = "available"
+        db.commit()
+        logger.info(
+            "Ceph-NFS pool %s available: endpoint=%s port=%d",
+            short_id,
+            pool.nfs_endpoint,
+            node_port,
+        )
+
+    except Exception as e:
+        logger.error("Ceph-NFS provisioning failed for pool %s: %s", pool_id[:8], e)
+        pool = db.query(StoragePool).get(pool_id)
+        if pool:
+            pool.status = "error"
+            db.commit()
+    finally:
+        db.close()
+
+
+def delete_ceph_nfs_pool(
+    pool_id: str, credentials: dict, ceph_subvolume_group: str | None
+):
+    short_id = pool_id[:8]
+    pseudo_path = f"/troshka-{short_id}"
+    vol_name = f"troshka-{short_id}"
+    group_name = ceph_subvolume_group or f"troshka-pool-{short_id}"
+    svc_name = f"troshka-nfs-{short_id}"
+
+    try:
+        core_api, api_client = _get_k8s_clients(credentials)
+
+        try:
+            core_api.delete_namespaced_service(svc_name, ODF_NAMESPACE)
+            logger.info("Deleted NodePort service %s", svc_name)
+        except Exception:
+            logger.warning("NodePort service %s not found, skipping", svc_name)
+
+        try:
+            toolbox = _find_toolbox_pod(core_api)
+            _ceph_exec(
+                core_api,
+                toolbox,
+                [
+                    "ceph",
+                    "nfs",
+                    "export",
+                    "rm",
+                    CEPH_NFS_CLUSTER,
+                    pseudo_path,
+                ],
+            )
+            logger.info("Removed NFS export %s", pseudo_path)
+
+            _ceph_exec(
+                core_api,
+                toolbox,
+                [
+                    "ceph",
+                    "fs",
+                    "subvolume",
+                    "rm",
+                    CEPH_FS_NAME,
+                    vol_name,
+                    group_name,
+                ],
+            )
+            logger.info("Removed Ceph subvolume %s", vol_name)
+
+            _ceph_exec(
+                core_api,
+                toolbox,
+                [
+                    "ceph",
+                    "fs",
+                    "subvolumegroup",
+                    "rm",
+                    CEPH_FS_NAME,
+                    group_name,
+                ],
+            )
+            logger.info("Removed Ceph subvolumegroup %s", group_name)
+        except Exception as e:
+            logger.warning("Ceph cleanup for pool %s partial: %s", short_id, e)
+
+    except Exception as e:
+        logger.error("Ceph-NFS cleanup failed for pool %s: %s", short_id, e)

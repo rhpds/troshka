@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 class StoragePoolCreate(BaseModel):
     name: str
-    mode: str  # "local", "shared-fsx", "shared-byo"
+    mode: str  # "local", "shared-fsx", "shared-byo", "shared-ceph-nfs"
     provider_id: str
     az: str | None = None
     instance_types: list[str] | None = None  # for AZ probing
@@ -36,6 +36,7 @@ class StoragePoolResponse(BaseModel):
     fsx_throughput_mbps: int | None = None
     fsx_storage_gb: int | None = None
     nfs_endpoint: str | None = None
+    nfs_port: int | None = None
     status: str
     provider_id: str
     host_count: int = 0

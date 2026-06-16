@@ -181,11 +181,15 @@ class OCPVirtDriver(ProviderDriver):
         # Append NFS mount if shared storage
         nfs_server = kwargs.get("nfs_server")
         nfs_path = kwargs.get("nfs_path")
+        nfs_port = kwargs.get("nfs_port")
         if nfs_server and nfs_path:
+            mount_opts = "nfsvers=4.1,nconnect=16,hard,_netdev"
+            if nfs_port:
+                mount_opts = f"port={nfs_port},{mount_opts}"
             user_data = user_data.rstrip() + (
                 f"\n  - mkdir -p /var/lib/troshka/shared"
                 f"\n  - 'echo \"{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs "
-                f"nfsvers=4.1,nconnect=16,hard,_netdev 0 0\" >> /etc/fstab'"
+                f"{mount_opts} 0 0\" >> /etc/fstab'"
                 f"\n  - mount /var/lib/troshka/shared"
                 f"\n  - setsebool -P virt_use_nfs 1"
                 f"\n"

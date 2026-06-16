@@ -35,6 +35,7 @@ class StoragePool(Base):
     fsx_storage_gb: Mapped[int | None] = mapped_column(Integer)
 
     nfs_endpoint: Mapped[str | None] = mapped_column(String(500))
+    nfs_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ceph_subvolume_group: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     ca_cert: Mapped[str | None] = mapped_column(Text)

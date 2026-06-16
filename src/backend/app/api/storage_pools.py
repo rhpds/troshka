@@ -87,7 +87,7 @@ def create_pool(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    if body.mode not in ("local", "shared-fsx", "shared-byo"):
+    if body.mode not in ("local", "shared-fsx", "shared-byo", "shared-ceph-nfs"):
         raise HTTPException(400, f"Invalid mode: {body.mode}")
 
     existing = db.query(StoragePool).filter(StoragePool.name == body.name).first()
@@ -109,6 +109,10 @@ def create_pool(
     if body.mode == "shared-byo":
         if not body.nfs_endpoint:
             raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
+
+    if body.mode == "shared-ceph-nfs":
+        if provider.type != "ocpvirt":
+            raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
 
     ca_cert, ca_key = None, None
     if body.mode.startswith("shared"):
@@ -165,6 +169,15 @@ def create_pool(
         storage_pool_service.add_sg_rules_for_shared_storage(
             credentials, region, provider.security_group_id, include_nfs=False
         )
+
+    elif body.mode == "shared-ceph-nfs":
+        credentials = provider.get_credentials()
+        t = threading.Thread(
+            target=storage_pool_service.provision_ceph_nfs_pool,
+            args=(pool.id, credentials),
+            daemon=True,
+        )
+        t.start()
 
     from app.services.pattern_buffer_service import provision_pattern_buffer_async
 
@@ -278,6 +291,13 @@ def delete_pool(
         credentials = provider.get_credentials()
         storage_pool_service.delete_fsx_filesystem(
             credentials, provider.default_region, pool.fsx_filesystem_id
+        )
+
+    if pool.mode == "shared-ceph-nfs":
+        provider = db.query(Provider).get(pool.provider_id)
+        credentials = provider.get_credentials()
+        storage_pool_service.delete_ceph_nfs_pool(
+            pool.id, credentials, pool.ceph_subvolume_group
         )
 
     db.delete(pool)

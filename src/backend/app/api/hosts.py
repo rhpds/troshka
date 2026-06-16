@@ -76,14 +76,14 @@ def list_hosts(
             db.query(Project)
             .filter(
                 Project.host_id == host.id,
-                Project.state.in_(["deployed", "stopped", "draft"]),
+                Project.state.in_(["active", "deployed", "stopped", "draft"]),
             )
             .all()
         )
-        deployed = [p for p in all_projects if p.state == "deployed"]
-        resp.running_projects = len(deployed)
+        running = [p for p in all_projects if p.state in ("active", "deployed")]
+        resp.running_projects = len(running)
         resp.total_projects = len(
-            [p for p in all_projects if p.state in ("deployed", "stopped")]
+            [p for p in all_projects if p.state in ("active", "deployed", "stopped")]
         )
         resp.running_vms = sum(
             len(
@@ -93,7 +93,7 @@ def list_hosts(
                     if n.get("type") == "vmNode"
                 ]
             )
-            for p in deployed
+            for p in running
         )
         resp.total_vms = sum(
             len(
@@ -244,6 +244,8 @@ def add_host(
             "nfs_server": parts[0],
             "nfs_path": parts[1] if len(parts) > 1 else "/",
         }
+        if pool.nfs_port:
+            nfs_kwargs["nfs_port"] = pool.nfs_port
 
     try:
         import uuid as _uuid
@@ -347,6 +349,7 @@ def add_host(
                 storage_mode=_sm,
                 nfs_server=nfs_kwargs.get("nfs_server", ""),
                 nfs_path=nfs_kwargs.get("nfs_path", ""),
+                nfs_port=nfs_kwargs.get("nfs_port", 0),
                 ssh_port=ssh_port,
                 ssh_user=_ssh_user,
                 ca_cert=_ca_cert,
@@ -464,12 +467,17 @@ def install_agent(
                     if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
                         _install_kwargs["nfs_server"] = _pool.fsx_dns_name
                         _install_kwargs["nfs_path"] = "/fsx"
-                    elif _pool.mode == "shared-byo" and _pool.nfs_endpoint:
+                    elif (
+                        _pool.mode in ("shared-byo", "shared-ceph-nfs")
+                        and _pool.nfs_endpoint
+                    ):
                         _parts = _pool.nfs_endpoint.split(":", 1)
                         _install_kwargs["nfs_server"] = _parts[0]
                         _install_kwargs["nfs_path"] = (
                             _parts[1] if len(_parts) > 1 else "/"
                         )
+                        if _pool.nfs_port:
+                            _install_kwargs["nfs_port"] = _pool.nfs_port
                     if _pool.ca_cert and _pool.ca_key and h.ip_address:
                         from app.services.storage_pool_service import (
                             sign_host_cert as _shc2,
@@ -829,10 +837,15 @@ def poweron_host(
                     if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
                         _kwargs["nfs_server"] = _pool.fsx_dns_name
                         _kwargs["nfs_path"] = "/fsx"
-                    elif _pool.mode == "shared-byo" and _pool.nfs_endpoint:
+                    elif (
+                        _pool.mode in ("shared-byo", "shared-ceph-nfs")
+                        and _pool.nfs_endpoint
+                    ):
                         parts = _pool.nfs_endpoint.split(":", 1)
                         _kwargs["nfs_server"] = parts[0]
                         _kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+                        if _pool.nfs_port:
+                            _kwargs["nfs_port"] = _pool.nfs_port
                     if _pool.ca_cert and _pool.ca_key and h.ip_address:
                         from app.services.storage_pool_service import (
                             sign_host_cert as _shc,
