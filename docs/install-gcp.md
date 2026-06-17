@@ -71,7 +71,19 @@ For development and testing, E2-standard types work fine. For production host pr
 
 ## Create Provider
 
-Use the Troshka API to create a GCP provider. First, get the full contents of `troshka-sa.json`:
+Add a GCP provider in the Troshka admin UI:
+
+1. Navigate to **Admin → Providers**
+2. Click **Add Provider**
+3. Select **Type: GCP**
+4. Paste the contents of `troshka-sa.json` into the **Service Account JSON** field
+5. Set **Default Region** (e.g., `us-central1`)
+6. Click **Create**
+
+<details>
+<summary>API equivalent</summary>
+
+First, get the full contents of `troshka-sa.json`:
 
 ```bash
 cat troshka-sa.json | jq -c .
@@ -95,18 +107,19 @@ curl -X POST http://localhost:8200/api/v1/providers \
   }'
 ```
 
-Alternatively, use the Troshka admin UI:
-
-1. Navigate to **Admin → Providers**
-2. Click **Add Provider**
-3. Select **Type: GCP**
-4. Paste the contents of `troshka-sa.json` into the **Service Account JSON** field
-5. Set **Default Region** (e.g., `us-central1`)
-6. Click **Create**
+</details>
 
 ### Test Provider
 
 Verify the provider credentials are working:
+
+1. Navigate to **Admin → Providers**
+2. Find your GCP provider in the list
+3. Click the **Test** button
+4. Wait for confirmation that credentials are valid
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/test \
@@ -115,14 +128,16 @@ curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/test \
 
 A successful response indicates that Troshka can authenticate with GCP using the service account credentials.
 
+</details>
+
 ## Network Setup
 
 Create a custom VPC network, subnet, and firewall rules for Troshka hosts. This is a one-time setup per provider.
 
-```bash
-curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/create-network-gcp \
-  -H "Authorization: Bearer $TOKEN"
-```
+1. Navigate to **Admin → Providers**
+2. Find your GCP provider in the list
+3. Click **Setup Network**
+4. Wait for confirmation that the network was created
 
 This creates:
 
@@ -136,12 +151,22 @@ This creates:
 
 All firewall rules target instances with the `troshka-host` network tag. The Troshka provisioner automatically tags all instances with `troshka-host` during creation.
 
+<details>
+<summary>API equivalent</summary>
+
+```bash
+curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/create-network-gcp \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 Verify the network was created:
 
 ```bash
 gcloud compute networks describe troshka-vpc --project=$PROJECT_ID
 gcloud compute firewall-rules list --project=$PROJECT_ID --filter="name~troshka"
 ```
+
+</details>
 
 ## Host Image Setup
 
@@ -151,6 +176,19 @@ Troshka supports two image modes for GCP:
 2. **Image Builder BYOS** — Custom RHEL images built via Red Hat Image Builder with packages pre-installed, lower cost, requires offline token setup
 
 ### Option 1: PAYG Images (Default)
+
+Discover and set a RHEL PAYG image:
+
+1. Navigate to **Admin → Providers**
+2. Find your GCP provider in the list
+3. Click **Discover Images** in the image section
+4. Select the latest RHEL 9 LVM image from the list (e.g., `rhel-9-v20260615`)
+5. Click **Set as Default Image**
+
+PAYG images include Red Hat subscriptions in the hourly instance cost. They work immediately without any RHSM registration or activation.
+
+<details>
+<summary>API equivalent</summary>
 
 Discover available RHEL PAYG images:
 
@@ -172,7 +210,7 @@ curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/set-image \
   }'
 ```
 
-PAYG images include Red Hat subscriptions in the hourly instance cost. They work immediately without any RHSM registration or activation.
+</details>
 
 ### Option 2: Image Builder BYOS (Production)
 
@@ -196,6 +234,29 @@ Image Builder creates the image in Red Hat's GCP project and shares it with your
 ## Console Setup
 
 Set up Cloud DNS for VNC console access via HTTPS. This creates a DNS zone and configures Let's Encrypt TLS certificates.
+
+1. Navigate to **Admin → Providers**
+2. Find your GCP provider in the list
+3. Click **Setup Console**
+4. Enter your console base domain (e.g., `console.example.com`)
+5. Click **Create**
+6. Note the nameservers shown in the confirmation message
+
+Add NS records for the subdomain in your parent DNS zone (wherever `example.com` is hosted). The UI displays the nameservers in a collapsible section:
+
+```
+console.example.com.  IN  NS  ns-cloud-a1.googledomains.com.
+console.example.com.  IN  NS  ns-cloud-a2.googledomains.com.
+console.example.com.  IN  NS  ns-cloud-a3.googledomains.com.
+console.example.com.  IN  NS  ns-cloud-a4.googledomains.com.
+```
+
+Each host will get an A record in this zone: `{instance_id}.console.example.com` pointing to the host's public IP.
+
+Let's Encrypt TLS certificates are provisioned automatically on each host using the `certbot-dns-google` plugin and the service account credentials for DNS-01 challenge validation.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/setup-console \
@@ -221,22 +282,21 @@ The response includes nameservers for the newly created Cloud DNS zone:
 }
 ```
 
-Add NS records for the subdomain in your parent DNS zone (wherever `example.com` is hosted):
-
-```
-console.example.com.  IN  NS  ns-cloud-a1.googledomains.com.
-console.example.com.  IN  NS  ns-cloud-a2.googledomains.com.
-console.example.com.  IN  NS  ns-cloud-a3.googledomains.com.
-console.example.com.  IN  NS  ns-cloud-a4.googledomains.com.
-```
-
-Each host will get an A record in this zone: `{instance_id}.console.example.com` pointing to the host's public IP.
-
-Let's Encrypt TLS certificates are provisioned automatically on each host using the `certbot-dns-google` plugin and the service account credentials for DNS-01 challenge validation.
+</details>
 
 ## Provision First Host
 
 Create your first Troshka host instance:
+
+1. Navigate to **Admin → Hosts**
+2. Click **Add Host**
+3. Select your GCP provider from the dropdown
+4. Choose an instance type (see recommended types below)
+5. Set storage size (e.g., 500 GB)
+6. Click **Create**
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts \
@@ -248,6 +308,8 @@ curl -X POST http://localhost:8200/api/v1/hosts \
     "storage_size_gb": 500
   }'
 ```
+
+</details>
 
 Recommended instance types:
 
@@ -274,7 +336,18 @@ Each provisioned host includes:
 
 ### Resizing Hosts
 
-To resize a host to a different instance type, use the resize API:
+To resize a host to a different instance type:
+
+1. Navigate to **Admin → Hosts**
+2. Find the host you want to resize
+3. Click the **Resize** button
+4. Select the new instance type
+5. Click **Confirm**
+
+GCP requires the instance to be stopped before resizing, then restarted. Troshka handles this automatically.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts/{host_id}/resize \
@@ -285,11 +358,24 @@ curl -X POST http://localhost:8200/api/v1/hosts/{host_id}/resize \
   }'
 ```
 
-GCP requires the instance to be stopped before resizing, then restarted. The API handles this automatically.
+</details>
 
 ### Extending Storage
 
 To extend the data disk size on a running host:
+
+1. Navigate to **Admin → Hosts**
+2. Find the host you want to extend
+3. Click the **Extend Storage** button
+4. Enter the increment in GB (e.g., 100)
+5. Click **Confirm**
+
+GCP supports online disk resizes. Troshka will resize the GCP persistent disk and trigger a filesystem resize on the host via troshkad.
+
+Auto-extend can be enabled on the host to automatically grow the disk when usage exceeds a threshold.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts/{host_id}/extend-storage \
@@ -300,12 +386,7 @@ curl -X POST http://localhost:8200/api/v1/hosts/{host_id}/extend-storage \
   }'
 ```
 
-GCP supports online disk resizes. The backend will:
-
-1. Resize the GCP persistent disk
-2. Trigger a filesystem resize on the host via troshkad
-
-Auto-extend can be enabled on the host to automatically grow the disk when usage exceeds a threshold.
+</details>
 
 ## Shared Storage
 
@@ -319,6 +400,17 @@ Troshka supports shared storage pools for live migration between hosts. GCP shar
 
 To provision a pattern buffer host (dedicated storage worker for capturing patterns):
 
+1. Navigate to **Admin → Hosts**
+2. Click **Add Host**
+3. Select your GCP provider
+4. Choose **Host Type: Pattern Buffer**
+5. Select instance type `e2-standard-2`
+6. Set storage size (e.g., 200 GB)
+7. Click **Create**
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts \
   -H "Authorization: Bearer $TOKEN" \
@@ -330,6 +422,8 @@ curl -X POST http://localhost:8200/api/v1/hosts \
     "host_type": "pattern_buffer"
   }'
 ```
+
+</details>
 
 Pattern buffer hosts:
 
