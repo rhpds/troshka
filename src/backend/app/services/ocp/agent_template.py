@@ -35,7 +35,7 @@ def _find_sno_node_ip(topology):
         ip = nics[0].get("ip") if nics else None
         if "sno" in name and ip:
             return ip
-        if name.startswith("cp-") and ip:
+        if (name.startswith("cp-") or name.startswith("hub-cp-")) and ip:
             cp_nodes.append(ip)
     if len(cp_nodes) == 1:
         return cp_nodes[0]
@@ -60,8 +60,25 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     api_vip = "10.0.0.2"
     ingress_vip = "10.0.0.3"
 
-    # SNO uses platform: none — no VIP management, DNS must point to node IP
-    if template_id == "ocp-sno":
+    # Use template-specific VIPs
+    if template_id == "ocp-ran-5g":
+        api_vip = "192.168.125.10"
+        ingress_vip = "192.168.125.11"
+
+    # Detect SNO by counting CP nodes instead of only checking template_id
+    cp_count = sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and (
+            n.get("data", {}).get("name", "").startswith("cp-")
+            or n.get("data", {}).get("name", "").startswith("hub-cp-")
+            or "sno" in n.get("data", {}).get("name", "")
+        )
+    )
+    is_sno = cp_count == 1 or template_id == "ocp-sno"
+
+    if is_sno:
         sno_ip = _find_sno_node_ip(topology)
         if sno_ip:
             dns_api = sno_ip
@@ -93,6 +110,23 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         ingress_vip,
         bastion_bmc_ip,
     )
+
+    # RAN lab bastion — append RAN-specific services after standard cloud-init
+    if template_id == "ocp-ran-5g":
+        from app.services.ocp.ran_bastion import generate_bastion_cloud_init
+
+        for node in topology.get("nodes", []):
+            if (
+                node.get("type") == "vmNode"
+                and node.get("data", {}).get("name") == "bastion"
+            ):
+                ran_ci = generate_bastion_cloud_init(
+                    bastion_password=bastion_password,
+                    student_name="lab-user",
+                )
+                # Append RAN-specific blocks after standard cloud-init
+                node["data"]["ciUserData"] = node["data"].get("ciUserData", "") + ran_ci
+                break
 
     return topology
 
@@ -478,8 +512,23 @@ def _build_install_config(
     pull_secret_json,
     ssh_pub_key,
 ):
-    num_workers = 0 if template_id in ("ocp-compact", "ocp-sno") else 2
-    num_masters = 1 if template_id == "ocp-sno" else 3
+    # Count actual CP and worker nodes from topology
+    cp_nodes_count = sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
+    )
+    worker_nodes_count = sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "workers"
+    )
+    num_masters = (
+        cp_nodes_count if cp_nodes_count > 0 else (1 if template_id == "ocp-sno" else 3)
+    )
+    num_workers = worker_nodes_count
 
     ic_lines = [
         "apiVersion: v1",
@@ -504,7 +553,7 @@ def _build_install_config(
         "  machineNetwork:",
         "    - cidr: 10.0.0.0/24",
     ]
-    if template_id == "ocp-sno":
+    if num_masters == 1 and num_workers == 0:
         ic_lines.extend(
             [
                 "platform:",

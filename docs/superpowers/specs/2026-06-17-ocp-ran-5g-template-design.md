@@ -147,7 +147,9 @@ The existing `customize_topology()` handles DNS records, bastion cloud-init, ins
 
 After the hub OCP cluster is installed by Troshka's Agent Installer, cloud-init scripts on the bastion handle the remaining setup. This runs as `runcmd` steps in the bastion's cloud-init user-data.
 
-### Phase 1: Bastion Services
+**Pattern-based deployment model:** Phases 2-4 run only on the **initial build**. Once the environment is fully configured, it's saved as a Troshka pattern. Subsequent deploys from the pattern restore the entire state — all operators, the seed SNO, and configurations come back intact. Only Phase 1 (bastion services) needs to run on every deploy since bastion state is not captured in patterns (it's cloud-init driven).
+
+### Phase 1: Bastion Services (runs every deploy)
 
 These run immediately on bastion boot (no dependency on hub cluster):
 
@@ -158,7 +160,7 @@ These run immediately on bastion boot (no dependency on hub cluster):
 5. **Showroom** — lab guide web UI (Apache + Wetty terminal + Traefik reverse proxy)
 6. **Webcache** — HTTP server for RHCOS live ISO and rootfs images
 
-### Phase 2: Operator Mirroring
+### Phase 2: Operator Mirroring (initial build only)
 
 Mirror required operator images to the local registry using `oc-mirror`. This is needed because the lab runs in disconnected mode. Operators to mirror:
 
@@ -173,7 +175,7 @@ Mirror required operator images to the local registry using `oc-mirror`. This is
 - cluster-logging
 - topology-aware-lifecycle-manager
 
-### Phase 3: Hub Cluster Configuration
+### Phase 3: Hub Cluster Configuration (initial build only)
 
 After Troshka confirms OCP install is complete:
 
@@ -186,7 +188,7 @@ After Troshka confirms OCP install is complete:
 7. Create admin/developer users with generated passwords
 8. Configure MultiClusterObservability (optional, connects to MinIO)
 
-### Phase 4: Seed SNO Deployment
+### Phase 4: Seed SNO Deployment (initial build only)
 
 1. Create BareMetalHost CRDs for `sno-seed` pointing at Troshka's sushy-emulator:
    - BMC address: `redfish-virtualmedia://<bastion-bmc-ip>:8000/redfish/v1/Systems/<domain-name>`
@@ -276,9 +278,12 @@ When creating a project from the `ocp-ran-5g` template, the user sees:
 7. **Frontend** — NIC model dropdown, RAN template in new-project dialog
 8. **Testing** — deploy on dev cluster, verify full lab flow
 
-## Open Questions
+## Resolved Design Decisions
 
-1. **Operator mirroring timing**: Mirroring operators to the local registry takes significant time and bandwidth. Should this be a pre-bake step (create a pattern with mirrored registry) or run at deploy time?
-2. **Showroom deployment**: Showroom is a set of podman containers. Should this run on the bastion via cloud-init, or should we explore running it as a Troshka-managed service?
-3. **Hub cluster domain**: The lab uses `5g-deployment.lab`. Should we make this configurable or hardcode it to match the lab instructions?
-4. **SNO MAC addresses**: The lab uses fixed MACs (`aa:aa:aa:aa:02:01`, etc.) that match the BareMetalHost CRDs and dnsmasq configs. Troshka generates random MACs. **Resolution:** Template the BareMetalHost CRDs and dnsmasq configs with the actual MACs from the deployed topology. The post-install script queries the Troshka API for the deployed topology, extracts the MAC addresses, and generates the CRDs and dnsmasq entries dynamically. This is more robust than forcing fixed MACs and is consistent with how Troshka handles other topology-dependent configuration.
+1. **Operator mirroring / deployment speed**: The first deploy installs all operators (ACM, ArgoCD, LVMS, SR-IOV, PTP, etc.) and completes the full setup. This fully-configured environment is then saved as a **Troshka pattern**. Subsequent deploys restore from the pattern — no operator installation or mirroring needed. This is the standard Troshka workflow: build once, pattern-save, instant redeploy.
+
+2. **Showroom deployment**: Runs on the bastion via cloud-init as podman containers. The Showroom setup should be implemented as a **modular cloud-init snippet** (reusable function/template) since Showroom will be needed for future lab templates beyond the RAN lab. The snippet takes parameters: lab repo URL, lab version, student credentials, bastion hostname.
+
+3. **Hub cluster domain**: Hardcoded to `5g-deployment.lab` to match the lab documentation exactly. No configurability needed — changing the domain would break the lab instructions.
+
+4. **SNO MAC addresses**: Template the BareMetalHost CRDs and dnsmasq configs with the actual MACs from the deployed topology. The post-install script queries the Troshka API for the deployed topology, extracts the MAC addresses, and generates the CRDs and dnsmasq entries dynamically. This is more robust than forcing fixed MACs and is consistent with how Troshka handles other topology-dependent configuration.

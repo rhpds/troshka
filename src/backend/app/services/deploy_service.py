@@ -239,14 +239,16 @@ def _find_vm_networks(
         if not handle or not handle.startswith("nic-"):
             continue
 
-        # Find the NIC data to get MAC address
+        # Find the NIC data to get MAC address and model
         # Handle format: "nic-{nicId}-top" or "nic-{nicId}-bottom"
         vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
         mac = ""
+        model = "virtio"
         if vm_node:
             for nic in vm_node.get("data", {}).get("nics", []):
                 if nic["id"] in handle:
                     mac = nic.get("mac", "")
+                    model = nic.get("model", "virtio")
                     break
 
         # BMC networks use a dedicated bridge (no VNI)
@@ -267,6 +269,7 @@ def _find_vm_networks(
                     "bridge": f"br-bmc-{project_id[:8]}",
                     "mac": bmc_mac,
                     "nic_id": handle,
+                    "model": model,
                 }
             )
             continue
@@ -280,6 +283,7 @@ def _find_vm_networks(
                 "bridge": f"br-{vni}",
                 "mac": mac,
                 "nic_id": handle,
+                "model": model,
             }
         )
 
@@ -1127,7 +1131,7 @@ def _create_vm_via_troshkad(
     # Build network list
     networks = []
     for net in vm_networks:
-        entry = {"bridge": net["bridge"], "model": "virtio"}
+        entry = {"bridge": net["bridge"], "model": net.get("model", "virtio")}
         if net["mac"]:
             entry["mac"] = net["mac"]
         networks.append(entry)

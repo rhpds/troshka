@@ -208,6 +208,12 @@ def create_project_from_template(
             status_code=404, detail=f"Template '{template_id}' not found"
         )
 
+    # RAN template defaults
+    if template_id == "ocp-ran-5g":
+        body.setdefault("cluster_name", "hub")
+        body.setdefault("base_domain", "5g-deployment.lab")
+        body.setdefault("bastion_bmc_ip", "192.168.50.50")
+
     bastion_password = body.get("bastion_password", "")
     external_access = body.get("external_access", False)
     block_outbound = body.get("block_outbound", True)
@@ -374,7 +380,7 @@ def update_project(
             project.auto_stop_expires_at = None
             project.auto_stop_warned = False
         else:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             if not project.auto_stop_started_at and project.state == "active":
                 project.auto_stop_started_at = now
             if project.auto_stop_started_at:
@@ -391,7 +397,7 @@ def update_project(
             project.lifetime_expires_at = None
             project.auto_delete_warned = False
         else:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             if not project.auto_delete_started_at and project.state != "draft":
                 project.auto_delete_started_at = now
             if project.auto_delete_started_at:
@@ -1348,9 +1354,6 @@ def reconfigure_project(
     def _do_reconfigure():
         from app.core.database import SessionLocal
         from app.services.deploy_service import (
-            _create_seed_isos_via_troshkad,
-            _create_vm_disks_via_troshkad,
-            _create_vm_via_troshkad,
             _deploy_progress,
             _resolve_boot_devs,
             _vm_domain_name,
@@ -1952,9 +1955,6 @@ def redeploy_vm(
     def _do_redeploy():
         from app.core.database import SessionLocal
         from app.services.deploy_service import (
-            _create_seed_isos_via_troshkad,
-            _create_vm_disks_via_troshkad,
-            _create_vm_via_troshkad,
             _get_host_pool,
             _vm_domain_name,
         )

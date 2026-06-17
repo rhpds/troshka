@@ -73,8 +73,12 @@ def resolve_template(
     resolved["install_method"] = tmpl.get("install_method", "agent")
     resolved["deploy_time"] = tmpl.get("deploy_time", "")
     resolved["bastion"] = base_for_versions.get("bastion", {})
-    resolved["networks"] = base_for_versions.get("networks", {})
-    resolved["gateway"] = base_for_versions.get("gateway", {})
+    resolved["networks"] = tmpl.get("networks") or base_for_versions.get("networks", {})
+    resolved["gateway"] = tmpl.get("gateway") or base_for_versions.get("gateway", {})
+
+    # Fully-declarative templates define VMs inline
+    if tmpl.get("vms"):
+        resolved["vms"] = tmpl["vms"]
 
     return resolved
 
@@ -84,7 +88,7 @@ def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dic
     templates_path = Path(templates_dir)
     for f in sorted(templates_path.glob("*.yaml")):
         tmpl = yaml.safe_load(f.read_text())
-        if tmpl.get("extends"):
+        if tmpl.get("extends") or tmpl.get("vms"):
             result.append(
                 {
                     "id": tmpl["name"],
@@ -292,11 +296,219 @@ def _gw_net_edge(gw_id, net_id):
 _generate_mac = _mac
 
 
+def _generate_topology_from_vms(
+    tmpl,
+    bmc_password="password",  # pragma: allowlist secret
+    external_access=False,
+):
+    """Generic YAML-driven topology generator.
+
+    Reads the ``vms`` and ``networks`` sections from a fully-declarative
+    template YAML and converts them to canvas JSONB (nodes + edges).
+    """
+    nodes = []
+    edges = []
+    external_ips = []
+
+    vms_def = tmpl.get("vms", {})
+    nets_def = tmpl.get("networks", {})
+    gw_def = tmpl.get("gateway", {})
+
+    VM_SPACING = 400
+    GW_Y = 0
+    NET_ROW_Y = 150
+    VM_ROW_Y = 350
+
+    # ── Networks ──
+    net_ids = {}
+    net_x = 150
+    for net_name, net_cfg in nets_def.items():
+        is_bmc = net_cfg.get("type") == "bmc"
+        net_data = {
+            "name": net_name,
+            "label": net_name,
+            "subtype": "network",
+            "cidr": net_cfg.get("cidr", "10.0.0.0/24"),
+            "dhcp": net_cfg.get("dhcp", False),
+            "icon": "\U0001f310",
+        }
+        if is_bmc:
+            net_data["networkType"] = "bmc"
+            net_data["bmcUsername"] = "admin"
+            net_data["bmcPassword"] = bmc_password
+        net_node = {
+            "id": _id(),
+            "type": "networkNode",
+            "position": {"x": net_x, "y": NET_ROW_Y},
+            "data": net_data,
+        }
+        net_ids[net_name] = net_node["id"]
+        nodes.append(net_node)
+        net_x += VM_SPACING
+
+    # ── Gateway ──
+    gw_outbound = gw_def.get("outbound_ports", [])
+    gw_node = {
+        "id": _id(),
+        "type": "networkNode",
+        "position": {"x": 150, "y": GW_Y},
+        "data": {
+            "name": "gateway",
+            "label": "gateway",
+            "subtype": "gateway",
+            "gatewayMode": "nat-portforward" if external_access else "nat",
+            "portForwards": [],
+            "outboundPolicy": "restrict" if gw_outbound else "allow-all",
+            "outboundPorts": ",".join(str(p) for p in gw_outbound),
+            "icon": "\U0001f310",
+        },
+    }
+    nodes.append(gw_node)
+    # Connect gateway to the first network
+    first_net = list(nets_def.keys())[0] if nets_def else None
+    if first_net and first_net in net_ids:
+        edges.append(_gw_net_edge(gw_node["id"], net_ids[first_net]))
+
+    # ── VMs ──
+    vm_x = 150
+    vm_index = 0
+    for vm_name, vm_cfg in vms_def.items():
+        role = vm_cfg.get("role", "")
+        os_type = vm_cfg.get("os", "rhcos")
+        power_on = vm_cfg.get("power_on", True)
+        has_bmc = vm_cfg.get("bmc", role == "control-plane")
+        bmc_ip = vm_cfg.get("bmc_ip", "")
+        disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
+        nics_cfg = vm_cfg.get("nics", [])
+
+        icon = "\U0001f5a5"
+        if os_type == "blank":
+            icon = "\U0001f4e6"
+
+        # Build NICs
+        nics = []
+        for i, nic_cfg in enumerate(nics_cfg):
+            mac_fn = (
+                _bmc_mac
+                if nets_def.get(nic_cfg.get("network", ""), {}).get("type") == "bmc"
+                else _mac
+            )
+            nic = {
+                "id": f"nic-{_id()}",
+                "name": f"eth{i}",
+                "mac": mac_fn(),
+                "model": nic_cfg.get("model", "virtio"),
+            }
+            if nic_cfg.get("ip"):
+                nic["ip"] = nic_cfg["ip"]
+            nics.append(nic)
+
+        # Build disk controllers and storage nodes
+        disk_controllers = []
+        disk_nodes = []
+        disk_edges_list = []
+        boot_device_ids = []
+        for di, disk_cfg in enumerate(disks_cfg):
+            dc = {"id": f"dp-{_id()}", "name": f"disk{di}", "bus": "virtio"}
+            disk_controllers.append(dc)
+            disk_id = _id()
+            if di == 0:
+                boot_device_ids.append(disk_id)
+            disk_node = {
+                "id": disk_id,
+                "type": "storageNode",
+                "position": {"x": vm_x - 190, "y": VM_ROW_Y + 70 + di * 100},
+                "data": {
+                    "label": f"{vm_name}-disk{di}",
+                    "name": f"{vm_name}-disk{di}",
+                    "size": disk_cfg.get("size_gb", 50),
+                    "format": "qcow2",
+                    "icon": "\U0001f6e2",
+                },
+            }
+            disk_edge = {
+                "id": _id(),
+                "source": disk_id,
+                "target": "",  # filled after VM node is created
+                "sourceHandle": "right",
+                "targetHandle": f"dp-{dc['id']}-left",
+                "type": "smoothstep",
+                "style": {
+                    "stroke": "rgba(251,191,36,0.6)",
+                    "strokeWidth": 2,
+                    "strokeDasharray": "4 4",
+                },
+                "animated": False,
+                "className": "edge-storage-pulse",
+            }
+            disk_nodes.append(disk_node)
+            disk_edges_list.append(disk_edge)
+
+        # Add cdrom controller for non-blank VMs
+        if os_type != "blank":
+            dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
+            disk_controllers.append(dc_cdrom)
+
+        vm_data = {
+            "label": vm_name,
+            "name": vm_name,
+            "vcpus": vm_cfg.get("vcpus", 2),
+            "ram": vm_cfg.get("ram_gb", 4),
+            "os": os_type,
+            "icon": icon,
+            "nics": nics,
+            "diskControllers": disk_controllers,
+            "bmcEnabled": has_bmc,
+            "firmware": vm_cfg.get("firmware", "uefi"),
+            "secureBoot": False,
+            "bootDevices": boot_device_ids,
+            "bootMethod": "disk",
+            "powerOnAtDeploy": power_on,
+        }
+        if bmc_ip:
+            vm_data["bmcIp"] = bmc_ip
+        if role == "control-plane":
+            vm_data["tags"] = {"AnsibleGroup": "controllers"}
+        elif role == "bastion":
+            vm_data["tags"] = {"AnsibleGroup": "bastions,showroom"}
+
+        vm_node = {
+            "id": _id(),
+            "type": "vmNode",
+            "position": {"x": vm_x, "y": VM_ROW_Y},
+            "data": vm_data,
+        }
+
+        # Fix up disk edge targets
+        for de in disk_edges_list:
+            de["target"] = vm_node["id"]
+
+        nodes.append(vm_node)
+        nodes.extend(disk_nodes)
+        edges.extend(disk_edges_list)
+
+        # Connect NICs to networks
+        for ni, nic_cfg in enumerate(nics_cfg):
+            net_name = nic_cfg.get("network", "")
+            if net_name in net_ids:
+                handle = "top" if ni == 0 else "bottom"
+                edges.append(_net_edge(net_ids[net_name], vm_node, ni, handle))
+
+        vm_x += VM_SPACING
+        vm_index += 1
+
+    return {"nodes": nodes, "edges": edges, "externalIps": external_ips}
+
+
 def generate_topology_from_template(
     resolved: dict,
     bmc_password: str = "password",
     external_access: bool = False,  # pragma: allowlist secret
 ) -> dict:
+    # Fully-declarative templates with a `vms` section use the generic generator
+    if resolved.get("vms"):
+        return _generate_topology_from_vms(resolved, bmc_password, external_access)
+
     nodes = []
     edges = []
     external_ips = []

@@ -770,6 +770,7 @@ export default function PropertiesPanel() {
                           const updated = [...nics]; updated[i] = { ...nic, model: e.target.value }; update("nics", updated);
                         }}>
                           <option value="virtio">virtio</option>
+                          <option value="igb">igb (SR-IOV)</option>
                           <option value="e1000e">e1000e</option>
                           <option value="e1000">e1000</option>
                           <option value="rtl8139">rtl8139</option>

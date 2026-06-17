@@ -567,7 +567,7 @@ _BRIDGE_RE = re.compile(r"^br-(?:troshka-|bmc-)?[a-f0-9]+$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 _BUS_TYPES = {"virtio", "scsi", "sata", "ide", "usb"}
-_NET_MODELS = {"virtio", "e1000", "rtl8139"}
+_NET_MODELS = {"virtio", "e1000", "e1000e", "igb", "rtl8139"}
 
 
 def _validate_domain_name(name):
