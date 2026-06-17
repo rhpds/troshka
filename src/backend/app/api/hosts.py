@@ -719,16 +719,15 @@ def poweroff_host(
         if provider:
             creds = provider.get_credentials()
 
-    if host.provider:
-        from app.services.providers import get_provider_driver
+    if not host.provider:
+        raise HTTPException(
+            status_code=400, detail="No provider configured for this host"
+        )
 
-        drv = get_provider_driver(host.provider)
-        drv.stop_host(host.provider, host.instance_id)
-    else:
-        from app.services.provisioner import _get_ec2_client
+    from app.services.providers import get_provider_driver
 
-        client = _get_ec2_client(credentials=creds)
-        client.stop_instances(InstanceIds=[host.instance_id])
+    drv = get_provider_driver(host.provider)
+    drv.stop_host(host.provider, host.instance_id)
 
     host.state = "stopped"
     host.agent_status = "disconnected"
@@ -1063,11 +1062,16 @@ def resize_storage(
         )
     if not host.instance_id:
         raise HTTPException(
-            status_code=400, detail="No EC2 instance associated — cannot resize"
+            status_code=400, detail="No instance associated — cannot resize"
         )
 
     provider = host.provider
-    creds = provider.get_credentials() if provider else None
+    if not provider or provider.type != "ec2":
+        raise HTTPException(
+            status_code=400,
+            detail="Storage resize via this endpoint is only supported for AWS EC2 hosts",
+        )
+    creds = provider.get_credentials()
 
     from app.services.provisioner import _get_ec2_client
 
