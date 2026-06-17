@@ -507,7 +507,11 @@ def generate_topology_from_template(
 ) -> dict:
     # Fully-declarative templates with a `vms` section use the generic generator
     if resolved.get("vms"):
-        return _generate_topology_from_vms(resolved, bmc_password, external_access)
+        topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
+        from app.services.auto_layout import auto_layout
+
+        topo["nodes"], topo["edges"] = auto_layout(topo["nodes"], topo["edges"])
+        return topo
 
     nodes = []
     edges = []

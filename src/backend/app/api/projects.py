@@ -186,6 +186,16 @@ def list_topology_templates(user: User = Depends(get_current_user)):
     return list_yaml_templates()
 
 
+@router.post("/auto-layout")
+def auto_layout_topology(body: dict, user: User = Depends(get_current_user)):
+    from app.services.auto_layout import auto_layout
+
+    nodes = body.get("nodes", [])
+    edges = body.get("edges", [])
+    new_nodes, new_edges = auto_layout(nodes, edges)
+    return {"nodes": new_nodes, "edges": new_edges}
+
+
 @router.post("/from-template", status_code=201)
 def create_project_from_template(
     body: dict,

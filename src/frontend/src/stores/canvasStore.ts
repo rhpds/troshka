@@ -118,7 +118,7 @@ interface CanvasState {
   setSelectedNode: (nodeId: string | null) => void;
   toggleMinimap: () => void;
   getSelectedNode: () => Node | undefined;
-  autoLayout: () => void;
+  autoLayout: () => Promise<void>;
   duplicateNode: (nodeId: string) => void;
   deleteEdge: (edgeId: string) => void;
   loadProject: (projectId: string) => void;
@@ -773,250 +773,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     });
   },
 
-  autoLayout: () => {
+  autoLayout: async () => {
     const nodes = get().nodes;
     const edges = get().edges;
     if (nodes.length === 0) return;
 
-    const updated = new Map<string, { x: number; y: number }>();
-
-    // Classify nodes
-    const networks = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network");
-    const routers = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "router");
-    const gateways = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "gateway");
-    const vmNodes = nodes.filter((n) => n.type === "vmNode");
-    const storageNodes = nodes.filter((n) => n.type === "storageNode");
-
-    // Build connection maps
-    const vmToNetworks = new Map<string, string[]>();
-    const networkToVms = new Map<string, string[]>();
-    const vmToStorage = new Map<string, string[]>();
-    const storageToVm = new Map<string, string>();
-
-    for (const e of edges) {
-      const src = nodes.find((n) => n.id === e.source);
-      const tgt = nodes.find((n) => n.id === e.target);
-      if (!src || !tgt) continue;
-
-      if (src.type === "vmNode" && tgt.type === "networkNode") {
-        vmToNetworks.set(src.id, [...(vmToNetworks.get(src.id) || []), tgt.id]);
-        networkToVms.set(tgt.id, [...(networkToVms.get(tgt.id) || []), src.id]);
-      }
-      if (tgt.type === "vmNode" && src.type === "networkNode") {
-        vmToNetworks.set(tgt.id, [...(vmToNetworks.get(tgt.id) || []), src.id]);
-        networkToVms.set(src.id, [...(networkToVms.get(src.id) || []), tgt.id]);
-      }
-      if (src.type === "vmNode" && tgt.type === "storageNode") {
-        vmToStorage.set(src.id, [...(vmToStorage.get(src.id) || []), tgt.id]);
-        storageToVm.set(tgt.id, src.id);
-      }
-      if (tgt.type === "vmNode" && src.type === "storageNode") {
-        vmToStorage.set(tgt.id, [...(vmToStorage.get(tgt.id) || []), src.id]);
-        storageToVm.set(src.id, tgt.id);
-      }
-    }
-
-    // Sizing
-    const netW = 240;
-    const netH = 70;
-    const vmW = 200;
-    const vmH = 230;
-    const diskW = 170;
-    const diskH = 90;
-    const gapX = 40;
-    const gapY = 80;
-    const diskGap = 30;
-
-    // Column width for VMs: disk + gap + VM + gap
-    const colW = diskW + diskGap + vmW + gapX;
-
-    // Determine which networks connect via top vs bottom handles on VMs
-    const topNetIds = new Set<string>();
-    const bottomNetIds = new Set<string>();
-    for (const e of edges) {
-      const src = nodes.find((n) => n.id === e.source);
-      const tgt = nodes.find((n) => n.id === e.target);
-      if (!src || !tgt) continue;
-      const sH = (e.sourceHandle || "").toLowerCase();
-      const tH = (e.targetHandle || "").toLowerCase();
-      if (src.type === "vmNode" && tgt.type === "networkNode") {
-        if (sH.includes("top")) topNetIds.add(tgt.id);
-        else if (sH.includes("bottom")) bottomNetIds.add(tgt.id);
-        else topNetIds.add(tgt.id);
-      }
-      if (tgt.type === "vmNode" && src.type === "networkNode") {
-        if (tH.includes("top")) topNetIds.add(src.id);
-        else if (tH.includes("bottom")) bottomNetIds.add(src.id);
-        else topNetIds.add(src.id);
-      }
-    }
-    // BMC networks always go to bottom
-    for (const n of networks) {
-      if ((n.data as Record<string, any>).networkType === "bmc") {
-        topNetIds.delete(n.id);
-        bottomNetIds.add(n.id);
-      }
-    }
-    // Unconnected networks go to top
-    for (const n of networks) {
-      if (!topNetIds.has(n.id) && !bottomNetIds.has(n.id)) topNetIds.add(n.id);
-    }
-
-    const topNets = networks.filter((n) => topNetIds.has(n.id));
-    const bottomNets = networks.filter((n) => bottomNetIds.has(n.id));
-
-    // --- Layout rows ---
-    let currentY = 40;
-
-    // Row 0: Gateways (top, spaced wide)
-    if (gateways.length > 0) {
-      const gwSpacing = Math.max(netW + gapX, colW);
-      gateways.forEach((n, i) => {
-        updated.set(n.id, { x: 40 + i * gwSpacing, y: currentY });
+    try {
+      const resp = await fetch("/api/v1/projects/auto-layout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nodes, edges }),
       });
-      currentY += netH + gapY;
+      if (!resp.ok) return;
+      const result = await resp.json();
+      set({ nodes: result.nodes, edges: result.edges });
+    } catch {
+      // Layout is best-effort — don't break the UI if the backend is down
     }
-
-    // Row 1: Top networks, with routers placed to the right of their connected networks
-    const routerToNets = new Map<string, string[]>();
-    for (const e of edges) {
-      const src = nodes.find((n) => n.id === e.source);
-      const tgt = nodes.find((n) => n.id === e.target);
-      if (!src || !tgt) continue;
-      const srcSub = (src.data as Record<string, any>).subtype as string;
-      const tgtSub = (tgt.data as Record<string, any>).subtype as string;
-      if (src.type === "networkNode" && tgt.type === "networkNode") {
-        if (srcSub === "router" || srcSub === "gateway") {
-          routerToNets.set(src.id, [...(routerToNets.get(src.id) || []), tgt.id]);
-        }
-        if (tgtSub === "router" || tgtSub === "gateway") {
-          routerToNets.set(tgt.id, [...(routerToNets.get(tgt.id) || []), src.id]);
-        }
-      }
-    }
-
-    const placedInfra = new Set<string>();
-    if (topNets.length > 0 || routers.length > 0) {
-      let netX = 40;
-      for (const net of topNets) {
-        updated.set(net.id, { x: netX, y: currentY });
-        placedInfra.add(net.id);
-        netX += netW + gapX;
-
-        // Place routers connected to this network immediately to its right
-        for (const r of routers) {
-          if (placedInfra.has(r.id)) continue;
-          const connNets = routerToNets.get(r.id) || [];
-          if (connNets.includes(net.id)) {
-            updated.set(r.id, { x: netX, y: currentY });
-            placedInfra.add(r.id);
-            netX += netW + gapX;
-          }
-        }
-      }
-      // Place unconnected routers at the end
-      for (const r of routers) {
-        if (placedInfra.has(r.id)) continue;
-        updated.set(r.id, { x: netX, y: currentY });
-        netX += netW + gapX;
-      }
-      currentY += netH + gapY;
-    }
-
-    // VM row: place VMs left to right, accounting for disk space only when needed
-    const vmRowY = currentY;
-    const placedVms = new Set<string>();
-    let cursorX = 40;
-    let maxVmBottom = vmRowY;
-    let vmCount = 0;
-
-    for (const vm of vmNodes) {
-      if (placedVms.has(vm.id)) continue;
-
-      const disks = vmToStorage.get(vm.id) || [];
-      const hasDisk = disks.length > 0;
-
-      // Position disks to the left of the VM, stacked vertically with enough gap
-      if (hasDisk) {
-        const diskSpacing = diskH + 20;
-        disks.forEach((diskId, di) => {
-          updated.set(diskId, {
-            x: cursorX,
-            y: vmRowY + 20 + di * diskSpacing,
-          });
-        });
-        const disksBottom = vmRowY + 20 + disks.length * diskSpacing;
-        if (disksBottom > maxVmBottom) maxVmBottom = disksBottom;
-        cursorX += diskW + diskGap;
-      }
-
-      updated.set(vm.id, { x: cursorX, y: vmRowY });
-      const vmBottom = vmRowY + vmH;
-      if (vmBottom > maxVmBottom) maxVmBottom = vmBottom;
-
-      cursorX += vmW + gapX;
-      placedVms.add(vm.id);
-      vmCount++;
-    }
-
-    currentY = maxVmBottom + gapY;
-
-    // Bottom networks row — position under the connected VM when possible
-    if (bottomNets.length > 0) {
-      const unplacedBottom: typeof bottomNets = [];
-      for (const n of bottomNets) {
-        const connVms = networkToVms.get(n.id) || [];
-        const connVmPos = connVms.map((vid) => updated.get(vid)).filter(Boolean);
-        if (connVmPos.length > 0) {
-          const avgX = connVmPos.reduce((sum, p) => sum + p!.x, 0) / connVmPos.length;
-          updated.set(n.id, { x: avgX, y: currentY });
-        } else {
-          unplacedBottom.push(n);
-        }
-      }
-      if (unplacedBottom.length > 0) {
-        const vmAreaWidth = cursorX - 40;
-        const netTotalWidth = unplacedBottom.length * (netW + gapX) - gapX;
-        const netStartX = 40 + (vmAreaWidth - netTotalWidth) / 2;
-        unplacedBottom.forEach((n, i) => {
-          updated.set(n.id, { x: Math.max(40, netStartX + i * (netW + gapX)), y: currentY });
-        });
-      }
-      currentY += netH + gapY;
-    }
-
-    // Unattached storage
-    const unattached = storageNodes.filter((n) => !storageToVm.has(n.id));
-    if (unattached.length > 0) {
-      unattached.forEach((n, i) => {
-        updated.set(n.id, { x: 40 + i * (diskW + gapX), y: currentY });
-      });
-    }
-
-    // Fix edge handles for bottom networks: VM bottom → network top
-    const bottomNetIdSet = new Set(bottomNets.map((n) => n.id));
-    const updatedEdges = edges.map((e) => {
-      const src = nodes.find((n) => n.id === e.source);
-      const tgt = nodes.find((n) => n.id === e.target);
-      if (!src || !tgt) return e;
-      if (src.type === "networkNode" && tgt.type === "vmNode" && bottomNetIdSet.has(src.id)) {
-        const handle = (e.targetHandle || "").replace(/-top$/, "-bottom");
-        return { ...e, sourceHandle: "top", targetHandle: handle };
-      }
-      if (tgt.type === "networkNode" && src.type === "vmNode" && bottomNetIdSet.has(tgt.id)) {
-        const handle = (e.sourceHandle || "").replace(/-top$/, "-bottom");
-        return { ...e, sourceHandle: handle, targetHandle: "top" };
-      }
-      return e;
-    });
-
-    set({
-      nodes: nodes.map((n) => {
-        const pos = updated.get(n.id);
-        return pos ? { ...n, position: pos } : n;
-      }),
-      edges: updatedEdges,
-    });
   },
 }), {
   name: "troshka-canvas-settings",

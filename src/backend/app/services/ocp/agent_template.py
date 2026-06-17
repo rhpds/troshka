@@ -293,6 +293,10 @@ def _setup_bastion_cloud_init(
                 "  - nmcli con up cluster-nic 2>/dev/null || true\n"
             )
 
+        # Ensure ciUserData exists (may not be set if no bastion_iso)
+        if "ciUserData" not in node["data"]:
+            node["data"]["ciUserData"] = "runcmd:\n"
+
         # Guard: skip all remaining runcmd blocks if cluster already installed (pattern deploy)
         _guard = "    [ -f /home/cloud-user/ocp-install/auth/kubeconfig ] && exit 0\n"
 

@@ -88,7 +88,7 @@ export default function CanvasToolbar() {
 
       <button
         className="tool-btn"
-        onClick={() => { autoLayout(); setTimeout(() => fitView({ padding: 0.2 }), 50); }}
+        onClick={async () => { await autoLayout(); setTimeout(() => fitView({ padding: 0.2 }), 50); }}
         title="Auto Layout"
       >
         ⊞⃗
