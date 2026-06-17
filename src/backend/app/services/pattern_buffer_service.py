@@ -489,7 +489,9 @@ def check_auto_sleep(db):
 
         last_activity = pool.pb_last_activity_at
         if last_activity is None:
-            last_activity = pool.created_at
+            pool.pb_last_activity_at = datetime.now(UTC)
+            db.commit()
+            continue
 
         idle_seconds = (datetime.now(UTC) - last_activity).total_seconds()
         threshold_seconds = pool.pb_auto_sleep_minutes * 60
