@@ -2475,11 +2475,24 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             break
         _t.sleep(5)
 
+    # Force kube-apiserver rollout to pick up current kubelet serving CA.
+    # After pattern restore or extended downtime, the API server may not
+    # trust the kubelet's serving cert — this triggers a redeploy.
+    _push("certs", "refreshing API server certificates")
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"troshka-cert-refresh-\'$(date +%s)\'"}}\' 2>/dev/null',
+        timeout=10,
+    )
+    logger.info("Triggered kube-apiserver rollout for %s", project_id[:8])
+
     # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
     _push("nodes", "waiting for nodes to be Ready")
     api_seen = False
     last_csr_check = 0
-    _apiserver_rollout_triggered = False
     while _t.time() < deadline:
         result = _exec_on_bastion(
             host,
@@ -2511,20 +2524,6 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
             if approved:
                 _push("certs", f"approved {approved} certificate(s)")
-                if not _apiserver_rollout_triggered:
-                    _exec_on_bastion(
-                        host,
-                        project_id,
-                        bastion_ip,
-                        password,
-                        'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"cert-renewal-\'$(date +%s)\'"}}\' 2>/dev/null',
-                        timeout=10,
-                    )
-                    _apiserver_rollout_triggered = True
-                    logger.info(
-                        "Triggered kube-apiserver rollout for cert renewal %s",
-                        project_id[:8],
-                    )
             last_csr_check = _t.time()
 
         _t.sleep(5)
