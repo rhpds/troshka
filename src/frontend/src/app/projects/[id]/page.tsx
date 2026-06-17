@@ -61,6 +61,7 @@ export default function ProjectCanvasPage() {
   const [deployHostId, setDeployHostId] = useState("");
   const [timerCountdown, setTimerCountdown] = useState<string | null>(null);
   const [timerUrgency, setTimerUrgency] = useState<"normal" | "warning" | "critical">("normal");
+  const [timerLabel, setTimerLabel] = useState<string>("Shutdown");
   const [timerToast, setTimerToast] = useState<{ timer: string; minutes: number } | null>(null);
 
   // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
@@ -199,12 +200,15 @@ export default function ProjectCanvasPage() {
 
   // Timer countdown ticker
   useEffect(() => {
-    const earliest = [autoStopExpiresAt, lifetimeExpiresAt]
-      .filter(Boolean)
-      .map(t => new Date(t!).getTime())
-      .sort((a, b) => a - b)[0];
+    const candidates = [
+      autoStopExpiresAt ? { time: new Date(autoStopExpiresAt).getTime(), label: "Shutdown" } : null,
+      lifetimeExpiresAt ? { time: new Date(lifetimeExpiresAt).getTime(), label: "Deleting" } : null,
+    ].filter(Boolean).sort((a, b) => a!.time - b!.time);
+    const nearest = candidates[0];
 
-    if (!earliest) { setTimerCountdown(null); return; }
+    if (!nearest) { setTimerCountdown(null); return; }
+    const earliest = nearest.time;
+    setTimerLabel(nearest.label);
 
     let id: ReturnType<typeof setInterval>;
     const tick = () => {
@@ -541,7 +545,7 @@ export default function ProjectCanvasPage() {
               title="Time remaining (click to open Project settings)"
               onClick={() => setShowPalette(true)}
             >
-              ⏱ {timerCountdown}
+              {timerLabel} in {timerCountdown}
             </span>
           )}
         </div>
