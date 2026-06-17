@@ -200,9 +200,10 @@ export default function ProjectCanvasPage() {
 
     if (!earliest) { setTimerCountdown(null); return; }
 
+    let id: ReturnType<typeof setInterval>;
     const tick = () => {
       const remaining = earliest - Date.now();
-      if (remaining <= 0) { setTimerCountdown("Expired"); setTimerUrgency("critical"); return; }
+      if (remaining <= 0) { setTimerCountdown("Expired"); setTimerUrgency("critical"); clearInterval(id); return; }
       const mins = Math.floor(remaining / 60000);
       const h = Math.floor(mins / 60);
       const m = mins % 60;
@@ -210,7 +211,7 @@ export default function ProjectCanvasPage() {
       setTimerUrgency(mins <= 5 ? "critical" : mins <= 15 ? "warning" : "normal");
     };
     tick();
-    const id = setInterval(tick, 1000);
+    id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [autoStopExpiresAt, lifetimeExpiresAt]);
 
