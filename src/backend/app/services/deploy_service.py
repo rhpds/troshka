@@ -1881,7 +1881,21 @@ def deploy_project_async(
         s.commit()
         notify_project(
             project_id,
-            {"type": "project-state", "state": "active", "deploy_error": None},
+            {
+                "type": "project-state",
+                "state": "active",
+                "deploy_error": None,
+                "auto_stop_expires_at": (
+                    project.auto_stop_expires_at.isoformat()
+                    if project.auto_stop_expires_at
+                    else None
+                ),
+                "lifetime_expires_at": (
+                    project.lifetime_expires_at.isoformat()
+                    if project.lifetime_expires_at
+                    else None
+                ),
+            },
         )
         vm_states = {vm["node_id"]: "running" for vm in vms}
         notify_project(
@@ -2703,7 +2717,17 @@ def stop_project_async(project_id: str):
         s.commit()
         notify_project(
             project_id,
-            {"type": "project-state", "state": "stopped", "deploy_error": None},
+            {
+                "type": "project-state",
+                "state": "stopped",
+                "deploy_error": None,
+                "auto_stop_expires_at": None,
+                "lifetime_expires_at": (
+                    project.lifetime_expires_at.isoformat()
+                    if project.lifetime_expires_at
+                    else None
+                ),
+            },
         )
         logger.info("Stop %s: complete", project_id[:8])
 
@@ -2883,7 +2907,21 @@ def start_project_async(project_id: str):
         s.commit()
         notify_project(
             project_id,
-            {"type": "project-state", "state": "active", "deploy_error": None},
+            {
+                "type": "project-state",
+                "state": "active",
+                "deploy_error": None,
+                "auto_stop_expires_at": (
+                    project.auto_stop_expires_at.isoformat()
+                    if project.auto_stop_expires_at
+                    else None
+                ),
+                "lifetime_expires_at": (
+                    project.lifetime_expires_at.isoformat()
+                    if project.lifetime_expires_at
+                    else None
+                ),
+            },
         )
         logger.info("Start %s: complete", project_id[:8])
 

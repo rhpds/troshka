@@ -167,6 +167,12 @@ export default function ProjectCanvasPage() {
     }
   }, [ws.projectState, ws.deployError]);
 
+  // WebSocket → timer expiry updates (from project-state messages after stop/start/deploy)
+  useEffect(() => {
+    if (ws.autoStopExpiresAt !== undefined) setAutoStopExpiresAt(ws.autoStopExpiresAt);
+    if (ws.lifetimeExpiresAt !== undefined) setLifetimeExpiresAt(ws.lifetimeExpiresAt);
+  }, [ws.autoStopExpiresAt, ws.lifetimeExpiresAt]);
+
   // WebSocket → deploy progress
   useEffect(() => {
     setDeployProgress(ws.deployProgress);
