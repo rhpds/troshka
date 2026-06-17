@@ -372,11 +372,15 @@ def update_project(
             project.auto_stop_started_at = None
             project.auto_stop_expires_at = None
             project.auto_stop_warned = False
-        elif project.auto_stop_started_at:
-            project.auto_stop_expires_at = (
-                project.auto_stop_started_at
-                + datetime.timedelta(minutes=project.auto_stop_minutes)
-            )
+        else:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if not project.auto_stop_started_at and project.state == "active":
+                project.auto_stop_started_at = now
+            if project.auto_stop_started_at:
+                project.auto_stop_expires_at = (
+                    project.auto_stop_started_at
+                    + datetime.timedelta(minutes=project.auto_stop_minutes)
+                )
             project.auto_stop_warned = False
 
     # Auto-delete timer recomputation
@@ -385,11 +389,15 @@ def update_project(
             project.auto_delete_started_at = None
             project.lifetime_expires_at = None
             project.auto_delete_warned = False
-        elif project.auto_delete_started_at:
-            project.lifetime_expires_at = (
-                project.auto_delete_started_at
-                + datetime.timedelta(minutes=project.auto_delete_minutes)
-            )
+        else:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if not project.auto_delete_started_at and project.state != "draft":
+                project.auto_delete_started_at = now
+            if project.auto_delete_started_at:
+                project.lifetime_expires_at = (
+                    project.auto_delete_started_at
+                    + datetime.timedelta(minutes=project.auto_delete_minutes)
+                )
             project.auto_delete_warned = False
 
     db.commit()

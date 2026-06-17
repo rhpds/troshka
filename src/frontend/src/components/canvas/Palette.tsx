@@ -585,7 +585,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div className="palette-item-label">Auto-Stop</div>
                   <select
-                    value={autoStopMinutes == null ? "null" : TIMER_PRESETS.some(p => p.value === autoStopMinutes) ? String(autoStopMinutes) : "-1"}
+                    value={autoStopMinutes == null ? "null" : String(autoStopMinutes)}
                     onChange={(e) => {
                       const v = e.target.value;
                       if (v === "-1") { setCustomStopOpen(true); return; }
@@ -637,7 +637,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div className="palette-item-label">Auto-Delete</div>
                   <select
-                    value={autoDeleteMinutes == null ? "null" : TIMER_PRESETS.some(p => p.value === autoDeleteMinutes) ? String(autoDeleteMinutes) : "-1"}
+                    value={autoDeleteMinutes == null ? "null" : String(autoDeleteMinutes)}
                     onChange={(e) => {
                       const v = e.target.value;
                       if (v === "-1") { setCustomDeleteOpen(true); return; }
