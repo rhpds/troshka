@@ -227,10 +227,6 @@ TROSHKA_AUTH__JWT_SECRET=my-secret
 
 See `src/backend/config/config.local.yaml.example` for local dev setup.
 
-### OCP Virt Provider
-
-For setting up Troshka on OpenShift Virtualization (KubeVirt), see [docs/ocp_virt_setup.md](docs/ocp_virt_setup.md).
-
 ## Authentication
 
 | Mode | How | When |
