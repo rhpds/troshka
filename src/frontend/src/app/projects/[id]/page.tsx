@@ -32,6 +32,10 @@ export default function ProjectCanvasPage() {
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("draft");
   const [projectHostId, setProjectHostId] = useState("");
+  const [autoStopMinutes, setAutoStopMinutes] = useState<number | null>(null);
+  const [autoDeleteMinutes, setAutoDeleteMinutes] = useState<number | null>(null);
+  const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
+  const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -71,6 +75,10 @@ export default function ProjectCanvasPage() {
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
         setDeployError(data.deploy_error || null);
+        setAutoStopMinutes(data.auto_stop_minutes ?? null);
+        setAutoDeleteMinutes(data.auto_delete_minutes ?? null);
+        setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
+        setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
@@ -679,6 +687,24 @@ export default function ProjectCanvasPage() {
         {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: ocpInstallElapsed != null ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster ready" } : ocpStatus === "error" ? { phase: "error", detail: "install failed" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
+        }} autoStopMinutes={autoStopMinutes} autoDeleteMinutes={autoDeleteMinutes} onAutoStopChange={(v) => {
+          setAutoStopMinutes(v);
+          fetch(`/api/v1/projects/${projectId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ auto_stop_minutes: v }),
+          }).then(r => r.json()).then(data => {
+            setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
+          });
+        }} onAutoDeleteChange={(v) => {
+          setAutoDeleteMinutes(v);
+          fetch(`/api/v1/projects/${projectId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ auto_delete_minutes: v }),
+          }).then(r => r.json()).then(data => {
+            setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
+          });
         }} />}
         <button
           onClick={() => setShowPalette(!showPalette)}

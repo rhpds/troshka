@@ -3,6 +3,31 @@
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 
+const TIMER_PRESETS = [
+  { label: "None", value: null },
+  { label: "30m", value: 30 },
+  { label: "1h", value: 60 },
+  { label: "2h", value: 120 },
+  { label: "4h", value: 240 },
+  { label: "8h", value: 480 },
+  { label: "24h", value: 1440 },
+  { label: "Custom...", value: -1 },
+] as const;
+
+function formatMinutes(m: number): string {
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  if (h && min) return `${h}h ${min}m`;
+  if (h) return `${h}h`;
+  return `${min}m`;
+}
+
+function currentPresetLabel(minutes: number | null | undefined): string {
+  if (minutes == null) return "None";
+  const preset = TIMER_PRESETS.find(p => p.value === minutes);
+  return preset ? preset.label : formatMinutes(minutes);
+}
+
 interface PaletteItemDef {
   type: string;
   label: string;
@@ -170,7 +195,7 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
@@ -186,6 +211,12 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const [hostInfo, setHostInfo] = useState<{ instance_id: string; ip_address: string; provider_type: string; provider_name: string } | null>(null);
+  const [customStopOpen, setCustomStopOpen] = useState(false);
+  const [customDeleteOpen, setCustomDeleteOpen] = useState(false);
+  const [customStopH, setCustomStopH] = useState(0);
+  const [customStopM, setCustomStopM] = useState(0);
+  const [customDeleteH, setCustomDeleteH] = useState(0);
+  const [customDeleteM, setCustomDeleteM] = useState(0);
   const nodes = useCanvasStore((s) => s.nodes);
 
   useEffect(() => {
@@ -538,13 +569,119 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           <span style={{ fontSize: 9 }}>{collapsedSections.has("Project") ? "▸" : "▾"}</span>
         </div>
         {!collapsedSections.has("Project") && (
-          <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
-            <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
-            <div>
-              <div className="palette-item-label">Start Order</div>
-              <div className="palette-item-desc">VM boot sequence</div>
+          <>
+            <div className="palette-item" onClick={onOpenStartOrder} style={{ cursor: "pointer" }}>
+              <div className="palette-icon" style={{ background: "rgba(108,99,255,0.15)" }}>🔢</div>
+              <div>
+                <div className="palette-item-label">Start Order</div>
+                <div className="palette-item-desc">VM boot sequence</div>
+              </div>
             </div>
-          </div>
+
+            {/* Auto-Stop Timer */}
+            <div className="palette-item" style={{ cursor: "default" }}>
+              <div className="palette-icon" style={{ background: "rgba(251,191,36,0.15)" }}>⏱</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="palette-item-label">Auto-Stop</div>
+                  <select
+                    value={autoStopMinutes == null ? "null" : TIMER_PRESETS.some(p => p.value === autoStopMinutes) ? String(autoStopMinutes) : "-1"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "-1") { setCustomStopOpen(true); return; }
+                      setCustomStopOpen(false);
+                      onAutoStopChange?.(v === "null" ? null : Number(v));
+                    }}
+                    style={{
+                      fontSize: 10, padding: "1px 4px", borderRadius: 3,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                      maxWidth: 80,
+                    }}
+                  >
+                    {TIMER_PRESETS.map((p) => (
+                      <option key={String(p.value)} value={String(p.value)}>{p.label}</option>
+                    ))}
+                    {autoStopMinutes != null && !TIMER_PRESETS.some(p => p.value === autoStopMinutes) && (
+                      <option value={String(autoStopMinutes)}>{formatMinutes(autoStopMinutes)}</option>
+                    )}
+                  </select>
+                </div>
+                <div className="palette-item-desc">Stop VMs after duration</div>
+                {customStopOpen && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                    <input type="number" min={0} max={999} value={customStopH} onChange={e => setCustomStopH(Number(e.target.value))}
+                      style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                    />
+                    <span style={{ fontSize: 10, opacity: 0.6 }}>h</span>
+                    <input type="number" min={0} max={59} value={customStopM} onChange={e => setCustomStopM(Number(e.target.value))}
+                      style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                    />
+                    <span style={{ fontSize: 10, opacity: 0.6 }}>m</span>
+                    <button onClick={() => {
+                      const total = customStopH * 60 + customStopM;
+                      if (total > 0) { onAutoStopChange?.(total); setCustomStopOpen(false); }
+                    }}
+                      style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "rgba(108,99,255,0.2)", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}
+                    >Set</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Auto-Delete Timer */}
+            <div className="palette-item" style={{ cursor: "default" }}>
+              <div className="palette-icon" style={{ background: "rgba(239,68,68,0.15)" }}>🗑</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="palette-item-label">Auto-Delete</div>
+                  <select
+                    value={autoDeleteMinutes == null ? "null" : TIMER_PRESETS.some(p => p.value === autoDeleteMinutes) ? String(autoDeleteMinutes) : "-1"}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "-1") { setCustomDeleteOpen(true); return; }
+                      setCustomDeleteOpen(false);
+                      onAutoDeleteChange?.(v === "null" ? null : Number(v));
+                    }}
+                    style={{
+                      fontSize: 10, padding: "1px 4px", borderRadius: 3,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--secondary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                      maxWidth: 80,
+                    }}
+                  >
+                    {TIMER_PRESETS.map((p) => (
+                      <option key={String(p.value)} value={String(p.value)}>{p.label}</option>
+                    ))}
+                    {autoDeleteMinutes != null && !TIMER_PRESETS.some(p => p.value === autoDeleteMinutes) && (
+                      <option value={String(autoDeleteMinutes)}>{formatMinutes(autoDeleteMinutes)}</option>
+                    )}
+                  </select>
+                </div>
+                <div className="palette-item-desc">Delete project after duration</div>
+                {customDeleteOpen && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                    <input type="number" min={0} max={999} value={customDeleteH} onChange={e => setCustomDeleteH(Number(e.target.value))}
+                      style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                    />
+                    <span style={{ fontSize: 10, opacity: 0.6 }}>h</span>
+                    <input type="number" min={0} max={59} value={customDeleteM} onChange={e => setCustomDeleteM(Number(e.target.value))}
+                      style={{ width: 36, fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--secondary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                    />
+                    <span style={{ fontSize: 10, opacity: 0.6 }}>m</span>
+                    <button onClick={() => {
+                      const total = customDeleteH * 60 + customDeleteM;
+                      if (total > 0) { onAutoDeleteChange?.(total); setCustomDeleteOpen(false); }
+                    }}
+                      style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "rgba(239,68,68,0.2)", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}
+                    >Set</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
         )}
       </div>
       <div className="palette-divider" />
