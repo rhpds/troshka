@@ -2110,7 +2110,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     break
 
     console_url = f"https://console-openshift-console.apps.{dns_domain}"
-    deadline = _t.time() + 600
+    deadline = _t.time() + 900
     logger.info(
         "OCP health monitor started for %s (bastion=%s, domain=%s)",
         project_id[:8],
@@ -2437,8 +2437,18 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         return
 
     # Phase 2: Ping CP nodes (pattern deploy path)
+    # Also approve CSRs early — bootstrap CSRs arrive while nodes are still
+    # booting, and approving them immediately lets the node proceed to
+    # requesting its serving cert sooner (otherwise there's a multi-minute gap)
     _push("nodes", "pinging control plane nodes")
+    last_csr_check_ping = 0
     while _t.time() < deadline:
+        if _t.time() - last_csr_check_ping >= 15:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check_ping = _t.time()
+
         items = []
         all_up = True
         for name in cp_names:
@@ -2469,6 +2479,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     _push("nodes", "waiting for nodes to be Ready")
     api_seen = False
     last_csr_check = 0
+    _apiserver_rollout_triggered = False
     while _t.time() < deadline:
         result = _exec_on_bastion(
             host,
@@ -2500,6 +2511,20 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
             if approved:
                 _push("certs", f"approved {approved} certificate(s)")
+                if not _apiserver_rollout_triggered:
+                    _exec_on_bastion(
+                        host,
+                        project_id,
+                        bastion_ip,
+                        password,
+                        'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"cert-renewal-\'$(date +%s)\'"}}\' 2>/dev/null',
+                        timeout=10,
+                    )
+                    _apiserver_rollout_triggered = True
+                    logger.info(
+                        "Triggered kube-apiserver rollout for cert renewal %s",
+                        project_id[:8],
+                    )
             last_csr_check = _t.time()
 
         _t.sleep(5)
@@ -2548,22 +2573,46 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             _push("operators", "waiting for API server")
         _t.sleep(10)
 
-    # Phase 5: Wait for console
+    # Phase 5: Wait for console (continue approving CSRs — serving certs
+    # often arrive late and block the console route)
     _push("console", "waiting for OpenShift console")
+    last_csr_check_console = 0
     while _t.time() < deadline:
+        if _t.time() - last_csr_check_console >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check_console = _t.time()
+
         result = _exec_on_bastion(
             host,
             project_id,
             bastion_ip,
             password,
-            f"curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null",
-            timeout=10,
+            f"oc get co console --no-headers 2>/dev/null | awk '{{print $3}}' && curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null",
+            timeout=15,
         )
-        if result and result.strip() == "200":
-            _push("console", "console ready")
-            break
+        if result:
+            lines = result.strip().split("\n")
+            co_available = lines[0].strip() == "True" if lines else False
+            http_code = lines[-1].strip() if len(lines) > 1 else ""
+            if co_available and http_code == "200":
+                _push("console", "console ready")
+                break
+            elif co_available:
+                _push("console", "operator ready, waiting for route")
+            else:
+                _push("console", "waiting for console operator")
         _push("console", "waiting for OpenShift console")
         _t.sleep(5)
+
+    # Final CSR sweep — don't declare ready with pending certs
+    for _ in range(6):
+        approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+        if not approved:
+            break
+        _push("certs", f"approved {approved} certificate(s)")
+        _t.sleep(10)
 
     elapsed_secs = int(_t.time() - start)
     _push("ready", "cluster ready")
@@ -2795,6 +2844,8 @@ def start_project_async(project_id: str):
 
         project.state = "active"
         project.deploy_error = None
+        if _is_ocp_topology(topology):
+            project.ocp_status = "monitoring"
         s.commit()
         notify_project(
             project_id,
