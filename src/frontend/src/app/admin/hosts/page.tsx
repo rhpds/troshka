@@ -901,7 +901,7 @@ export default function AdminHostsPage() {
                 const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
                 if (isPowering) return (
                   <>
-                    <Button variant="secondary" isLoading isDisabled>Powering off...</Button>
+                    <Button variant="secondary" isLoading isDisabled>{h.state === "stopped" ? "Powering on..." : "Powering off..."}</Button>
                     <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id)} isLoading={removingHosts.has(h.id)}>
                       {removingHosts.has(h.id) ? "Terminating..." : "Remove"}
                     </Button>
@@ -1042,7 +1042,6 @@ export default function AdminHostsPage() {
                   </Button>}
                 </>
               )}
-              </>); })()}
               {h.state === "active" && (
                 <Button variant="secondary" onClick={() => {
                   const msg = h.used_vcpus > 0
@@ -1050,7 +1049,7 @@ export default function AdminHostsPage() {
                     : `Power off ${h.instance_id}?`;
                   if (!window.confirm(msg)) return;
                   powerHost(h.id, "poweroff");
-                }} isDisabled={installingHosts.has(h.id) || updatingHosts.has(h.id) || poweringHosts.has(h.id)} isLoading={poweringHosts.has(h.id)}>
+                }} isDisabled={hostBusy} isLoading={poweringHosts.has(h.id)}>
                   Power Off
                 </Button>
               )}
@@ -1076,6 +1075,7 @@ export default function AdminHostsPage() {
               <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
                 {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
+              </>); })()}
               {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && !isOcpVirtHost(h) && (
                 <>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
