@@ -962,7 +962,7 @@ def poweron_host(
                         _kwargs["host_cert"] = _hc
                         _kwargs["host_key"] = _hk
             result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)
-            h.agent_status = "connected" if result["success"] else "install_failed"
+            h.agent_status = "connected" if result["success"] else "disconnected"
 
             # Store troshkad credentials
             troshkad_creds = result.get("troshkad_credentials", {})
