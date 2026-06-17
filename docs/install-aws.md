@@ -52,6 +52,21 @@ See `infra/iam-policy.json` for the complete policy document.
 
 Create an AWS provider in Troshka:
 
+1. Navigate to Admin → Providers
+2. Click "Add Provider" button
+3. Fill in the form:
+   - **Name**: `aws-prod` (or your preferred name)
+   - **Type**: Select "EC2"
+   - **Access Key ID**: Your AWS access key (AKIA...)
+   - **Secret Access Key**: Your AWS secret key
+   - **Region**: `us-east-1` (or your preferred region)
+4. Click "Create"
+5. Click "Test" button to verify credentials
+6. Wait for success confirmation message
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers \
   -H "Authorization: Bearer $TOKEN" \
@@ -69,9 +84,7 @@ curl -X POST http://localhost:8200/api/v1/providers \
 
 The response includes a `provider_id` — save this for subsequent operations.
 
-### Test Credentials
-
-Verify the provider credentials:
+**Test Credentials:**
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/test \
@@ -83,23 +96,26 @@ Expected response:
 {"status": "success", "message": "Provider credentials are valid"}
 ```
 
+</details>
+
 ## 3. VPC Setup
 
 Create a VPC with all required networking infrastructure.
 
-### Via Admin UI
-
-1. Navigate to Providers page
+1. Navigate to Admin → Providers
 2. Find your provider in the list
 3. Click "Setup VPC" button
-4. Wait for confirmation
+4. Wait for confirmation message
 
-### Via API
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/create-vpc \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+</details>
 
 ### What Gets Created
 
@@ -118,6 +134,11 @@ All resources are tagged with `ManagedBy: troshka` for identification.
 
 ### Verify VPC
 
+The Providers page shows VPC details once setup is complete.
+
+<details>
+<summary>API equivalent</summary>
+
 List discovered VPCs:
 
 ```bash
@@ -127,25 +148,48 @@ curl http://localhost:8200/api/v1/providers/{provider_id}/discover-vpcs \
 
 Response includes VPC ID, CIDR block, subnet IDs, and availability zones.
 
+</details>
+
 ## 4. S3 Bucket
 
-Create an S3 bucket for library items, pattern storage, and snapshot exports:
+Create an S3 bucket for library items, pattern storage, and snapshot exports.
 
-```bash
-curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/create-bucket \
-  -H "Authorization: Bearer $TOKEN"
-```
+1. Navigate to Admin → Providers
+2. Find your provider in the list
+3. Click "Setup S3" button
+4. Wait for confirmation message
 
 This creates a bucket named `troshka-images` in the provider's region. The bucket is required for:
 - Library item uploads (ISOs, disk images)
 - Pattern storage (captured VM state)
 - Snapshot exports (backing up project state)
 
+<details>
+<summary>API equivalent</summary>
+
+```bash
+curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/create-bucket \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+</details>
+
 ## 5. Host Image
 
 Choose how to obtain the RHEL host image.
 
 ### Option A: Marketplace RHEL (Easiest)
+
+Discover and select a RHEL AMI from the marketplace:
+
+1. Navigate to Admin → Providers
+2. Find your provider in the list
+3. Click "Discover Images" button
+4. Wait for the list of available RHEL AMIs to load
+5. Click "Set as Default" on a RHEL 9 AMI
+
+<details>
+<summary>API equivalent</summary>
 
 Discover available RHEL AMIs in the region:
 
@@ -163,6 +207,8 @@ curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/set-image \
   -d '{"image_id": "ami-..."}'
 ```
 
+</details>
+
 ### Option B: Red Hat Image Builder (Recommended for Production)
 
 Build a custom RHEL AMI with all required packages pre-installed. This eliminates:
@@ -172,19 +218,22 @@ Build a custom RHEL AMI with all required packages pre-installed. This eliminate
 
 **Prerequisites:**
 1. Obtain a Red Hat offline token from https://access.redhat.com/management/api
-2. Save the token in Troshka Settings page
 
 **Build Process:**
 
-Via Admin UI:
 1. Navigate to Settings → Red Hat Integration
-2. Paste offline token and save
-3. Navigate to Providers page
-4. Click "Build Host Image" on your provider
-5. Wait approximately 15 minutes for build completion
-6. Image is automatically set as `default_image` when ready
+2. Paste offline token into the "Red Hat Offline Token" field
+3. Click "Save"
+4. Navigate to Admin → Providers
+5. Find your provider in the list
+6. Click "Build Host Image" button
+7. Wait approximately 15 minutes for build completion
+8. Image is automatically set as `default_image` when ready
 
-Via API:
+The build progress is shown on the Providers page with a percentage indicator.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 # Start build
@@ -198,11 +247,29 @@ curl http://localhost:8200/api/v1/providers/{provider_id}/image-build-status \
 
 Status response includes build state, progress percentage, and image ID when complete. The backend polls Red Hat Image Builder API every 30 seconds and auto-refreshes access tokens.
 
+</details>
+
 ## 6. Console Setup
 
 Configure automated DNS management for VNC console access.
 
 ### Create Route53 Zone
+
+1. Navigate to Admin → Providers
+2. Find your provider in the list
+3. Click "Setup Console" button
+4. Enter your console domain (e.g., `console.example.com`) in the input field
+5. Click "Submit"
+6. Wait for confirmation message
+7. Note the nameservers displayed in the collapsible section
+
+This creates:
+- Route53 hosted zone for the console domain
+- IAM role `troshka-certbot-role` with Route53 DNS challenge permissions
+- IAM instance profile `troshka-certbot-profile` (attached to hosts for certbot)
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/setup-console \
@@ -211,12 +278,9 @@ curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/setup-console 
   -d '{"base_domain": "console.example.com"}'
 ```
 
-This creates:
-- Route53 hosted zone for the console domain
-- IAM role `troshka-certbot-role` with Route53 DNS challenge permissions
-- IAM instance profile `troshka-certbot-profile` (attached to hosts for certbot)
-
 Response includes `console_nameservers` (4 AWS nameservers).
+
+</details>
 
 ### Delegate Domain
 
@@ -240,7 +304,21 @@ console.example.com.  IN  NS  ns-012.awsdns-45.co.uk.
 
 ## 7. Provision First Host
 
-Provision a host for running nested VMs:
+Provision a host for running nested VMs.
+
+1. Navigate to Admin → Providers
+2. Find your provider in the list
+3. Scroll down to the "Hosts" section
+4. Click "Add Host" button
+5. Fill in the form:
+   - **Instance Type**: Select from dropdown (e.g., `m5.metal` for production, `m8i.xlarge` for dev)
+   - **Storage Size (GB)**: Enter desired size (minimum 100, recommended 500 for production)
+6. Click "Create"
+7. Wait 3-5 minutes for provisioning to complete
+8. Host status will change from "provisioning" to "connected" when ready
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts \
@@ -252,6 +330,17 @@ curl -X POST http://localhost:8200/api/v1/hosts \
     "storage_size_gb": 500
   }'
 ```
+
+Provisioning takes 3-5 minutes. The API returns immediately with `status: "provisioning"`. Check host status:
+
+```bash
+curl http://localhost:8200/api/v1/hosts \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+When `status: "connected"`, the host is ready for deployments.
+
+</details>
 
 ### Recommended Instance Types
 
@@ -268,20 +357,26 @@ curl -X POST http://localhost:8200/api/v1/hosts \
 - **Production**: 500 GB or more (depends on VM disk sizes and pattern caching)
 - Storage is EBS gp3 (provisioned automatically, online resizable via admin UI)
 
-Provisioning takes 3-5 minutes. The API returns immediately with `status: "provisioning"`. Check host status:
-
-```bash
-curl http://localhost:8200/api/v1/hosts \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-When `status: "connected"`, the host is ready for deployments.
-
 ## 8. Shared Storage (Optional)
 
 Create an FSx OpenZFS storage pool for live migration and pattern sharing across hosts.
 
 ### Create Storage Pool
+
+1. Navigate to Admin → Storage Pools
+2. Click "Create Storage Pool" button
+3. Fill in the form:
+   - **Name**: `shared-pool` (or your preferred name)
+   - **Mode**: Select "FSx OpenZFS"
+   - **Provider**: Select your provider from dropdown
+   - **Availability Zone**: Select an AZ (e.g., `us-east-1a`)
+4. Click "Create"
+5. Wait approximately 5 minutes for FSx file system creation
+
+**Important:** All hosts in the pool must be in the same AZ. FSx OpenZFS is single-AZ.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/storage-pools \
@@ -295,7 +390,7 @@ curl -X POST http://localhost:8200/api/v1/storage-pools \
   }'
 ```
 
-**Important:** All hosts in the pool must be in the same AZ. FSx OpenZFS is single-AZ.
+</details>
 
 ### What Gets Created
 
@@ -320,38 +415,77 @@ curl -X POST http://localhost:8200/api/v1/storage-pools \
 Run through this checklist to confirm the setup is working:
 
 ### Provider Test
+
+1. Navigate to Admin → Providers
+2. Find your provider in the list
+3. Click "Test" button
+4. Verify success message appears
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{provider_id}/test \
   -H "Authorization: Bearer $TOKEN"
 ```
 Expected: `{"status": "success"}`
 
+</details>
+
 ### VPC Discovery
+
+Verify VPC details are shown on the Providers page with `ManagedBy: troshka` tag.
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl http://localhost:8200/api/v1/providers/{provider_id}/discover-vpcs \
   -H "Authorization: Bearer $TOKEN"
 ```
 Expected: Response includes VPC with `ManagedBy: troshka` tag
 
+</details>
+
 ### Host Status
+
+1. Navigate to Admin → Providers
+2. Scroll down to the "Hosts" section
+3. Verify host shows `status: "connected"` with instance ID, public IP, and console domain
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl http://localhost:8200/api/v1/hosts \
   -H "Authorization: Bearer $TOKEN"
 ```
 Expected: Host shows `status: "connected"`, instance ID, public IP, console domain
 
+</details>
+
 ### Agent Version
-```bash
-curl http://localhost:8200/api/v1/hosts/expected-agent-version \
-  -H "Authorization: Bearer $TOKEN"
-```
-Compare response with host's `agent_version` field. If mismatched, run:
+
+Check that the host's agent version matches the expected version shown on the Providers page. If mismatched, run:
 ```bash
 ./scripts/update-agent.sh
 ```
 
+<details>
+<summary>API equivalent</summary>
+
+```bash
+curl http://localhost:8200/api/v1/hosts/expected-agent-version \
+  -H "Authorization: Bearer $TOKEN"
+```
+Compare response with host's `agent_version` field.
+
+</details>
+
 ### Console Access
+
 After deploying a VM with a project:
+
 1. Navigate to the project's Hosts page
 2. Click the console icon for a running VM
 3. Browser should open `https://{instance_id}.{base_domain}` with noVNC console
