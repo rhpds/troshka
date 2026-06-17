@@ -832,7 +832,7 @@ export default function StoragePoolsPage() {
                         loadData();
                       }}>Wake Pattern Buffer</Button>
                     )}
-                    {!pbAction[pool.id] && pool.status === "available" && (
+                    {!pbAction[pool.id] && !["provisioning", "installing"].includes(pool.worker_status || "") && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
                         const prov = providers.find((p) => p.id === pool.provider_id);
                         const provType = prov?.type || "ec2";
@@ -842,6 +842,13 @@ export default function StoragePoolsPage() {
                       }}>
                         {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
                       </Button>
+                    )}
+                    {!pbAction[pool.id] && ["provisioning", "installing"].includes(pool.worker_status || "") && (
+                      <Button variant="danger" size="sm" onClick={() => {
+                        if (!window.confirm("Cancel pattern buffer provisioning and delete the instance?")) return;
+                        fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer`, { method: "DELETE" });
+                        loadData();
+                      }}>Delete Pattern Buffer</Button>
                     )}
                     {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && editId !== pool.id && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => startEdit(pool)}>Edit</Button>

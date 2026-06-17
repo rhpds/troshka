@@ -512,6 +512,37 @@ def provision_or_replace_pattern_buffer(
     return {"status": "provisioning", "pool_id": pool_id}
 
 
+@router.delete("/{pool_id}/pattern-buffer")
+def delete_pattern_buffer(
+    pool_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Terminate and remove the pattern buffer for a storage pool."""
+    pool = db.query(StoragePool).filter_by(id=pool_id).first()
+    if not pool:
+        raise HTTPException(status_code=404, detail="Pool not found")
+    if not pool.worker_host_id:
+        raise HTTPException(status_code=404, detail="No pattern buffer to delete")
+
+    worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
+    if worker and worker.state not in ("terminated",):
+        try:
+            from app.services.providers import get_provider_driver
+
+            provider = db.query(Provider).get(pool.provider_id)
+            drv = get_provider_driver(provider)
+            drv.terminate_host(provider, worker.instance_id)
+        except Exception:
+            logger.warning("Failed to terminate PB %s", worker.id[:8], exc_info=True)
+        worker.state = "terminated"
+        worker.agent_status = "disconnected"
+
+    pool.worker_host_id = None
+    db.commit()
+    return {"status": "deleted", "pool_id": pool_id}
+
+
 @router.post("/{pool_id}/pattern-buffer/stop")
 def stop_pool_pattern_buffer(
     pool_id: str,

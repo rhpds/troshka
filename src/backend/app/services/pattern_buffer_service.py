@@ -151,6 +151,9 @@ def _provision_pattern_buffer(pool_id: str):
         db.add(host)
         db.flush()
         pool.worker_host_id = host_id
+        from datetime import UTC, datetime
+
+        pool.pb_last_activity_at = datetime.now(UTC)
         db.commit()
         db.refresh(host)
 
