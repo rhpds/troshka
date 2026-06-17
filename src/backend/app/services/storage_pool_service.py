@@ -947,7 +947,9 @@ def create_azure_files_nfs(
         resource_group, account_name, share_name, share_params
     )
 
-    mount_url = f"{account_name}.file.core.windows.net:/{account_name}/{share_name}"
+    mount_url = (
+        f"{account_name}.privatelink.file.core.windows.net:/{account_name}/{share_name}"
+    )
 
     return {
         "storage_account": account_name,
