@@ -89,7 +89,11 @@ async def lifespan(app):
     try:
         stuck_hosts = (
             s2.query(_HostReset)
-            .filter(_HostReset.agent_status.in_(("waiting_ssh", "installing")))
+            .filter(
+                _HostReset.agent_status.in_(
+                    ("waiting_ssh", "installing", "install_failed")
+                )
+            )
             .all()
         )
         for h in stuck_hosts:
