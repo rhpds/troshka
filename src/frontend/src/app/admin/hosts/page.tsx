@@ -692,6 +692,7 @@ export default function AdminHostsPage() {
           })}
         </div>);
         })()}
+      </PageSection>
 
       {/* Host List */}
       <PageSection>
