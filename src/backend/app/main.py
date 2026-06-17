@@ -167,11 +167,127 @@ async def lifespan(app):
                         "Startup: failed to sync SG rules for pool %s: %s", pool.name, e
                     )
 
+        # Resume stuck pattern buffer installs (agent disconnected but host active)
+        from app.models.host import Host as _Host
+        from app.models.storage_pool import StoragePool
+
+        pb_pools = (
+            s.query(StoragePool).filter(StoragePool.worker_host_id.isnot(None)).all()
+        )
+        for pool in pb_pools:
+            pb_host = s.query(_Host).filter_by(id=pool.worker_host_id).first()
+            if (
+                pb_host
+                and pb_host.state == "active"
+                and pb_host.agent_status != "connected"
+            ):
+                logger.info(
+                    "Startup: retrying agent install on pattern buffer %s for pool %s",
+                    pb_host.id[:8],
+                    pool.name,
+                )
+                threading.Thread(
+                    target=_retry_pb_agent_install,
+                    args=(pb_host.id, pool.id),
+                    name=f"pb-retry-{pb_host.id[:8]}",
+                    daemon=True,
+                ).start()
+
         s.commit()
     finally:
         s.close()
 
     yield
+
+
+def _retry_pb_agent_install(host_id: str, pool_id: str):
+    """Retry agent install on a pattern buffer host that got stuck."""
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.storage_pool import StoragePool
+    from app.services.agent_deployer import (
+        deploy_agent,
+        get_provider_data_disk,
+        get_provider_ssh_user,
+        wait_for_ssh,
+    )
+
+    db = SessionLocal()
+    try:
+        host = db.query(Host).filter_by(id=host_id).first()
+        pool = db.query(StoragePool).filter_by(id=pool_id).first()
+        if not host or not pool or not pool.provider:
+            return
+
+        provider = pool.provider
+        ssh_user = get_provider_ssh_user(provider.type)
+        ssh_host = host.ip_address
+        ssh_port = 22
+
+        if provider.type == "ocpvirt":
+            from app.services.providers.ocpvirt import OcpVirtDriver
+
+            svc = OcpVirtDriver()._get_ssh_service(provider, host.instance_id)
+            if svc:
+                ssh_host = svc.get("host", ssh_host)
+                ssh_port = svc.get("port", 22)
+
+        if not wait_for_ssh(
+            ssh_host, host.private_key, port=ssh_port, ssh_user=ssh_user, timeout=120
+        ):
+            logger.warning("PB retry: SSH not available on %s", host_id[:8])
+            return
+
+        data_disk = get_provider_data_disk(provider.type)
+        storage_mode = (
+            "shared"
+            if pool.nfs_endpoint or pool.fsx_dns_name or pool.azure_file_share_url
+            else "local"
+        )
+        cert_pem = key_pem = ca_pem = ""
+        if pool.ca_cert and pool.ca_key:
+            from app.services.storage_pool_service import sign_host_cert
+
+            cert_pem, key_pem = sign_host_cert(
+                pool.ca_cert,
+                pool.ca_key,
+                host.ip_address,
+                host.private_ip or "",
+            )
+            ca_pem = pool.ca_cert
+
+        nfs_server = nfs_path = ""
+        if pool.fsx_dns_name:
+            nfs_server, nfs_path = pool.fsx_dns_name, "/fsx"
+        elif pool.azure_file_share_url:
+            parts = pool.azure_file_share_url.split(":", 1)
+            nfs_server = parts[0]
+            nfs_path = parts[1] if len(parts) > 1 else "/"
+        elif pool.nfs_endpoint:
+            parts = pool.nfs_endpoint.split(":", 1)
+            nfs_server = parts[0]
+            nfs_path = parts[1] if len(parts) > 1 else "/"
+
+        deploy_agent(
+            ssh_host,
+            host.private_key or "",
+            host_id=host_id,
+            storage_mode=storage_mode,
+            host_cert=cert_pem,
+            host_key=key_pem,
+            ca_cert=ca_pem,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            data_disk_device=data_disk,
+            nfs_server=nfs_server,
+            nfs_path=nfs_path,
+            nfs_port=pool.nfs_port or 0,
+        )
+        logger.info("PB retry: agent installed on %s", host_id[:8])
+    except Exception:
+        logger.exception("PB retry: failed for %s", host_id[:8])
+    finally:
+        db.close()
 
 
 app = FastAPI(
