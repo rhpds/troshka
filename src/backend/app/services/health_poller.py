@@ -235,6 +235,14 @@ def _poll_hosts():
 
         db.commit()
 
+        # Auto-sleep idle pattern buffers
+        try:
+            from app.services.pattern_buffer_service import check_auto_sleep
+
+            check_auto_sleep(db)
+        except Exception:
+            logger.debug("Auto-sleep check failed", exc_info=True)
+
         # Check if all hosts failed — maybe our IP changed
         _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed)
     except Exception:

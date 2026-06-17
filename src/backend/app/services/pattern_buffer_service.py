@@ -419,6 +419,9 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
     while time.time() - start < timeout:
         result = check_health(host)
         if result:
+            from datetime import UTC, datetime
+
+            pool.pb_last_activity_at = datetime.now(UTC)
             host.agent_status = "connected"
             db.commit()
             logger.info(
@@ -450,3 +453,61 @@ def get_pattern_buffer_host(
         if wake_pattern_buffer(db, pool):
             return host
     return None
+
+
+def touch_activity(db, pool_id: str):
+    """Record that the pattern buffer for this pool was just used."""
+    from datetime import UTC, datetime
+
+    pool = db.query(StoragePool).filter_by(id=pool_id).first()
+    if pool:
+        pool.pb_last_activity_at = datetime.now(UTC)
+        db.commit()
+
+
+def check_auto_sleep(db):
+    """Check all pools for idle pattern buffers and auto-sleep them."""
+    from datetime import UTC, datetime
+    from app.models.host import Host
+
+    pools = (
+        db.query(StoragePool)
+        .filter(
+            StoragePool.worker_host_id.isnot(None),
+            StoragePool.pb_auto_sleep_minutes > 0,
+        )
+        .all()
+    )
+
+    for pool in pools:
+        host = db.query(Host).filter_by(id=pool.worker_host_id).first()
+        if not host or host.state != "active" or host.agent_status != "connected":
+            continue
+
+        last_activity = pool.pb_last_activity_at
+        if last_activity is None:
+            last_activity = pool.created_at
+
+        idle_seconds = (datetime.now(UTC) - last_activity).total_seconds()
+        threshold_seconds = pool.pb_auto_sleep_minutes * 60
+
+        if idle_seconds < threshold_seconds:
+            continue
+
+        busy = _check_pattern_buffer_busy(db, pool)
+        if busy:
+            logger.debug(
+                "Pool %s PB idle %.0fs but busy: %s", pool.name, idle_seconds, busy
+            )
+            continue
+
+        logger.info(
+            "Auto-sleeping pattern buffer for pool %s (idle %.0fm, threshold %dm)",
+            pool.name,
+            idle_seconds / 60,
+            pool.pb_auto_sleep_minutes,
+        )
+        try:
+            stop_pattern_buffer(db, pool)
+        except Exception:
+            logger.warning("Auto-sleep failed for pool %s", pool.name, exc_info=True)

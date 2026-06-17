@@ -693,6 +693,16 @@ def capture_pattern_disks(
             log.warning("Failed to save pattern metadata to S3 for %s", pattern_id[:8])
 
         log.info("Pattern %s capture complete", pattern_id)
+
+        # Touch pattern buffer activity
+        if worker_host and worker_host.storage_pool_id:
+            try:
+                from app.services.pattern_buffer_service import touch_activity
+
+                touch_activity(db, worker_host.storage_pool_id)
+            except Exception:
+                log.debug("Failed to touch PB activity", exc_info=True)
+
         _capture_progress[pattern_id] = {
             "step": "complete",
             "detail": "Capture complete",
