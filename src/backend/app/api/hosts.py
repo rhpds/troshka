@@ -789,28 +789,37 @@ def poweron_host(
             "Host %s resized %s → %s before power on", host_id[:8], old_type, new_type
         )
 
-    from app.services.provisioner import _get_ec2_client, get_host_status
+    from app.services.providers import get_provider_driver
 
-    client = _get_ec2_client(credentials=creds)
+    provider = (
+        db.query(Provider).filter_by(id=host.provider_id).first()
+        if host.provider_id
+        else None
+    )
+    if not provider:
+        raise HTTPException(
+            status_code=400, detail="No provider configured for this host"
+        )
 
-    # Check actual EC2 state first
-    status = get_host_status(host.instance_id, credentials=creds)
-    ec2_state = status["state"] if status else "unknown"
+    drv = get_provider_driver(provider)
 
-    if ec2_state == "running":
-        # Already running — just update DB and reinstall agent
+    # Check actual instance state via provider driver
+    status = drv.get_host_status(provider, host.instance_id)
+    cloud_state = status["state"] if status else "unknown"
+
+    if cloud_state == "running":
         host.state = "active"
         host.ip_address = status.get("public_ip")
         host.agent_status = "disconnected"
         db.commit()
-    elif ec2_state in ("stopped", "stopping"):
-        if ec2_state == "stopped":
-            client.start_instances(InstanceIds=[host.instance_id])
+    elif cloud_state in ("stopped", "stopping", "deallocated"):
+        if cloud_state in ("stopped", "deallocated"):
+            drv.start_host(provider, host.instance_id)
         host.state = "starting"
         db.commit()
     else:
         raise HTTPException(
-            status_code=409, detail=f"Instance is in unexpected state: {ec2_state}"
+            status_code=409, detail=f"Instance is in unexpected state: {cloud_state}"
         )
 
     # Background: wait for running, update IP, reinstall agent
@@ -819,7 +828,12 @@ def poweron_host(
 
     import threading
 
+    provider_id = host.provider_id
+    provider_type = provider.type
+
     def _wait_and_reinstall():
+        import time
+
         from app.core.database import SessionLocal
         from app.services.agent_deployer import (
             deploy_agent,
@@ -827,24 +841,32 @@ def poweron_host(
             get_provider_ssh_user,
             wait_for_ssh,
         )
-        from app.services.provisioner import _get_ec2_client as get_client
+        from app.services.providers import get_provider_driver as _get_drv
 
         s = SessionLocal()
         try:
-            # Wait for instance running
-            ec2 = get_client(credentials=creds)
-            waiter = ec2.get_waiter("instance_running")
-            waiter.wait(InstanceIds=[instance_id])
-            desc = ec2.describe_instances(InstanceIds=[instance_id])
-            inst = desc["Reservations"][0]["Instances"][0]
+            _prov = s.query(Provider).filter_by(id=provider_id).first()
+            if not _prov:
+                return
+            _drv = _get_drv(_prov)
+
+            # Poll until instance is running (up to 5 min)
+            deadline = time.time() + 300
+            new_ip = None
+            while time.time() < deadline:
+                st = _drv.get_host_status(_prov, instance_id)
+                if st and st.get("state") == "running":
+                    new_ip = st.get("public_ip")
+                    break
+                time.sleep(10)
 
             h = s.query(Host).filter_by(id=host_id).first()
             if not h:
                 return
             h.state = "active"
-            new_ip = inst.get("PublicIpAddress")
             old_ip = h.ip_address
             h.ip_address = new_ip
+            h.private_ip = (st or {}).get("private_ip") or h.private_ip
             h.agent_status = "waiting_ssh"
             s.commit()
 
@@ -879,9 +901,12 @@ def poweron_host(
             _ssh_user2 = get_provider_ssh_user(_provider_type)
             _data_disk2 = get_provider_data_disk(_provider_type)
 
-            if not wait_for_ssh(h.ip_address, h.private_key, ssh_user=_ssh_user2):
-                h.agent_status = "install_failed"
+            if not wait_for_ssh(
+                h.ip_address, h.private_key, ssh_user=_ssh_user2, timeout=300
+            ):
+                h.agent_status = "disconnected"
                 s.commit()
+                logger.warning("Host %s SSH not available after power on", host_id[:8])
                 return
             h.agent_status = "installing"
             s.commit()
@@ -952,7 +977,7 @@ def poweron_host(
                 h = s.query(Host).filter_by(id=host_id).first()
                 if h:
                     h.state = "active"
-                    h.agent_status = "install_failed"
+                    h.agent_status = "disconnected"
                     s.commit()
             except Exception:
                 pass
