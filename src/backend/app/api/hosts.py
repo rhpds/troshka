@@ -855,11 +855,27 @@ def poweron_host(
                 return
             _drv = _get_drv(_prov)
 
+            # Wait for instance to fully stop if it's still shutting down
+            for _ in range(60):
+                st_check = _drv.get_host_status(_prov, instance_id)
+                state_now = st_check["state"] if st_check else "unknown"
+                if state_now in ("stopped", "deallocated", "terminated"):
+                    break
+                if state_now == "running":
+                    break
+                logger.info(
+                    "Host %s in %s state, waiting for stop...",
+                    host_id[:8],
+                    state_now,
+                )
+                time.sleep(5)
+
             # Start the instance via cloud API
-            try:
-                _drv.start_host(_prov, instance_id)
-            except Exception as e:
-                logger.warning("start_host failed for %s: %s", host_id[:8], e)
+            if state_now != "running":
+                try:
+                    _drv.start_host(_prov, instance_id)
+                except Exception as e:
+                    logger.warning("start_host failed for %s: %s", host_id[:8], e)
 
             # Poll until instance is running (up to 5 min)
             deadline = time.time() + 300
