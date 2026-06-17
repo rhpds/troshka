@@ -1,3 +1,4 @@
+import datetime
 import logging
 import uuid as uuid_mod
 
@@ -60,6 +61,49 @@ from app.services.troshkad_client import (
 from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+def _project_response_dict(project):
+    result = {
+        "id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "owner_id": project.owner_id,
+        "provider_id": project.provider_id,
+        "host_type": project.host_type,
+        "host_id": project.host_id,
+        "guid": project.guid,
+        "state": project.state,
+        "public_token": project.public_token,
+        "guest_permission": project.guest_permission,
+        "topology": project.topology,
+        "deployed_topology": project.deployed_topology,
+        "vni_map": project.vni_map,
+        "deploy_error": project.deploy_error,
+        "ocp_status": project.ocp_status,
+        "ocp_install_elapsed": project.ocp_install_elapsed,
+        "tags": project.tags,
+        "auto_stop_minutes": project.auto_stop_minutes,
+        "auto_stop_expires_at": (
+            project.auto_stop_expires_at.isoformat()
+            if project.auto_stop_expires_at
+            else None
+        ),
+        "auto_delete_minutes": project.auto_delete_minutes,
+        "lifetime_expires_at": (
+            project.lifetime_expires_at.isoformat()
+            if project.lifetime_expires_at
+            else None
+        ),
+        "poweroff_mode": project.poweroff_mode,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    }
+    deployed_topo = project.deployed_topology or {}
+    bmc_data = deployed_topo.get("bmc")
+    if bmc_data:
+        result["bmc"] = bmc_data
+    return result
 
 
 @router.get("/", response_model=list[ProjectResponse])
@@ -285,44 +329,7 @@ def get_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Build response dict from project model
-    result = {
-        "id": project.id,
-        "name": project.name,
-        "description": project.description,
-        "owner_id": project.owner_id,
-        "provider_id": project.provider_id,
-        "host_type": project.host_type,
-        "host_id": project.host_id,
-        "guid": project.guid,
-        "state": project.state,
-        "topology": project.topology,
-        "deployed_topology": project.deployed_topology,
-        "vni_map": project.vni_map,
-        "deploy_error": project.deploy_error,
-        "ocp_status": project.ocp_status,
-        "ocp_install_elapsed": project.ocp_install_elapsed,
-        "tags": project.tags,
-        "auto_stop_minutes": project.auto_stop_minutes,
-        "auto_stop_expires_at": (
-            project.auto_stop_expires_at.isoformat()
-            if project.auto_stop_expires_at
-            else None
-        ),
-        "auto_delete_minutes": project.auto_delete_minutes,
-        "lifetime_expires_at": project.lifetime_expires_at,
-        "poweroff_mode": project.poweroff_mode,
-        "created_at": project.created_at,
-        "updated_at": project.updated_at,
-    }
-
-    # Include BMC addresses if available
-    deployed_topo = project.deployed_topology or {}
-    bmc_data = deployed_topo.get("bmc")
-    if bmc_data:
-        result["bmc"] = bmc_data
-
-    return result
+    return _project_response_dict(project)
 
 
 @router.get("/{project_id}/deploy-progress")
@@ -358,13 +365,80 @@ def update_project(
     fields = body.model_dump(exclude_unset=True)
     for field, value in fields.items():
         setattr(project, field, value)
+
+    # Auto-stop timer recomputation
+    if "auto_stop_minutes" in fields:
+        if fields["auto_stop_minutes"] is None:
+            project.auto_stop_started_at = None
+            project.auto_stop_expires_at = None
+            project.auto_stop_warned = False
+        elif project.auto_stop_started_at:
+            project.auto_stop_expires_at = (
+                project.auto_stop_started_at
+                + datetime.timedelta(minutes=project.auto_stop_minutes)
+            )
+            project.auto_stop_warned = False
+
+    # Auto-delete timer recomputation
+    if "auto_delete_minutes" in fields:
+        if fields["auto_delete_minutes"] is None:
+            project.auto_delete_started_at = None
+            project.lifetime_expires_at = None
+            project.auto_delete_warned = False
+        elif project.auto_delete_started_at:
+            project.lifetime_expires_at = (
+                project.auto_delete_started_at
+                + datetime.timedelta(minutes=project.auto_delete_minutes)
+            )
+            project.auto_delete_warned = False
+
     db.commit()
     db.refresh(project)
     if "topology" in fields:
         notify_project(
             project_id, {"type": "topology-update", "topology": project.topology}
         )
-    return project
+    return _project_response_dict(project)
+
+
+class ExtendTimerRequest(PydanticBaseModel):
+    timer: str  # "auto_stop" or "auto_delete"
+    add_minutes: int
+
+
+@router.post("/{project_id}/extend-timer")
+def extend_timer(
+    project_id: str,
+    body: ExtendTimerRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if body.timer == "auto_stop":
+        if not project.auto_stop_expires_at:
+            raise HTTPException(status_code=400, detail="Auto-stop timer is not active")
+        project.auto_stop_expires_at += datetime.timedelta(minutes=body.add_minutes)
+        project.auto_stop_warned = False
+    elif body.timer == "auto_delete":
+        if not project.lifetime_expires_at:
+            raise HTTPException(
+                status_code=400, detail="Auto-delete timer is not active"
+            )
+        project.lifetime_expires_at += datetime.timedelta(minutes=body.add_minutes)
+        project.auto_delete_warned = False
+    else:
+        raise HTTPException(
+            status_code=400, detail="timer must be 'auto_stop' or 'auto_delete'"
+        )
+
+    db.commit()
+    db.refresh(project)
+    return _project_response_dict(project)
 
 
 @router.post("/{project_id}/deploy")

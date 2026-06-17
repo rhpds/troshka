@@ -1,3 +1,5 @@
+import datetime
+
 from fastapi.testclient import TestClient
 
 from app.core.auth import create_jwt, hash_password
@@ -144,3 +146,111 @@ def test_get_project_includes_timer_fields():
     assert "auto_stop_expires_at" in data
     assert "auto_delete_minutes" in data
     assert "lifetime_expires_at" in data
+
+
+def test_patch_auto_stop_clears_expiry_when_disabled():
+    """Setting auto_stop_minutes=None clears all auto-stop fields."""
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+
+    # Set a timer
+    client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": 60},
+        headers=HEADERS,
+    )
+    # Manually set started_at to simulate an active project
+    db = TestSession()
+    from app.models.project import Project
+
+    p = db.query(Project).filter_by(id=project_id).first()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    p.auto_stop_started_at = now
+    p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)
+    p.auto_stop_warned = True
+    db.commit()
+    db.close()
+
+    # Disable the timer
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": None},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["auto_stop_minutes"] is None
+    assert data["auto_stop_expires_at"] is None
+
+
+def test_patch_auto_stop_recomputes_expiry_when_running():
+    """Changing auto_stop_minutes on an active timer recomputes expires_at."""
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+
+    # Set up a running timer
+    db = TestSession()
+    from app.models.project import Project
+
+    p = db.query(Project).filter_by(id=project_id).first()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    p.auto_stop_minutes = 60
+    p.auto_stop_started_at = now
+    p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)
+    db.commit()
+    db.close()
+
+    # Change to 120 minutes
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": 120},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["auto_stop_minutes"] == 120
+    # expires_at should be ~120 min from started_at, not 60
+    assert data["auto_stop_expires_at"] is not None
+
+
+def test_extend_auto_stop_timer():
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+
+    # Set up a running timer
+    db = TestSession()
+    from app.models.project import Project
+
+    p = db.query(Project).filter_by(id=project_id).first()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    p.auto_stop_minutes = 60
+    p.auto_stop_started_at = now
+    p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)
+    p.auto_stop_warned = True
+    db.commit()
+    old_expires = p.auto_stop_expires_at
+    db.close()
+
+    resp = client.post(
+        f"/api/v1/projects/{project_id}/extend-timer",
+        json={"timer": "auto_stop", "add_minutes": 30},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # expires_at should be pushed forward by 30 min
+    new_expires = datetime.datetime.fromisoformat(data["auto_stop_expires_at"])
+    assert new_expires > old_expires
+
+
+def test_extend_timer_fails_when_no_timer_active():
+    create_resp = client.post(
+        "/api/v1/projects", json={"name": "No Timer"}, headers=HEADERS
+    )
+    project_id = create_resp.json()["id"]
+    resp = client.post(
+        f"/api/v1/projects/{project_id}/extend-timer",
+        json={"timer": "auto_stop", "add_minutes": 30},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 400
