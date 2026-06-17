@@ -23,11 +23,19 @@ class Project(Base):
     state: Mapped[str] = mapped_column(String(20), default="draft")
     public_token: Mapped[str | None] = mapped_column(String(64), unique=True)
     guest_permission: Mapped[str] = mapped_column(String(20), default="console_only")
-    run_timer_hours: Mapped[int | None] = mapped_column(Integer)
-    run_timer_max_ext_hours: Mapped[int | None] = mapped_column(Integer)
-    run_timer_started_at: Mapped[datetime.datetime | None] = mapped_column(
+    auto_stop_minutes: Mapped[int | None] = mapped_column(Integer)
+    auto_stop_started_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    auto_stop_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    auto_stop_warned: Mapped[bool] = mapped_column(default=False)
+    auto_delete_minutes: Mapped[int | None] = mapped_column(Integer)
+    auto_delete_started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    auto_delete_warned: Mapped[bool] = mapped_column(default=False)
     lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )

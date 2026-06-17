@@ -124,8 +124,8 @@ def create_project(
         owner_id=user.id,
         provider_id=body.provider_id,
         host_type=body.host_type,
-        run_timer_hours=body.run_timer_hours,
-        lifetime_expires_at=body.lifetime_expires_at,
+        auto_stop_minutes=body.auto_stop_minutes,
+        auto_delete_minutes=body.auto_delete_minutes,
         poweroff_mode=body.poweroff_mode,
     )
     db.add(project)
@@ -303,7 +303,13 @@ def get_project(
         "ocp_status": project.ocp_status,
         "ocp_install_elapsed": project.ocp_install_elapsed,
         "tags": project.tags,
-        "run_timer_hours": project.run_timer_hours,
+        "auto_stop_minutes": project.auto_stop_minutes,
+        "auto_stop_expires_at": (
+            project.auto_stop_expires_at.isoformat()
+            if project.auto_stop_expires_at
+            else None
+        ),
+        "auto_delete_minutes": project.auto_delete_minutes,
         "lifetime_expires_at": project.lifetime_expires_at,
         "poweroff_mode": project.poweroff_mode,
         "created_at": project.created_at,

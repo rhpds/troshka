@@ -8,8 +8,8 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     provider_id: str | None = None
     host_type: str = "shared"
-    run_timer_hours: int | None = None
-    lifetime_expires_at: datetime.datetime | None = None
+    auto_stop_minutes: int | None = None
+    auto_delete_minutes: int | None = None
     poweroff_mode: str = "simultaneous"
 
 
@@ -17,9 +17,8 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     host_type: str | None = None
-    run_timer_hours: int | None = None
-    run_timer_max_ext_hours: int | None = None
-    lifetime_expires_at: datetime.datetime | None = None
+    auto_stop_minutes: int | None = None
+    auto_delete_minutes: int | None = None
     poweroff_mode: str | None = None
     guest_permission: str | None = None
     state: str | None = None
@@ -37,7 +36,10 @@ class ProjectResponse(BaseModel):
     state: str
     public_token: str | None = None
     guest_permission: str
-    run_timer_hours: int | None = None
+    auto_stop_minutes: int | None = None
+    auto_stop_expires_at: datetime.datetime | None = None
+    auto_delete_minutes: int | None = None
+    lifetime_expires_at: datetime.datetime | None = None
     poweroff_mode: str
     host_id: str | None = None
     host_instance_id: str | None = None

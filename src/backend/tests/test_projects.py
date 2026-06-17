@@ -90,3 +90,57 @@ def test_delete_project():
 def test_dev_mode_allows_unauthenticated():
     resp = client.get("/api/v1/projects")
     assert resp.status_code == 200
+
+
+def test_set_auto_stop_timer():
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": 120},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["auto_stop_minutes"] == 120
+
+
+def test_set_auto_delete_timer():
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_delete_minutes": 480},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["auto_delete_minutes"] == 480
+
+
+def test_disable_auto_stop_timer():
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+    client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": 60},
+        headers=HEADERS,
+    )
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"auto_stop_minutes": None},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["auto_stop_minutes"] is None
+    assert resp.json().get("auto_stop_expires_at") is None
+
+
+def test_get_project_includes_timer_fields():
+    list_resp = client.get("/api/v1/projects", headers=HEADERS)
+    project_id = list_resp.json()[0]["id"]
+    resp = client.get(f"/api/v1/projects/{project_id}", headers=HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "auto_stop_minutes" in data
+    assert "auto_stop_expires_at" in data
+    assert "auto_delete_minutes" in data
+    assert "lifetime_expires_at" in data
