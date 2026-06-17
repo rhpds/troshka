@@ -203,18 +203,29 @@ def _resource_not_found(exc):
     )
 
 
-def _delete_resource(label, delete_fn):
-    """Call delete_fn, handle 'not found' gracefully, wait for completion."""
-    try:
-        poller = delete_fn()
-        if hasattr(poller, "result"):
-            poller.result()
-        logger.info("Deleted %s", label)
-    except Exception as e:
-        if _resource_not_found(e):
-            logger.info("%s already gone", label)
-        else:
-            raise
+def _delete_resource(label, delete_fn, retries=3):
+    """Call delete_fn, retry on transient errors, continue on failure."""
+    for attempt in range(retries):
+        try:
+            poller = delete_fn()
+            if hasattr(poller, "result"):
+                poller.result()
+            logger.info("Deleted %s", label)
+            return True
+        except Exception as e:
+            if _resource_not_found(e):
+                logger.info("%s already gone", label)
+                return True
+            if attempt < retries - 1:
+                logger.info(
+                    "Retry deleting %s (%d/%d): %s", label, attempt + 1, retries, e
+                )
+                time.sleep(5)
+            else:
+                logger.warning(
+                    "Failed to delete %s after %d attempts: %s", label, retries, e
+                )
+    return False
 
 
 class AzureDriver(ProviderDriver):
@@ -422,6 +433,16 @@ class AzureDriver(ProviderDriver):
         )
         poller.result()
         logger.info("Created VM %s (%s) in %s", instance_name, instance_type, location)
+
+        # --- Tag disks (Azure doesn't inherit VM tags to managed disks) ---
+        host_tags = {"managed-by": "troshka", "troshka-host-id": host_id[:12]}
+        for disk_name in (os_disk_name, data_disk_name):
+            try:
+                compute_client.disks.begin_update(
+                    rg, disk_name, {"tags": host_tags}
+                ).result()
+            except Exception:
+                logger.debug("Failed to tag disk %s", disk_name)
 
         # --- Poll until running and get IPs ---
         public_ip = None
