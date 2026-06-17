@@ -724,11 +724,7 @@ def poweroff_host(
             status_code=400, detail="No provider configured for this host"
         )
 
-    from app.services.providers import get_provider_driver
-
-    drv = get_provider_driver(host.provider)
-    drv.stop_host(host.provider, host.instance_id)
-
+    # Set state immediately and do cloud API call in background
     host.state = "stopped"
     host.agent_status = "disconnected"
     host.ip_address = None
@@ -736,6 +732,30 @@ def poweroff_host(
 
     sync_host_capacity(db, host)
     db.commit()
+
+    import threading
+
+    _host_id = host.id
+    _instance_id = host.instance_id
+    _provider_id = host.provider_id
+
+    def _do_stop():
+        from app.services.providers import get_provider_driver
+
+        try:
+            from app.core.database import SessionLocal
+
+            s = SessionLocal()
+            prov = s.query(Provider).filter_by(id=_provider_id).first()
+            if prov:
+                drv = get_provider_driver(prov)
+                drv.stop_host(prov, _instance_id)
+            s.close()
+        except Exception:
+            logger.exception("Background stop failed for host %s", _host_id[:8])
+
+    threading.Thread(target=_do_stop, daemon=True, name=f"stop-{_host_id[:8]}").start()
+
     return {"status": "stopped"}
 
 
