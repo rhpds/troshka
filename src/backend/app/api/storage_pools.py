@@ -346,9 +346,37 @@ def delete_pool(
     if not pool:
         raise HTTPException(404, "Storage pool not found")
 
-    host_count = db.query(Host).filter(Host.storage_pool_id == pool.id).count()
+    host_count = (
+        db.query(Host)
+        .filter(
+            Host.storage_pool_id == pool.id,
+            Host.host_type != "pattern_buffer",
+        )
+        .count()
+    )
     if host_count > 0:
         raise HTTPException(400, f"Pool still has {host_count} hosts assigned")
+
+    if pool.worker_host_id:
+        worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
+        if worker and worker.state not in ("terminated",):
+            try:
+                from app.services.providers import get_provider_driver
+
+                provider = db.query(Provider).get(pool.provider_id)
+                drv = get_provider_driver(provider)
+                drv.terminate_host(provider, worker.instance_id)
+                logger.info("Terminated pattern buffer %s", worker.id[:8])
+            except Exception:
+                logger.warning(
+                    "Failed to terminate pattern buffer %s",
+                    worker.id[:8],
+                    exc_info=True,
+                )
+            worker.state = "terminated"
+            worker.agent_status = "disconnected"
+        pool.worker_host_id = None
+        db.commit()
 
     if pool.mode == "shared-fsx" and pool.fsx_filesystem_id:
         provider = db.query(Provider).get(pool.provider_id)

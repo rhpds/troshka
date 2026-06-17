@@ -395,9 +395,13 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
 
 
 def check_health(host):
-    """Check troshkad health. Returns health dict or None on error."""
+    """Check troshkad health. Returns health dict or None on error.
+
+    Uses retries=1 (no retry) since the health poller calls this every 30s —
+    retrying here just multiplies the load on unreachable hosts.
+    """
     try:
-        return troshkad_request(host, "GET", "/health", timeout=10)
+        return troshkad_request(host, "GET", "/health", timeout=10, retries=1)
     except TroshkadError:
         return None
 

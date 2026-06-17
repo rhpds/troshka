@@ -832,7 +832,7 @@ export default function StoragePoolsPage() {
                         loadData();
                       }}>Wake Pattern Buffer</Button>
                     )}
-                    {!pbAction[pool.id] && !["provisioning", "installing", "active"].includes(pool.worker_status || "") && pool.status === "available" && (
+                    {!pbAction[pool.id] && pool.status === "available" && (
                       <Button variant="secondary" size="sm" onClick={() => {
                         const prov = providers.find((p) => p.id === pool.provider_id);
                         const provType = prov?.type || "ec2";

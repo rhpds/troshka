@@ -31,7 +31,10 @@ prefix = '${HOST_PREFIX}'
 db = SessionLocal()
 try:
     if prefix:
-        hosts = db.query(Host).filter(Host.id.like(prefix + '%')).all()
+        hosts = db.query(Host).filter(Host.id == prefix).all()
+        if not hosts:
+            from sqlalchemy import cast, String
+            hosts = db.query(Host).filter(cast(Host.id, String).like(prefix + '%')).all()
     else:
         hosts = db.query(Host).filter(Host.agent_status == 'connected').all()
 

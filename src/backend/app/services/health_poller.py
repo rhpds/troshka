@@ -103,6 +103,9 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
         db.close()
 
 
+_skip_until: dict[str, float] = {}
+
+
 def _poll_hosts():
     """Single poll cycle — check all active hosts."""
     from app.core.database import SessionLocal
@@ -126,15 +129,22 @@ def _poll_hosts():
         )
 
         _checked_pools = set()
+        now = time.time()
         for host in hosts:
+            if not host.agent_cert_fingerprint:
+                continue
+            skip_ts = _skip_until.get(host.id)
+            if skip_ts and now < skip_ts:
+                continue
             hosts_checked += 1
             try:
                 health = check_health(host)
-                now = datetime.now(UTC)
+                now_dt = datetime.now(UTC)
 
                 if health:
                     # Success — update health data
-                    host.last_health_at = now
+                    host.last_health_at = now_dt
+                    _skip_until.pop(host.id, None)
                     if health.get("version"):
                         host.agent_version = health["version"]
 
@@ -217,13 +227,14 @@ def _poll_hosts():
                         )
                 else:
                     hosts_failed += 1
-                    # Failed — check if we should mark as disconnected
+                    _skip_until[host.id] = time.time() + 60
                     if host.agent_status == "connected" and host.last_health_at:
-                        elapsed = (now - host.last_health_at).total_seconds()
+                        elapsed = (now_dt - host.last_health_at).total_seconds()
                         if elapsed > _DISCONNECT_AFTER_SECONDS:
                             host.agent_status = "disconnected"
+                            _skip_until[host.id] = time.time() + 300
                             logger.warning(
-                                "Host %s marked disconnected (no health for %ds)",
+                                "Host %s marked disconnected (no health for %ds, backing off 5m)",
                                 host.id[:8],
                                 int(elapsed),
                             )
