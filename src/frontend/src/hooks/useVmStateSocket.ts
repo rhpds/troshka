@@ -29,6 +29,8 @@ interface VmStateSocket {
   ocpHealth: OcpHealth | null;
   topologyUpdate: any | null;
   deleted: boolean;
+  timerWarning: { timer: string; expires_at: string; minutes_remaining: number } | null;
+  timerFired: string | null;
 }
 
 const BACKOFF_BASE = 1000;
@@ -45,6 +47,8 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [ocpHealth, setOcpHealth] = useState<OcpHealth | null>(null);
   const [topologyUpdate, setTopologyUpdate] = useState<any | null>(null);
   const [deleted, setDeleted] = useState(false);
+  const [timerWarning, setTimerWarning] = useState<VmStateSocket["timerWarning"]>(null);
+  const [timerFired, setTimerFired] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
@@ -102,6 +106,12 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "project-deleted":
             setDeleted(true);
             break;
+          case "timer_warning":
+            setTimerWarning({ timer: msg.timer, expires_at: msg.expires_at, minutes_remaining: msg.minutes_remaining });
+            break;
+          case "timer_fired":
+            setTimerFired(msg.timer);
+            break;
           case "ping":
             break;
         }
@@ -137,5 +147,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, deleted };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, deleted, timerWarning, timerFired };
 }

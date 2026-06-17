@@ -59,6 +59,9 @@ export default function ProjectCanvasPage() {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [hasDeployedTopology, setHasDeployedTopology] = useState(false);
   const [deployHostId, setDeployHostId] = useState("");
+  const [timerCountdown, setTimerCountdown] = useState<string | null>(null);
+  const [timerUrgency, setTimerUrgency] = useState<"normal" | "warning" | "critical">("normal");
+  const [timerToast, setTimerToast] = useState<{ timer: string; minutes: number } | null>(null);
 
   // One-time REST fetch for project name + dirty flag + deployed disk sizes (WS doesn't carry these)
   useEffect(() => {
@@ -187,6 +190,46 @@ export default function ProjectCanvasPage() {
     if (ws.ocpHealth?.phase === "ready") setOcpStatus("ready");
     else if (ws.ocpHealth) setOcpStatus("monitoring");
   }, [ws.ocpHealth]);
+
+  // Timer countdown ticker
+  useEffect(() => {
+    const earliest = [autoStopExpiresAt, lifetimeExpiresAt]
+      .filter(Boolean)
+      .map(t => new Date(t!).getTime())
+      .sort((a, b) => a - b)[0];
+
+    if (!earliest) { setTimerCountdown(null); return; }
+
+    const tick = () => {
+      const remaining = earliest - Date.now();
+      if (remaining <= 0) { setTimerCountdown("Expired"); setTimerUrgency("critical"); return; }
+      const mins = Math.floor(remaining / 60000);
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      setTimerCountdown(h > 0 ? `${h}h ${m}m` : `${m}m`);
+      setTimerUrgency(mins <= 5 ? "critical" : mins <= 15 ? "warning" : "normal");
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [autoStopExpiresAt, lifetimeExpiresAt]);
+
+  // Timer warning toast
+  useEffect(() => {
+    if (ws.timerWarning) {
+      setTimerToast({ timer: ws.timerWarning.timer, minutes: ws.timerWarning.minutes_remaining });
+    }
+  }, [ws.timerWarning]);
+
+  // Timer fired handler
+  useEffect(() => {
+    if (ws.timerFired === "auto_stop") {
+      setProjectState("stopping");
+    } else if (ws.timerFired === "auto_delete") {
+      setProjectState("deleting");
+      router.push("/projects");
+    }
+  }, [ws.timerFired]);
 
   const setAllVmStatus = useCanvasStore((s) => s.setAllVmStatus);
   const topologyDirty = useCanvasStore((s) => s.topologyDirty);
@@ -419,6 +462,43 @@ export default function ProjectCanvasPage() {
 
   return (
     <ReactFlowProvider>
+      {timerToast && (
+        <div style={{
+          position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999,
+          background: timerToast.timer === "auto_delete" ? "rgba(239,68,68,0.95)" : "rgba(251,191,36,0.95)",
+          color: "#fff", padding: "10px 20px", borderRadius: 8,
+          display: "flex", alignItems: "center", gap: 12, fontSize: 13, fontWeight: 500,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+        }}>
+          <span>
+            {timerToast.timer === "auto_stop" ? "⏱ Auto-stop" : "🗑 Auto-delete"} in {timerToast.minutes} minute{timerToast.minutes !== 1 ? "s" : ""}
+          </span>
+          <button
+            onClick={() => {
+              fetch(`/api/v1/projects/${projectId}/extend-timer`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ timer: timerToast.timer, add_minutes: 60 }),
+              }).then(r => r.json()).then(data => {
+                setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
+                setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
+              });
+              setTimerToast(null);
+            }}
+            style={{
+              padding: "4px 12px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.4)",
+              background: "rgba(255,255,255,0.15)", color: "#fff", cursor: "pointer", fontSize: 12,
+            }}
+          >Extend 1h</button>
+          <button
+            onClick={() => setTimerToast(null)}
+            style={{
+              padding: "4px 8px", borderRadius: 4, border: "none",
+              background: "transparent", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 14,
+            }}
+          >✕</button>
+        </div>
+      )}
       <div className="project-action-bar">
         <div className="project-action-bar-left">
           <button className="project-back-btn" onClick={() => router.push("/projects")} title="Back to projects">←</button>
@@ -442,6 +522,21 @@ export default function ProjectCanvasPage() {
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
             {projectState}
           </span>
+          {timerCountdown && (
+            <span
+              className={`project-timer-badge ${timerUrgency}`}
+              style={{
+                fontSize: 11, marginLeft: 8, padding: "2px 8px", borderRadius: 10,
+                color: timerUrgency === "critical" ? "#ef4444" : timerUrgency === "warning" ? "#fbbf24" : "#94a3b8",
+                background: timerUrgency === "critical" ? "rgba(239,68,68,0.12)" : timerUrgency === "warning" ? "rgba(251,191,36,0.12)" : "rgba(148,163,184,0.08)",
+                animation: timerUrgency === "critical" ? "pulse 1s infinite" : "none",
+              }}
+              title="Time remaining (click to open Project settings)"
+              onClick={() => setShowPalette(true)}
+            >
+              ⏱ {timerCountdown}
+            </span>
+          )}
         </div>
         <div className="project-action-bar-center">
           <span className="project-action-stats">
@@ -826,6 +921,12 @@ export default function ProjectCanvasPage() {
           </div>
         </div>
       )}
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      `}</style>
     </ReactFlowProvider>
   );
 }
