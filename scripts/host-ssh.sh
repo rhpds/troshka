@@ -77,7 +77,7 @@ h = hosts[0]
 prov = db.query(Provider).filter_by(id=h.provider_id).first()
 ptype = prov.type if prov else 'ec2'
 ssh_port = 22000 if ptype == 'ocpvirt' else 22
-ssh_user = 'cloud-user' if ptype == 'ocpvirt' else 'ec2-user'
+ssh_user = 'cloud-user' if ptype == 'ocpvirt' else 'troshka' if ptype in ('gcp', 'azure') else 'ec2-user'
 kf = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', prefix='troshka-ssh-')
 kf.write(h.private_key.encode())
 kf.close()

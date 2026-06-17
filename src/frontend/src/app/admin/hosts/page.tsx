@@ -65,7 +65,7 @@ export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_image: string | null}>>([]);
+  const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_image: string | null; gcp_zone?: string; azure_location?: string}>>([]);
   const [provisioning, setProvisioning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [newProviderId, setNewProviderId] = useState("");
@@ -134,7 +134,7 @@ export default function AdminHostsPage() {
     const isOcpVirt = selectedProvider?.type === "ocpvirt";
     const instanceType = isOcpVirt ? `${newCpuCores}c-${newMemoryGb}g` : newInstanceType;
     const placeholderId = `pending-${Date.now()}`;
-    const placeholder = { id: placeholderId, instance_type: instanceType, region: isOcpVirt ? "ocp-virt" : (newRegion || "us-east-1") };
+    const placeholder = { id: placeholderId, instance_type: instanceType, region: isOcpVirt ? "ocp-virt" : (newRegion || selectedProvider?.default_region || "") };
     setPendingHosts((prev) => [...prev, placeholder]);
     try {
       const body: Record<string, any> = {
@@ -160,24 +160,41 @@ export default function AdminHostsPage() {
     setPendingHosts((prev) => prev.filter((p) => p.id !== placeholderId));
   };
 
-  const instanceTypes = [
-    { value: "c8i.large",    label: "c8i.large — 2 vCPU / 4 GB — ~$0.085/hr" },
-    { value: "c8i.xlarge",   label: "c8i.xlarge — 4 vCPU / 8 GB — ~$0.170/hr" },
-    { value: "c8i.2xlarge",  label: "c8i.2xlarge — 8 vCPU / 16 GB — ~$0.340/hr" },
-    { value: "c8i.4xlarge",  label: "c8i.4xlarge — 16 vCPU / 32 GB — ~$0.680/hr" },
-    { value: "m8i.large",    label: "m8i.large — 2 vCPU / 8 GB — ~$0.096/hr" },
-    { value: "m8i.xlarge",   label: "m8i.xlarge — 4 vCPU / 16 GB — ~$0.192/hr" },
-    { value: "m8i.2xlarge",  label: "m8i.2xlarge — 8 vCPU / 32 GB — ~$0.384/hr" },
-    { value: "m8i.4xlarge",  label: "m8i.4xlarge — 16 vCPU / 64 GB — ~$0.768/hr" },
-    { value: "m8i.8xlarge",  label: "m8i.8xlarge — 32 vCPU / 128 GB — ~$1.536/hr" },
-    { value: "r8i.large",    label: "r8i.large — 2 vCPU / 16 GB — ~$0.126/hr" },
-    { value: "r8i.xlarge",   label: "r8i.xlarge — 4 vCPU / 32 GB — ~$0.252/hr" },
-    { value: "r8i.2xlarge",  label: "r8i.2xlarge — 8 vCPU / 64 GB — ~$0.504/hr" },
-    { value: "r8i.4xlarge",  label: "r8i.4xlarge — 16 vCPU / 128 GB — ~$1.008/hr" },
-    { value: "r8i.8xlarge",  label: "r8i.8xlarge — 32 vCPU / 256 GB — ~$2.016/hr" },
-    { value: "r8i.24xlarge", label: "r8i.24xlarge — 96 vCPU / 768 GB — ~$6.048/hr" },
-  ];
-
+  const instanceTypesByProvider: Record<string, Array<{value: string; label: string}>> = {
+    ec2: [
+      { value: "c8i.large",    label: "c8i.large — 2 vCPU / 4 GB — ~$0.085/hr" },
+      { value: "c8i.xlarge",   label: "c8i.xlarge — 4 vCPU / 8 GB — ~$0.170/hr" },
+      { value: "c8i.2xlarge",  label: "c8i.2xlarge — 8 vCPU / 16 GB — ~$0.340/hr" },
+      { value: "c8i.4xlarge",  label: "c8i.4xlarge — 16 vCPU / 32 GB — ~$0.680/hr" },
+      { value: "m8i.large",    label: "m8i.large — 2 vCPU / 8 GB — ~$0.096/hr" },
+      { value: "m8i.xlarge",   label: "m8i.xlarge — 4 vCPU / 16 GB — ~$0.192/hr" },
+      { value: "m8i.2xlarge",  label: "m8i.2xlarge — 8 vCPU / 32 GB — ~$0.384/hr" },
+      { value: "m8i.4xlarge",  label: "m8i.4xlarge — 16 vCPU / 64 GB — ~$0.768/hr" },
+      { value: "m8i.8xlarge",  label: "m8i.8xlarge — 32 vCPU / 128 GB — ~$1.536/hr" },
+      { value: "r8i.large",    label: "r8i.large — 2 vCPU / 16 GB — ~$0.126/hr" },
+      { value: "r8i.xlarge",   label: "r8i.xlarge — 4 vCPU / 32 GB — ~$0.252/hr" },
+      { value: "r8i.2xlarge",  label: "r8i.2xlarge — 8 vCPU / 64 GB — ~$0.504/hr" },
+      { value: "r8i.4xlarge",  label: "r8i.4xlarge — 16 vCPU / 128 GB — ~$1.008/hr" },
+      { value: "r8i.8xlarge",  label: "r8i.8xlarge — 32 vCPU / 256 GB — ~$2.016/hr" },
+      { value: "r8i.24xlarge", label: "r8i.24xlarge — 96 vCPU / 768 GB — ~$6.048/hr" },
+    ],
+    gcp: [
+      { value: "n2-highmem-8",  label: "n2-highmem-8 — 8 vCPU / 64 GB — ~$0.52/hr" },
+      { value: "n2-highmem-16", label: "n2-highmem-16 — 16 vCPU / 128 GB — ~$1.04/hr" },
+      { value: "n2-highmem-32", label: "n2-highmem-32 — 32 vCPU / 256 GB — ~$2.08/hr" },
+      { value: "n2-highmem-48", label: "n2-highmem-48 — 48 vCPU / 384 GB — ~$3.12/hr" },
+      { value: "n2-highmem-64", label: "n2-highmem-64 — 64 vCPU / 512 GB — ~$4.16/hr" },
+      { value: "n2-highmem-96", label: "n2-highmem-96 — 96 vCPU / 768 GB — ~$6.24/hr" },
+    ],
+    azure: [
+      { value: "Standard_E8s_v5",  label: "Standard_E8s_v5 — 8 vCPU / 64 GB — ~$0.50/hr" },
+      { value: "Standard_E16s_v5", label: "Standard_E16s_v5 — 16 vCPU / 128 GB — ~$1.01/hr" },
+      { value: "Standard_E32s_v5", label: "Standard_E32s_v5 — 32 vCPU / 256 GB — ~$2.02/hr" },
+      { value: "Standard_E48s_v5", label: "Standard_E48s_v5 — 48 vCPU / 384 GB — ~$3.02/hr" },
+      { value: "Standard_E64s_v5", label: "Standard_E64s_v5 — 64 vCPU / 512 GB — ~$4.03/hr" },
+      { value: "Standard_E96s_v5", label: "Standard_E96s_v5 — 96 vCPU / 672 GB — ~$6.05/hr" },
+    ],
+  };
   const awsRegions = [
     { value: "us-east-1",      label: "US East (N. Virginia)" },
     { value: "us-east-2",      label: "US East (Ohio)" },
@@ -196,7 +213,7 @@ export default function AdminHostsPage() {
     const projectsResp = await fetch("/api/v1/projects/");
     const projects = projectsResp.ok ? await projectsResp.json() : [];
     const hostProjects = projects.filter((p: Record<string, string>) => p.host_id === hostId && p.state !== "draft");
-    let msg = `Remove host ${instanceId || hostId}? This will terminate the EC2 instance.`;
+    let msg = `Remove host ${instanceId || hostId}? This will terminate the cloud instance.`;
     if (hostProjects.length > 0) {
       const names = hostProjects.map((p: Record<string, string>) => p.name).join(", ");
       msg += `\n\n⚠ ${hostProjects.length} project(s) will be reset to draft and their disk data will be lost: ${names}`;
@@ -214,9 +231,10 @@ export default function AdminHostsPage() {
   };
 
   const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, any> | undefined;
+  const instanceTypes = instanceTypesByProvider[selectedProvider?.type || "ec2"] || instanceTypesByProvider.ec2;
   const selectedProviderHasImage = selectedProvider ? !!selectedProvider.default_image : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
-  const selectedProviderReady = selectedProvider?.type === "ocpvirt" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
+  const selectedProviderReady = selectedProvider?.type === "ocpvirt" || selectedProvider?.type === "gcp" || selectedProvider?.type === "azure" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
   const filteredHosts = hosts.filter((h) => {
@@ -457,7 +475,7 @@ export default function AdminHostsPage() {
             <ToolbarItem>
               <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All types</option>
-                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => p.type))].map((t) => (
+                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => p.type))].map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
@@ -465,7 +483,7 @@ export default function AdminHostsPage() {
             <ToolbarItem>
               <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All providers</option>
-                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => (
+                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
                 ))}
               </select>
@@ -506,15 +524,17 @@ export default function AdminHostsPage() {
                     onChange={(e) => {
                       setNewProviderId(e.target.value);
                       const p = providers.find((p) => p.id === e.target.value);
-                      if (p) setNewRegion(p.default_region || "");
+                      if (p) setNewRegion(p.default_region || p.gcp_zone || p.azure_location || "");
                       if (p) {
+                        const types = instanceTypesByProvider[p.type] || instanceTypesByProvider.ec2;
+                        setNewInstanceType(types[0]?.value || "");
                         const matchingPool = pools.find((pl) => pl.status === "available" && pl.provider_id === e.target.value && (p.type !== "ocpvirt" || pl.mode !== "shared-fsx"));
                         setSelectedPool(matchingPool?.id || "");
                       }
                     }}
                   >
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt").map((p) => (
+                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
@@ -570,18 +590,29 @@ export default function AdminHostsPage() {
                         ))}
                       </select>
                     </div>
-                    <div style={{ minWidth: 200 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
-                      <select
-                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
-                        value={newRegion}
-                        onChange={(e) => setNewRegion(e.target.value)}
-                      >
-                        {awsRegions.map((r) => (
-                          <option key={r.value} value={r.value}>{r.label}</option>
-                        ))}
-                      </select>
-                    </div>
+                    {selectedProvider?.type === "ec2" ? (
+                      <div style={{ minWidth: 200 }}>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Region</label>
+                        <select
+                          style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                          value={newRegion}
+                          onChange={(e) => setNewRegion(e.target.value)}
+                        >
+                          {awsRegions.map((r) => (
+                            <option key={r.value} value={r.value}>{r.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div style={{ minWidth: 150 }}>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Zone</label>
+                        <input
+                          style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                          value={newRegion}
+                          disabled
+                        />
+                      </div>
+                    )}
                   </>
                 )}
                 {newProviderId && <div style={{ minWidth: 220 }}>
@@ -659,24 +690,6 @@ export default function AdminHostsPage() {
 
       {/* Host List */}
       <PageSection>
-        {pendingHosts.map((ph) => (
-          <Card key={ph.id} style={{ marginBottom: 8, opacity: 0.6 }}>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <strong>provisioning...</strong>
-                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "#fbbf2422", color: "#fbbf24" }}>
-                    provisioning
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                  {ph.instance_type} · {ph.region} · provisioning...
-                </div>
-              </div>
-              <Button variant="plain" isDisabled isLoading>Provisioning...</Button>
-            </CardBody>
-          </Card>
-        ))}
         {filteredHosts.length > 0 && (() => {
           const selected = filteredHosts.filter((h) => selectedHosts.has(h.id));
           const allSelected = selected.length === filteredHosts.length && filteredHosts.length > 0;
@@ -753,6 +766,24 @@ export default function AdminHostsPage() {
             </div>
           );
         })()}
+        {pendingHosts.map((ph) => (
+          <Card key={ph.id} style={{ marginBottom: 8, opacity: 0.6 }}>
+            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <strong>provisioning...</strong>
+                  <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "#fbbf2422", color: "#fbbf24" }}>
+                    provisioning
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+                  {ph.instance_type} · {ph.region} · provisioning...
+                </div>
+              </div>
+              <Button variant="plain" isDisabled isLoading>Provisioning...</Button>
+            </CardBody>
+          </Card>
+        ))}
         {filteredHosts.length === 0 && pendingHosts.length === 0 && (
           <p style={{ opacity: 0.6 }}>No hosts{filterRegion ? ` in ${filterRegion}` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
         )}
@@ -823,7 +854,7 @@ export default function AdminHostsPage() {
                   ) : (
                     <span>{h.instance_type}</span>
                   )}
-                  <span>{h.region ? `· ${h.region} ` : ""}· {h.ip_address || "no IP"}{isOcpVirtHost(h) ? ":22000" : ""} {h.host_type === "pattern_buffer" ? <> · <Label color="purple" isCompact>pattern buffer</Label></> : ""}</span>
+                  <span>{(() => { const prov = providers.find(p => p.id === h.provider_id); return prov ? `· ${prov.name} (${prov.type})` : ""; })()} · {h.ip_address || "no IP"}{isOcpVirtHost(h) ? ":22000" : ""} {h.host_type === "pattern_buffer" ? <> · <Label color="purple" isCompact>pattern buffer</Label></> : ""}</span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
@@ -837,7 +868,7 @@ export default function AdminHostsPage() {
                   <div><strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB</div>
                   <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1</div>
                 </div>
-                {(() => { const si = storageInfo[h.id]; const optimizing = si && h.storage_size_gb > Math.round(si.total_gb); return (
+                {(() => { const si = storageInfo[h.id]; const optimizing = si && (h.storage_size_gb - Math.round(si.total_gb)) > Math.round(h.storage_size_gb * 0.05); return (
                 <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Storage</div>
                   <div>{si ? <><strong>{si.used_pct}%</strong> of {Math.round(si.total_gb)} GB</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}</div>
