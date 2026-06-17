@@ -24,6 +24,7 @@ class PatternCreate(BaseModel):
     tags: dict | None = None
     source_project_id: str | None = None
     restart_after: bool = True
+    quiesce_cluster: bool = True
     topology: dict | None = None
     disk_mappings: list[dict] | None = None
 

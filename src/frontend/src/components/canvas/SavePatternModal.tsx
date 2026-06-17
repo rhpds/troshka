@@ -15,6 +15,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
   const [description, setDescription] = useState("");
   const [stopVMs, setStopVMs] = useState(false);
   const [restartAfter, setRestartAfter] = useState(true);
+  const [quiesceCluster, setQuiesceCluster] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
@@ -84,6 +85,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           visibility: "private",
           source_project_id: projectId,
           restart_after: restartAfter,
+          quiesce_cluster: quiesceCluster,
         }),
       });
       if (resp.ok) {
@@ -190,6 +192,10 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
                 Restart project after capture
               </label>
             )}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
+              <input type="checkbox" checked={quiesceCluster} onChange={(e) => setQuiesceCluster(e.target.checked)} disabled={saving} />
+              Quiesce OCP cluster before capture
+            </label>
           </div>
         )}
 

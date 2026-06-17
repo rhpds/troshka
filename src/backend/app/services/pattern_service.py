@@ -13,6 +13,104 @@ log = logging.getLogger(__name__)
 _capture_progress: dict[str, dict] = {}
 
 
+def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
+    """Wait for OCP cluster to be in a clean state before pattern capture.
+
+    Approves pending CSRs, forces kube-apiserver rollout, waits for all
+    cluster operators to be Available and not Progressing.
+    """
+    from app.services.deploy_service import (
+        _approve_pending_csrs,
+        _exec_on_bastion,
+        _is_ocp_topology,
+    )
+
+    if not _is_ocp_topology(topology):
+        return
+
+    nodes = topology.get("nodes", [])
+    bastion = next(
+        (
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
+    if not bastion:
+        return
+
+    bastion_ip = ""
+    for nic in bastion.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            bastion_ip = nic["ip"]
+            break
+    if not bastion_ip:
+        bastion_ip = "10.0.0.50"
+    password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+
+    log.info("Pattern %s: quiescing OCP cluster before capture", pattern_id[:8])
+    _capture_progress[pattern_id] = {
+        "step": "quiescing",
+        "detail": "Waiting for cluster to stabilize",
+    }
+
+    # Approve any pending CSRs
+    approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+    if approved:
+        log.info("Pattern %s: approved %d CSR(s)", pattern_id[:8], approved)
+        # Force kube-apiserver rollout only if certs rotated — the rollout
+        # itself causes temporary auth disruption, so skip it if unnecessary
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"pattern-capture-\'$(date +%s)\'"}}\' 2>/dev/null',
+            timeout=10,
+        )
+        log.info(
+            "Pattern %s: triggered kube-apiserver rollout after CSR approval",
+            pattern_id[:8],
+        )
+
+    # Wait for all cluster operators to be Available and not Progressing
+    import time
+
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get co --no-headers 2>/dev/null | awk '{print $3,$4}' | sort | uniq -c",
+            timeout=15,
+        )
+        if result:
+            lines = result.strip().split("\n")
+            all_good = all("True False" in line for line in lines if line.strip())
+            if all_good:
+                log.info(
+                    "Pattern %s: cluster quiesced — all operators available",
+                    pattern_id[:8],
+                )
+                break
+        _capture_progress[pattern_id] = {
+            "step": "quiescing",
+            "detail": "Waiting for cluster operators to stabilize",
+        }
+        time.sleep(10)
+    else:
+        log.warning(
+            "Pattern %s: quiesce timed out after 5m, proceeding with capture",
+            pattern_id[:8],
+        )
+
+    # Final CSR sweep
+    _approve_pending_csrs(host, project_id, bastion_ip, password)
+
+
 def _get_pattern_buffer(db, host):
     """Get the pattern buffer host for the pool this host belongs to, if any."""
     if not host.storage_pool_id:
@@ -176,7 +274,10 @@ def cancel_capture(pattern_id: str, db) -> None:
 
 
 def capture_pattern_disks(
-    pattern_id: str, project_id: str, restart_after: bool = True
+    pattern_id: str,
+    project_id: str,
+    restart_after: bool = True,
+    quiesce_cluster: bool = True,
 ) -> None:
     """Capture all disks from a project into a pattern.
 
@@ -208,6 +309,11 @@ def capture_pattern_disks(
         topology = (
             project.deployed_topology or project.topology or {"nodes": [], "edges": []}
         )
+
+        # Quiesce OCP cluster before capture — ensures certs and operators
+        # are in a clean state so deploys from this pattern start cleanly
+        if project.state == "active" and quiesce_cluster:
+            _quiesce_ocp_cluster(host, project_id, topology, pattern_id)
         disk_nodes = [
             n for n in topology.get("nodes", []) if n.get("type") == "storageNode"
         ]

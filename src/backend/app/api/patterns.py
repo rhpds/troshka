@@ -285,7 +285,12 @@ def create_pattern(
 
         threading.Thread(
             target=capture_pattern_disks,
-            args=(pattern.id, body.source_project_id, body.restart_after),
+            args=(
+                pattern.id,
+                body.source_project_id,
+                body.restart_after,
+                body.quiesce_cluster,
+            ),
             name=f"capture-{pattern.id[:8]}",
             daemon=True,
         ).start()
