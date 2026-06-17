@@ -649,6 +649,30 @@ export default function AdminHostsPage() {
               <div style={{ fontSize: 13, fontWeight: 600 }}>All Regions</div>
               <div style={{ fontSize: 24, fontWeight: 700 }}>{hosts.length}</div>
               <div style={{ fontSize: 11, opacity: 0.6 }}>hosts</div>
+              {(() => {
+                const totVcpus = summary.reduce((a, s) => a + s.total_vcpus, 0);
+                const usedVcpus = summary.reduce((a, s) => a + s.used_vcpus, 0);
+                const allocVcpus = summary.reduce((a, s) => a + ((s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus), 0);
+                const totRamMb = summary.reduce((a, s) => a + s.total_ram_mb, 0);
+                const usedRamMb = summary.reduce((a, s) => a + s.used_ram_mb, 0);
+                const allocRamMb = summary.reduce((a, s) => a + ((s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb), 0);
+                const cpuPct = allocVcpus ? (usedVcpus / allocVcpus) * 100 : 0;
+                const ramPct = allocRamMb ? (usedRamMb / allocRamMb) * 100 : 0;
+                return (<>
+                  <div style={{ fontSize: 11, marginTop: 8 }}>
+                    vCPU: {usedVcpus}/{allocVcpus} <span style={{ opacity: 0.4 }}>({totVcpus} phys)</span>
+                  </div>
+                  <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                    <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
+                  </div>
+                  <div style={{ fontSize: 11, marginTop: 6 }}>
+                    RAM: {Math.round(usedRamMb / 1024)}/{Math.round(allocRamMb / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(totRamMb / 1024)} phys)</span>
+                  </div>
+                  <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                    <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
+                  </div>
+                </>);
+              })()}
             </CardBody>
           </Card>
           {summary.map((s) => (
