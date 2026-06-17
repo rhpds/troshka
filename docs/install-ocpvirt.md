@@ -122,7 +122,20 @@ Save this token securely — you will need it for the provider credentials.
 
 ## Create Provider
 
-Create the OCP Virt provider via API:
+1. Navigate to Admin → Providers
+2. Click "Add Provider"
+3. Fill in the form:
+   - **Name**: `ocpvirt-prod`
+   - **Type**: Select "OpenShift Virtualization"
+   - **API URL**: `https://api.cluster.example.com:6443`
+   - **Token**: Paste the token from the previous step
+   - **Namespace**: `troshka`
+   - **Verify SSL**: Uncheck (for self-signed certs)
+4. Click "Create Provider"
+5. Click "Test" to verify connectivity
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 export TROSHKA_TOKEN="<your-troshka-api-token>"
@@ -151,20 +164,29 @@ curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/test" \
   -H "Authorization: Bearer $TROSHKA_TOKEN"
 ```
 
+</details>
+
 ## Infrastructure Setup
 
-Run infrastructure verification:
-
-```bash
-curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/setup-infra" \
-  -H "Authorization: Bearer $TROSHKA_TOKEN"
-```
+1. Navigate to Admin → Providers
+2. Click "Setup Infrastructure" on your OCP Virt provider
+3. Wait for the verification to complete
 
 This verifies:
 - API connectivity and token validity
 - Namespace exists and is accessible
 - Storage classes are available
 - Worker nodes have nested virtualization capability
+
+<details>
+<summary>API equivalent</summary>
+
+```bash
+curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/setup-infra" \
+  -H "Authorization: Bearer $TROSHKA_TOKEN"
+```
+
+</details>
 
 ## Storage
 
@@ -181,22 +203,42 @@ OCP Virt hosts require a RHEL 9 base image. The driver supports two methods:
 
 ### Method 1: DataSource (Recommended)
 
-Use a pre-imported DataSource from the `openshift-virtualization-os-images` namespace:
+Use a pre-imported DataSource from the `openshift-virtualization-os-images` namespace.
+
+First, list available DataSources:
 
 ```bash
-# List available DataSources
 oc get datasources -n openshift-virtualization-os-images
+```
 
-# Set the default image
+Then configure the image via UI:
+
+1. Navigate to Admin → Providers
+2. Select your OCP Virt provider
+3. In the Image Settings section, enter the DataSource name (e.g., `rhel9`)
+4. Click "Save"
+
+<details>
+<summary>API equivalent</summary>
+
+```bash
 curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/set-image" \
   -H "Authorization: Bearer $TROSHKA_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"image_id": "rhel9"}'
 ```
 
+</details>
+
 ### Method 2: HTTP URL
 
-Provide a direct URL to a RHEL 9 QCOW2 image:
+1. Navigate to Admin → Providers
+2. Select your OCP Virt provider
+3. In the Image Settings section, enter the RHEL 9 QCOW2 image URL
+4. Click "Save"
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/set-image" \
@@ -204,6 +246,8 @@ curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/set-image" \
   -H "Content-Type: application/json" \
   -d '{"rhel_image_url": "https://example.com/rhel-9.5-x86_64-kvm.qcow2"}'
 ```
+
+</details>
 
 ## RHEL Installation ISO
 
@@ -236,7 +280,15 @@ virtctl image-upload pvc rhel-10.2-dvd-iso \
   --insecure
 ```
 
-The ISO PVC name must match the `iso_pvc` credential field (default: `rhel-10.2-dvd-iso`). Update provider credentials if using a different name:
+The ISO PVC name must match the `iso_pvc` credential field (default: `rhel-10.2-dvd-iso`). If using a different name:
+
+1. Navigate to Admin → Providers
+2. Select your OCP Virt provider
+3. Update the ISO PVC name in the credentials section
+4. Click "Save"
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X PATCH "http://localhost:8200/api/v1/providers/<provider-id>" \
@@ -245,11 +297,25 @@ curl -X PATCH "http://localhost:8200/api/v1/providers/<provider-id>" \
   -d '{"credentials": {"iso_pvc": "your-iso-pvc-name"}}'
 ```
 
+</details>
+
 ## Console Setup
 
 OCP Virt uses OpenShift Routes for console access (edge TLS termination by the OCP router). No external DNS or Let's Encrypt certificates are needed.
 
-Run console setup:
+1. Navigate to Admin → Providers
+2. Click "Setup Console" on your OCP Virt provider
+3. Enter the base domain (typically the cluster's wildcard apps domain, e.g., `apps.cluster.example.com`)
+4. Click "Setup"
+
+This configures the console domain. When hosts are provisioned, the driver creates:
+- A Service for `troshka-vncd` (ClusterIP on port 8080)
+- A Route with edge TLS termination (auto-generated hostname: `troshka-console-{host-id}-troshka.apps.cluster.example.com`)
+
+The `troshka-vncd` daemon runs without TLS (`--no-tls` flag) — all TLS is handled by the OCP router.
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/setup-console" \
@@ -258,15 +324,32 @@ curl -X POST "http://localhost:8200/api/v1/providers/<provider-id>/setup-console
   -d '{"base_domain": "apps.cluster.example.com"}'
 ```
 
-This configures the console domain (typically the cluster's wildcard apps domain). When hosts are provisioned, the driver creates:
-- A Service for `troshka-vncd` (ClusterIP on port 8080)
-- A Route with edge TLS termination (auto-generated hostname: `troshka-console-{host-id}-troshka.apps.cluster.example.com`)
-
-The `troshka-vncd` daemon runs without TLS (`--no-tls` flag) — all TLS is handled by the OCP router.
+</details>
 
 ## Provision First Host
 
-Create a host via API:
+1. Navigate to Admin → Providers
+2. Select your OCP Virt provider
+3. Click "Add Host"
+4. Fill in the form:
+   - **Instance Type**: Enter in format `{vcpus}c-{ram_gb}g` (e.g., `64c-256g` for 64 vCPUs and 256 GiB RAM)
+   - **Storage Size**: Enter data disk size in GB (e.g., `500`)
+5. Click "Create Host"
+6. Monitor the provisioning progress in the Hosts section
+
+Instance type format: `{vcpus}c-{ram_gb}g`
+- Example: `64c-256g` = 64 vCPUs, 256 GiB RAM
+- Example: `32c-128g` = 32 vCPUs, 128 GiB RAM
+
+The provisioner creates:
+- VirtualMachine with 2 DataVolumes (root + data disks)
+- LoadBalancer Service for SSH (port 22000) and agent (port 31337)
+- Secret with cloud-init userdata
+
+Host provisioning typically takes 5-10 minutes (VM boot + package installation via ISO repos).
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts \
@@ -279,16 +362,7 @@ curl -X POST http://localhost:8200/api/v1/hosts \
   }'
 ```
 
-Instance type format: `{vcpus}c-{ram_gb}g`
-- Example: `64c-256g` = 64 vCPUs, 256 GiB RAM
-- Example: `32c-128g` = 32 vCPUs, 128 GiB RAM
-
-The provisioner creates:
-- VirtualMachine with 2 DataVolumes (root + data disks)
-- LoadBalancer Service for SSH (port 22000) and agent (port 31337)
-- Secret with cloud-init userdata
-
-Host provisioning typically takes 5-10 minutes (VM boot + package installation via ISO repos).
+</details>
 
 ## Differences from Cloud Providers
 
