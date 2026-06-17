@@ -800,26 +800,12 @@ def poweron_host(
             status_code=400, detail="No provider configured for this host"
         )
 
-    drv = get_provider_driver(provider)
-
-    # Check actual instance state via provider driver
-    status = drv.get_host_status(provider, host.instance_id)
-    cloud_state = status["state"] if status else "unknown"
-
-    if cloud_state == "running":
-        host.state = "active"
-        host.ip_address = status.get("public_ip")
-        host.agent_status = "disconnected"
-        db.commit()
-    elif cloud_state in ("stopped", "stopping", "deallocated"):
-        if cloud_state in ("stopped", "deallocated"):
-            drv.start_host(provider, host.instance_id)
-        host.state = "starting"
-        db.commit()
-    else:
-        raise HTTPException(
-            status_code=409, detail=f"Instance is in unexpected state: {cloud_state}"
-        )
+    # Set state to starting immediately and do the actual cloud API call
+    # in the background thread — cloud API calls can take 5-10 seconds
+    # and would otherwise timeout the frontend fetch
+    host.state = "starting"
+    host.agent_status = "disconnected"
+    db.commit()
 
     # Background: wait for running, update IP, reinstall agent
     host_id = host.id
@@ -848,6 +834,12 @@ def poweron_host(
             if not _prov:
                 return
             _drv = _get_drv(_prov)
+
+            # Start the instance via cloud API
+            try:
+                _drv.start_host(_prov, instance_id)
+            except Exception as e:
+                logger.warning("start_host failed for %s: %s", host_id[:8], e)
 
             # Poll until instance is running (up to 5 min)
             deadline = time.time() + 300
