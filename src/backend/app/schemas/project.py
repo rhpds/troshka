@@ -39,6 +39,7 @@ class ProjectResponse(BaseModel):
     auto_stop_minutes: int | None = None
     auto_stop_expires_at: datetime.datetime | None = None
     auto_delete_minutes: int | None = None
+    auto_stopped: bool = False
     lifetime_expires_at: datetime.datetime | None = None
     poweroff_mode: str
     host_id: str | None = None

@@ -917,7 +917,7 @@ export default function ProjectsPage() {
                       background: `${stateColors[p.state] || "#94a3b8"}22`,
                       color: stateColors[p.state] || "#94a3b8",
                     }}>
-                      {p.state}
+                      {p.state === "stopped" && p.auto_stopped ? "stopped (auto)" : p.state}
                     </span>
                     {(p.state === "stopping" || p.state === "starting" || p.state === "deploying") && (
                       <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
