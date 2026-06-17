@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Nested VM Environment Builder</strong><br/>
-  Design, deploy, and share multi-VM environments on AWS EC2 and OCP Virtualization
+  Design, deploy, and share multi-VM environments on AWS, GCP, Azure, and OpenShift Virtualization
 </p>
 
 ---
@@ -111,7 +111,23 @@ Troshka eliminates this entire class of problems:
 - **DNS integration** — Optional Route53 DNS provider for automated record management per project
 - **Host garbage collector** — Auto-sync capacity, clean orphaned VMs/disks/bridges, repair networks, evict stale cache
 - **API-first** — Full REST API with API key authentication, plus an Ansible collection for IaC
-- **Multi-provider** — Deploy to AWS EC2 (nested virtualization) or OCP Virtualization (KubeVirt)
+- **Multi-provider** — Deploy to AWS EC2, Google Cloud, Azure, or OpenShift Virtualization (KubeVirt)
+
+## Documentation
+
+- **[Architecture Guide](docs/architecture.md)** — system design, provider abstraction, networking, storage, agent internals
+- **[API Guide](docs/api-guide.md)** — workflow walkthroughs with examples + full endpoint reference
+
+### Installation Guides
+
+Start with [Common Setup](docs/install-common.md) (backend, frontend, database), then follow the guide for your cloud:
+
+| Cloud | Guide | Shared Storage | Console TLS | EIPs |
+|-------|-------|---------------|-------------|------|
+| AWS | [AWS Setup](docs/install-aws.md) | FSx OpenZFS | Route53 + certbot | Yes |
+| GCP | [GCP Setup](docs/install-gcp.md) | Not yet | Cloud DNS + certbot | Yes |
+| Azure | [Azure Setup](docs/install-azure.md) | Azure Files NFS | Azure DNS + certbot | Yes |
+| OCP Virt | [OCP Virt Setup](docs/install-ocpvirt.md) | Ceph-NFS | OCP Routes | No |
 
 ## Architecture
 
@@ -125,6 +141,8 @@ Browser
   |                               +-- PostgreSQL (state)
   |                               +-- S3 (disk images, patterns)
   |                               +-- troshkad agents (EC2 hosts)
+  |                               +-- GCP Compute Engine
+  |                               +-- Azure Resource Manager
   |                               +-- Kubernetes API --> OCP Virt
   |
   +-- WSS (console) --> API Server --> troshkad --> libvirt VNC
