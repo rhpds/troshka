@@ -68,6 +68,7 @@ export default function AdminHostsPage() {
   const [filterText, setFilterText] = useState("");
   const [cpuRatio, setCpuRatio] = useState(4.0);
   const [ramRatio, setRamRatio] = useState(1.5);
+  const [showOvercommit, setShowOvercommit] = useState(true);
   const [selectedHosts, setSelectedHosts] = useState<Set<string>>(new Set());
 
   const [storageInfo, setStorageInfo] = useState<Record<string, { used_pct: number; free_gb: number; total_gb: number }>>({});
@@ -637,14 +638,22 @@ export default function AdminHostsPage() {
             providerMap[pid].hosts.push(h);
           }
           const provSummaries = Object.values(providerMap);
-          const totVcpus = hosts.reduce((a, h) => a + h.total_vcpus, 0);
+          const cr = showOvercommit ? cpuRatio : 1;
+          const rr = showOvercommit ? ramRatio : 1;
+          const totVcpus = Math.round(hosts.reduce((a, h) => a + h.total_vcpus, 0) * cr);
           const usedVcpus = hosts.reduce((a, h) => a + h.used_vcpus, 0);
-          const totRamMb = hosts.reduce((a, h) => a + h.total_ram_mb, 0);
+          const totRamMb = Math.round(hosts.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
           const usedRamMb = hosts.reduce((a, h) => a + h.used_ram_mb, 0);
           const totRunningVms = hosts.reduce((a, h) => a + h.running_vms, 0);
           const totCpuPct = totVcpus ? (usedVcpus / totVcpus) * 100 : 0;
           const totRamPct = totRamMb ? (usedRamMb / totRamMb) * 100 : 0;
-          return (
+          return (<>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", opacity: 0.7 }}>
+              <input type="checkbox" checked={showOvercommit} onChange={(e) => setShowOvercommit(e.target.checked)} />
+              Overcommit ({cpuRatio}:1 CPU, {ramRatio}:1 RAM)
+            </label>
+          </div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
           <Card isClickable isSelectable onClick={() => setFilterProvider("")}
             style={{ minWidth: 200, borderLeft: !filterProvider ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}>
@@ -664,9 +673,9 @@ export default function AdminHostsPage() {
           </Card>
           {provSummaries.map((ps) => {
             const activeCount = ps.hosts.filter((h) => h.state === "active").length;
-            const pVcpus = ps.hosts.reduce((a, h) => a + h.total_vcpus, 0);
+            const pVcpus = Math.round(ps.hosts.reduce((a, h) => a + h.total_vcpus, 0) * cr);
             const pUsedVcpus = ps.hosts.reduce((a, h) => a + h.used_vcpus, 0);
-            const pRamMb = ps.hosts.reduce((a, h) => a + h.total_ram_mb, 0);
+            const pRamMb = Math.round(ps.hosts.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
             const pUsedRamMb = ps.hosts.reduce((a, h) => a + h.used_ram_mb, 0);
             const pRunningVms = ps.hosts.reduce((a, h) => a + h.running_vms, 0);
             const cpuPct = pVcpus ? (pUsedVcpus / pVcpus) * 100 : 0;
@@ -690,7 +699,8 @@ export default function AdminHostsPage() {
               </CardBody>
             </Card>);
           })}
-        </div>);
+        </div>
+        </>);
         })()}
       </PageSection>
 
