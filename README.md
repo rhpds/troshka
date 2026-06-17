@@ -259,11 +259,10 @@ troshka/
 |   |   |   +-- stores/       # Zustand state
 |   +-- troshkad/             # Host agent daemon (single-file, stdlib only)
 |   +-- agent/                # Agent installer and deployer
-+-- ansible/                  # OCP deployment
 +-- collection/               # Ansible collection for IaC
-+-- infra/                    # IAM policies, infrastructure config
-+-- scripts/                  # Dev utilities (host-ssh.sh, host-db.sh)
-+-- docs/                     # Design specs and plans
++-- infra/                    # IAM policies, RBAC manifests, host utilities (see infra/README.md)
++-- scripts/                  # Dev/ops utilities (see scripts/README.md)
++-- docs/                     # Architecture, API, and installation guides
 +-- dev-services.sh           # Local dev orchestration
 ```
 

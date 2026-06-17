@@ -778,7 +778,7 @@ def deploy_agent(
         # Copy utility scripts
         tools_dir = os.path.dirname(troshkad_path)
         infra_dir = os.path.join(os.path.dirname(os.path.dirname(tools_dir)), "infra")
-        troshka_files = os.path.join(infra_dir, "troshka-files.sh")
+        troshka_files = os.path.join(infra_dir, "troshka-fs-monitor.sh")
         if os.path.exists(troshka_files):
             subprocess.run(
                 [
@@ -786,7 +786,7 @@ def deploy_agent(
                     *scp_port_opts,
                     *ssh_opts,
                     troshka_files,
-                    f"{ssh_user}@{host_ip}:/tmp/troshka-files.sh",
+                    f"{ssh_user}@{host_ip}:/tmp/troshka-fs-monitor.sh",
                 ],
                 capture_output=True,
                 text=True,
@@ -800,13 +800,13 @@ def deploy_agent(
                     f"{ssh_user}@{host_ip}",
                     "sudo",
                     "mv",
-                    "/tmp/troshka-files.sh",
-                    "/usr/local/bin/troshka-files",
+                    "/tmp/troshka-fs-monitor.sh",
+                    "/usr/local/bin/troshka-fs-monitor",
                     "&&",
                     "sudo",
                     "chmod",
                     "+x",
-                    "/usr/local/bin/troshka-files",
+                    "/usr/local/bin/troshka-fs-monitor",
                 ],
                 capture_output=True,
                 timeout=60,

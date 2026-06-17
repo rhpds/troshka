@@ -1,5 +1,5 @@
 #!/bin/bash
-# Troshka storage viewer — run on host with: sudo troshka-files
+# Troshka storage viewer — run on host with: sudo troshka-fs-monitor
 # Refreshes every 2 seconds, grouped by project
 tput civis 2>/dev/null
 trap 'tput cnorm 2>/dev/null; exit' INT TERM
