@@ -70,6 +70,8 @@ runcmd:
     echo 1 > /sys/kernel/mm/ksm/run
     echo 200 > /sys/kernel/mm/ksm/sleep_millisecs
   - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
+  - firewall-cmd --add-port=31337/tcp --add-port=443/tcp --permanent 2>/dev/null || true
+  - firewall-cmd --reload 2>/dev/null || true
 """
 
 

@@ -843,9 +843,9 @@ export default function StoragePoolsPage() {
                         {pool.worker_host_id ? "Replace" : "Add"} Pattern Buffer
                       </Button>
                     )}
-                    {!pbAction[pool.id] && ["provisioning", "installing"].includes(pool.worker_status || "") && (
+                    {!pbAction[pool.id] && pool.worker_host_id && (
                       <Button variant="danger" size="sm" onClick={() => {
-                        if (!window.confirm("Cancel pattern buffer provisioning and delete the instance?")) return;
+                        if (!window.confirm("Delete the pattern buffer instance? This will terminate the VM.")) return;
                         fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer`, { method: "DELETE" });
                         loadData();
                       }}>Delete Pattern Buffer</Button>
