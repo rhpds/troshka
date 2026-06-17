@@ -333,65 +333,92 @@ class AzureDriver(ProviderDriver):
             plan_info = None
 
         # --- Create VM ---
-        vm_params = {
-            "location": location,
-            "tags": {"managed-by": "troshka", "troshka-host-id": host_id[:12]},
-            "hardware_profile": {"vm_size": instance_type},
-            "storage_profile": {
-                "image_reference": (
-                    {"id": image_ref["id"]}
-                    if "id" in image_ref
-                    else {
-                        "publisher": image_ref["publisher"],
-                        "offer": image_ref["offer"],
-                        "sku": image_ref["sku"],
-                        "version": image_ref["version"],
-                    }
+        from azure.mgmt.compute.models import (
+            DataDisk,
+            HardwareProfile,
+            ImageReference,
+            LinuxConfiguration,
+            ManagedDiskParameters,
+            NetworkInterfaceReference,
+            NetworkProfile,
+            OSDisk,
+            OSProfile,
+            SshConfiguration,
+            SshPublicKey,
+            StorageProfile,
+            VirtualMachine,
+        )
+
+        if "id" in image_ref:
+            image_reference = ImageReference(id=image_ref["id"])
+        else:
+            image_reference = ImageReference(
+                publisher=image_ref["publisher"],
+                offer=image_ref["offer"],
+                sku=image_ref["sku"],
+                version=image_ref["version"],
+            )
+
+        vm_obj = VirtualMachine(
+            location=location,
+            tags={"managed-by": "troshka", "troshka-host-id": host_id[:12]},
+            hardware_profile=HardwareProfile(vm_size=instance_type),
+            storage_profile=StorageProfile(
+                image_reference=image_reference,
+                os_disk=OSDisk(
+                    name=os_disk_name,
+                    create_option="FromImage",
+                    disk_size_gb=50,
+                    managed_disk=ManagedDiskParameters(
+                        storage_account_type="Premium_LRS"
+                    ),
+                    delete_option="Detach",
                 ),
-                "os_disk": {
-                    "name": os_disk_name,
-                    "create_option": "FromImage",
-                    "disk_size_gb": 50,
-                    "managed_disk": {"storage_account_type": "Premium_LRS"},
-                    "delete_option": "Detach",
-                },
-                "data_disks": [
-                    {
-                        "lun": 0,
-                        "name": data_disk_name,
-                        "create_option": "Empty",
-                        "disk_size_gb": storage_size_gb,
-                        "managed_disk": {"storage_account_type": "Premium_LRS"},
-                        "delete_option": "Detach",
-                    }
+                data_disks=[
+                    DataDisk(
+                        lun=0,
+                        name=data_disk_name,
+                        create_option="Empty",
+                        disk_size_gb=storage_size_gb,
+                        managed_disk=ManagedDiskParameters(
+                            storage_account_type="Premium_LRS"
+                        ),
+                        delete_option="Detach",
+                    )
                 ],
-            },
-            "os_profile": {
-                "computer_name": instance_name[:15],  # Azure limit: 15 chars
-                "admin_username": "troshka",
-                "custom_data": custom_data_b64,
-                "linux_configuration": {
-                    "disable_password_authentication": True,
-                    "ssh": {
-                        "public_keys": [
-                            {
-                                "path": "/home/troshka/.ssh/authorized_keys",
-                                "key_data": public_key,
-                            }
+            ),
+            os_profile=OSProfile(
+                computer_name=instance_name[:15],
+                admin_username="troshka",
+                custom_data=custom_data_b64,
+                linux_configuration=LinuxConfiguration(
+                    disable_password_authentication=True,
+                    ssh=SshConfiguration(
+                        public_keys=[
+                            SshPublicKey(
+                                path="/home/troshka/.ssh/authorized_keys",
+                                key_data=public_key,
+                            )
                         ]
-                    },
-                },
-            },
-            "network_profile": {
-                "network_interfaces": [{"id": nic.id, "primary": True}]
-            },
-        }
+                    ),
+                ),
+            ),
+            network_profile=NetworkProfile(
+                network_interfaces=[NetworkInterfaceReference(id=nic.id, primary=True)]
+            ),
+        )
 
         if plan_info:
-            vm_params["plan"] = plan_info
+            from azure.mgmt.compute.models import Plan
+
+            vm_obj.plan = Plan(
+                name=plan_info["name"],
+                publisher=plan_info["publisher"],
+                product=plan_info["product"],
+            )
 
         poller = compute_client.virtual_machines.begin_create_or_update(
-            rg, instance_name, vm_params
+            rg, instance_name, vm_obj
         )
         poller.result()
         logger.info("Created VM %s (%s) in %s", instance_name, instance_type, location)

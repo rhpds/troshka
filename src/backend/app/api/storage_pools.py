@@ -35,6 +35,7 @@ def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
         worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
         if worker:
             resp.worker_ip = worker.ip_address
+            resp.worker_private_ip = worker.private_ip
             resp.worker_instance_id = worker.instance_id
             resp.worker_agent_version = worker.agent_version
             if worker.agent_status == "connected":

@@ -65,6 +65,7 @@ class StoragePoolResponse(BaseModel):
     worker_status: str | None = None
     worker_error: str | None = None
     worker_ip: str | None = None
+    worker_private_ip: str | None = None
     worker_instance_id: str | None = None
     worker_agent_version: str | None = None
     created_at: datetime.datetime

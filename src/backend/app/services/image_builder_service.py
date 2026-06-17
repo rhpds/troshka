@@ -147,7 +147,7 @@ def _build_upload_options(provider, rhel_version: str = "rhel-10") -> dict:
         if isinstance(sa_json, str):
             sa_json = json.loads(sa_json)
         email = sa_json.get("client_email", "")
-        return {"share_with_accounts": [email]}
+        return {"share_with_accounts": [f"serviceAccount:{email}"]}
     elif provider.type == "azure":
         creds = provider.get_credentials()
         return {
@@ -248,10 +248,19 @@ def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-1
                 else:
                     raise
 
-            image_status = status.get("image_status", {}).get("status", "unknown")
+            image_status_obj = status.get("image_status", {})
+            image_status = image_status_obj.get("status", "unknown")
+            progress = image_status_obj.get("progress", {})
+            done = progress.get("done", 0)
+            total = progress.get("total", 0)
+            minutes = elapsed // 60
+            if total:
+                msg = f"Step {done}/{total} — {image_status} ({minutes}m elapsed)"
+            else:
+                msg = f"{image_status} ({minutes}m elapsed)"
             _build_progress[provider_id].update(
                 {
-                    "message": f"Image Builder status: {image_status} ({elapsed}s elapsed)",
+                    "message": msg,
                     "elapsed_seconds": elapsed,
                 }
             )

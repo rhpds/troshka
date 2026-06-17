@@ -1320,8 +1320,8 @@ def discover_images_gcp(
     skip = ("arm64", "eus", "sap", "baremetal")
     latest_by_prefix: dict[str, dict] = {}
 
-    for image_project in ["rhel-byos-cloud", "rhel-cloud"]:
-        source = "BYOS" if "byos" in image_project else "PAYG"
+    for image_project in ["rhel-cloud"]:
+        source = "PAYG"
         try:
             for img in images_client.list(project=image_project):
                 name = img.name or ""
@@ -1509,7 +1509,6 @@ def discover_images_azure(
     results = []
 
     offers = [
-        ("redhat", "rhel-byos", "BYOS"),
         ("redhat", "RHEL", "PAYG"),
     ]
     for publisher, offer, source in offers:

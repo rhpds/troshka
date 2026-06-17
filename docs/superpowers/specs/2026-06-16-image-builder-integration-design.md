@@ -81,13 +81,26 @@ Response includes the cloud image ID/name that was uploaded. Set it as `provider
 ## One-Time Cloud Setup
 
 ### Azure
-Image Builder needs to be authorized as an application in the Azure tenant:
-- App ID: `b3e1c24c-3025-4c1b-b694-35caba6fcb6e` (Red Hat's Image Builder)
-- Grant Contributor role on the resource group
+Image Builder uploads images using its own service principal (`org.osbuild.azure.image`), which must have Contributor on the target resource group:
+
+```bash
+# 1. Register the SP in your tenant (if not already present)
+az ad sp create --id b94bb246-b02c-4985-9c22-d44e66f657f4
+
+# 2. Grant Contributor on the resource group
+az role assignment create \
+  --assignee b94bb246-b02c-4985-9c22-d44e66f657f4 \
+  --role Contributor \
+  --scope /subscriptions/{YOUR_SUBSCRIPTION_ID}/resourceGroups/{YOUR_RESOURCE_GROUP}
+```
+
+- App ID: `b94bb246-b02c-4985-9c22-d44e66f657f4`
+- The SP may already exist in your tenant — step 1 will error harmlessly if so
+- Without this, the build succeeds but upload fails with 403 on resource group read
 
 ### GCP
-- Share the resulting image with the service account email
-- Or use the project ID directly in upload options
+- No manual setup needed — Image Builder creates the image in Red Hat's project and shares it with the Troshka service account
+- The `share_with_accounts` value must use `serviceAccount:` prefix (e.g., `serviceAccount:sa@project.iam.gserviceaccount.com`)
 
 ## Implementation
 

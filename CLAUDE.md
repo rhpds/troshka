@@ -330,6 +330,26 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Terminate cleanup**: must delete VM → OS disk → data disk → NIC → public IP in order (Azure doesn't auto-delete dependents)
 - **Stop vs deallocate**: always use `begin_deallocate()` not `begin_power_off()` — deallocate releases compute billing
 
+### Red Hat Image Builder Integration
+- Builds custom RHEL host images with all packages pre-installed (qemu-kvm, libvirt, etc.) via Red Hat Insights Image Builder API
+- Eliminates RHSM registration at boot and PAYG image premium
+- **User flow**: Settings page → save Red Hat offline token → Provider page → "Build Host Image" → wait ~15 min → image auto-set as `default_image`
+- Offline token: get from https://access.redhat.com/management/api, stored encrypted on User model (Fernet, same as OCP pull secret)
+- Service: `src/backend/app/services/image_builder_service.py` — token exchange, compose submission, polling, progress tracking
+- API: `POST /providers/{id}/build-image`, `GET .../status`, `DELETE .../status`
+- Background thread polls Red Hat API every 30s, auto-refreshes access token on 401
+- Progress tracked in module-level `_build_progress` dict (lost on restart)
+- **Azure one-time setup**: Image Builder's service principal (`b94bb246-b02c-4985-9c22-d44e66f657f4`) needs Contributor on the target resource group:
+  ```bash
+  az ad sp create --id b94bb246-b02c-4985-9c22-d44e66f657f4
+  az role assignment create --assignee b94bb246-b02c-4985-9c22-d44e66f657f4 \
+    --role Contributor --scope /subscriptions/{SUB_ID}/resourceGroups/{RG_NAME}
+  ```
+- **Azure image format**: managed image resource ID (`/subscriptions/.../images/...`), NOT marketplace URN — `_parse_image_urn()` handles both
+- **GCP setup**: no manual steps — image built in Red Hat's project, shared with service account. `share_with_accounts` must use `serviceAccount:` prefix
+- **GCP image format**: `projects/{red-hat-project}/global/images/{name}` — GCP driver handles cross-project image paths
+- Pattern buffer hosts also use `default_image` — extra packages are harmless
+
 ### Dev Database
 - PostgreSQL runs in a podman container (`troshka-postgres`) with persistent volume (`troshka-pgdata`)
 - `--restart=always` ensures container restarts after crashes

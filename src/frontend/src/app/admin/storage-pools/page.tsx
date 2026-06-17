@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PageSection,
   Title,
@@ -22,6 +22,11 @@ interface StoragePool {
   fsx_dns_name: string | null;
   fsx_throughput_mbps: number | null;
   fsx_storage_gb: number | null;
+  azure_files_capacity_gb: number | null;
+  azure_files_throughput: number | null;
+  azure_storage_account: string | null;
+  azure_file_share_name: string | null;
+  azure_file_share_url: string | null;
   nfs_endpoint: string | null;
   status: string;
   provider_id: string;
@@ -36,6 +41,7 @@ interface StoragePool {
   worker_status: string | null;
   worker_error: string | null;
   worker_ip: string | null;
+  worker_private_ip: string | null;
   worker_instance_id: string | null;
   worker_agent_version: string | null;
 }
@@ -62,6 +68,10 @@ const modeLabels: Record<string, string> = {
   "shared-ceph-nfs": "Ceph-NFS (OCP Virt)",
   "shared-azure-files": "Azure Files NFS (Azure)",
 };
+
+function poolStorageGb(pool: StoragePool): number | null {
+  return pool.fsx_storage_gb || pool.azure_files_capacity_gb || null;
+}
 
 const inputStyle = {
   width: "100%",
@@ -109,6 +119,7 @@ export default function StoragePoolsPage() {
   const [pbAction, setPbAction] = useState<Record<string, string>>({});
   const [pbError, setPbError] = useState<string | null>(null);
   const [pbErrorDismissed, setPbErrorDismissed] = useState<Set<string>>(new Set());
+  const pbErrorDismissedRef = useRef<Set<string>>(new Set());
   const [pbErrorPoolId, setPbErrorPoolId] = useState<string | null>(null);
   const [expectedAgentVersion, setExpectedAgentVersion] = useState("");
   const [pbInstanceType, setPbInstanceType] = useState("");
@@ -142,8 +153,13 @@ export default function StoragePoolsPage() {
     ]).then(([p, prov]) => {
       setPools(p);
       setProviders(prov);
-      const errPool = p.find((pp: StoragePool) => pp.worker_error && !pbErrorDismissed.has(pp.id));
-      if (errPool) { setPbError(errPool.worker_error); setPbErrorPoolId(errPool.id); }
+      const errPool = p.find((pp: StoragePool) => pp.worker_error && !pbErrorDismissedRef.current.has(pp.id));
+      if (errPool) {
+        setPbError(errPool.worker_error);
+        setPbErrorPoolId(errPool.id);
+        pbErrorDismissedRef.current.add(errPool.id);
+        setPbErrorDismissed(new Set(pbErrorDismissedRef.current));
+      }
       setPbAction(prev => {
         const next: Record<string, string> = {};
         for (const [id, action] of Object.entries(prev)) {
@@ -265,9 +281,11 @@ export default function StoragePoolsPage() {
       mode: newMode,
       provider_id: providerId,
       az: newAz || null,
-      fsx_throughput_mbps: (newMode === "shared-fsx" || newMode === "shared-azure-files") ? newThroughput : null,
-      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : newMode === "shared-azure-files" ? newStorageGb : null,
+      fsx_throughput_mbps: newMode === "shared-fsx" ? newThroughput : null,
+      fsx_storage_gb: newMode === "shared-fsx" ? newStorageGb : newMode === "shared-ceph-nfs" ? newStorageQuotaGb : null,
       netapp_capacity_gb: newMode === "shared-netapp" ? newStorageGb : null,
+      azure_files_capacity_gb: newMode === "shared-azure-files" ? newStorageGb : null,
+      azure_files_throughput: newMode === "shared-azure-files" ? newThroughput : null,
       nfs_endpoint: newMode === "shared-byo" ? newNfsEndpoint : null,
     };
     const resp = await fetch("/api/v1/storage-pools", {
@@ -293,7 +311,7 @@ export default function StoragePoolsPage() {
   const startEdit = (pool: StoragePool) => {
     setEditId(pool.id);
     setEditThroughput(pool.fsx_throughput_mbps || 160);
-    setEditStorageGb(pool.fsx_storage_gb || 128);
+    setEditStorageGb(poolStorageGb(pool) || 128);
     setEditNfsEndpoint(pool.nfs_endpoint || "");
     setEditAutoExtend(pool.auto_extend_enabled);
     setEditThresholdPct(pool.auto_extend_threshold_pct);
@@ -311,9 +329,9 @@ export default function StoragePoolsPage() {
       const minThroughput = pool.mode === "shared-fsx" ? 160 : 100;
       if (editThroughput < minThroughput) { setError(`Throughput must be at least ${minThroughput} MBps`); return; }
       const minStorage = pool.mode === "shared-fsx" ? 64 : 100;
-      if (editStorageGb < (pool.fsx_storage_gb || minStorage)) { setError("Storage can only grow, not shrink"); return; }
-      const minGrow = Math.ceil((pool.fsx_storage_gb || minStorage) * 1.1);
-      if (editStorageGb > (pool.fsx_storage_gb || 0) && editStorageGb < minGrow) {
+      if (editStorageGb < (poolStorageGb(pool) || minStorage)) { setError("Storage can only grow, not shrink"); return; }
+      const minGrow = Math.ceil((poolStorageGb(pool) || minStorage) * 1.1);
+      if (editStorageGb > (poolStorageGb(pool) || 0) && editStorageGb < minGrow) {
         setError(`Storage increase must be at least 10% (minimum ${minGrow} GB)`); return;
       }
     }
@@ -361,8 +379,8 @@ export default function StoragePoolsPage() {
   };
 
   const handleExtendNow = async (pool: StoragePool) => {
-    const newSize = (pool.fsx_storage_gb || 0) + pool.auto_extend_increment_gb;
-    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${pool.fsx_storage_gb} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nNote: FSx only allows one extend every 6 hours. The host may take a few minutes to see the new capacity.`)) return;
+    const newSize = (poolStorageGb(pool) || 0) + pool.auto_extend_increment_gb;
+    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${poolStorageGb(pool)} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nNote: FSx only allows one extend every 6 hours. The host may take a few minutes to see the new capacity.`)) return;
     setExtending({ ...extending, [pool.id]: true });
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
       method: "POST",
@@ -403,7 +421,7 @@ export default function StoragePoolsPage() {
 
   const handleResizePool = async (pool: StoragePool) => {
     const targetGb = parseInt(extendTarget[pool.id]);
-    const currentGb = pool.fsx_storage_gb || 0;
+    const currentGb = poolStorageGb(pool) || 0;
     if (!targetGb || targetGb <= currentGb) {
       setError(`New size must be larger than current (${currentGb} GB)`);
       return;
@@ -596,7 +614,7 @@ export default function StoragePoolsPage() {
                             <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage (GB)</label>
                             <input style={inputStyle} type="number" value={editStorageGb}
                                    onChange={(e) => setEditStorageGb(parseInt(e.target.value) || 64)}
-                                   min={pool.fsx_storage_gb || (pool.mode === "shared-fsx" ? 64 : 100)} />
+                                   min={poolStorageGb(pool) || (pool.mode === "shared-fsx" ? 64 : 100)} />
                           </div>
                         </>
                       )}
@@ -650,10 +668,17 @@ export default function StoragePoolsPage() {
                         {pool.az && <span>AZ: {pool.az}</span>}
                         <span>Hosts: {pool.host_count}</span>
                         {pool.fsx_filesystem_id && <span>FSx: {pool.fsx_filesystem_id}</span>}
-                        {pool.fsx_throughput_mbps && <span>Throughput: {pool.fsx_throughput_mbps} MBps</span>}
-                        {pool.fsx_storage_gb && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${pool.fsx_storage_gb} GB (${poolUsage[pool.id].used_pct}%)` : `${pool.fsx_storage_gb} GB`}</span>}
+                        {pool.azure_storage_account && <span>Account: {pool.azure_storage_account}/{pool.azure_file_share_name}</span>}
+                        {(pool.fsx_throughput_mbps || pool.azure_files_throughput) && <span>Throughput: {pool.fsx_throughput_mbps || pool.azure_files_throughput} MBps</span>}
+                        {poolStorageGb(pool) && <span style={poolUsage[pool.id]?.used_pct >= 80 ? { color: "#f87171", fontWeight: 600 } : undefined}>Storage: {poolUsage[pool.id] ? `${poolUsage[pool.id].used_gb} / ${poolStorageGb(pool)} GB (${poolUsage[pool.id].used_pct}%)` : `${poolStorageGb(pool)} GB`}</span>}
                         {pool.nfs_endpoint && <span>NFS: {pool.nfs_endpoint}</span>}
                       </div>
+                      {pool.fsx_dns_name && (
+                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.fsx_dns_name}:/fsx</div>
+                      )}
+                      {pool.azure_file_share_url && (
+                        <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4, fontFamily: "monospace" }}>NFS: {pool.azure_file_share_url}</div>
+                      )}
                       {(pool.mode === "shared-fsx" || pool.mode === "shared-azure-files") && pool.status === "available" && (
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                           <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -662,14 +687,14 @@ export default function StoragePoolsPage() {
                               type="number"
                               value={extendTarget[pool.id] || ""}
                               onChange={(e) => setExtendTarget({ ...extendTarget, [pool.id]: e.target.value })}
-                              placeholder={`${pool.fsx_storage_gb} GB`}
-                              min={(pool.fsx_storage_gb || 0) + 1}
+                              placeholder={`${poolStorageGb(pool)} GB`}
+                              min={(poolStorageGb(pool) || 0) + 1}
                             />
                             <Button
                               variant="secondary"
                               onClick={() => handleResizePool(pool)}
                               isLoading={extending[pool.id]}
-                              isDisabled={extending[pool.id] || !extendTarget[pool.id] || parseInt(extendTarget[pool.id]) <= (pool.fsx_storage_gb || 0)}
+                              isDisabled={extending[pool.id] || !extendTarget[pool.id] || parseInt(extendTarget[pool.id]) <= (poolStorageGb(pool) || 0)}
                             >
                               Resize
                             </Button>
@@ -742,7 +767,7 @@ export default function StoragePoolsPage() {
                 <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
                   <div style={{ fontSize: 11, marginBottom: 4 }}>
                     {pool.worker_status === "connected" ? (
-                      <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""} · {pool.worker_instance_id || ""}</span>
+                      <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""}{pool.worker_private_ip ? ` (${pool.worker_private_ip})` : ""} · {pool.worker_instance_id || ""}</span>
                     ) : pool.worker_status === "stopped" ? (
                       <span style={{ opacity: 0.5 }}>Pattern Buffer: sleeping · {pool.worker_instance_type}</span>
                     ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
@@ -869,7 +894,7 @@ export default function StoragePoolsPage() {
               <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 12, color: "#f87171" }}>Pattern Buffer Error</div>
               <div style={{ fontSize: 13, marginBottom: 16 }}>{pbError}</div>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Button variant="secondary" size="sm" onClick={() => { if (pbErrorPoolId) setPbErrorDismissed((prev) => new Set(prev).add(pbErrorPoolId)); setPbError(null); }}>Close</Button>
+                <Button variant="secondary" size="sm" onClick={() => { if (pbErrorPoolId) { pbErrorDismissedRef.current.add(pbErrorPoolId); setPbErrorDismissed(new Set(pbErrorDismissedRef.current)); } setPbError(null); }}>Close</Button>
               </div>
             </CardBody>
           </Card>

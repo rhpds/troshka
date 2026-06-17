@@ -125,7 +125,10 @@ export default function AdminProvidersPage() {
     const activeBuilds = Object.entries(buildStatus).filter(
       ([, s]) => s.status === "authenticating" || s.status === "building"
     );
-    if (activeBuilds.length === 0) return;
+    if (activeBuilds.length === 0) {
+      setBuildingProvider(null);
+      return;
+    }
 
     const interval = setInterval(async () => {
       for (const [pid] of activeBuilds) {
@@ -691,6 +694,11 @@ export default function AdminProvidersPage() {
                               {imageResult[p.id]}
                             </div>
                           )}
+                          {(p.type === "gcp" || p.type === "azure") && (
+                            <div style={{ fontSize: 11, marginBottom: 8, padding: "6px 10px", borderRadius: 4, background: "var(--pf-t--global--background--color--secondary--default)", opacity: 0.8 }}>
+                              Showing PAYG images only. For BYOS, use <strong>Build Host Image</strong> above to create a custom image with packages pre-installed.
+                            </div>
+                          )}
                           {imageOptions[p.id] && imageOptions[p.id].length > 0 && (() => {
                             const filter = imageFilter[p.id] || "all";
                             const versionFilter = imageVersionFilter[p.id] || "all";
@@ -710,7 +718,7 @@ export default function AdminProvidersPage() {
                             return (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                {p.type !== "ocpvirt" && (
+                                {p.type !== "ocpvirt" && p.type !== "gcp" && p.type !== "azure" && (
                                   <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
                                     <option value="all">All</option>
                                     <option value="BYOS">BYOS</option>
