@@ -545,7 +545,7 @@ export default function ProjectCanvasPage() {
               title="Time remaining (click to open Project settings)"
               onClick={() => setShowPalette(true)}
             >
-              {timerLabel} in {timerCountdown}
+              ⏱ {timerLabel} in {timerCountdown}
             </span>
           )}
         </div>
