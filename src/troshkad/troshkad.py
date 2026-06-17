@@ -578,7 +578,7 @@ def _validate_domain_name(name):
 
 def _validate_path(path):
     normalized = os.path.normpath(path)
-    allowed_prefixes = ["/var/lib/troshka/"]
+    allowed_prefixes = ["/var/lib/troshka/", "/opt/troshka/", "/var/log/troshka-"]
     mode = _config.get("storage_mode", "local")
     if mode == "shared":
         shared = _config.get("shared_mount", "/var/lib/troshka/shared")
@@ -683,7 +683,7 @@ def _job_log(job, msg):
     logger.info("[%s] %s", job["job_id"][:8], msg)
 
 
-def _run_cmd(job, cmd, timeout=600):
+def _run_cmd(job, cmd, timeout=600, check=True):
     """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
     _job_log(job, f"$ {' '.join(cmd)}")
     proc = subprocess.Popen(
@@ -704,7 +704,7 @@ def _run_cmd(job, cmd, timeout=600):
     if stderr:
         for line in stderr.strip().split("\n"):
             _job_log(job, line)
-    if proc.returncode != 0:
+    if check and proc.returncode != 0:
         raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(cmd)}")
     return proc
 
@@ -825,9 +825,13 @@ def _handle_vm_create(job, params):
 COMMAND_HANDLERS["vms/create"] = _handle_vm_create
 
 
+_IMAGE_CACHE_DIRS = ("/var/lib/troshka/images/", "/var/lib/troshka/shared/images/")
+
+
 def _delete_vm_disks(job, domain):
     """Delete disk files for a domain before undefining it.
     Files are owned by qemu:qemu, so delete as qemu user to avoid NFS root_squash issues.
+    Never deletes shared library images from the image cache.
     """
     try:
         result = subprocess.run(
@@ -840,6 +844,9 @@ def _delete_vm_disks(job, domain):
             parts = line.split()
             if len(parts) >= 4 and parts[1] == "disk" and parts[3].startswith("/"):
                 path = parts[3]
+                if any(path.startswith(d) for d in _IMAGE_CACHE_DIRS):
+                    _job_log(job, f"Skipped shared image: {path}")
+                    continue
                 try:
                     subprocess.run(
                         ["sudo", "-u", "qemu", "rm", "-f", "--", path],
@@ -5064,10 +5071,22 @@ COMMAND_HANDLERS["host/resize-storage"] = _handle_resize_storage
 
 
 def _handle_files_remove(job, params):
-    """Remove files or directories under /var/lib/troshka."""
+    """Remove files or directories under /var/lib/troshka, /opt/troshka, or /var/log."""
     paths = params.get("paths", [])
     if not paths:
         raise ValueError("Missing required parameter: paths")
+
+    kill_pattern = params.get("kill_pattern", "")
+    if kill_pattern:
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", kill_pattern],
+                timeout=5,
+                capture_output=True,
+            )
+            _job_log(job, f"Killed processes matching: {kill_pattern}")
+        except Exception:
+            pass
 
     removed = 0
     for path in paths:
@@ -5595,21 +5614,26 @@ def _watchdog_loop():
             try:
                 result = subprocess.run(
                     ["systemctl", "is-active", unit],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if result.stdout.strip() == "active":
                     continue
                 if is_socket:
                     check_svc = subprocess.run(
                         ["systemctl", "is-active", f"{service_name}.service"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
                     if check_svc.stdout.strip() == "active":
                         continue
                 logger.warning("watchdog: %s is not active, restarting", unit)
                 subprocess.run(
                     ["systemctl", "start", unit],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
             except Exception as e:
                 logger.warning("watchdog: %s check error: %s", service_name, e)

@@ -18,12 +18,17 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
 fi
 
 PREAMBLE='
+from sqlalchemy import cast, String
 from app.core.database import SessionLocal
 from app.models.host import Host
 from app.models.project import Project
 from app.models.pattern import Pattern
 from app.models.library import LibraryItem
 db = SessionLocal()
+
+def find(model, prefix):
+    """Find a record by UUID prefix, e.g. find(Host, "c73f")"""
+    return db.query(model).filter(cast(model.id, String).like(prefix + "%")).first()
 '
 
 if [[ $# -eq 0 ]]; then

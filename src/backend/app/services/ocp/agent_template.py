@@ -20,6 +20,23 @@ _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 
 
+def _find_cluster_cidr(topology):
+    """Find the cluster network CIDR from topology."""
+    default = "10.0.0.0/24"
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") == "network" and data.get("networkType") != "bmc":
+            cidr = data.get("cidr", default)
+            try:
+                ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                return default
+            return cidr
+    return default
+
+
 def _find_sno_node_ip(topology):
     """Find the SNO node's cluster IP from the topology.
 
@@ -153,9 +170,8 @@ def _attach_bastion_image(topology, bastion_image):
     if not bastion_image:
         return
     for node in topology.get("nodes", []):
-        if (
-            node.get("type") == "storageNode"
-            and node.get("data", {}).get("name") == "bastion-disk"
+        if node.get("type") == "storageNode" and (
+            node.get("data", {}).get("name") in ("bastion-disk", "bastion-disk0")
         ):
             node["data"]["source"] = "library"
             node["data"]["libraryItemId"] = bastion_image["id"]
@@ -333,14 +349,16 @@ def _setup_bastion_cloud_init(
         )
 
         # Install script
-        # Collect BMC IPs for the install script (validated)
+        # Collect BMC IPs only for hub cluster VMs (controllers/workers)
         bmc_ips = []
         for tnode in topology.get("nodes", []):
             td = tnode.get("data", {})
+            group = td.get("tags", {}).get("AnsibleGroup", "")
             if (
                 tnode.get("type") == "vmNode"
                 and td.get("bmcEnabled")
                 and td.get("bmcIp")
+                and group in ("controllers", "workers")
             ):
                 ip = str(ipaddress.IPv4Address(td["bmcIp"]))
                 bmc_ips.append(ip)
@@ -555,7 +573,7 @@ def _build_install_config(
         "  serviceNetwork:",
         "    - 172.30.0.0/16",
         "  machineNetwork:",
-        "    - cidr: 10.0.0.0/24",
+        f"    - cidr: {_find_cluster_cidr(topology)}",
     ]
     if num_masters == 1 and num_workers == 0:
         ic_lines.extend(
@@ -576,18 +594,22 @@ def _build_install_config(
                 "    hosts:",
             ]
         )
-    if template_id != "ocp-sno":
+    is_sno = num_masters == 1 and num_workers == 0
+    if not is_sno:
         for node in topology.get("nodes", []):
             if node.get("type") != "vmNode":
                 continue
             td = node.get("data", {})
             if not td.get("bmcEnabled") or not td.get("bmcIp"):
                 continue
+            group = td.get("tags", {}).get("AnsibleGroup", "")
+            if group not in ("controllers", "workers"):
+                continue
             vm_name = td.get("name", "")
             boot_mac = td.get("nics", [{}])[0].get("mac", "")
             if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
                 continue
-            role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+            role = "master" if group == "controllers" else "worker"
             ic_lines.extend(
                 [
                     f"      - name: {vm_name}",
@@ -607,6 +629,12 @@ def _build_agent_config(
     topology, cluster_name, base_domain, api_vip="10.0.0.2", ingress_vip="10.0.0.3"
 ):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
+    cluster_cidr = _find_cluster_cidr(topology)
+    net = ipaddress.ip_network(cluster_cidr, strict=False)
+    gateway_ip = str(net.network_address + 1)
+    prefix_len = net.prefixlen
+
+    rendezvous_ip = ""
     hosts_yaml = ""
     for node in topology.get("nodes", []):
         if node.get("type") != "vmNode":
@@ -614,13 +642,18 @@ def _build_agent_config(
         td = node.get("data", {})
         if not td.get("bmcEnabled") or not td.get("bmcIp"):
             continue
+        group = td.get("tags", {}).get("AnsibleGroup", "")
+        if group not in ("controllers", "workers"):
+            continue
         vm_name = td.get("name", "")
         bmc_ip = td["bmcIp"]
         cluster_ip = td.get("nics", [{}])[0].get("ip", "")
         boot_mac = td.get("nics", [{}])[0].get("mac", "")
         if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
             continue
-        role = "master" if "cp-" in vm_name or "sno" in vm_name else "worker"
+        role = "master" if group == "controllers" else "worker"
+        if not rendezvous_ip and cluster_ip:
+            rendezvous_ip = cluster_ip
 
         hosts_yaml += (
             f"    - hostname: {vm_name}\n"
@@ -639,25 +672,28 @@ def _build_agent_config(
             f"              enabled: true\n"
             f"              address:\n"
             f"                - ip: {cluster_ip}\n"
-            f"                  prefix-length: 24\n"
+            f"                  prefix-length: {prefix_len}\n"
             f"              dhcp: false\n"
             f"        dns-resolver:\n"
             f"          config:\n"
             f"            server:\n"
-            f"              - 10.0.0.1\n"
+            f"              - {gateway_ip}\n"
             f"        routes:\n"
             f"          config:\n"
             f"            - destination: 0.0.0.0/0\n"
-            f"              next-hop-address: 10.0.0.1\n"
+            f"              next-hop-address: {gateway_ip}\n"
             f"              next-hop-interface: cluster-nic\n"
         )
+
+    if not rendezvous_ip:
+        rendezvous_ip = str(net.network_address + 10)
 
     ac_lines = [
         "apiVersion: v1beta1",
         "kind: AgentConfig",
         "metadata:",
         f"  name: {cluster_name}",
-        "rendezvousIP: 10.0.0.10",
+        f"rendezvousIP: {rendezvous_ip}",
         "additionalNTPSources:",
         "  - clock.redhat.com",
         "  - pool.ntp.org",

@@ -22,6 +22,21 @@ gateway:
   outbound_ports: [53, 80, 443, 123, icmp]
 
 vms:
+  bastion:
+    role: bastion
+    vcpus: 4
+    ram_gb: 8
+    os: rhel-10
+    firmware: uefi
+    disks:
+      - size_gb: 100
+    nics:
+      - network: cluster
+        model: virtio
+        ip: 192.168.125.50
+      - network: bmc
+        model: virtio
+
   hub-cp-0:
     role: control-plane
     vcpus: 16
@@ -41,21 +56,6 @@ vms:
       - network: ptp
         model: igb
 
-  bastion:
-    role: bastion
-    vcpus: 4
-    ram_gb: 8
-    os: rhel-10
-    firmware: uefi
-    disks:
-      - size_gb: 100
-    nics:
-      - network: cluster
-        model: virtio
-        ip: 192.168.125.50
-      - network: bmc
-        model: virtio
-
   sno-seed:
     role: blank
     vcpus: 12
@@ -64,6 +64,7 @@ vms:
     firmware: uefi
     power_on: false
     bmc: true
+    bmc_ip: 192.168.50.20
     disks:
       - size_gb: 200
       - size_gb: 200
@@ -86,6 +87,7 @@ vms:
     firmware: uefi
     power_on: false
     bmc: true
+    bmc_ip: 192.168.50.21
     disks:
       - size_gb: 200
       - size_gb: 200
@@ -108,6 +110,7 @@ vms:
     firmware: uefi
     power_on: false
     bmc: true
+    bmc_ip: 192.168.50.22
     disks:
       - size_gb: 200
       - size_gb: 200

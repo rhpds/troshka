@@ -57,9 +57,9 @@ db = SessionLocal()
 try:
     if prefix:
         from sqlalchemy import cast, String
-        hosts = db.query(Host).filter(Host.agent_status == 'connected', cast(Host.id, String).like(prefix + '%')).all()
+        hosts = db.query(Host).filter(Host.state == 'active', Host.agent_status == 'connected', cast(Host.id, String).like(prefix + '%')).all()
     else:
-        hosts = db.query(Host).filter(Host.agent_status == 'connected').all()
+        hosts = db.query(Host).filter(Host.state == 'active', Host.agent_status == 'connected').all()
 
     if not hosts:
         print('No connected hosts found' + (f' matching {prefix}' if prefix else ''))
@@ -71,6 +71,16 @@ try:
             continue
 
         old_ver = h.agent_version or 'unknown'
+        # Skip hosts that aren't actually reachable
+        try:
+            health = check_health(h)
+            if not health:
+                print(f'{h.id[:8]} ({h.ip_address}): skipped (unreachable)')
+                continue
+        except Exception:
+            print(f'{h.id[:8]} ({h.ip_address}): skipped (unreachable)')
+            continue
+
         print(f'{h.id[:8]} ({h.ip_address}): updating {old_ver} -> {version}...', end=' ', flush=True)
         try:
             push_update(h, script_bytes, version, force=force)

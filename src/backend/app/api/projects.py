@@ -240,27 +240,49 @@ def create_project_from_template(
     # OCP template customization — resolve DB objects, then delegate to plugin
     from app.models.library import LibraryItem
 
+    from app.models.library import Library
+
     bastion_image_id = body.get("bastion_image_id")
     bastion_image = None
     if bastion_image_id:
         item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()
-        if item:
-            bastion_image = {
-                "id": item.id,
-                "name": item.name,
-                "size_gb": max(1, (item.size_bytes or 0) // (1024**3)),
-            }
+    else:
+        item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(
+                Library.owner_id == user.id,
+                LibraryItem.tags["ocp_default_image"].as_boolean(),
+            )
+            .first()
+        )
+    if item:
+        bastion_image = {
+            "id": item.id,
+            "name": item.name,
+            "size_gb": max(1, (item.size_bytes or 0) // (1024**3)),
+        }
 
     bastion_iso_id = body.get("bastion_iso_id")
     bastion_iso = None
     if bastion_iso_id:
         iso_item = db.query(LibraryItem).filter_by(id=bastion_iso_id).first()
-        if iso_item:
-            bastion_iso = {
-                "id": iso_item.id,
-                "name": iso_item.name,
-                "size_bytes": iso_item.size_bytes or 0,
-            }
+    else:
+        iso_item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(
+                Library.owner_id == user.id,
+                LibraryItem.tags["ocp_default_iso"].as_boolean(),
+            )
+            .first()
+        )
+    if iso_item:
+        bastion_iso = {
+            "id": iso_item.id,
+            "name": iso_item.name,
+            "size_bytes": iso_item.size_bytes or 0,
+        }
 
     ssh_pub_key = ""
     ssh_key_ids = []

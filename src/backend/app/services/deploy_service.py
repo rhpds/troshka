@@ -1253,10 +1253,22 @@ def _start_vms_via_troshkad(host, project_id, topology):
                     logger.warning("Failed to start VM %s: %s", vm_name, e)
                     failed.append((vm["name"], str(e)))
 
-    # Start any VMs not in start order (parallel)
+    # Start any VMs not in start order (parallel), skip VMs with powerOnAtDeploy=false
+    power_on_map = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") == "vmNode":
+            power_on_map[node["id"]] = node.get("data", {}).get("powerOnAtDeploy", True)
+
     unordered_jobs = []
     for vm in vms:
         if vm["node_id"] not in ordered_vm_ids:
+            if not power_on_map.get(vm["node_id"], True):
+                logger.info(
+                    "Deploy %s: skipping %s (powerOnAtDeploy=false)",
+                    project_id[:8],
+                    vm["name"],
+                )
+                continue
             vm_name = _vm_domain_name(project_id, vm["node_id"])
             try:
                 job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
@@ -2266,8 +2278,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
             if "validation:" in full_text:
                 phases_seen.add("validating")
+            if "preparing-for-installation" in full_text:
+                phases_seen.add("validation")
+                phases_seen.add("preparing")
             if "Preparing cluster" in full_text:
                 phases_seen.add("validation")
+                phases_seen.add("preparing")
             if "Bootstrap Kube API Initialized" in full_text:
                 phases_seen.add("bootstrap-api")
             if (
@@ -2335,6 +2351,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 items.append("Host validation: ⏳")
             elif "api-init" in phases_seen:
                 items.append("Host validation: ⏳")
+
+            if "preparing" in phases_seen:
+                has_installing = bool(node_status)
+                items.append(
+                    f"Preparing for installation: {'✓' if has_installing else '⏳'}"
+                )
 
             if node_status:
                 all_done = all(s in ("done", "joined") for s in node_status.values())
@@ -2993,6 +3015,23 @@ def destroy_project_sync(ctx: dict):
             wait_for_job(host, job_id, timeout=30)
         except TroshkadError as e:
             logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
+
+        # Kill metadata service and remove script/log
+        try:
+            job_id = start_job(
+                host,
+                "/files/remove",
+                {
+                    "paths": [
+                        f"/opt/troshka/metadata-{project_id[:8]}.py",
+                        f"/var/log/troshka-metadata-{project_id[:8]}.log",
+                    ],
+                    "kill_pattern": f"metadata-{project_id[:8]}.py",
+                },
+            )
+            wait_for_job(host, job_id, timeout=15)
+        except TroshkadError:
+            pass
 
         # Tear down BMC endpoints (sushy-emulator, vbmcd)
         try:
