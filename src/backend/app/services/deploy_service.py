@@ -2721,6 +2721,7 @@ def stop_project_async(project_id: str):
                 "type": "project-state",
                 "state": "stopped",
                 "deploy_error": None,
+                "auto_stopped": project.auto_stopped,
                 "auto_stop_expires_at": None,
                 "lifetime_expires_at": (
                     project.lifetime_expires_at.isoformat()
@@ -2892,6 +2893,7 @@ def start_project_async(project_id: str):
 
         project.state = "active"
         project.deploy_error = None
+        project.auto_stopped = False
 
         # Restart auto-stop timer
         if project.auto_stop_minutes:

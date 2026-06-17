@@ -43,6 +43,7 @@ def _check_project_timers(_dry_run=False):
                 continue
             logger.info("Auto-stop fired for project %s (%s)", p.name, p.id[:8])
             p.state = "stopping"
+            p.auto_stopped = True
             p.auto_stop_started_at = None
             p.auto_stop_expires_at = None
             p.auto_stop_warned = False

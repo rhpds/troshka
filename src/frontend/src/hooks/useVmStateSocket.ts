@@ -33,6 +33,7 @@ interface VmStateSocket {
   timerFired: string | null;
   autoStopExpiresAt: string | null;
   lifetimeExpiresAt: string | null;
+  autoStopped: boolean;
 }
 
 const BACKOFF_BASE = 1000;
@@ -53,6 +54,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [timerFired, setTimerFired] = useState<string | null>(null);
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
+  const [autoStopped, setAutoStopped] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retriesRef = useRef(0);
@@ -99,6 +101,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             setDeployError(msg.deploy_error ?? null);
             if ("auto_stop_expires_at" in msg) setAutoStopExpiresAt(msg.auto_stop_expires_at ?? null);
             if ("lifetime_expires_at" in msg) setLifetimeExpiresAt(msg.lifetime_expires_at ?? null);
+            if ("auto_stopped" in msg) setAutoStopped(!!msg.auto_stopped);
             break;
           case "deploy-progress":
             setDeployProgress(msg.progress || null);
@@ -153,5 +156,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
 }

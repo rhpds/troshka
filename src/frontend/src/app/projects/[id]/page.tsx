@@ -36,6 +36,7 @@ export default function ProjectCanvasPage() {
   const [autoDeleteMinutes, setAutoDeleteMinutes] = useState<number | null>(null);
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
+  const [autoStopped, setAutoStopped] = useState(false);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -83,6 +84,7 @@ export default function ProjectCanvasPage() {
         setAutoDeleteMinutes(data.auto_delete_minutes ?? null);
         setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
         setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
+        setAutoStopped(!!data.auto_stopped);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
@@ -172,7 +174,8 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     if (ws.autoStopExpiresAt !== undefined) setAutoStopExpiresAt(ws.autoStopExpiresAt);
     if (ws.lifetimeExpiresAt !== undefined) setLifetimeExpiresAt(ws.lifetimeExpiresAt);
-  }, [ws.autoStopExpiresAt, ws.lifetimeExpiresAt]);
+    if (ws.autoStopped !== undefined) setAutoStopped(ws.autoStopped);
+  }, [ws.autoStopExpiresAt, ws.lifetimeExpiresAt, ws.autoStopped]);
 
   // WebSocket → deploy progress
   useEffect(() => {
@@ -533,7 +536,7 @@ export default function ProjectCanvasPage() {
             title="Click to rename"
           >{projectName || "Untitled"}</span>
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
-            {projectState}
+            {projectState === "stopped" && autoStopped ? "stopped (auto)" : projectState}
           </span>
           {timerCountdown && (
             <span

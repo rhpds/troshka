@@ -36,6 +36,7 @@ class Project(Base):
         DateTime(timezone=True)
     )
     auto_delete_warned: Mapped[bool] = mapped_column(default=False)
+    auto_stopped: Mapped[bool] = mapped_column(default=False)
     lifetime_expires_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True)
     )

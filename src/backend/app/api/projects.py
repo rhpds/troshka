@@ -90,6 +90,7 @@ def _project_response_dict(project):
             else None
         ),
         "auto_delete_minutes": project.auto_delete_minutes,
+        "auto_stopped": project.auto_stopped,
         "lifetime_expires_at": (
             project.lifetime_expires_at.isoformat()
             if project.lifetime_expires_at
