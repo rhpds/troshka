@@ -298,10 +298,10 @@ export default function AdminHostsPage() {
 
   const [resizeType, setResizeType] = useState<Record<string, string>>({});
 
-  const [poweringHost, setPoweringHost] = useState<string | null>(null);
+  const [poweringHosts, setPoweringHosts] = useState<Set<string>>(new Set());
 
   const powerHost = async (hostId: string, action: "poweroff" | "poweron", instanceType?: string) => {
-    setPoweringHost(hostId);
+    setPoweringHosts((prev) => new Set(prev).add(hostId));
     try {
       const opts: RequestInit = { method: "POST" };
       if (action === "poweron" && instanceType) {
@@ -319,7 +319,7 @@ export default function AdminHostsPage() {
     } catch {
       alert("Failed to connect to server");
     }
-    setPoweringHost(null);
+    setPoweringHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
 
   const [installing, setInstalling] = useState<string | null>(null);
@@ -1041,7 +1041,7 @@ export default function AdminHostsPage() {
                     : `Power off ${h.instance_id}?`;
                   if (!window.confirm(msg)) return;
                   powerHost(h.id, "poweroff");
-                }} isDisabled={installing === h.id || updating === h.id || poweringHost === h.id} isLoading={poweringHost === h.id}>
+                }} isDisabled={installing === h.id || updating === h.id || poweringHosts.has(h.id)} isLoading={poweringHosts.has(h.id)}>
                   Power Off
                 </Button>
               )}
@@ -1054,7 +1054,7 @@ export default function AdminHostsPage() {
                       : `Power on ${h.instance_id}?`;
                     if (!window.confirm(msg)) return;
                     powerHost(h.id, "poweron", resizeType[h.id] || undefined);
-                  }} isLoading={poweringHost === h.id} isDisabled={poweringHost === h.id}>
+                  }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
                     {willResize ? "Resize & Power On" : "Power On"}
                   </Button>
                 );
