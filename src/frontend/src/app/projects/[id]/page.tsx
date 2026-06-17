@@ -213,7 +213,7 @@ export default function ProjectCanvasPage() {
     let id: ReturnType<typeof setInterval>;
     const tick = () => {
       const remaining = earliest - Date.now();
-      if (remaining <= 0) { setTimerCountdown("Expired"); setTimerUrgency("critical"); clearInterval(id); return; }
+      if (remaining <= 0) { setTimerCountdown(null); clearInterval(id); return; }
       const totalSecs = Math.floor(remaining / 1000);
       const h = Math.floor(totalSecs / 3600);
       const m = Math.floor((totalSecs % 3600) / 60);
