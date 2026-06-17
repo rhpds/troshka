@@ -821,10 +821,12 @@ export default function AdminHostsPage() {
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[h.state] || "#94a3b8"}22`, color: stateColors[h.state] || "#94a3b8" }}>
                     {h.state}
                   </span>
+                  {h.state !== "stopped" && (
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${agentColors[h.agent_status] || "#94a3b8"}22`, color: agentColors[h.agent_status] || "#94a3b8" }}>
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
-                    {agentLabels[h.agent_status] || h.agent_status}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
+                    {h.state === "starting" && h.agent_status === "disconnected" ? "reconnecting" : (agentLabels[h.agent_status] || h.agent_status)}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
+                  )}
                   {(() => {
                     const localWarnings = (h.storage_warnings || []).filter((w: any) =>
                       !h.storage_pool_id || !w.mount.includes("/shared")
