@@ -52,8 +52,18 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
     log.info("Pattern %s: quiescing OCP cluster before capture", pattern_id[:8])
     _capture_progress[pattern_id] = {
         "step": "quiescing",
-        "detail": "Waiting for cluster to stabilize",
+        "detail": "Checking cluster health",
     }
+    from app.services.ws_pubsub import notify_pattern
+
+    notify_pattern(
+        pattern_id,
+        {
+            "type": "capture-progress",
+            "step": "quiescing",
+            "detail": "Checking cluster health",
+        },
+    )
 
     # Approve any pending CSRs
     approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
@@ -95,11 +105,31 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
                     "Pattern %s: cluster quiesced — all operators available",
                     pattern_id[:8],
                 )
+                _capture_progress[pattern_id] = {
+                    "step": "quiescing",
+                    "detail": "Cluster stable — all operators available",
+                }
+                notify_pattern(
+                    pattern_id,
+                    {
+                        "type": "capture-progress",
+                        "step": "quiescing",
+                        "detail": "Cluster stable — all operators available",
+                    },
+                )
                 break
         _capture_progress[pattern_id] = {
             "step": "quiescing",
             "detail": "Waiting for cluster operators to stabilize",
         }
+        notify_pattern(
+            pattern_id,
+            {
+                "type": "capture-progress",
+                "step": "quiescing",
+                "detail": "Waiting for cluster operators to stabilize",
+            },
+        )
         time.sleep(10)
     else:
         log.warning(
