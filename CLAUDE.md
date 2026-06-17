@@ -144,6 +144,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - `instance-id` must be unique per deploy (UUID suffix) for cloud-init to re-run
 - `chpasswd` uses new `users:` format (not deprecated `list: |`)
 - Custom user-data is YAML-validated before appending
+- **SELinux**: RHEL images (GCP, Azure, OCP Virt) have SELinux enforcing — cloud-init must run `semanage fcontext -a -t virt_image_t '/var/lib/troshka(/.*)?' && restorecon -R /var/lib/troshka` so QEMU can access disk images and symlinks. Without this, VMs fail to start with "Permission denied" on ISOs.
+- **Firewalld**: RHEL images have firewalld enabled — cloud-init must open ports 31337 (agent) and 443 (console) with `firewall-cmd --add-port=31337/tcp --add-port=443/tcp --permanent && firewall-cmd --reload`. Without this, the backend can't reach the agent after boot.
 
 ### Troshkad (Host Agent Daemon)
 - Single-file Python daemon at `src/troshkad/troshkad.py` — stdlib only, no pip
