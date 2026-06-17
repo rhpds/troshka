@@ -615,11 +615,12 @@ export default function AdminHostsPage() {
           const provSummaries = Object.values(providerMap);
           const cr = showOvercommit ? cpuRatio : 1;
           const rr = showOvercommit ? ramRatio : 1;
-          const totVcpus = Math.round(hosts.reduce((a, h) => a + h.total_vcpus, 0) * cr);
-          const usedVcpus = hosts.reduce((a, h) => a + h.used_vcpus, 0);
-          const totRamMb = Math.round(hosts.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
-          const usedRamMb = hosts.reduce((a, h) => a + h.used_ram_mb, 0);
-          const totRunningVms = hosts.reduce((a, h) => a + h.running_vms, 0);
+          const activeHosts = hosts.filter((h) => h.state === "active");
+          const totVcpus = Math.round(activeHosts.reduce((a, h) => a + h.total_vcpus, 0) * cr);
+          const usedVcpus = activeHosts.reduce((a, h) => a + h.used_vcpus, 0);
+          const totRamMb = Math.round(activeHosts.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
+          const usedRamMb = activeHosts.reduce((a, h) => a + h.used_ram_mb, 0);
+          const totRunningVms = activeHosts.reduce((a, h) => a + h.running_vms, 0);
           const totCpuPct = totVcpus ? (usedVcpus / totVcpus) * 100 : 0;
           const totRamPct = totRamMb ? (usedRamMb / totRamMb) * 100 : 0;
           return (<>
@@ -634,8 +635,8 @@ export default function AdminHostsPage() {
             style={{ minWidth: 200, borderLeft: !filterProvider ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}>
             <CardBody>
               <div style={{ fontSize: 13, fontWeight: 600 }}>All Providers</div>
-              <div style={{ fontSize: 24, fontWeight: 700 }}>{hosts.length}</div>
-              <div style={{ fontSize: 11, opacity: 0.6 }}>hosts &middot; {totRunningVms} VMs running</div>
+              <div style={{ fontSize: 24, fontWeight: 700 }}>{activeHosts.length}<span style={{ fontSize: 14, opacity: 0.5 }}>/{hosts.length}</span></div>
+              <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts &middot; {totRunningVms} VMs running</div>
               <div style={{ fontSize: 11, marginTop: 8 }}>vCPU: {usedVcpus}/{totVcpus}</div>
               <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                 <div style={{ height: 4, borderRadius: 2, width: `${totCpuPct}%`, background: totCpuPct > 80 ? "#f87171" : "#4ade80" }} />
@@ -647,12 +648,13 @@ export default function AdminHostsPage() {
             </CardBody>
           </Card>
           {provSummaries.map((ps) => {
-            const activeCount = ps.hosts.filter((h) => h.state === "active").length;
-            const pVcpus = Math.round(ps.hosts.reduce((a, h) => a + h.total_vcpus, 0) * cr);
-            const pUsedVcpus = ps.hosts.reduce((a, h) => a + h.used_vcpus, 0);
-            const pRamMb = Math.round(ps.hosts.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
-            const pUsedRamMb = ps.hosts.reduce((a, h) => a + h.used_ram_mb, 0);
-            const pRunningVms = ps.hosts.reduce((a, h) => a + h.running_vms, 0);
+            const pActive = ps.hosts.filter((h) => h.state === "active");
+            const activeCount = pActive.length;
+            const pVcpus = Math.round(pActive.reduce((a, h) => a + h.total_vcpus, 0) * cr);
+            const pUsedVcpus = pActive.reduce((a, h) => a + h.used_vcpus, 0);
+            const pRamMb = Math.round(pActive.reduce((a, h) => a + h.total_ram_mb, 0) * rr);
+            const pUsedRamMb = pActive.reduce((a, h) => a + h.used_ram_mb, 0);
+            const pRunningVms = pActive.reduce((a, h) => a + h.running_vms, 0);
             const cpuPct = pVcpus ? (pUsedVcpus / pVcpus) * 100 : 0;
             const ramPct = pRamMb ? (pUsedRamMb / pRamMb) * 100 : 0;
             return (
