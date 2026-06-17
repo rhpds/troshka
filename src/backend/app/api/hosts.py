@@ -890,8 +890,19 @@ def poweron_host(
             h = s.query(Host).filter_by(id=host_id).first()
             if not h:
                 return
-            h.state = "active"
+
+            if not new_ip:
+                logger.warning(
+                    "Host %s never reached running state after power-on",
+                    host_id[:8],
+                )
+                h.state = "stopped"
+                h.agent_status = "disconnected"
+                s.commit()
+                return
+
             old_ip = h.ip_address
+            h.state = "active"
             h.ip_address = new_ip
             h.private_ip = (st or {}).get("private_ip") or h.private_ip
             h.agent_status = "waiting_ssh"
