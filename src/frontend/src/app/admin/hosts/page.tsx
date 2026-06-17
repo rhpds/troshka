@@ -207,7 +207,7 @@ export default function AdminHostsPage() {
     { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)" },
   ];
 
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [removingHosts, setRemovingHosts] = useState<Set<string>>(new Set());
 
   const removeHost = async (hostId: string, instanceId: string | null) => {
     const projectsResp = await fetch("/api/v1/projects/");
@@ -219,7 +219,7 @@ export default function AdminHostsPage() {
       msg += `\n\n⚠ ${hostProjects.length} project(s) will be reset to draft and their disk data will be lost: ${names}`;
     }
     if (!window.confirm(msg)) return;
-    setRemoving(hostId);
+    setRemovingHosts((prev) => new Set(prev).add(hostId));
     const resp = await fetch(`/api/v1/hosts/${hostId}`, { method: "DELETE" });
     if (resp.ok) {
       loadData();
@@ -227,7 +227,7 @@ export default function AdminHostsPage() {
       const data = await resp.json();
       alert(data.detail || "Failed to remove host");
     }
-    setRemoving(null);
+    setRemovingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
 
   const selectedProvider = providers.find((p) => p.id === newProviderId) as Record<string, any> | undefined;
@@ -322,8 +322,8 @@ export default function AdminHostsPage() {
     setPoweringHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
 
-  const [installing, setInstalling] = useState<string | null>(null);
-  const [updating, setUpdating] = useState<string | null>(null);
+  const [installingHosts, setInstallingHosts] = useState<Set<string>>(new Set());
+  const [updatingHosts, setUpdatingHosts] = useState<Set<string>>(new Set());
   const [expectedVersion, setExpectedVersion] = useState("");
   const [installOutput, setInstallOutput] = useState<Record<string, string>>({});
   const [expandedAutoExtend, setExpandedAutoExtend] = useState<Record<string, boolean>>({});
@@ -332,14 +332,14 @@ export default function AdminHostsPage() {
   const [resizing, setResizing] = useState<Record<string, boolean>>({});
 
   const installAgent = async (hostId: string) => {
-    setInstalling(hostId);
+    setInstallingHosts((prev) => new Set(prev).add(hostId));
     setInstallOutput((prev) => ({ ...prev, [hostId]: "" }));
     try {
       const resp = await fetch(`/api/v1/hosts/${hostId}/install-agent`, { method: "POST" });
       if (!resp.ok) {
         const data = await resp.json();
         setInstallOutput((prev) => ({ ...prev, [hostId]: data.detail || "Install request failed" }));
-        setInstalling(null);
+        setInstallingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
         return;
       }
       // Poll until agent connects (install runs in background)
@@ -352,11 +352,11 @@ export default function AdminHostsPage() {
           if (updated?.agent_status === "connected") {
             setInstallOutput((prev) => ({ ...prev, [hostId]: "" }));
             loadData();
-            setInstalling(null);
+            setInstallingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
             return;
           } else if (updated?.agent_status === "install_failed") {
             setInstallOutput((prev) => ({ ...prev, [hostId]: "Agent install failed — check server logs" }));
-            setInstalling(null);
+            setInstallingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
             return;
           }
         }
@@ -365,7 +365,7 @@ export default function AdminHostsPage() {
     } catch {
       setInstallOutput((prev) => ({ ...prev, [hostId]: "Connection failed" }));
     }
-    setInstalling(null);
+    setInstallingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
 
   const handleEvacuate = async (hostId: string) => {
@@ -897,13 +897,13 @@ export default function AdminHostsPage() {
                 {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
               </Button>
               {(() => {
-                const hostBusy = installing === h.id || updating === h.id || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
+                const hostBusy = installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
                 return (<>
               {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
                 <Button variant="secondary" onClick={() => {
                   if (!window.confirm(`Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`)) return;
                   installAgent(h.id);
-                }} isLoading={installing === h.id} isDisabled={hostBusy}>
+                }} isLoading={installingHosts.has(h.id)} isDisabled={hostBusy}>
                   {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
                 </Button>
               )}
@@ -920,13 +920,13 @@ export default function AdminHostsPage() {
               {h.state === "active" && h.agent_status === "connected" && (
                 <>
                   {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
-                          isLoading={updating === h.id} isDisabled={hostBusy} onClick={async (e) => {
+                          isLoading={updatingHosts.has(h.id)} isDisabled={hostBusy} onClick={async (e) => {
                     const force = e.shiftKey;
                     const msg = force
                       ? "FORCE update troshkad? This will kill any running jobs."
                       : "Update troshkad on this host? (Shift+click for force update)";
                     if (!window.confirm(msg)) return;
-                    setUpdating(h.id);
+                    setUpdatingHosts((prev) => new Set(prev).add(h.id));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
                       if (!resp.ok) {
@@ -963,20 +963,20 @@ export default function AdminHostsPage() {
                       }
                       alert("Update timed out — check host status");
                     } finally {
-                      setUpdating(null);
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
                     }
                   }}>
-                    {updating === h.id ? "Updating..." : "Update Agent"}
+                    {updatingHosts.has(h.id) ? "Updating..." : "Update Agent"}
                   </Button>}
-                  <Button variant="secondary" isLoading={installing === h.id} isDisabled={hostBusy} onClick={() => {
+                  <Button variant="secondary" isLoading={installingHosts.has(h.id)} isDisabled={hostBusy} onClick={() => {
                     if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
                     installAgent(h.id);
                   }}>
-                    {installing === h.id ? "Reinstalling..." : "Reinstall Agent"}
+                    {installingHosts.has(h.id) ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
-                  {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updating === `gc-${h.id}`} isDisabled={hostBusy || updating === `gc-${h.id}`} onClick={async () => {
+                  {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updatingHosts.has(`gc-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`gc-${h.id}`)} onClick={async () => {
                     if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
-                    setUpdating(`gc-${h.id}`);
+                    setUpdatingHosts((prev) => new Set(prev).add(`gc-${h.id}`));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
                       if (resp.ok) {
@@ -1007,15 +1007,15 @@ export default function AdminHostsPage() {
                         alert("GC failed — check server logs");
                       }
                     } finally {
-                      setUpdating(null);
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
                     }
                   }}>
                     Clean
                   </Button>}
-                  {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updating === `wipe-${h.id}`} isDisabled={hostBusy || updating === `wipe-${h.id}`} onClick={async () => {
+                  {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updatingHosts.has(`wipe-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`wipe-${h.id}`)} onClick={async () => {
                     if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
                     if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
-                    setUpdating(`wipe-${h.id}`);
+                    setUpdatingHosts((prev) => new Set(prev).add(`wipe-${h.id}`));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
                       if (resp.ok) {
@@ -1026,10 +1026,10 @@ export default function AdminHostsPage() {
                         alert("Wipe failed — check server logs");
                       }
                     } finally {
-                      setUpdating(null);
+                      setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
                     }
                   }}>
-                    {updating === `wipe-${h.id}` ? "Wiping..." : "Wipe Host"}
+                    {updatingHosts.has(`wipe-${h.id}`) ? "Wiping..." : "Wipe Host"}
                   </Button>}
                 </>
               )}
@@ -1041,7 +1041,7 @@ export default function AdminHostsPage() {
                     : `Power off ${h.instance_id}?`;
                   if (!window.confirm(msg)) return;
                   powerHost(h.id, "poweroff");
-                }} isDisabled={installing === h.id || updating === h.id || poweringHosts.has(h.id)} isLoading={poweringHosts.has(h.id)}>
+                }} isDisabled={installingHosts.has(h.id) || updatingHosts.has(h.id) || poweringHosts.has(h.id)} isLoading={poweringHosts.has(h.id)}>
                   Power Off
                 </Button>
               )}
@@ -1064,8 +1064,8 @@ export default function AdminHostsPage() {
                   Starting...
                 </Button>
               )}
-              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removing === h.id || h.state === "shutting_down"} isLoading={removing === h.id || h.state === "shutting_down"}>
-                {(removing === h.id || h.state === "shutting_down") ? "Terminating..." : "Remove"}
+              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
+                {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
               </Button>
               {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && !isOcpVirtHost(h) && (
                 <>
