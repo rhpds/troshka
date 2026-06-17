@@ -29,6 +29,7 @@ class StoragePoolUpdate(BaseModel):
     auto_extend_threshold_pct: int | None = None
     auto_extend_increment_gb: int | None = None
     auto_extend_max_gb: int | None = None
+    pb_auto_sleep_minutes: int | None = None
 
 
 class StoragePoolResponse(BaseModel):
@@ -73,6 +74,8 @@ class StoragePoolResponse(BaseModel):
     auto_extend_threshold_pct: int = 80
     auto_extend_increment_gb: int = 64
     auto_extend_max_gb: int | None = None
+    pb_auto_sleep_minutes: int = 30
+    pb_last_activity_at: datetime.datetime | None = None
 
     model_config = {"from_attributes": True}
 

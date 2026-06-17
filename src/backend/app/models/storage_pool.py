@@ -70,6 +70,10 @@ class StoragePool(Base):
         ForeignKey("hosts.id", ondelete="SET NULL", use_alter=True), nullable=True
     )
     worker_instance_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pb_auto_sleep_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    pb_last_activity_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
