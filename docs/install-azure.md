@@ -40,6 +40,23 @@ This allows Troshka to provision RHEL BYOS images without manual acceptance.
 
 ## 3. Create Provider in Troshka
 
+Add the Azure provider:
+
+1. Navigate to Admin → Providers
+2. Click "Add Provider"
+3. Fill in the form:
+   - **Name**: azure-prod
+   - **Type**: Azure
+   - **Tenant ID**: YOUR_TENANT_ID
+   - **Client ID**: YOUR_CLIENT_ID
+   - **Client Secret**: YOUR_CLIENT_SECRET
+   - **Subscription ID**: YOUR_SUBSCRIPTION_ID
+4. Click "Save"
+5. Click the "Test" button to verify connectivity
+
+<details>
+<summary>API equivalent</summary>
+
 Add the Azure provider via the API:
 
 ```bash
@@ -65,9 +82,23 @@ curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/test \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+</details>
+
 ## 4. Network Setup
 
 Create the Azure VNet, subnet, and NSG with required security rules:
+
+1. Navigate to Admin → Providers
+2. Locate your Azure provider
+3. Click "Setup Network"
+4. Fill in the form:
+   - **Resource Group**: troshka-resources
+   - **Location**: eastus
+5. Click "Create"
+6. Wait for the confirmation message
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/create-network-azure \
@@ -78,6 +109,8 @@ curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/create-network
     "location": "eastus"
   }'
 ```
+
+</details>
 
 This creates:
 - Resource Group (if it does not exist)
@@ -97,6 +130,16 @@ Troshka supports two image options:
 
 Uses the `redhat` publisher BYOS image (requires RHSM registration at boot for package installs):
 
+1. Navigate to Admin → Providers
+2. Locate your Azure provider
+3. The default image `redhat:rhel-byos:rhel-lvm94-gen2:latest` is automatically set
+4. You can change it via the image settings section if needed
+
+<details>
+<summary>API equivalent</summary>
+
+Discover available images:
+
 ```bash
 curl -X GET http://localhost:8200/api/v1/providers/{PROVIDER_ID}/discover-images-azure \
   -H "Authorization: Bearer $TOKEN"
@@ -112,6 +155,8 @@ curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/set-image \
     "image_id": "redhat:rhel-byos:rhel-lvm94-gen2:latest"
   }'
 ```
+
+</details>
 
 ### Option B: Red Hat Image Builder (Recommended)
 
@@ -142,6 +187,18 @@ The resulting image resource ID format is `/subscriptions/.../resourceGroups/...
 
 Configure Azure DNS and Let's Encrypt TLS for VNC console access:
 
+1. Navigate to Admin → Providers
+2. Locate your Azure provider
+3. Click "Setup Console"
+4. Enter your base domain (e.g., `console.example.com`)
+5. Click "Create"
+6. Wait for the DNS zone to be created
+7. Copy the returned nameservers from the collapsible section
+8. Add the nameservers as NS records in your parent zone
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/setup-console \
   -H "Authorization: Bearer $TOKEN" \
@@ -151,6 +208,8 @@ curl -X POST http://localhost:8200/api/v1/providers/{PROVIDER_ID}/setup-console 
   }'
 ```
 
+</details>
+
 This creates an Azure DNS zone and returns nameservers for delegation. Add the returned nameservers as NS records in your parent zone.
 
 The console uses the `certbot-dns-azure` plugin (authenticates via service principal credentials) to obtain Let's Encrypt certificates.
@@ -158,6 +217,18 @@ The console uses the `certbot-dns-azure` plugin (authenticates via service princ
 ## 7. Provision First Host
 
 Create a host instance:
+
+1. Navigate to Admin → Providers
+2. Locate your Azure provider
+3. Click "Add Host"
+4. Fill in the form:
+   - **Instance Type**: Standard_E32s_v5 (or choose from recommended types below)
+   - **Storage Size**: 500 GB
+5. Click "Create"
+6. Wait for the host to provision and connect (status shows "connected")
+
+<details>
+<summary>API equivalent</summary>
 
 ```bash
 curl -X POST http://localhost:8200/api/v1/hosts \
@@ -169,6 +240,8 @@ curl -X POST http://localhost:8200/api/v1/hosts \
     "storage_size_gb": 500
   }'
 ```
+
+</details>
 
 ### Recommended Instance Types
 
@@ -204,6 +277,18 @@ Troshka always uses `begin_deallocate()` to minimize cost. Verify deallocated st
 
 For multi-host deployments with live migration support, create an Azure Files NFS Premium v2 storage pool:
 
+1. Navigate to Admin → Storage Pools
+2. Click "Add Storage Pool"
+3. Fill in the form:
+   - **Name**: shared-pool
+   - **Mode**: shared-azure-files
+   - **Provider**: Select your Azure provider
+4. Click "Create"
+5. Wait for the storage account and file share to be created
+
+<details>
+<summary>API equivalent</summary>
+
 ```bash
 curl -X POST http://localhost:8200/api/v1/storage-pools \
   -H "Authorization: Bearer $TOKEN" \
@@ -214,6 +299,8 @@ curl -X POST http://localhost:8200/api/v1/storage-pools \
     "provider_id": "YOUR_PROVIDER_ID"
   }'
 ```
+
+</details>
 
 This auto-creates:
 - Storage account (Premium performance tier, NFS enabled)
