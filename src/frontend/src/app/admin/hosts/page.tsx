@@ -49,21 +49,12 @@ interface Host {
   auto_extend_threshold_pct: number;
   auto_extend_increment_gb: number;
   auto_extend_max_gb: number | null;
-}
-
-interface RegionSummary {
-  region: string;
-  total_hosts: number;
-  active_hosts: number;
-  total_vcpus: number;
-  used_vcpus: number;
-  total_ram_mb: number;
-  used_ram_mb: number;
+  console_domain: string | null;
+  provider_type: string | null;
 }
 
 export default function AdminHostsPage() {
   const [hosts, setHosts] = useState<Host[]>([]);
-  const [summary, setSummary] = useState<RegionSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [providers, setProviders] = useState<Array<{id: string; name: string; type: string; default_region: string; default_image: string | null; gcp_zone?: string; azure_location?: string}>>([]);
   const [provisioning, setProvisioning] = useState(false);
@@ -72,7 +63,6 @@ export default function AdminHostsPage() {
   const [newInstanceType, setNewInstanceType] = useState("m8i.xlarge");
   const [newRegion, setNewRegion] = useState("");
   const [error, setError] = useState("");
-  const [filterRegion, setFilterRegion] = useState("");
   const [filterProvider, setFilterProvider] = useState("");
   const [filterProviderType, setFilterProviderType] = useState("");
   const [filterText, setFilterText] = useState("");
@@ -89,12 +79,10 @@ export default function AdminHostsPage() {
   const loadData = () => {
     Promise.all([
       fetch("/api/v1/hosts/").then((r) => r.ok ? r.json() : []),
-      fetch("/api/v1/hosts/summary").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/providers/").then((r) => r.ok ? r.json() : []),
       fetch("/api/v1/storage-pools").then((r) => r.ok ? r.json() : []),
-    ]).then(([h, s, p, pools]) => {
+    ]).then(([h, p, pools]) => {
       setHosts(Array.isArray(h) ? h : []);
-      setSummary(Array.isArray(s) ? s : []);
       setProviders(Array.isArray(p) ? p : []);
       setPools(Array.isArray(pools) ? pools : []);
       setLoading(false);
@@ -238,7 +226,6 @@ export default function AdminHostsPage() {
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
   const filteredHosts = hosts.filter((h) => {
-    if (filterRegion && (h.region || "unknown") !== filterRegion) return false;
     if (filterProvider && h.provider_id !== filterProvider) return false;
     if (filterProviderType && providerTypeById[h.provider_id || ""] !== filterProviderType) return false;
     if (filterText) {
@@ -639,78 +626,72 @@ export default function AdminHostsPage() {
 
       {/* Region Summary Cards */}
       <PageSection>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
-          <Card
-            isClickable isSelectable
-            onClick={() => setFilterRegion("")}
-            style={{ minWidth: 200, borderLeft: !filterRegion ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}
-          >
+        {(() => {
+          const providerMap: Record<string, { name: string; type: string; id: string; hosts: Host[] }> = {};
+          for (const h of hosts) {
+            const pid = h.provider_id || "unknown";
+            if (!providerMap[pid]) {
+              const prov = providers.find((p) => p.id === pid);
+              providerMap[pid] = { name: prov?.name || "Unknown", type: prov?.type || "", id: pid, hosts: [] };
+            }
+            providerMap[pid].hosts.push(h);
+          }
+          const provSummaries = Object.values(providerMap);
+          const totVcpus = hosts.reduce((a, h) => a + h.total_vcpus, 0);
+          const usedVcpus = hosts.reduce((a, h) => a + h.used_vcpus, 0);
+          const totRamMb = hosts.reduce((a, h) => a + h.total_ram_mb, 0);
+          const usedRamMb = hosts.reduce((a, h) => a + h.used_ram_mb, 0);
+          const totRunningVms = hosts.reduce((a, h) => a + h.running_vms, 0);
+          const totCpuPct = totVcpus ? (usedVcpus / totVcpus) * 100 : 0;
+          const totRamPct = totRamMb ? (usedRamMb / totRamMb) * 100 : 0;
+          return (
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+          <Card isClickable isSelectable onClick={() => setFilterProvider("")}
+            style={{ minWidth: 200, borderLeft: !filterProvider ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}>
             <CardBody>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>All Regions</div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>All Providers</div>
               <div style={{ fontSize: 24, fontWeight: 700 }}>{hosts.length}</div>
-              <div style={{ fontSize: 11, opacity: 0.6 }}>hosts</div>
-              {(() => {
-                const totVcpus = summary.reduce((a, s) => a + s.total_vcpus, 0);
-                const usedVcpus = summary.reduce((a, s) => a + s.used_vcpus, 0);
-                const allocVcpus = summary.reduce((a, s) => a + ((s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus), 0);
-                const totRamMb = summary.reduce((a, s) => a + s.total_ram_mb, 0);
-                const usedRamMb = summary.reduce((a, s) => a + s.used_ram_mb, 0);
-                const allocRamMb = summary.reduce((a, s) => a + ((s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb), 0);
-                const cpuPct = allocVcpus ? (usedVcpus / allocVcpus) * 100 : 0;
-                const ramPct = allocRamMb ? (usedRamMb / allocRamMb) * 100 : 0;
-                return (<>
-                  <div style={{ fontSize: 11, marginTop: 8 }}>
-                    vCPU: {usedVcpus}/{allocVcpus} <span style={{ opacity: 0.4 }}>({totVcpus} phys)</span>
-                  </div>
-                  <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
-                    <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
-                  </div>
-                  <div style={{ fontSize: 11, marginTop: 6 }}>
-                    RAM: {Math.round(usedRamMb / 1024)}/{Math.round(allocRamMb / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(totRamMb / 1024)} phys)</span>
-                  </div>
-                  <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
-                    <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
-                  </div>
-                </>);
-              })()}
+              <div style={{ fontSize: 11, opacity: 0.6 }}>hosts &middot; {totRunningVms} VMs running</div>
+              <div style={{ fontSize: 11, marginTop: 8 }}>vCPU: {usedVcpus}/{totVcpus}</div>
+              <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                <div style={{ height: 4, borderRadius: 2, width: `${totCpuPct}%`, background: totCpuPct > 80 ? "#f87171" : "#4ade80" }} />
+              </div>
+              <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {Math.round(usedRamMb / 1024)}/{Math.round(totRamMb / 1024)} GB</div>
+              <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                <div style={{ height: 4, borderRadius: 2, width: `${totRamPct}%`, background: totRamPct > 80 ? "#f87171" : "#4ade80" }} />
+              </div>
             </CardBody>
           </Card>
-          {summary.map((s) => (
-            <Card
-              key={s.region}
-              isClickable isSelectable
-              onClick={() => setFilterRegion(s.region === filterRegion ? "" : s.region)}
-              style={{ minWidth: 200, borderLeft: filterRegion === s.region ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}
-            >
+          {provSummaries.map((ps) => {
+            const activeCount = ps.hosts.filter((h) => h.state === "active").length;
+            const pVcpus = ps.hosts.reduce((a, h) => a + h.total_vcpus, 0);
+            const pUsedVcpus = ps.hosts.reduce((a, h) => a + h.used_vcpus, 0);
+            const pRamMb = ps.hosts.reduce((a, h) => a + h.total_ram_mb, 0);
+            const pUsedRamMb = ps.hosts.reduce((a, h) => a + h.used_ram_mb, 0);
+            const pRunningVms = ps.hosts.reduce((a, h) => a + h.running_vms, 0);
+            const cpuPct = pVcpus ? (pUsedVcpus / pVcpus) * 100 : 0;
+            const ramPct = pRamMb ? (pUsedRamMb / pRamMb) * 100 : 0;
+            return (
+            <Card key={ps.id} isClickable isSelectable
+              onClick={() => setFilterProvider(ps.id === filterProvider ? "" : ps.id)}
+              style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}>
               <CardBody>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{s.region}</div>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>{s.active_hosts}<span style={{ fontSize: 14, opacity: 0.5 }}>/{s.total_hosts}</span></div>
-                <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts</div>
-                {(() => {
-                  const allocVcpus = (s as unknown as Record<string, number>).alloc_vcpus || s.total_vcpus;
-                  const allocRamMb = (s as unknown as Record<string, number>).alloc_ram_mb || s.total_ram_mb;
-                  const cpuPct = allocVcpus ? (s.used_vcpus / allocVcpus) * 100 : 0;
-                  const ramPct = allocRamMb ? (s.used_ram_mb / allocRamMb) * 100 : 0;
-                  return (<>
-                    <div style={{ fontSize: 11, marginTop: 8 }}>
-                      vCPU: {s.used_vcpus}/{allocVcpus} <span style={{ opacity: 0.4 }}>({s.total_vcpus} phys)</span>
-                    </div>
-                    <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
-                      <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
-                    </div>
-                    <div style={{ fontSize: 11, marginTop: 6 }}>
-                      RAM: {Math.round(s.used_ram_mb / 1024)}/{Math.round(allocRamMb / 1024)} GB <span style={{ opacity: 0.4 }}>({Math.round(s.total_ram_mb / 1024)} phys)</span>
-                    </div>
-                    <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
-                      <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
-                    </div>
-                  </>);
-                })()}
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ opacity: 0.4 }}>({ps.type})</span></div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{activeCount}<span style={{ fontSize: 14, opacity: 0.5 }}>/{ps.hosts.length}</span></div>
+                <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts &middot; {pRunningVms} VMs</div>
+                <div style={{ fontSize: 11, marginTop: 8 }}>vCPU: {pUsedVcpus}/{pVcpus}</div>
+                <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                  <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
+                </div>
+                <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {Math.round(pUsedRamMb / 1024)}/{Math.round(pRamMb / 1024)} GB</div>
+                <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
+                  <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
+                </div>
               </CardBody>
-            </Card>
-          ))}
-        </div>
-      </PageSection>
+            </Card>);
+          })}
+        </div>);
+        })()}
 
       {/* Host List */}
       <PageSection>
@@ -809,7 +790,7 @@ export default function AdminHostsPage() {
           </Card>
         ))}
         {filteredHosts.length === 0 && pendingHosts.length === 0 && (
-          <p style={{ opacity: 0.6 }}>No hosts{filterRegion ? ` in ${filterRegion}` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
+          <p style={{ opacity: 0.6 }}>No hosts{filterProvider ? ` for this provider` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
         )}
         {filteredHosts.map((h) => (
           <Card key={h.id} style={{ marginBottom: 8 }}>
