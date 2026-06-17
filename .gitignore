@@ -50,6 +50,8 @@ secrets/
 *.pem
 *.key
 *.png
+!docs/images/*.png
+!src/frontend/public/images/*.png
 .playwright-mcp/
 troshka.db*
 mockup.html

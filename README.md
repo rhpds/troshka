@@ -131,31 +131,20 @@ Start with [Common Setup](docs/install-common.md) (backend, frontend, database),
 
 ## Architecture
 
-```
-Browser
-  |
-  +-- Next.js Frontend (PatternFly 6 + React Flow)
-  |       |
-  |       +-- /api/* proxy --> FastAPI API Server
-  |                               |
-  |                               +-- PostgreSQL (state)
-  |                               +-- S3 (disk images, patterns)
-  |                               +-- troshkad agents (EC2 hosts)
-  |                               +-- GCP Compute Engine
-  |                               +-- Azure Resource Manager
-  |                               +-- Kubernetes API --> OCP Virt
-  |
-  +-- WSS (console) --> API Server --> troshkad --> libvirt VNC
-```
+<p align="center">
+  <img src="docs/images/architecture.png" alt="Troshka Architecture" width="800" />
+</p>
 
 | Component | Tech | Purpose |
 |-----------|------|---------|
-| API Server | FastAPI + Uvicorn | REST API, WebSocket hub, RBAC |
-| Frontend | Next.js 15 + PatternFly 6 + React Flow | Canvas editor, project management |
+| Frontend | Next.js 15, PatternFly 6, React Flow | Canvas editor, project management |
+| Backend | FastAPI, SQLAlchemy 2, Uvicorn | REST API, WebSocket hub, RBAC |
 | Database | PostgreSQL 16 | Projects, topology, users, hosts |
-| troshkad | Python daemon + libvirt | Host agent — VM lifecycle, storage, networking |
+| troshkad | Python daemon (stdlib only) | Host agent — VM lifecycle, storage, networking |
+| troshka-vncd | Python daemon (websockets) | VNC console relay with JWT auth |
 | S3 | AWS S3 | Disk images, patterns, snapshots |
-| Deployment | Ansible + Jinja2 manifests | OpenShift deployment |
+
+For the full deep-dive, see the [Architecture Guide](docs/architecture.md).
 
 ## Quick Start
 
