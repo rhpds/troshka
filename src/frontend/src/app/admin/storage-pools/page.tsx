@@ -44,6 +44,8 @@ interface StoragePool {
   worker_private_ip: string | null;
   worker_instance_id: string | null;
   worker_agent_version: string | null;
+  pb_auto_sleep_minutes: number;
+  pb_last_activity_at: string | null;
 }
 
 interface Provider {
@@ -767,7 +769,14 @@ export default function StoragePoolsPage() {
                 <div style={{ display: "flex", gap: 6, flexDirection: "column", alignItems: "flex-end" }}>
                   <div style={{ fontSize: 11, marginBottom: 4 }}>
                     {pool.worker_status === "connected" ? (
-                      <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""}{pool.worker_private_ip ? ` (${pool.worker_private_ip})` : ""} · {pool.worker_instance_id || ""}</span>
+                      <span style={{ color: "#4ade80" }}>Pattern Buffer: {pool.worker_instance_type} · {pool.worker_ip || ""}{pool.worker_private_ip ? ` (${pool.worker_private_ip})` : ""} · {pool.worker_instance_id || ""}{pool.pb_auto_sleep_minutes > 0 && pool.pb_last_activity_at && (() => {
+  const idleMin = Math.floor((Date.now() - new Date(pool.pb_last_activity_at!).getTime()) / 60000);
+  return (
+    <span style={{ color: idleMin > pool.pb_auto_sleep_minutes * 0.8 ? "#f0ab00" : "var(--pf-t--global--text--color--subtle)", marginLeft: 8, fontSize: 10 }}>
+      Idle {idleMin}m / {pool.pb_auto_sleep_minutes}m
+    </span>
+  );
+})()}</span>
                     ) : pool.worker_status === "stopped" ? (
                       <span style={{ opacity: 0.5 }}>Pattern Buffer: sleeping · {pool.worker_instance_type}</span>
                     ) : pool.worker_status === "provisioning" || pool.worker_status === "installing" || pool.worker_status === "active" ? (
@@ -844,6 +853,30 @@ export default function StoragePoolsPage() {
                       </Button>
                     )}
                   </div>
+                  {pool.worker_host_id && (
+                    <div style={{ marginTop: 6 }}>
+                      <select
+                        style={{ padding: "4px 8px", borderRadius: 4, fontSize: 11, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                        value={pool.pb_auto_sleep_minutes}
+                        onChange={async (e) => {
+                          const val = parseInt(e.target.value);
+                          await fetch(`/api/v1/storage-pools/${pool.id}`, {
+                            method: "PATCH",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ pb_auto_sleep_minutes: val }),
+                          });
+                          loadData();
+                        }}
+                      >
+                        <option value={0}>Auto-sleep: Off</option>
+                        <option value={15}>Auto-sleep: 15m</option>
+                        <option value={30}>Auto-sleep: 30m</option>
+                        <option value={60}>Auto-sleep: 1h</option>
+                        <option value={120}>Auto-sleep: 2h</option>
+                        <option value={240}>Auto-sleep: 4h</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
             </CardBody>

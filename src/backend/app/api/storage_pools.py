@@ -304,6 +304,9 @@ def update_pool(
     if body.auto_extend_max_gb is not None:
         pool.auto_extend_max_gb = body.auto_extend_max_gb
 
+    if body.pb_auto_sleep_minutes is not None:
+        pool.pb_auto_sleep_minutes = body.pb_auto_sleep_minutes
+
     db.commit()
     db.refresh(pool)
     return _pool_response(pool, db)
