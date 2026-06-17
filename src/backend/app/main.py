@@ -82,6 +82,28 @@ async def lifespan(app):
     finally:
         s.close()
 
+    # Reset hosts stuck in transient agent states from a previous crash/restart
+    from app.models.host import Host as _HostReset
+
+    s2 = SessionLocal()
+    try:
+        stuck_hosts = (
+            s2.query(_HostReset)
+            .filter(_HostReset.agent_status.in_(("waiting_ssh", "installing")))
+            .all()
+        )
+        for h in stuck_hosts:
+            logger.warning(
+                "Startup: resetting stuck host %s agent_status from %s to disconnected",
+                h.id[:8],
+                h.agent_status,
+            )
+            h.agent_status = "disconnected"
+        if stuck_hosts:
+            s2.commit()
+    finally:
+        s2.close()
+
     # Resume stuck pattern captures
     from app.models.pattern import Pattern
 
