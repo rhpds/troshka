@@ -451,31 +451,6 @@ export default function AdminHostsPage() {
             <ToolbarItem>
               <Title headingLevel="h1">Host Pool</Title>
             </ToolbarItem>
-            <ToolbarItem>
-              <input
-                type="text"
-                placeholder="Search hosts..."
-                value={filterText}
-                onChange={(e) => setFilterText(e.target.value)}
-                style={{ ...inputStyle, width: "auto", minWidth: 180 }}
-              />
-            </ToolbarItem>
-            <ToolbarItem>
-              <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-                <option value="">All types</option>
-                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => p.type))].map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </ToolbarItem>
-            <ToolbarItem>
-              <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-                <option value="">All providers</option>
-                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
-                ))}
-              </select>
-            </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
               <Button variant="primary" onClick={() => setShowAddForm(true)}>
                 + Add Host
@@ -651,7 +626,7 @@ export default function AdminHostsPage() {
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", opacity: 0.7 }}>
               <input type="checkbox" checked={showOvercommit} onChange={(e) => setShowOvercommit(e.target.checked)} />
-              Overcommit ({cpuRatio}:1 CPU, {ramRatio}:1 RAM)
+              Show overcommit ({cpuRatio}:1 CPU, {ramRatio}:1 RAM)
             </label>
           </div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
@@ -714,7 +689,28 @@ export default function AdminHostsPage() {
           const allConnected = someSelected && selected.every((h) => h.agent_status === "connected");
           const allStopped = someSelected && selected.every((h) => h.state === "stopped");
           const allActiveConnected = allActive && allConnected;
-          return (
+          return (<>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search hosts..."
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+                style={{ ...inputStyle, width: "auto", minWidth: 180 }}
+              />
+              <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+                <option value="">All types</option>
+                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => p.type))].map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+              <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+                <option value="">All providers</option>
+                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
+                ))}
+              </select>
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
                 <input
@@ -780,7 +776,7 @@ export default function AdminHostsPage() {
                 </div>
               )}
             </div>
-          );
+          </>);
         })()}
         {pendingHosts.map((ph) => (
           <Card key={ph.id} style={{ marginBottom: 8, opacity: 0.6 }}>
