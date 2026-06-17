@@ -27,10 +27,12 @@ async def lifespan(app):
     import asyncio
 
     from app.services.health_poller import start_health_poller
+    from app.services.project_timer import start_project_timer
     from app.services.ws_pubsub import set_event_loop, start_state_poller
 
     set_event_loop(asyncio.get_running_loop())
     start_health_poller()
+    start_project_timer()
     start_state_poller()
 
     # Reset projects stuck in transient states from a previous crash/restart

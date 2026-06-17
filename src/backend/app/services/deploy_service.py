@@ -5,6 +5,7 @@ Translates canvas topology into libvirt VMs and VXLAN networks,
 then sends structured commands to the troshkad agent on the host.
 """
 
+import datetime
 import logging
 import threading
 import time as _time
@@ -1792,6 +1793,24 @@ def deploy_project_async(
         project.deploy_progress = None
         project.deployed_topology = project.topology
 
+        # Start auto-stop timer if configured
+        if project.state == "active" and project.auto_stop_minutes:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            project.auto_stop_started_at = now
+            project.auto_stop_expires_at = now + datetime.timedelta(
+                minutes=project.auto_stop_minutes
+            )
+            project.auto_stop_warned = False
+
+        # Start auto-delete timer on first deploy
+        if project.auto_delete_minutes and not project.auto_delete_started_at:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            project.auto_delete_started_at = now
+            project.lifetime_expires_at = now + datetime.timedelta(
+                minutes=project.auto_delete_minutes
+            )
+            project.auto_delete_warned = False
+
         # Create DNS records if DNS provider configured
         if project.dns_provider_id and project.guid and project.domain:
             from app.models.dns_provider import DnsProvider
@@ -2675,6 +2694,12 @@ def stop_project_async(project_id: str):
         # BMC, networks, and EIPs stay intact on stop — only torn down on delete
         project.state = "stopped"
         project.deploy_error = None
+
+        # Clear auto-stop timer (consumed; will restart on next start)
+        project.auto_stop_started_at = None
+        project.auto_stop_expires_at = None
+        project.auto_stop_warned = False
+
         s.commit()
         notify_project(
             project_id,
@@ -2843,6 +2868,16 @@ def start_project_async(project_id: str):
 
         project.state = "active"
         project.deploy_error = None
+
+        # Restart auto-stop timer
+        if project.auto_stop_minutes:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            project.auto_stop_started_at = now
+            project.auto_stop_expires_at = now + datetime.timedelta(
+                minutes=project.auto_stop_minutes
+            )
+            project.auto_stop_warned = False
+
         if _is_ocp_topology(topology):
             project.ocp_status = "monitoring"
         s.commit()
