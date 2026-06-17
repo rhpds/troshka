@@ -213,7 +213,7 @@ export default function ProjectCanvasPage() {
     let id: ReturnType<typeof setInterval>;
     const tick = () => {
       const remaining = earliest - Date.now();
-      if (remaining <= 0) { setTimerCountdown(null); clearInterval(id); return; }
+      if (remaining <= 0) { setTimerCountdown(nearest!.label === "Shutdown" ? "Auto-Shutdown" : "Auto-Deleted"); setTimerUrgency("critical"); clearInterval(id); return; }
       const totalSecs = Math.floor(remaining / 1000);
       const h = Math.floor(totalSecs / 3600);
       const m = Math.floor((totalSecs % 3600) / 60);
@@ -547,7 +547,7 @@ export default function ProjectCanvasPage() {
               title="Time remaining (click to open Project settings)"
               onClick={() => setShowPalette(true)}
             >
-              ⏱ {timerLabel} in {timerCountdown}
+              ⏱ {timerCountdown === "Auto-Shutdown" || timerCountdown === "Auto-Deleted" ? `Project was ${timerCountdown}` : `${timerLabel} in ${timerCountdown}`}
             </span>
           )}
         </div>
