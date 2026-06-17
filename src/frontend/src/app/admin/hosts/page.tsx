@@ -897,7 +897,16 @@ export default function AdminHostsPage() {
                 {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
               </Button>
               {(() => {
-                const hostBusy = installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
+                const isPowering = poweringHosts.has(h.id);
+                const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
+                if (isPowering) return (
+                  <>
+                    <Button variant="secondary" isLoading isDisabled>Powering off...</Button>
+                    <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id)} isLoading={removingHosts.has(h.id)}>
+                      {removingHosts.has(h.id) ? "Terminating..." : "Remove"}
+                    </Button>
+                  </>
+                );
                 return (<>
               {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
                 <Button variant="secondary" onClick={() => {
