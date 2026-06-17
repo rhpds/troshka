@@ -890,7 +890,51 @@ def create_azure_files_nfs(
     pe_poller = network_client.private_endpoints.begin_create_or_update(
         resource_group, f"{account_name}-pe", pe_params
     )
-    pe_poller.result()
+    pe_result = pe_poller.result()
+
+    # Private DNS zone so VMs can resolve the storage FQDN to the private endpoint IP
+    from azure.mgmt.privatedns import PrivateDnsManagementClient
+
+    dns_client = PrivateDnsManagementClient(credential, subscription_id)
+    dns_zone = "privatelink.file.core.windows.net"
+
+    # Extract VNet ID from subnet ID (strip /subnets/...)
+    vnet_id = subnet_id.rsplit("/subnets/", 1)[0]
+
+    try:
+        dns_client.private_zones.get(resource_group, dns_zone)
+    except Exception:
+        dns_client.private_zones.begin_create_or_update(
+            resource_group, dns_zone, {"location": "global"}
+        ).result()
+
+    try:
+        dns_client.virtual_network_links.get(
+            resource_group, dns_zone, "troshka-vnet-link"
+        )
+    except Exception:
+        dns_client.virtual_network_links.begin_create_or_update(
+            resource_group,
+            dns_zone,
+            "troshka-vnet-link",
+            {
+                "location": "global",
+                "virtual_network": {"id": vnet_id},
+                "registration_enabled": False,
+            },
+        ).result()
+
+    pe_ip = pe_result.custom_dns_configs[0].ip_addresses[0]
+    try:
+        dns_client.record_sets.create_or_update(
+            resource_group,
+            dns_zone,
+            account_name,
+            "A",
+            {"ttl": 300, "a_records": [{"ipv4_address": pe_ip}]},
+        )
+    except Exception:
+        logger.warning("Failed to create DNS A record for %s", account_name)
 
     # Create NFS file share
     share_params = {
