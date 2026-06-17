@@ -903,8 +903,8 @@ export default function StoragePoolsPage() {
               </select>
               <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
                 <Button variant="secondary" size="sm" onClick={() => setPbPoolId(null)}>Cancel</Button>
-                <Button variant="primary" size="sm" onClick={async () => {
-                  await fetch(`/api/v1/storage-pools/${pbPoolId}/pattern-buffer`, {
+                <Button variant="primary" size="sm" onClick={() => {
+                  fetch(`/api/v1/storage-pools/${pbPoolId}/pattern-buffer`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ instance_type: pbInstanceType }),
