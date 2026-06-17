@@ -4647,7 +4647,17 @@ def _handle_pattern_capture_direct(job, params):
             with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
                 job.setdefault("_tmpdirs", []).append(tmpdir)
                 tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-                src_size = os.path.getsize(disk_path)
+                src_size = 0
+                try:
+                    info_out = subprocess.check_output(
+                        ["qemu-img", "info", "--output=json", disk_path],
+                        timeout=30,
+                    )
+                    import json as _json_info
+
+                    src_size = _json_info.loads(info_out).get("virtual-size", 0)
+                except Exception:
+                    src_size = os.path.getsize(disk_path)
                 src_size_gb = round(src_size / (1024**3), 1)
                 _job_log(
                     job,
