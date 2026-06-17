@@ -214,11 +214,13 @@ export default function ProjectCanvasPage() {
     const tick = () => {
       const remaining = earliest - Date.now();
       if (remaining <= 0) { setTimerCountdown("Expired"); setTimerUrgency("critical"); clearInterval(id); return; }
-      const mins = Math.floor(remaining / 60000);
-      const h = Math.floor(mins / 60);
-      const m = mins % 60;
-      setTimerCountdown(h > 0 ? `${h}h ${m}m` : `${m}m`);
-      setTimerUrgency(mins <= 5 ? "critical" : mins <= 15 ? "warning" : "normal");
+      const totalSecs = Math.floor(remaining / 1000);
+      const h = Math.floor(totalSecs / 3600);
+      const m = Math.floor((totalSecs % 3600) / 60);
+      const s = totalSecs % 60;
+      const pad = (n: number) => String(n).padStart(2, "0");
+      setTimerCountdown(h > 0 ? `${h}h ${pad(m)}m ${pad(s)}s` : `${m}m ${pad(s)}s`);
+      setTimerUrgency(totalSecs <= 300 ? "critical" : totalSecs <= 900 ? "warning" : "normal");
     };
     tick();
     id = setInterval(tick, 1000);
