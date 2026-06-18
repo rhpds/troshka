@@ -823,10 +823,9 @@ export default function ProjectCanvasPage() {
           <div style={{
             position: "absolute", inset: 0, zIndex: 20,
             display: "flex", alignItems: "center", justifyContent: "center",
-            background: "var(--troshka-bg)",
-            pointerEvents: "auto",
+            pointerEvents: "none",
           }}>
-            <div style={{ textAlign: "center" }}>
+            <div style={{ textAlign: "center", pointerEvents: "auto" }}>
               <div style={{ fontSize: 14, opacity: 0.5, marginBottom: 16 }}>
                 Drag components from the palette or import a template
               </div>
