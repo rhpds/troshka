@@ -233,7 +233,7 @@ def create_project_from_template(
     if ocp_cfg.get("base_domain"):
         body.setdefault("base_domain", ocp_cfg["base_domain"])
 
-    bastion_password = body.get("bastion_password", "")
+    common_password = body.get("common_password", "")
     external_access = body.get("external_access", False)
     block_outbound = body.get("block_outbound", True)
 
@@ -242,7 +242,7 @@ def create_project_from_template(
 
     topology = generate_topology_from_template(
         resolved,
-        bmc_password=bastion_password or "password",
+        bmc_password=common_password,
         external_access=external_access,
     )
 
@@ -333,7 +333,7 @@ def create_project_from_template(
             "cluster_name": body.get("cluster_name", "ocp"),
             "base_domain": body.get("base_domain", "ocp.local"),
             "ocp_version": body.get("ocp_version", "4.20"),
-            "bastion_password": bastion_password,
+            "common_password": common_password,
             "pull_secret_json": pull_secret_json,
             "ssh_pub_key": ssh_pub_key,
             "ssh_key_ids": ssh_key_ids,

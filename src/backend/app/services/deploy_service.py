@@ -62,6 +62,19 @@ def validate_topology_names(topology: dict) -> list[str]:
     return errors
 
 
+def validate_topology_passwords(topology: dict) -> list[str]:
+    """Check that required passwords are set. Returns list of errors."""
+    errors = []
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") == "networkNode" and data.get("networkType") == "bmc":
+            if not data.get("bmcPassword"):
+                errors.append(
+                    f"BMC network '{data.get('name', '?')}' has no password set"
+                )
+    return errors
+
+
 def _update_deploy_progress(
     project_id: str, step: str, detail: str = "", items: list | None = None
 ):

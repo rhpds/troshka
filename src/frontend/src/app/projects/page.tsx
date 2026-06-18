@@ -79,7 +79,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
   const [bastionImageId, setBastionImageId] = useState("");
   const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
-  const [bastionPassword, setBastionPassword] = useState(() => {
+  const [commonPassword, setCommonPassword] = useState(() => {
     const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
   });
@@ -189,7 +189,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
         if (bastionImageId) templateBody.bastion_image_id = bastionImageId;
         if (bastionIsoId) templateBody.bastion_iso_id = bastionIsoId;
         if (bastionSshKeyId) templateBody.bastion_ssh_key_id = bastionSshKeyId;
-        if (bastionPassword) templateBody.bastion_password = bastionPassword;
+        if (commonPassword) templateBody.common_password = commonPassword;
         if (bastionBmcIp) templateBody.bastion_bmc_ip = bastionBmcIp;
         if (clusterName) templateBody.cluster_name = clusterName;
         if (baseDomain) templateBody.base_domain = baseDomain;
@@ -445,11 +445,11 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password <span style={{ color: "#f87171" }}>*</span> <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user + BMC)</span></label>
                       <div style={{ display: "flex", gap: 4 }}>
-                        <input style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }} value={bastionPassword} onChange={(e) => setBastionPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
+                        <input style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }} value={commonPassword} onChange={(e) => setCommonPassword(e.target.value)} placeholder="Used for console access and BMC auth" onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }} />
                         <button
                           type="button"
                           style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
-                          onClick={() => { navigator.clipboard.writeText(bastionPassword); }}
+                          onClick={() => { navigator.clipboard.writeText(commonPassword); }}
                           title="Copy password"
                         >Copy</button>
                       </div>
@@ -667,12 +667,12 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !bastionPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)) ? 0.4 : 1,
                 }}
               >
                 {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}

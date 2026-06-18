@@ -79,7 +79,12 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     cluster_name = config.get("cluster_name", "ocp")
     base_domain = config.get("base_domain", "ocp.local")
     ocp_version = config.get("ocp_version", "4.20")
-    bastion_password = config.get("bastion_password", "")
+    common_password = config.get("common_password", "")
+    if not common_password:
+        raise ValueError(
+            "No password provided. Set common_password in the API request "
+            "or in the template YAML."
+        )
     pull_secret_json = config.get("pull_secret_json", "")
     ssh_pub_key = config.get("ssh_pub_key", "")
     bastion_image = config.get("bastion_image")
@@ -137,7 +142,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     _attach_bastion_iso(topology, bastion_iso)
     _setup_bastion_cloud_init(
         topology,
-        bastion_password,
+        common_password,
         ssh_pub_key,
         ssh_key_ids,
         ssh_keys,
@@ -303,8 +308,9 @@ def _setup_bastion_cloud_init(
             "dejavu-sans-fonts",
             "desktop-backgrounds-gnome",
         ]
-        if password:
-            node["data"]["ciCloudUserPassword"] = password
+        cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
+        if cloud_user_pw:
+            node["data"]["ciCloudUserPassword"] = cloud_user_pw
         if ssh_key_ids:
             node["data"]["ciSshKeyIds"] = ssh_key_ids
         if ssh_keys:
@@ -385,10 +391,18 @@ def _setup_bastion_cloud_init(
                 bmc_ips.append(ip)
         bmc_ips_str = " ".join(bmc_ips)
 
+        # Read BMC password from the BMC network node (may differ from common)
+        bmc_pw = password
+        for tnode in topology.get("nodes", []):
+            td = tnode.get("data", {})
+            if td.get("networkType") == "bmc" and td.get("bmcPassword"):
+                bmc_pw = td["bmcPassword"]
+                break
+
         node["data"]["ciUserData"] += _build_install_script(
             ocp_version,
             auto_install_ocp,
-            password,
+            bmc_pw,
             bmc_ips_str,
             cluster_name,
             base_domain,
