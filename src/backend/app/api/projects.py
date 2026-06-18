@@ -1340,7 +1340,9 @@ def vm_exec(
                 vm_ip = nic["ip"]
                 break
 
-    if vm_ip and password:
+    private_key = body.get("private_key", "")
+
+    if vm_ip and (password or private_key):
         try:
             job_id = start_job(
                 host,
@@ -1350,6 +1352,7 @@ def vm_exec(
                     "vm_ip": vm_ip,
                     "username": username,
                     "password": password,
+                    "private_key": private_key,
                     "command": command,
                     "timeout": timeout,
                 },

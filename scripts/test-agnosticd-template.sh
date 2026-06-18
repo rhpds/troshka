@@ -55,12 +55,21 @@ for var in cloud_provider env_type troshka_deploy_mode vms networks; do
     fi
 done
 
+# --- Install collection from local checkout (dev override) ---
+if [ -d "$HOME/troshka-ansible-collection" ]; then
+    echo ""
+    echo "=== Installing collection from local checkout ==="
+    ansible-galaxy collection install "$HOME/troshka-ansible-collection" \
+        -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
+fi
+
 # --- Run ---
 echo ""
 echo "=== Running agnosticd-v2 lifecycle ==="
 echo ""
 
 cd "$AGD_DIR"
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \

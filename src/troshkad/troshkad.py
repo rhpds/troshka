@@ -6458,6 +6458,7 @@ def _handle_vm_ssh_exec(job, params):
     vm_ip = params.get("vm_ip", "")
     username = params.get("username", "cloud-user")
     password = params.get("password", "")
+    private_key = params.get("private_key", "")
     command = params.get("command", "")
     timeout_secs = min(params.get("timeout", 10), 3600)
 
@@ -6465,37 +6466,67 @@ def _handle_vm_ssh_exec(job, params):
         raise RuntimeError("No command specified")
     if not vm_ip:
         raise RuntimeError("No VM IP specified")
-    if not password:
-        raise RuntimeError("No password specified")
+    if not password and not private_key:
+        raise RuntimeError("No password or private_key specified")
 
     ns = f"troshka-{project_id[:8]}" if project_id else ""
     ns_prefix = ["ip", "netns", "exec", ns] if ns else []
 
-    result = subprocess.run(
-        ns_prefix
-        + [
-            "sshpass",
-            "-p",
-            password,
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "LogLevel=ERROR",
-            "-o",
-            f"ConnectTimeout={min(timeout_secs, 10)}",
-            f"{username}@{vm_ip}",
-            command,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout_secs + 5,
-    )
-    output = result.stdout.strip()
-    error = result.stderr.strip() if result.returncode != 0 else ""
-    return {"output": output, "error": error, "exit_code": result.returncode}
+    key_file = None
+    ssh_cmd = ns_prefix[:]
+    try:
+        if private_key:
+            key_file = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".pem", delete=False
+            )
+            key_file.write(private_key)
+            key_file.close()
+            os.chmod(key_file.name, 0o600)
+            ssh_cmd += [
+                "ssh",
+                "-i",
+                key_file.name,
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
+                f"ConnectTimeout={min(timeout_secs, 10)}",
+                f"{username}@{vm_ip}",
+                command,
+            ]
+        else:
+            ssh_cmd += [
+                "sshpass",
+                "-p",
+                password,
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
+                f"ConnectTimeout={min(timeout_secs, 10)}",
+                f"{username}@{vm_ip}",
+                command,
+            ]
+
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_secs + 5,
+        )
+        output = result.stdout.strip()
+        error = result.stderr.strip() if result.returncode != 0 else ""
+        return {"output": output, "error": error, "exit_code": result.returncode}
+    finally:
+        if key_file and os.path.exists(key_file.name):
+            os.unlink(key_file.name)
 
 
 COMMAND_HANDLERS["vm/ssh-exec"] = _handle_vm_ssh_exec
