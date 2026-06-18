@@ -15,7 +15,6 @@ export default function CanvasToolbar() {
   const canRedo = useCanvasStore((s) => s.canRedo);
   const undo = useCanvasStore((s) => s.undo);
   const redo = useCanvasStore((s) => s.redo);
-
   const zoomPercent = Math.round(zoom * 100);
 
   return (
@@ -103,6 +102,7 @@ export default function CanvasToolbar() {
       >
         ⊟
       </button>
+
 
     </div>
   );

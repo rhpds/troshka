@@ -27,6 +27,10 @@ export default function ProjectCanvasPage() {
   const [showProperties, setShowProperties] = useState(true);
   const [showPatternModal, setShowPatternModal] = useState(false);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importYaml, setImportYaml] = useState("");
+  const [importError, setImportError] = useState("");
+  const [importing, setImporting] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
   const [projectGuid, setProjectGuid] = useState("");
@@ -574,6 +578,26 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
+          {nodes.length > 0 && (
+            <button
+              className="project-publish-btn"
+              style={{ opacity: 0.85 }}
+              onClick={async () => {
+                const resp = await fetch(`/api/v1/projects/${projectId}/export-template`);
+                if (!resp.ok) return;
+                const yaml = await resp.text();
+                const blob = new Blob([yaml], { type: "text/yaml" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${projectName || "project"}-template.yaml`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Export Template
+            </button>
+          )}
           {projectState !== "deploying" && projectState !== "reconfiguring" && (
             <button
               className="project-stop-btn"
@@ -795,6 +819,31 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
+        {nodes.length === 0 && projectName && projectState === "draft" && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 20,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "var(--troshka-bg)",
+            pointerEvents: "auto",
+          }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 14, opacity: 0.5, marginBottom: 16 }}>
+                Drag components from the palette or import a template
+              </div>
+              <button
+                onClick={() => { setImportYaml(""); setImportError(""); setShowImportModal(true); }}
+                style={{
+                  padding: "10px 24px", borderRadius: 8,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 500,
+                }}
+              >
+                Import Template YAML
+              </button>
+            </div>
+          </div>
+        )}
         {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: ocpInstallElapsed != null ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster ready" } : ocpStatus === "error" ? { phase: "error", detail: "install failed" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
@@ -934,6 +983,116 @@ export default function ProjectCanvasPage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {showImportModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowImportModal(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 600, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Import Template YAML</div>
+            <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 12 }}>
+              Paste an infra_template.yaml to generate the canvas topology.
+            </div>
+            <textarea
+              value={importYaml}
+              onChange={(e) => { setImportYaml(e.target.value); setImportError(""); }}
+              placeholder={"networks:\n  cluster:\n    cidr: 10.0.0.0/24\n    dhcp: true\n\nvms:\n  bastion:\n    role: bastion\n    vcpus: 4\n    ram_gb: 8\n    ..."}
+              style={{
+                width: "100%", height: 300, fontFamily: "monospace", fontSize: 12,
+                padding: 12, borderRadius: 8, resize: "vertical",
+                background: "var(--pf-t--global--background--color--secondary--default)",
+                color: "var(--pf-t--global--text--color--regular)",
+                border: "1px solid var(--pf-t--global--border--color--default)",
+              }}
+            />
+            {importError && (
+              <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8 }}>
+                {importError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+              <button onClick={() => setShowImportModal(false)}
+                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <label style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", display: "inline-block" }}>
+                Upload File
+                <input type="file" accept=".yaml,.yml" style={{ display: "none" }} onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    file.text().then((text) => { setImportYaml(text); setImportError(""); });
+                  }
+                  e.target.value = "";
+                }} />
+              </label>
+              <button
+                disabled={!importYaml.trim() || importing}
+                onClick={async () => {
+                  setImporting(true);
+                  setImportError("");
+                  try {
+                    let parsed: Record<string, unknown>;
+                    try {
+                      const jsYaml = await import("js-yaml");
+                      parsed = jsYaml.load(importYaml) as Record<string, unknown>;
+                    } catch {
+                      setImportError("Invalid YAML syntax");
+                      setImporting(false);
+                      return;
+                    }
+                    if (!parsed || typeof parsed !== "object") {
+                      setImportError("Template must be a YAML mapping");
+                      setImporting(false);
+                      return;
+                    }
+                    if (!parsed.vms || !parsed.networks) {
+                      setImportError("Template must contain 'vms' and 'networks' sections");
+                      setImporting(false);
+                      return;
+                    }
+                    const resp = await fetch(`/api/v1/projects/${projectId}/import-template`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ template_yaml: parsed }),
+                    });
+                    if (!resp.ok) {
+                      const err = await resp.json().catch(() => ({ detail: "Import failed" }));
+                      setImportError(err.detail || "Import failed");
+                      setImporting(false);
+                      return;
+                    }
+                    const data = await resp.json();
+                    const t = data.topology || {};
+                    useCanvasStore.setState({
+                      nodes: t.nodes || [],
+                      edges: t.edges || [],
+                      hiddenNodeIds: t.hiddenNodeIds || [],
+                      startOrder: t.startOrder || [],
+                      externalIps: t.externalIps || [],
+                    });
+                    setShowImportModal(false);
+                  } catch (err: unknown) {
+                    setImportError(err instanceof Error ? err.message : "Import failed");
+                  } finally {
+                    setImporting(false);
+                  }
+                }}
+                style={{
+                  padding: "8px 20px", borderRadius: 6, border: "none",
+                  background: importing ? "var(--pf-t--global--background--color--disabled--default)" : "var(--pf-t--global--background--color--primary--default)",
+                  color: "#fff", cursor: importing ? "not-allowed" : "pointer", fontWeight: 500,
+                }}
+              >
+                {importing ? "Importing..." : "Import"}
+              </button>
+            </div>
           </div>
         </div>
       )}

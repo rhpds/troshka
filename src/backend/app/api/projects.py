@@ -366,6 +366,57 @@ def create_project_from_template(
     return {"id": project.id, "name": project.name}
 
 
+@router.post("/{project_id}/import-template")
+def import_template(
+    project_id: str,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    if project.state != "draft":
+        raise HTTPException(
+            status_code=409, detail="Can only import template on draft projects"
+        )
+
+    template_yaml = body.get("template_yaml")
+    if not template_yaml:
+        raise HTTPException(status_code=400, detail="template_yaml is required")
+    if not isinstance(template_yaml, dict):
+        raise HTTPException(
+            status_code=400, detail="template_yaml must be a YAML mapping"
+        )
+    if "vms" not in template_yaml:
+        raise HTTPException(
+            status_code=400, detail="Template must contain a 'vms' section"
+        )
+    if "networks" not in template_yaml:
+        raise HTTPException(
+            status_code=400, detail="Template must contain a 'networks' section"
+        )
+
+    try:
+        resolved = resolve_inline_template(template_yaml)
+        topology = generate_topology_from_template(resolved)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
+
+    project.topology = topology
+    db.commit()
+    db.refresh(project)
+
+    return {"topology": topology}
+
+
 @router.get("/{project_id}/export-template")
 def export_template(
     project_id: str,
