@@ -106,6 +106,14 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Zustand store: `useCanvasStore` for nodes, edges, selections
 - Node types: `vmNode`, `networkNode`, `storageNode`
 - Auto-save: debounced 1s after changes via `_saveTopologyToApi`
+- Empty canvas (draft, no nodes) shows "Import Template YAML" overlay — palette still interactive behind it
+
+### Template Import/Export
+- **Import**: `POST /projects/{id}/import-template` — takes `template_yaml` dict, generates topology via `resolve_inline_template` + `generate_topology_from_template` (includes auto-layout), patches project in-place. Frontend validates YAML syntax and required sections (`vms`, `networks`) before sending. Only works on `draft` projects.
+- **Export**: `GET /projects/{id}/export-template` and `GET /patterns/{id}/export-template` — reverse-maps canvas topology JSONB to simple `infra_template.yaml` format via `export_topology_to_template()`. Returns YAML with `text/yaml` content type. Includes OCP metadata, disconnected config, bastion services, and DNS records if present on the topology.
+- **Inline templates**: `resolve_inline_template()` accepts template YAML from external sources (e.g. agnosticv `#include`) without needing files on disk
+- **Round-trip**: import → edit on canvas → export produces valid template YAML that can be re-imported or used in agnosticv
+- **Frontend UI**: "Import Template YAML" button on blank canvas opens paste/upload modal. "Export Template" button in action bar (next to MegaConsole/Save as Pattern) downloads YAML file.
 
 ## Important Conventions
 
@@ -162,6 +170,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Wipe preserves cache**: never deletes `/var/lib/troshka/images/` or `/var/lib/troshka/cache/`
 - **Job cancellation**: `DELETE /jobs/{job_id}` sets `_cancelled` flag and kills active subprocess; handlers check `_cancelled` between steps
 - **Version**: `VERSION = "dev"` in source, stamped with SHA-256 content hash at push time
+- **NIC models**: `virtio`, `e1000`, `e1000e`, `igb` (Intel 82576 SR-IOV emulation), `rtl8139` — set via `model` field in topology NIC data and template YAML
+- **powerOnAtDeploy**: per-VM flag in topology — when `false`, VM is defined but not started during deploy (used for blank target VMs like SNOs that boot via BMC/ACM later)
 - Agent install restarts `virtqemud` so hook changes take effect
 
 ### Host Operations
@@ -205,6 +215,19 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Progress: byte-level download tracking with active transfer detail
 - External access toggle: `externalAccess` on gateway node — when off, no EIPs or port forwards are provisioned (gateway stays for outbound NAT)
 - Topology templates: predefined OCP templates with version dropdown, deploy time estimates, auto-sizing from install results
+
+### AgnosticD-v2 Integration
+- **Architecture**: Babylon → AAP2 → agnosticd-v2 (with `troshka` cloud provider + bastion service roles) → Troshka API
+- **Catalog items**: defined in agnosticv repo (`troshka/` directory), infrastructure topology in `infra_template.yaml` included via `#include`
+- **Config**: `env_type: troshka` — agnosticd-v2 config at `ansible/configs/troshka/`
+- **Three deploy modes** (`troshka_deploy_mode`):
+  - `template` — full build: infra + bastion services (pre_software_workloads) + OCP + workloads (software_workloads)
+  - `pattern` — deploy from saved snapshot, skip all workloads
+  - `pattern_workloads` — deploy from snapshot, skip pre-software, run software workloads on top
+- **Bastion service roles** (agnosticd-v2): `disconnected_registry`, `disconnected_mirror`, `bastion_gitea`, `bastion_minio`
+- **Ansible collection**: `agnosticd.cloud_provider_troshka` — deploy role assembles `template_yaml` from agnosticv merged vars, calls `POST /projects/from-template` then `POST /projects/{id}/deploy`
+- **agnosticv `#include`**: files inside catalog item dirs are treated as catalog items by default (causes recursion). Register non-catalog files like `infra_template.yaml` in `.agnosticv.yaml` `related_files` list to prevent this.
+- **No catalog-item-specific Python** in Troshka — all lab config comes from YAML templates. Troshka engine is generic; catalog items live in agnosticv.
 
 ### Health Poller & Storage Monitoring
 - `health_poller.py` runs periodic checks on all connected hosts
