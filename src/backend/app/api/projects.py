@@ -293,9 +293,9 @@ def create_project_from_template(
             "size_bytes": iso_item.size_bytes or 0,
         }
 
-    ssh_pub_key = ""
+    ssh_pub_key = body.get("ssh_pub_key", "")
     ssh_key_ids = []
-    ssh_keys = []
+    ssh_keys = [ssh_pub_key] if ssh_pub_key else []
     bastion_ssh_key_id = body.get("bastion_ssh_key_id")
     if bastion_ssh_key_id:
         from app.models.user import UserSshKey
