@@ -218,11 +218,12 @@ def create_project_from_template(
             status_code=404, detail=f"Template '{template_id}' not found"
         )
 
-    # RAN template defaults
-    if template_id == "ocp-ran-5g":
-        body.setdefault("cluster_name", "hub")
-        body.setdefault("base_domain", "5g-deployment.lab")
-        body.setdefault("bastion_bmc_ip", "192.168.50.50")
+    # Apply defaults from template's ocp section
+    ocp_cfg = resolved.get("ocp", {})
+    if ocp_cfg.get("cluster_name"):
+        body.setdefault("cluster_name", ocp_cfg["cluster_name"])
+    if ocp_cfg.get("base_domain"):
+        body.setdefault("base_domain", ocp_cfg["base_domain"])
 
     bastion_password = body.get("bastion_password", "")
     external_access = body.get("external_access", False)
@@ -333,6 +334,7 @@ def create_project_from_template(
             "bastion_iso": bastion_iso,
             "bastion_bmc_ip": bmc_ip_raw,
             "auto_install_ocp": body.get("auto_install_ocp", True),
+            "resolved": resolved,
         },
     )
 

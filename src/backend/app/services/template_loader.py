@@ -80,6 +80,17 @@ def resolve_template(
     if tmpl.get("vms"):
         resolved["vms"] = tmpl["vms"]
 
+    # Pass through declarative config sections
+    for section in (
+        "ocp",
+        "dns_records",
+        "disconnected",
+        "bastion_services",
+        "workload",
+    ):
+        if tmpl.get(section):
+            resolved[section] = tmpl[section]
+
     return resolved
 
 

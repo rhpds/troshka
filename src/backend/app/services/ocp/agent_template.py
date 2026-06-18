@@ -88,14 +88,26 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     auto_install_ocp = config.get("auto_install_ocp", True)
     ssh_key_ids = config.get("ssh_key_ids", [])
     ssh_keys = config.get("ssh_keys", [])
+    resolved = config.get("resolved", {})
 
-    api_vip = "10.0.0.2"
-    ingress_vip = "10.0.0.3"
+    # Derive VIPs from topology — first CP node IP is API VIP, next IP is ingress VIP
+    cluster_cidr = _find_cluster_cidr(topology)
+    net = ipaddress.ip_network(cluster_cidr, strict=False)
+    api_vip = str(net.network_address + 2)
+    ingress_vip = str(net.network_address + 3)
 
-    # Use template-specific VIPs
-    if template_id == "ocp-ran-5g":
-        api_vip = "192.168.125.10"
-        ingress_vip = "192.168.125.11"
+    # If there are CP nodes with explicit IPs, use the first CP's IP as API VIP
+    for n in topology.get("nodes", []):
+        if (
+            n.get("type") == "vmNode"
+            and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
+        ):
+            cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
+            if cp_ip:
+                api_vip = cp_ip
+                ingress_vip_num = int(ipaddress.IPv4Address(cp_ip)) + 1
+                ingress_vip = str(ipaddress.IPv4Address(ingress_vip_num))
+                break
 
     # Detect SNO by counting VMs tagged as controllers
     cp_count = sum(
@@ -104,7 +116,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         if n.get("type") == "vmNode"
         and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
     )
-    is_sno = cp_count == 1 or template_id == "ocp-sno"
+    is_sno = cp_count == 1
 
     if is_sno:
         sno_ip = _find_sno_node_ip(topology)
@@ -118,7 +130,9 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         dns_api = api_vip
         dns_ingress = ingress_vip
 
-    _setup_dns_records(topology, cluster_name, base_domain, dns_api, dns_ingress)
+    _setup_dns_records(
+        topology, cluster_name, base_domain, dns_api, dns_ingress, resolved
+    )
     _attach_bastion_image(topology, bastion_image)
     _attach_bastion_iso(topology, bastion_iso)
     _setup_bastion_cloud_init(
@@ -139,8 +153,10 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         bastion_bmc_ip,
     )
 
-    # RAN lab bastion — append RAN-specific services after standard cloud-init
-    if template_id == "ocp-ran-5g":
+    # Append bastion services cloud-init if template declares them
+    disconnected_cfg = resolved.get("disconnected", {})
+    bastion_svc_cfg = resolved.get("bastion_services", {})
+    if disconnected_cfg or bastion_svc_cfg:
         from app.services.ocp.ran_bastion import generate_bastion_cloud_init
 
         for node in topology.get("nodes", []):
@@ -152,14 +168,16 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
                     bastion_password=bastion_password,
                     student_name="lab-user",
                 )
-                # Append RAN-specific blocks after standard cloud-init
                 node["data"]["ciUserData"] = node["data"].get("ciUserData", "") + ran_ci
                 break
 
     return topology
 
 
-def _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip):
+def _setup_dns_records(
+    topology, cluster_name, base_domain, api_vip, ingress_vip, resolved=None
+):
+    resolved = resolved or {}
     for node in topology.get("nodes", []):
         if (
             node.get("type") == "networkNode"
@@ -174,8 +192,14 @@ def _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip
                 {"name": f".apps.{cluster_name}.{base_domain}", "ip": ingress_vip},
             ]
             bastion_ip = _find_bastion_ip(topology)
-            if bastion_ip:
-                records.append({"name": f"infra.{base_domain}", "ip": bastion_ip})
+            # Add extra DNS records from template (e.g. infra.domain → bastion)
+            for extra in resolved.get("dns_records", []):
+                target = extra.get("target", "")
+                ip = extra.get("ip", "")
+                if target == "bastion" and bastion_ip:
+                    ip = bastion_ip
+                if ip:
+                    records.append({"name": extra["name"], "ip": ip})
             node["data"]["dnsRecords"] = records
             break
 

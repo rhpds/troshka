@@ -1,0 +1,58 @@
+name: example
+display_name: "Example Template"
+description: "Minimal example for testing YAML-driven topology generation"
+category: example
+install_method: agent
+deploy_time: "~5 min"
+
+ocp:
+  cluster_name: test
+  base_domain: example.local
+
+dns_records:
+  - name: infra.example.local
+    target: bastion
+
+networks:
+  cluster:
+    cidr: 10.0.0.0/24
+    dhcp: true
+    domain: example.local
+  bmc:
+    cidr: 192.168.100.0/24
+    type: bmc
+
+gateway:
+  outbound_ports: [53, 80, 443, 123, icmp]
+
+vms:
+  bastion:
+    role: bastion
+    vcpus: 2
+    ram_gb: 4
+    os: rhel-10
+    firmware: uefi
+    disks:
+      - size_gb: 50
+    nics:
+      - network: cluster
+        model: virtio
+        ip: 10.0.0.50
+      - network: bmc
+        model: virtio
+
+  cp-0:
+    role: control-plane
+    vcpus: 4
+    ram_gb: 16
+    os: rhcos
+    firmware: uefi
+    bmc_ip: 192.168.100.10
+    disks:
+      - size_gb: 120
+    nics:
+      - network: cluster
+        model: virtio
+        ip: 10.0.0.10
+      - network: bmc
+        model: virtio
