@@ -205,17 +205,25 @@ def create_project_from_template(
     from app.services.template_loader import (
         generate_topology_from_template,
         resolve_template,
+        resolve_inline_template,
     )
 
+    template_yaml = body.get("template_yaml")
     template_id = body.get("template_id")
-    if not template_id:
-        raise HTTPException(status_code=400, detail="template_id is required")
 
-    try:
-        resolved = resolve_template(template_id)
-    except FileNotFoundError:
+    if template_yaml:
+        resolved = resolve_inline_template(template_yaml)
+        template_id = resolved.get("name", "inline")
+    elif template_id:
+        try:
+            resolved = resolve_template(template_id)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404, detail=f"Template '{template_id}' not found"
+            )
+    else:
         raise HTTPException(
-            status_code=404, detail=f"Template '{template_id}' not found"
+            status_code=400, detail="template_id or template_yaml is required"
         )
 
     # Apply defaults from template's ocp section

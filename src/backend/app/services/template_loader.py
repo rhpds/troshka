@@ -94,6 +94,48 @@ def resolve_template(
     return resolved
 
 
+def resolve_inline_template(template_yaml: str | dict) -> dict:
+    """Resolve a template from inline YAML content (string or dict).
+
+    Used when the template comes from an external source (e.g. agnosticv)
+    rather than from a file in the templates directory.
+    """
+    if isinstance(template_yaml, str):
+        tmpl = yaml.safe_load(template_yaml)
+    else:
+        tmpl = template_yaml
+
+    if not isinstance(tmpl, dict):
+        raise ValueError("Invalid template YAML")
+
+    resolved = {}
+    resolved["name"] = tmpl.get("name", "inline")
+    resolved["display_name"] = tmpl.get("display_name", resolved["name"])
+    resolved["description"] = tmpl.get("description", "")
+    resolved["category"] = tmpl.get("category", "")
+    resolved["install_method"] = tmpl.get("install_method", "agent")
+    resolved["deploy_time"] = tmpl.get("deploy_time", "")
+    resolved["bastion"] = tmpl.get("bastion", {})
+    resolved["networks"] = tmpl.get("networks", {})
+    resolved["gateway"] = tmpl.get("gateway", {})
+    resolved["parameters"] = tmpl.get("parameters", {})
+
+    if tmpl.get("vms"):
+        resolved["vms"] = tmpl["vms"]
+
+    for section in (
+        "ocp",
+        "dns_records",
+        "disconnected",
+        "bastion_services",
+        "workload",
+    ):
+        if tmpl.get(section):
+            resolved[section] = tmpl[section]
+
+    return resolved
+
+
 def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dict]:
     result = []
     templates_path = Path(templates_dir)
