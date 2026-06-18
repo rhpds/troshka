@@ -108,7 +108,7 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
         raise ValueError("Invalid template YAML")
 
     resolved = {}
-    resolved["name"] = tmpl.get("name", "inline")
+    resolved["name"] = tmpl.get("template_name", tmpl.get("name", "inline"))
     resolved["display_name"] = tmpl.get("display_name", resolved["name"])
     resolved["description"] = tmpl.get("description", "")
     resolved["category"] = tmpl.get("category", "")
@@ -424,10 +424,15 @@ def _generate_topology_from_vms(
         },
     }
     nodes.append(gw_node)
-    # Connect gateway to the first network
-    first_net = list(nets_def.keys())[0] if nets_def else None
-    if first_net and first_net in net_ids:
-        edges.append(_gw_net_edge(gw_node["id"], net_ids[first_net]))
+    # Connect gateway to the specified network, or first non-BMC network
+    gw_net_name = gw_def.get("network")
+    if not gw_net_name:
+        for nn, nc in nets_def.items():
+            if nc.get("type") != "bmc":
+                gw_net_name = nn
+                break
+    if gw_net_name and gw_net_name in net_ids:
+        edges.append(_gw_net_edge(gw_node["id"], net_ids[gw_net_name]))
 
     # ── VMs ──
     vm_name_to_id = {}
@@ -745,6 +750,15 @@ def export_topology_to_template(topology: dict) -> dict:
                         ports.append(p)
                 if ports:
                     gateway["outbound_ports"] = ports
+            # Find which network the gateway connects to
+            gw_id = nn["id"]
+            for e in edges:
+                if e.get("source") == gw_id and e.get("target") in net_names:
+                    gateway["network"] = net_names[e["target"]]
+                    break
+                if e.get("target") == gw_id and e.get("source") in net_names:
+                    gateway["network"] = net_names[e["source"]]
+                    break
             break
 
     # ── VMs ──

@@ -24,7 +24,7 @@ TROSHKA_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGD_DIR="$HOME/agnosticd-v2"
 COLLECTION_DIR="$HOME/troshka-ansible-collection"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
-CONFIG="${TROSHKA_CONFIG:-openshift-cluster-troshka}"
+CONFIG="${TROSHKA_CONFIG:-troshka}"
 
 # --- Helper: install collection ---
 install_collection() {
