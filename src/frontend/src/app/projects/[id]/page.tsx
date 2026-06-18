@@ -1057,16 +1057,8 @@ export default function ProjectCanvasPage() {
                       setImporting(false);
                       return;
                     }
-                    const data = await resp.json();
-                    const t = data.topology || {};
-                    useCanvasStore.setState({
-                      nodes: t.nodes || [],
-                      edges: t.edges || [],
-                      hiddenNodeIds: t.hiddenNodeIds || [],
-                      startOrder: t.startOrder || [],
-                      externalIps: t.externalIps || [],
-                    });
                     setShowImportModal(false);
+                    loadProject(projectId);
                   } catch (err: unknown) {
                     setImportError(err instanceof Error ? err.message : "Import failed");
                   } finally {
