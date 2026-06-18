@@ -1099,7 +1099,7 @@ export default function ProjectCanvasPage() {
               background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
               color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
             }}>
-              This exports the infrastructure topology (VMs, networks, disk sizes) with references to library items (disk images and ISOs). On import, referenced library items are validated to ensure they exist. Disk images and installed software are <strong>not</strong> included — to capture a fully built environment with all data, use <strong>Save as Pattern</strong> instead.
+              This exports the infrastructure topology (VMs, networks, disk sizes) with references to library items (disk images and ISOs). On import, referenced library items are validated to ensure they exist. To capture a fully built environment including disk images and installed software, use <strong>Save as Pattern</strong> instead.
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowExportModal(false)}
@@ -1122,7 +1122,8 @@ export default function ProjectCanvasPage() {
                   setShowExportModal(false);
                 }}
                 style={{
-                  padding: "8px 20px", borderRadius: 6, border: "none",
+                  padding: "8px 20px", borderRadius: 6,
+                  border: "1px solid var(--pf-t--global--border--color--default)",
                   background: "var(--pf-t--global--background--color--primary--default)",
                   color: "#fff", cursor: "pointer", fontWeight: 500,
                 }}
