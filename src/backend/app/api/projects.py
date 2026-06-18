@@ -520,7 +520,8 @@ def export_template(
     import yaml
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
-    return Response(content=yaml_str, media_type="text/yaml")
+    header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
+    return Response(content=header + yaml_str, media_type="text/yaml")
 
 
 @router.get("/{project_id}")

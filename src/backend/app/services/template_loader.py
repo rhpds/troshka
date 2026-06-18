@@ -394,8 +394,8 @@ def _generate_topology_from_vms(
             net_data["dnsUpstream"] = True
         if is_bmc:
             net_data["networkType"] = "bmc"
-            net_data["bmcUsername"] = "admin"
-            net_data["bmcPassword"] = bmc_password
+            net_data["bmcUsername"] = net_cfg.get("bmc_username", "admin")
+            net_data["bmcPassword"] = net_cfg.get("bmc_password", bmc_password)
         net_node = {
             "id": _id(),
             "type": "networkNode",
@@ -723,6 +723,10 @@ def export_topology_to_template(topology: dict) -> dict:
             net_out["dns_upstream"] = True
         if d.get("networkType") == "bmc":
             net_out["type"] = "bmc"
+            if d.get("bmcUsername"):
+                net_out["bmc_username"] = d["bmcUsername"]
+            if d.get("bmcPassword"):
+                net_out["bmc_password"] = d["bmcPassword"]
         networks[name] = net_out
 
     # ── Gateway ──

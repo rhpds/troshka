@@ -1093,6 +1093,13 @@ export default function ProjectCanvasPage() {
             }}>
               This exports the infrastructure topology (VMs, networks, disk sizes) with references to library items (disk images and ISOs). On import, referenced library items are validated to ensure they exist. To capture a fully built environment including disk images and installed software, use <strong>Save as Pattern</strong> instead.
             </div>
+            <div style={{
+              fontSize: 12, padding: "10px 16px", borderRadius: 8, marginBottom: 16,
+              background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
+              color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
+            }}>
+              Passwords (BMC, cloud-user, cloud-init) are exported in <strong>plain text</strong>. Do not share the exported file if it contains sensitive credentials.
+            </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowExportModal(false)}
                 style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
