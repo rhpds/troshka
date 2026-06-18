@@ -37,6 +37,31 @@ _active_health_monitors: set = set()
 _deploy_progress: dict[str, dict] = {}
 
 
+def validate_topology_names(topology: dict) -> list[str]:
+    """Check for duplicate node names within a topology. Returns list of errors."""
+    errors = []
+    seen: dict[str, dict[str, str]] = {"vm": {}, "network": {}, "storage": {}}
+    type_labels = {"vm": "VM", "network": "Network", "storage": "Disk"}
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        name = data.get("name") or data.get("label", "")
+        if not name:
+            continue
+        if node.get("type") == "vmNode":
+            bucket = "vm"
+        elif node.get("type") == "networkNode":
+            bucket = "network"
+        elif node.get("type") == "storageNode":
+            bucket = "storage"
+        else:
+            continue
+        if name in seen[bucket]:
+            errors.append(f"Duplicate {type_labels[bucket]} name: '{name}'")
+        else:
+            seen[bucket][name] = node["id"]
+    return errors
+
+
 def _update_deploy_progress(
     project_id: str, step: str, detail: str = "", items: list | None = None
 ):

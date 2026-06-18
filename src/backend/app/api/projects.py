@@ -354,6 +354,15 @@ def create_project_from_template(
         desc_parts.append(f"OCP {ocp_version}")
     desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
 
+    from app.services.deploy_service import validate_topology_names
+
+    name_errors = validate_topology_names(topology)
+    if name_errors:
+        raise HTTPException(
+            status_code=400,
+            detail="Template produces duplicate names: " + "; ".join(name_errors),
+        )
+
     project = Project(
         name=body.get("name", resolved.get("display_name", template_id)),
         description=" | ".join(desc_parts),
@@ -444,6 +453,15 @@ def import_template(
         topology = generate_topology_from_template(resolved)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
+
+    from app.services.deploy_service import validate_topology_names
+
+    name_errors = validate_topology_names(topology)
+    if name_errors:
+        raise HTTPException(
+            status_code=400,
+            detail="Template produces duplicate names: " + "; ".join(name_errors),
+        )
 
     project.topology = topology
     db.commit()
@@ -643,6 +661,15 @@ def deploy_project(
         )
     if not project.topology:
         raise HTTPException(status_code=400, detail="Project has no topology")
+
+    from app.services.deploy_service import validate_topology_names
+
+    name_errors = validate_topology_names(project.topology)
+    if name_errors:
+        raise HTTPException(
+            status_code=400,
+            detail="Topology has duplicate names: " + "; ".join(name_errors),
+        )
 
     reqs = calculate_project_requirements(project.topology)
     if reqs["vm_count"] == 0:

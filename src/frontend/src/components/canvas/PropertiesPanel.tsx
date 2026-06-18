@@ -9,6 +9,14 @@ import type {
   StorageNodeData,
 } from "@/stores/canvasStore";
 
+function isDuplicateName(name: string, nodeId: string, nodeType: string): boolean {
+  if (!name) return false;
+  const nodes = useCanvasStore.getState().nodes;
+  return nodes.some(
+    (n) => n.id !== nodeId && n.type === nodeType && ((n.data as Record<string, unknown>).name || (n.data as Record<string, unknown>).label) === name
+  );
+}
+
 function cidrToRange(cidr: string): [number, number] | null {
   if (!cidr) return null;
   const match = cidr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/);
@@ -227,7 +235,11 @@ export default function PropertiesPanel() {
                   className="props-input"
                   value={(data.name as string) || ""}
                   onChange={(e) => update("name", e.target.value)}
+                  style={isDuplicateName((data.name as string) || "", node.id, "vmNode") ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : undefined}
                 />
+                {isDuplicateName((data.name as string) || "", node.id, "vmNode") && (
+                  <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>Duplicate VM name</div>
+                )}
               </div>
               <div className="props-field">
                 <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1113,7 +1125,11 @@ export default function PropertiesPanel() {
                   className="props-input"
                   value={(data.name as string) || ""}
                   onChange={(e) => update("name", e.target.value)}
+                  style={isDuplicateName((data.name as string) || "", node.id, "networkNode") ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : undefined}
                 />
+                {isDuplicateName((data.name as string) || "", node.id, "networkNode") && (
+                  <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>Duplicate network name</div>
+                )}
               </div>
 
               {/* Network: CIDR + Services */}
@@ -1883,7 +1899,11 @@ export default function PropertiesPanel() {
                   className="props-input"
                   value={(data.name as string) || ""}
                   onChange={(e) => update("name", e.target.value)}
+                  style={isDuplicateName((data.name as string) || "", node.id, "storageNode") ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : undefined}
                 />
+                {isDuplicateName((data.name as string) || "", node.id, "storageNode") && (
+                  <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>Duplicate disk name</div>
+                )}
               </div>
               <div className="props-field">
                 <label className="props-label">Type</label>
