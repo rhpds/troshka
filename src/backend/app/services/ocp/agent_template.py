@@ -276,6 +276,11 @@ def _setup_bastion_cloud_init(
         ):
             continue
 
+        # When auto_install_ocp is false, agnosticd handles everything
+        # via Ansible roles — no cloud-init needed
+        if not auto_install_ocp:
+            break
+
         node["data"]["cloudInit"] = True
         node["data"]["ciPackages"] = [
             "git",

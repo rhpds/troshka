@@ -18,7 +18,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGD_DIR="$HOME/agnosticd-v2"
 AGV_DIR="$HOME/agnosticv"
-COLLECTION_DIR="$HOME/troshka-ansible-collection"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 GUID="${1:-$(head -c4 /dev/urandom | xxd -p | cut -c1-5)}"
 CI_PATH="troshka/OCP4-RAN-TK/dev.yaml"
@@ -56,18 +55,12 @@ for var in cloud_provider env_type troshka_deploy_mode vms networks; do
     fi
 done
 
-# --- Install collection ---
-echo ""
-echo "=== Installing collection ==="
-ansible-galaxy collection install "$COLLECTION_DIR" -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
-
 # --- Run ---
 echo ""
 echo "=== Running agnosticd-v2 lifecycle ==="
 echo ""
 
 cd "$AGD_DIR"
-ANSIBLE_COLLECTIONS_PATH="$HOME/.ansible/collections" \
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
