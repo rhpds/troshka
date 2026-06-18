@@ -442,6 +442,19 @@ def import_template(
             )
             if not item:
                 missing.append(f"VM '{vm_name}': PXE boot ISO '{iso_id}' not found")
+        for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
+            iso_item_id = iso_cfg.get("library_item_id")
+            if iso_item_id:
+                item = (
+                    db.query(LibraryItem)
+                    .join(Library)
+                    .filter(LibraryItem.id == iso_item_id, Library.owner_id == user.id)
+                    .first()
+                )
+                if not item:
+                    missing.append(
+                        f"VM '{vm_name}' ISO {ii}: library item '{iso_item_id}' not found"
+                    )
     if missing:
         raise HTTPException(
             status_code=400,

@@ -547,6 +547,52 @@ def _generate_topology_from_vms(
         nodes.extend(disk_nodes)
         edges.extend(disk_edges_list)
 
+        # Create ISO storage nodes from template isos field
+        isos_cfg = vm_cfg.get("isos", [])
+        cdrom_dc = next(
+            (dc for dc in disk_controllers if dc.get("name", "").startswith("cdrom")),
+            None,
+        )
+        for iso_cfg in isos_cfg:
+            if not cdrom_dc:
+                break
+            iso_id = _id()
+            iso_data = {
+                "label": iso_cfg.get("library_item_name", "iso"),
+                "name": iso_cfg.get("library_item_name", "iso"),
+                "size": 10,
+                "format": "iso",
+                "source": "library",
+                "icon": "\U0001f4bf",
+            }
+            if iso_cfg.get("library_item_id"):
+                iso_data["libraryItemId"] = iso_cfg["library_item_id"]
+            if iso_cfg.get("library_item_name"):
+                iso_data["libraryItemName"] = iso_cfg["library_item_name"]
+            iso_node = {
+                "id": iso_id,
+                "type": "storageNode",
+                "position": {"x": vm_x + 190, "y": VM_ROW_Y + 70},
+                "data": iso_data,
+            }
+            iso_edge = {
+                "id": _id(),
+                "source": iso_id,
+                "target": vm_node["id"],
+                "sourceHandle": "left",
+                "targetHandle": f"dp-{cdrom_dc['id']}-left",
+                "type": "smoothstep",
+                "style": {
+                    "stroke": "rgba(251,191,36,0.6)",
+                    "strokeWidth": 2,
+                    "strokeDasharray": "4 4",
+                },
+                "animated": False,
+                "className": "edge-storage-pulse",
+            }
+            nodes.append(iso_node)
+            edges.append(iso_edge)
+
         # Connect NICs to networks
         for ni, nic_cfg in enumerate(nics_cfg):
             net_name = nic_cfg.get("network", "")
@@ -695,6 +741,29 @@ def export_topology_to_template(topology: dict) -> dict:
                 if not dc.get("name", "").startswith("cdrom"):
                     disks.append({"size_gb": 50})
         vm_out["disks"] = disks
+
+        # ISOs — find cdrom-attached storage nodes
+        isos = []
+        for dc in disk_controllers:
+            if not dc.get("name", "").startswith("cdrom"):
+                continue
+            for sid in storage_ids:
+                sn = storage_nodes.get(sid)
+                if not sn:
+                    continue
+                for e in vm_edges:
+                    if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+                        sd = sn.get("data", {})
+                        if sd.get("format") == "iso" and sd.get("libraryItemId"):
+                            isos.append(
+                                {
+                                    "library_item_id": sd["libraryItemId"],
+                                    "library_item_name": sd.get("libraryItemName", ""),
+                                }
+                            )
+                        break
+        if isos:
+            vm_out["isos"] = isos
 
         if d.get("pxeBootIsoId"):
             vm_out["pxe_boot_iso_id"] = d["pxeBootIsoId"]
