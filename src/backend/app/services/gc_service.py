@@ -57,20 +57,31 @@ def discover_orphans(db: Session, host) -> dict:
         }
 
     # Build list of known project IDs and domains for GC
+    # Include ALL projects in the same pool (shared storage is visible to all hosts)
     active_project_ids = []
     known_domains = []
     skip_states = {"deploying", "reconfiguring"}
 
-    for p in db.query(Project).filter(Project.host_id == host.id).all():
+    from app.models.host import Host as HostModel
+
+    pool_host_ids = [host.id]
+    if host.storage_pool_id:
+        pool_host_ids = [
+            h.id
+            for h in db.query(HostModel)
+            .filter(HostModel.storage_pool_id == host.storage_pool_id)
+            .all()
+        ]
+
+    for p in db.query(Project).filter(Project.host_id.in_(pool_host_ids)).all():
         if p.state in skip_states or p.state in ("active", "stopped"):
             active_project_ids.append(p.id)
-            # Add domain name patterns for this project
             pid_short = p.id[:8]
             known_domains.append(f"troshka-{pid_short}")
 
     # Build list of project IDs that should have BMC
     bmc_project_ids = set()
-    for p in db.query(Project).filter(Project.host_id == host.id).all():
+    for p in db.query(Project).filter(Project.host_id.in_(pool_host_ids)).all():
         if p.state in ("active", "stopped"):
             topo = p.deployed_topology or p.topology or {}
             for node in topo.get("nodes", []):
