@@ -1295,6 +1295,62 @@ def get_vm_console(
     return {"ws_url": f"wss://{host.console_domain}/ws/{jwt}"}
 
 
+@router.get("/{project_id}/vms/{vm_id}/ready")
+def vm_ready(
+    project_id: str,
+    vm_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Check if a VM is SSH-reachable via the exec API."""
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped", "deploying"):
+        return {"ready": False, "reason": f"project is {project.state}"}
+    if not host:
+        return {"ready": False, "reason": "no host assigned"}
+
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    if not vm_node:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    vm_ip = ""
+    for nic in vm_node.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            vm_ip = nic["ip"]
+            break
+
+    password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
+    if not vm_ip:
+        return {"ready": False, "reason": "no IP"}
+    if not password:
+        return {"ready": False, "reason": "no password"}
+
+    try:
+        job_id = start_job(
+            host,
+            "/vm/ssh-exec",
+            {
+                "project_id": project_id,
+                "vm_ip": vm_ip,
+                "username": "cloud-user",
+                "password": password,
+                "command": "echo ok",
+                "timeout": 5,
+            },
+        )
+        job = wait_for_job(host, job_id, timeout=15)
+        if job["status"] == "completed":
+            output = job.get("result", {}).get("output", "")
+            return {"ready": "ok" in output, "vm_id": vm_id}
+    except TroshkadError as e:
+        return {"ready": False, "reason": str(e)}
+
+    return {"ready": False, "reason": "exec failed"}
+
+
 @router.post("/{project_id}/vms/{vm_id}/exec")
 def vm_exec(
     project_id: str,
