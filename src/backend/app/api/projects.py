@@ -366,6 +366,46 @@ def create_project_from_template(
     return {"id": project.id, "name": project.name}
 
 
+@router.get("/{project_id}/export-template")
+def export_template(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.template_loader import export_topology_to_template
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    topo = project.topology or {}
+    result = export_topology_to_template(topo)
+    result["name"] = project.name
+    if project.description:
+        result["description"] = project.description
+
+    # Include OCP metadata if present
+    ocp_meta = topo.get("ocpMeta", {})
+    if ocp_meta.get("clusterName"):
+        result["ocp"] = {
+            "cluster_name": ocp_meta["clusterName"],
+            "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
+        }
+
+    # Include declarative sections stored on the topology
+    for key in ("disconnected", "bastion_services", "dns_records"):
+        if topo.get(key):
+            result[key] = topo[key]
+
+    from fastapi.responses import Response
+    import yaml
+
+    yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
+    return Response(content=yaml_str, media_type="text/yaml")
+
+
 @router.get("/{project_id}")
 def get_project(
     project_id: str,

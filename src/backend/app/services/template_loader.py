@@ -551,6 +551,154 @@ def _generate_topology_from_vms(
     return {"nodes": nodes, "edges": edges, "externalIps": external_ips}
 
 
+def export_topology_to_template(topology: dict) -> dict:
+    """Reverse-map a canvas topology JSONB to a simple infra_template YAML dict."""
+    nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+
+    # Index network nodes by id
+    net_nodes = {n["id"]: n for n in nodes if n.get("type") == "networkNode"}
+    vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
+
+    # Build edge lookup: target node id -> list of source node ids
+    edge_by_target = {}
+    for e in edges:
+        edge_by_target.setdefault(e["target"], []).append(e)
+
+    # Map network node IDs to friendly names
+    net_names = {}
+    for nid, nn in net_nodes.items():
+        d = nn.get("data", {})
+        if d.get("subtype") == "gateway":
+            continue
+        net_names[nid] = d.get("name", d.get("label", nid[:8]))
+
+    # Build NIC -> network mapping from edges
+    nic_to_net = {}
+    for e in edges:
+        src = e.get("source", "")
+        tgt_handle = e.get("targetHandle", "")
+        if src in net_names and tgt_handle.startswith("nic-"):
+            nic_id = tgt_handle.split("-")[1]
+            nic_to_net[nic_id] = net_names[src]
+
+    # ── Networks ──
+    networks = {}
+    for nid, nn in net_nodes.items():
+        d = nn.get("data", {})
+        if d.get("subtype") == "gateway":
+            continue
+        name = net_names[nid]
+        net_out = {}
+        if d.get("cidr"):
+            net_out["cidr"] = d["cidr"]
+        if d.get("dhcp"):
+            net_out["dhcp"] = True
+        if d.get("domain"):
+            net_out["domain"] = d["domain"]
+        if d.get("networkType") == "bmc":
+            net_out["type"] = "bmc"
+        networks[name] = net_out
+
+    # ── Gateway ──
+    gateway = {}
+    for nn in net_nodes.values():
+        d = nn.get("data", {})
+        if d.get("subtype") == "gateway":
+            ports_str = d.get("outboundPorts", "")
+            if ports_str and d.get("outboundPolicy") == "restrict":
+                ports = []
+                for p in ports_str.split(","):
+                    p = p.strip()
+                    if p.isdigit():
+                        ports.append(int(p))
+                    elif p:
+                        ports.append(p)
+                if ports:
+                    gateway["outbound_ports"] = ports
+            break
+
+    # ── VMs ──
+    vms = {}
+    for vm in vm_nodes:
+        d = vm.get("data", {})
+        name = d.get("name", d.get("label", vm["id"][:8]))
+
+        vm_out = {}
+
+        # Role from tags
+        tags = d.get("tags", {})
+        ag = tags.get("AnsibleGroup", "")
+        if "bastions" in ag:
+            vm_out["role"] = "bastion"
+        elif "controllers" in ag:
+            vm_out["role"] = "control-plane"
+        elif d.get("os") == "blank":
+            vm_out["role"] = "blank"
+
+        vm_out["vcpus"] = d.get("vcpus", 2)
+        vm_out["ram_gb"] = d.get("ram", 4)
+        vm_out["os"] = d.get("os", "rhcos")
+        vm_out["firmware"] = d.get("firmware", "uefi")
+
+        if not d.get("powerOnAtDeploy", True):
+            vm_out["power_on"] = False
+        if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
+            vm_out["bmc"] = True
+        if d.get("bmcIp"):
+            vm_out["bmc_ip"] = d["bmcIp"]
+
+        # Disks — find storage nodes connected to this VM
+        disk_controllers = d.get("diskControllers", [])
+        disks = []
+        vm_edges = edge_by_target.get(vm["id"], [])
+        storage_ids = [
+            e["source"] for e in vm_edges if e.get("targetHandle", "").startswith("dp-")
+        ]
+        storage_nodes = {n["id"]: n for n in nodes if n.get("type") == "storageNode"}
+        # Maintain controller order
+        for dc in disk_controllers:
+            if dc.get("name", "").startswith("cdrom"):
+                continue
+            for sid in storage_ids:
+                sn = storage_nodes.get(sid)
+                if not sn:
+                    continue
+                # Match by edge targetHandle containing controller id
+                for e in vm_edges:
+                    if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+                        size = sn.get("data", {}).get("size", 50)
+                        disks.append({"size_gb": size})
+                        break
+        if not disks:
+            for dc in disk_controllers:
+                if not dc.get("name", "").startswith("cdrom"):
+                    disks.append({"size_gb": 50})
+        vm_out["disks"] = disks
+
+        # NICs
+        nics_out = []
+        for nic in d.get("nics", []):
+            nic_out = {}
+            net_name = nic_to_net.get(nic["id"], "")
+            if net_name:
+                nic_out["network"] = net_name
+            model = nic.get("model", "virtio")
+            nic_out["model"] = model
+            if nic.get("ip"):
+                nic_out["ip"] = nic["ip"]
+            nics_out.append(nic_out)
+        vm_out["nics"] = nics_out
+
+        vms[name] = vm_out
+
+    result = {"networks": networks}
+    if gateway:
+        result["gateway"] = gateway
+    result["vms"] = vms
+    return result
+
+
 def generate_topology_from_template(
     resolved: dict,
     bmc_password: str = "password",

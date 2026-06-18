@@ -363,6 +363,55 @@ def get_pattern(
     return _pattern_to_detail_dict(pattern)
 
 
+@router.get("/{pattern_id}/export-template")
+def export_pattern_template(
+    pattern_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services.template_loader import export_topology_to_template
+
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
+        if not shared:
+            raise HTTPException(status_code=404, detail="Pattern not found")
+
+    topo = pattern.topology or {}
+    result = export_topology_to_template(topo)
+    result["name"] = pattern.name
+    if pattern.description:
+        result["description"] = pattern.description
+
+    ocp_meta = topo.get("ocpMeta", {})
+    if ocp_meta.get("clusterName"):
+        result["ocp"] = {
+            "cluster_name": ocp_meta["clusterName"],
+            "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
+        }
+
+    for key in ("disconnected", "bastion_services", "dns_records"):
+        if topo.get(key):
+            result[key] = topo[key]
+
+    from fastapi.responses import Response
+    import yaml
+
+    yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
+    return Response(content=yaml_str, media_type="text/yaml")
+
+
 @router.patch("/{pattern_id}")
 def update_pattern(
     pattern_id: str,
