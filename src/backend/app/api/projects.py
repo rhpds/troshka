@@ -404,8 +404,8 @@ def import_template(
             status_code=400, detail="Template must contain a 'networks' section"
         )
 
-    # Validate library item references exist
-    from app.models.library import LibraryItem
+    # Validate library item references exist and belong to this user
+    from app.models.library import Library, LibraryItem
 
     missing = []
     vms_def = template_yaml.get("vms", {})
@@ -413,14 +413,24 @@ def import_template(
         for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
             item_id = disk_cfg.get("library_item_id")
             if item_id:
-                item = db.query(LibraryItem).filter_by(id=item_id).first()
+                item = (
+                    db.query(LibraryItem)
+                    .join(Library)
+                    .filter(LibraryItem.id == item_id, Library.owner_id == user.id)
+                    .first()
+                )
                 if not item:
                     missing.append(
                         f"VM '{vm_name}' disk {di}: library item '{item_id}' not found"
                     )
         iso_id = vm_cfg.get("pxe_boot_iso_id")
         if iso_id:
-            item = db.query(LibraryItem).filter_by(id=iso_id).first()
+            item = (
+                db.query(LibraryItem)
+                .join(Library)
+                .filter(LibraryItem.id == iso_id, Library.owner_id == user.id)
+                .first()
+            )
             if not item:
                 missing.append(f"VM '{vm_name}': PXE boot ISO '{iso_id}' not found")
     if missing:

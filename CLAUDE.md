@@ -113,7 +113,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Export**: `GET /projects/{id}/export-template` and `GET /patterns/{id}/export-template` — reverse-maps canvas topology JSONB to simple `infra_template.yaml` format via `export_topology_to_template()`. Returns YAML with `text/yaml` content type. Includes OCP metadata, disconnected config, bastion services, and DNS records if present on the topology.
 - **Inline templates**: `resolve_inline_template()` accepts template YAML from external sources (e.g. agnosticv `#include`) without needing files on disk
 - **Round-trip**: import → edit on canvas → export produces valid template YAML that can be re-imported or used in agnosticv
-- **Frontend UI**: "Import Template YAML" button on blank canvas opens paste/upload modal. "Export Template" button in action bar (next to MegaConsole/Save as Pattern) downloads YAML file.
+- **Library item references**: disks can include `library_item_id` / `library_item_name` to reference a library image; VMs can include `pxe_boot_iso_id` / `pxe_boot_iso_name` for PXE boot ISOs. Import validates all referenced items exist in the DB. Blank disks (no `library_item_id`) create empty qcow2 at the specified `size_gb`.
+- **Frontend UI**: "Import Template YAML" button on blank canvas opens paste/upload modal. "Export Template" button in action bar (next to MegaConsole/Save as Pattern) opens confirmation modal noting only infra topology is exported (not disk images — use Save as Pattern for that).
 
 ## Important Conventions
 
