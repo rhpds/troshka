@@ -154,21 +154,16 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     )
 
     # Append bastion services cloud-init if template declares them
-    disconnected_cfg = resolved.get("disconnected", {})
-    bastion_svc_cfg = resolved.get("bastion_services", {})
-    if disconnected_cfg or bastion_svc_cfg:
-        from app.services.ocp.ran_bastion import generate_bastion_cloud_init
+    if resolved.get("disconnected") or resolved.get("bastion_services"):
+        from app.services.ocp.bastion_services import generate_cloud_init
 
         for node in topology.get("nodes", []):
             if (
                 node.get("type") == "vmNode"
                 and node.get("data", {}).get("name") == "bastion"
             ):
-                ran_ci = generate_bastion_cloud_init(
-                    bastion_password=bastion_password,
-                    student_name="lab-user",
-                )
-                node["data"]["ciUserData"] = node["data"].get("ciUserData", "") + ran_ci
+                svc_ci = generate_cloud_init(resolved, bastion_password)
+                node["data"]["ciUserData"] = node["data"].get("ciUserData", "") + svc_ci
                 break
 
     return topology
