@@ -726,17 +726,22 @@ export default function PropertiesPanel() {
                     borderColor: (() => {
                       const val = ((data as Record<string, any>).ciUserData as string || "").trim();
                       if (!val) return undefined;
-                      const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
-                      const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
-                      return hasValidStructure ? undefined : "var(--troshka-red)";
+                      try {
+                        const jsYaml = require("js-yaml");
+                        const parsed = jsYaml.load(val);
+                        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? undefined : "var(--troshka-red)";
+                      } catch { return "var(--troshka-red)"; }
                     })(),
                   }} value={(data as Record<string, any>).ciUserData as string || ""} onChange={(e) => update("ciUserData", e.target.value)} placeholder="#cloud-config&#10;packages:&#10;  - vim" />
                   {(() => {
                     const val = ((data as Record<string, any>).ciUserData as string || "").trim();
                     if (!val) return null;
-                    const lines = val.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
-                    const hasValidStructure = lines.every((l) => /^\s*[-\w]/.test(l));
-                    return hasValidStructure ? null : (
+                    try {
+                      const jsYaml = require("js-yaml");
+                      const parsed = jsYaml.load(val);
+                      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return null;
+                    } catch { /* fall through */ }
+                    return (
                       <span style={{ fontSize: 10, color: "var(--troshka-red)" }}>Invalid YAML — must be cloud-config key-value pairs</span>
                     );
                   })()}
