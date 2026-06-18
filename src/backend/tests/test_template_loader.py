@@ -243,3 +243,50 @@ def test_dns_records_from_template():
     assert "api.test.example.local" in dns_names
     assert ".apps.test.example.local" in dns_names
     assert "infra.example.local" in dns_names
+
+
+def test_export_import_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "round-trip-test",
+        "networks": {
+            "mgmt": {"cidr": "10.0.0.0/24", "dhcp": True},
+        },
+        "gateway": {"outbound_ports": [53, 80, 443]},
+        "vms": {
+            "server": {
+                "role": "bastion",
+                "vcpus": 4,
+                "ram_gb": 8,
+                "os": "rhel-10",
+                "firmware": "uefi",
+                "disks": [{"size_gb": 100}],
+                "nics": [{"network": "mgmt", "model": "virtio", "ip": "10.0.0.10"}],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Verify edges exist in generated topology
+    net_edges = [e for e in topo["edges"] if "nic-" in e.get("targetHandle", "")]
+    assert len(net_edges) > 0, "Generated topology should have network edges"
+
+    # Export back to template YAML
+    exported = export_topology_to_template(topo)
+    assert "mgmt" in exported["networks"]
+    assert "server" in exported["vms"]
+    server = exported["vms"]["server"]
+    assert server["nics"][0]["network"] == "mgmt"
+    assert server["nics"][0]["ip"] == "10.0.0.10"
+
+    # Re-import the exported template
+    resolved2 = resolve_inline_template(exported)
+    topo2 = generate_topology_from_template(resolved2)
+    net_edges2 = [e for e in topo2["edges"] if "nic-" in e.get("targetHandle", "")]
+    assert len(net_edges2) > 0, "Re-imported topology must have network edges"

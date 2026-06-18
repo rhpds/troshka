@@ -583,12 +583,18 @@ def export_topology_to_template(topology: dict) -> dict:
         net_names[nid] = d.get("name", d.get("label", nid[:8]))
 
     # Build NIC -> network mapping from edges
+    # targetHandle format: "nic-{nic_id}-{top|bottom}" where nic_id itself is "nic-{uuid}"
     nic_to_net = {}
     for e in edges:
         src = e.get("source", "")
         tgt_handle = e.get("targetHandle", "")
         if src in net_names and tgt_handle.startswith("nic-"):
-            nic_id = tgt_handle.split("-")[1]
+            # Strip "nic-" prefix and "-top"/"-bottom" suffix to get the nic ID
+            nic_id = tgt_handle.removeprefix("nic-")
+            for suffix in ("-top", "-bottom"):
+                if nic_id.endswith(suffix):
+                    nic_id = nic_id.removesuffix(suffix)
+                    break
             nic_to_net[nic_id] = net_names[src]
 
     # ── Networks ──
