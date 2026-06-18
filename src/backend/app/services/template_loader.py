@@ -127,6 +127,8 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
         "dns_records",
         "disconnected",
         "bastion_services",
+        "start_order",
+        "hidden_nodes",
     ):
         if tmpl.get(section):
             resolved[section] = tmpl[section]
@@ -383,6 +385,13 @@ def _generate_topology_from_vms(
             "dhcp": net_cfg.get("dhcp", False),
             "icon": "\U0001f310",
         }
+        if net_cfg.get("domain"):
+            net_data["dns"] = True
+            net_data["dnsDomain"] = net_cfg["domain"]
+        if net_cfg.get("dns_records"):
+            net_data["dnsRecords"] = net_cfg["dns_records"]
+        if net_cfg.get("dns_upstream"):
+            net_data["dnsUpstream"] = True
         if is_bmc:
             net_data["networkType"] = "bmc"
             net_data["bmcUsername"] = "admin"
@@ -421,6 +430,7 @@ def _generate_topology_from_vms(
         edges.append(_gw_net_edge(gw_node["id"], net_ids[first_net]))
 
     # ── VMs ──
+    vm_name_to_id = {}
     vm_x = 150
     vm_index = 0
     for vm_name, vm_cfg in vms_def.items():
@@ -474,6 +484,7 @@ def _generate_topology_from_vms(
             }
             if disk_cfg.get("library_item_id"):
                 disk_data["libraryItemId"] = disk_cfg["library_item_id"]
+                disk_data["source"] = "library"
             if disk_cfg.get("library_item_name"):
                 disk_data["libraryItemName"] = disk_cfg["library_item_name"]
             disk_node = {
@@ -516,7 +527,7 @@ def _generate_topology_from_vms(
             "diskControllers": disk_controllers,
             "bmcEnabled": has_bmc,
             "firmware": vm_cfg.get("firmware", "uefi"),
-            "secureBoot": False,
+            "secureBoot": vm_cfg.get("secure_boot", False),
             "bootDevices": boot_device_ids,
             "bootMethod": "disk",
             "powerOnAtDeploy": power_on,
@@ -527,10 +538,26 @@ def _generate_topology_from_vms(
             vm_data["pxeBootIsoId"] = vm_cfg["pxe_boot_iso_id"]
         if vm_cfg.get("pxe_boot_iso_name"):
             vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
-        if role == "control-plane":
+
+        # Tags: use explicit tags if provided, otherwise derive from role
+        if vm_cfg.get("tags"):
+            vm_data["tags"] = vm_cfg["tags"]
+        elif role == "control-plane":
             vm_data["tags"] = {"AnsibleGroup": "controllers"}
         elif role == "bastion":
             vm_data["tags"] = {"AnsibleGroup": "bastions,showroom"}
+
+        # Cloud-init
+        if vm_cfg.get("cloud_init"):
+            vm_data["cloudInit"] = True
+        if vm_cfg.get("cloud_user_password"):
+            vm_data["ciCloudUserPassword"] = vm_cfg["cloud_user_password"]
+        if vm_cfg.get("user_data"):
+            vm_data["ciUserData"] = vm_cfg["user_data"]
+        if vm_cfg.get("packages"):
+            vm_data["ciPackages"] = vm_cfg["packages"]
+        if vm_cfg.get("network_config"):
+            vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
 
         vm_node = {
             "id": _id(),
@@ -557,9 +584,10 @@ def _generate_topology_from_vms(
             if not cdrom_dc:
                 break
             iso_id = _id()
+            iso_node_name = iso_cfg.get("name", f"{vm_name}-iso")
             iso_data = {
-                "label": iso_cfg.get("library_item_name", "iso"),
-                "name": iso_cfg.get("library_item_name", "iso"),
+                "label": iso_node_name,
+                "name": iso_node_name,
                 "size": 10,
                 "format": "iso",
                 "source": "library",
@@ -603,10 +631,39 @@ def _generate_topology_from_vms(
                 handle = "top" if ni == 0 else "bottom"
                 edges.append(_net_edge(net_ids[net_name], vm_node, ni, handle))
 
+        vm_name_to_id[vm_name] = vm_node["id"]
         vm_x += VM_SPACING
         vm_index += 1
 
-    return {"nodes": nodes, "edges": edges, "externalIps": external_ips}
+    # Build startOrder from template
+    start_order = []
+    for entry in tmpl.get("start_order", []):
+        vm_id = vm_name_to_id.get(entry.get("vm", ""), "")
+        if not vm_id:
+            continue
+        so = {"vmId": vm_id, "autoStart": entry.get("auto_start", True)}
+        wait_name = entry.get("wait_for", "")
+        if wait_name and wait_name in vm_name_to_id:
+            so["waitForVm"] = vm_name_to_id[wait_name]
+        if entry.get("delay"):
+            so["delay"] = entry["delay"]
+        start_order.append(so)
+
+    # Build hiddenNodeIds from template
+    hidden_ids = []
+    all_name_to_id = {**vm_name_to_id, **net_ids}
+    for name in tmpl.get("hidden_nodes", []):
+        nid = all_name_to_id.get(name)
+        if nid:
+            hidden_ids.append(nid)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "externalIps": external_ips,
+        "startOrder": start_order,
+        "hiddenNodeIds": hidden_ids,
+    }
 
 
 def export_topology_to_template(topology: dict) -> dict:
@@ -658,8 +715,12 @@ def export_topology_to_template(topology: dict) -> dict:
             net_out["cidr"] = d["cidr"]
         if d.get("dhcp"):
             net_out["dhcp"] = True
-        if d.get("domain"):
-            net_out["domain"] = d["domain"]
+        if d.get("dnsDomain"):
+            net_out["domain"] = d["dnsDomain"]
+        if d.get("dnsRecords"):
+            net_out["dns_records"] = d["dnsRecords"]
+        if d.get("dnsUpstream"):
+            net_out["dns_upstream"] = True
         if d.get("networkType") == "bmc":
             net_out["type"] = "bmc"
         networks[name] = net_out
@@ -705,12 +766,33 @@ def export_topology_to_template(topology: dict) -> dict:
         vm_out["os"] = d.get("os", "rhcos")
         vm_out["firmware"] = d.get("firmware", "uefi")
 
+        if d.get("secureBoot"):
+            vm_out["secure_boot"] = True
         if not d.get("powerOnAtDeploy", True):
             vm_out["power_on"] = False
         if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
             vm_out["bmc"] = True
         if d.get("bmcIp"):
             vm_out["bmc_ip"] = d["bmcIp"]
+
+        if (
+            tags
+            and tags != {"AnsibleGroup": "controllers"}
+            and tags != {"AnsibleGroup": "bastions,showroom"}
+        ):
+            vm_out["tags"] = tags
+
+        # Cloud-init
+        if d.get("cloudInit"):
+            vm_out["cloud_init"] = True
+        if d.get("ciCloudUserPassword"):
+            vm_out["cloud_user_password"] = d["ciCloudUserPassword"]
+        if d.get("ciUserData"):
+            vm_out["user_data"] = d["ciUserData"]
+        if d.get("ciPackages"):
+            vm_out["packages"] = d["ciPackages"]
+        if d.get("ciNetworkConfig"):
+            vm_out["network_config"] = d["ciNetworkConfig"]
 
         # Disks — find storage nodes connected to this VM
         disk_controllers = d.get("diskControllers", [])
@@ -760,6 +842,7 @@ def export_topology_to_template(topology: dict) -> dict:
                         if sd.get("format") == "iso" and sd.get("libraryItemId"):
                             isos.append(
                                 {
+                                    "name": sd.get("name", "iso"),
                                     "library_item_id": sd["libraryItemId"],
                                     "library_item_name": sd.get("libraryItemName", ""),
                                 }
@@ -793,6 +876,31 @@ def export_topology_to_template(topology: dict) -> dict:
     if gateway:
         result["gateway"] = gateway
     result["vms"] = vms
+
+    # Map node IDs to names for start_order and hidden_nodes
+    id_to_name = {}
+    for n in nodes:
+        d = n.get("data", {})
+        id_to_name[n["id"]] = d.get("name", d.get("label", n["id"][:8]))
+
+    start_order = topology.get("startOrder", [])
+    if start_order:
+        so_out = []
+        for entry in start_order:
+            so_entry = {"vm": id_to_name.get(entry.get("vmId", ""), "")}
+            if entry.get("waitForVm"):
+                so_entry["wait_for"] = id_to_name.get(entry["waitForVm"], "")
+            if "autoStart" in entry:
+                so_entry["auto_start"] = entry["autoStart"]
+            if entry.get("delay"):
+                so_entry["delay"] = entry["delay"]
+            so_out.append(so_entry)
+        result["start_order"] = so_out
+
+    hidden = topology.get("hiddenNodeIds", [])
+    if hidden:
+        result["hidden_nodes"] = [id_to_name.get(h, h) for h in hidden]
+
     return result
 
 
