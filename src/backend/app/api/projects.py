@@ -1386,9 +1386,11 @@ def vm_exec(
         password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
     timeout = min(body.get("timeout", 10), 3600)
-    use_ssh = body.get("use_ssh", False)
+    method = body.get("method", "auto")  # auto, ssh, serial
+    # backward compat
+    if body.get("use_ssh"):
+        method = "ssh"
 
-    # Try SSH first — faster and more reliable
     vm_ip = ""
     if vm_node:
         for nic in vm_node.get("data", {}).get("nics", []):
@@ -1398,7 +1400,8 @@ def vm_exec(
 
     private_key = body.get("private_key", "")
 
-    if vm_ip and (password or private_key):
+    # SSH exec
+    if method in ("auto", "ssh") and vm_ip and (password or private_key):
         try:
             job_id = start_job(
                 host,
@@ -1421,19 +1424,19 @@ def vm_exec(
                     "error": result.get("error", ""),
                     "exit_code": result.get("exit_code", 0),
                 }
-        except TroshkadError:
-            if use_ssh:
-                raise HTTPException(
-                    status_code=503, detail="SSH exec failed and use_ssh=true"
-                )
-
-    if use_ssh:
+        except TroshkadError as e:
+            if method == "ssh":
+                raise HTTPException(status_code=503, detail=f"SSH exec failed: {e}")
+    elif method == "ssh":
         raise HTTPException(
             status_code=503,
-            detail="SSH exec unavailable (no IP or password) and use_ssh=true",
+            detail="SSH exec unavailable — need VM IP and password or private_key",
         )
 
-    # Fallback to serial console
+    if method == "ssh":
+        raise HTTPException(status_code=503, detail="SSH exec failed")
+
+    # Serial console fallback (method=auto or method=serial)
     dom = _domain_name(project_id, vm_id)
     try:
         job_id = start_job(
