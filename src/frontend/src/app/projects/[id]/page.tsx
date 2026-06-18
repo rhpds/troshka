@@ -29,6 +29,8 @@ export default function ProjectCanvasPage() {
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPasswordMode, setExportPasswordMode] = useState<"current" | "custom" | "none">("current");
+  const [exportCustomPassword, setExportCustomPassword] = useState("");
   const [importYaml, setImportYaml] = useState("");
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -1093,12 +1095,40 @@ export default function ProjectCanvasPage() {
             }}>
               This exports the infrastructure topology (VMs, networks, disk sizes) with references to library items (disk images and ISOs). On import, referenced library items are validated to ensure they exist. To capture a fully built environment including disk images and installed software, use <strong>Save as Pattern</strong> instead.
             </div>
-            <div style={{
-              fontSize: 12, padding: "10px 16px", borderRadius: 8, marginBottom: 16,
-              background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
-              color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
-            }}>
-              Passwords (BMC, cloud-user, cloud-init) are exported in <strong>plain text</strong>. Do not share the exported file if it contains sensitive credentials.
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Passwords</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "current"} onChange={() => setExportPasswordMode("current")} />
+                  Include current passwords (plain text)
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "custom"} onChange={() => setExportPasswordMode("custom")} />
+                  Set a single password for all
+                </label>
+                {exportPasswordMode === "custom" && (
+                  <input
+                    className="props-input"
+                    value={exportCustomPassword}
+                    onChange={(e) => setExportCustomPassword(e.target.value)}
+                    placeholder="Enter password"
+                    style={{ marginLeft: 24, width: 200, fontSize: 13 }}
+                  />
+                )}
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="radio" name="exportPw" checked={exportPasswordMode === "none"} onChange={() => setExportPasswordMode("none")} />
+                  Omit all passwords
+                </label>
+              </div>
+              {exportPasswordMode === "current" && (
+                <div style={{
+                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
+                  background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)",
+                  color: "var(--pf-t--global--text--color--subtle)",
+                }}>
+                  Passwords will be stored in plain text. Do not share the file if it contains sensitive credentials.
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowExportModal(false)}
@@ -1107,8 +1137,14 @@ export default function ProjectCanvasPage() {
                 Cancel
               </button>
               <button
+                disabled={exportPasswordMode === "custom" && !exportCustomPassword}
                 onClick={async () => {
-                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template`);
+                  const params = new URLSearchParams();
+                  if (exportPasswordMode === "none") params.set("password_mode", "none");
+                  else if (exportPasswordMode === "custom") params.set("password_mode", "custom");
+                  if (exportPasswordMode === "custom" && exportCustomPassword) params.set("custom_password", exportCustomPassword);
+                  const qs = params.toString() ? `?${params.toString()}` : "";
+                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template${qs}`);
                   if (!resp.ok) return;
                   const yaml = await resp.text();
                   const blob = new Blob([yaml], { type: "text/yaml" });

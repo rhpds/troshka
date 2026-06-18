@@ -483,9 +483,34 @@ def import_template(
     return {"topology": topology}
 
 
+_PASSWORD_FIELDS = {
+    "vm": ["cloud_user_password"],
+    "network": ["bmc_password"],
+}
+
+
+def _apply_password_mode(result: dict, mode: str, custom: str = ""):
+    if mode == "current":
+        return
+    for net_cfg in result.get("networks", {}).values():
+        if mode == "none":
+            net_cfg.pop("bmc_password", None)
+        elif mode == "custom" and custom:
+            if "bmc_password" in net_cfg:
+                net_cfg["bmc_password"] = custom
+    for vm_cfg in result.get("vms", {}).values():
+        if mode == "none":
+            vm_cfg.pop("cloud_user_password", None)
+        elif mode == "custom" and custom:
+            if "cloud_user_password" in vm_cfg:
+                vm_cfg["cloud_user_password"] = custom
+
+
 @router.get("/{project_id}/export-template")
 def export_template(
     project_id: str,
+    password_mode: str = "current",
+    custom_password: str = "",  # pragma: allowlist secret
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -503,7 +528,6 @@ def export_template(
     if project.description:
         result["description"] = project.description
 
-    # Include OCP metadata if present
     ocp_meta = topo.get("ocpMeta", {})
     if ocp_meta.get("clusterName"):
         result["ocp"] = {
@@ -511,16 +535,21 @@ def export_template(
             "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
         }
 
-    # Include declarative sections stored on the topology
     for key in ("disconnected", "bastion_services", "dns_records"):
         if topo.get(key):
             result[key] = topo[key]
+
+    # Apply password mode
+    _apply_password_mode(result, password_mode, custom_password)
 
     from fastapi.responses import Response
     import yaml
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
-    header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
+    if password_mode == "none":  # pragma: allowlist secret
+        header = "# Troshka infra_template export\n# Passwords omitted — set them before deploying.\n\n"
+    else:
+        header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
     return Response(content=header + yaml_str, media_type="text/yaml")
 
 
