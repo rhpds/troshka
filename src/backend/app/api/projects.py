@@ -506,11 +506,10 @@ def _apply_password_mode(result: dict, mode: str, custom: str = ""):
                 vm_cfg["cloud_user_password"] = custom
 
 
-@router.get("/{project_id}/export-template")
+@router.post("/{project_id}/export-template")
 def export_template(
     project_id: str,
-    password_mode: str = "current",
-    custom_password: str = "",  # pragma: allowlist secret
+    body: dict | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -540,13 +539,16 @@ def export_template(
             result[key] = topo[key]
 
     # Apply password mode
-    _apply_password_mode(result, password_mode, custom_password)
+    body = body or {}
+    pw_mode = body.get("password_mode", "current")
+    pw_custom = body.get("custom_password", "")  # pragma: allowlist secret
+    _apply_password_mode(result, pw_mode, pw_custom)
 
     from fastapi.responses import Response
     import yaml
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
-    if password_mode == "none":  # pragma: allowlist secret
+    if pw_mode == "none":
         header = "# Troshka infra_template export\n# Passwords omitted — set them before deploying.\n\n"
     else:
         header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"

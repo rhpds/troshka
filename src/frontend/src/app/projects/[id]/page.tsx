@@ -1139,12 +1139,13 @@ export default function ProjectCanvasPage() {
               <button
                 disabled={exportPasswordMode === "custom" && !exportCustomPassword}
                 onClick={async () => {
-                  const params = new URLSearchParams();
-                  if (exportPasswordMode === "none") params.set("password_mode", "none");
-                  else if (exportPasswordMode === "custom") params.set("password_mode", "custom");
-                  if (exportPasswordMode === "custom" && exportCustomPassword) params.set("custom_password", exportCustomPassword);
-                  const qs = params.toString() ? `?${params.toString()}` : "";
-                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template${qs}`);
+                  const exportBody: Record<string, string> = { password_mode: exportPasswordMode };
+                  if (exportPasswordMode === "custom" && exportCustomPassword) exportBody.custom_password = exportCustomPassword;
+                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(exportBody),
+                  });
                   if (!resp.ok) return;
                   const yaml = await resp.text();
                   const blob = new Blob([yaml], { type: "text/yaml" });
