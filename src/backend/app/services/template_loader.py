@@ -572,14 +572,17 @@ def _generate_topology_from_vms(
             iso_node = {
                 "id": iso_id,
                 "type": "storageNode",
-                "position": {"x": vm_x + 190, "y": VM_ROW_Y + 70},
+                "position": {
+                    "x": vm_x - 190,
+                    "y": VM_ROW_Y + 70 + len(disks_cfg) * 100,
+                },
                 "data": iso_data,
             }
             iso_edge = {
                 "id": _id(),
                 "source": iso_id,
                 "target": vm_node["id"],
-                "sourceHandle": "left",
+                "sourceHandle": "right",
                 "targetHandle": f"dp-{cdrom_dc['id']}-left",
                 "type": "smoothstep",
                 "style": {

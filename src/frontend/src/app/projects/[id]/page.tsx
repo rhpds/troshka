@@ -1066,7 +1066,7 @@ export default function ProjectCanvasPage() {
                   }
                 }}
                 style={{
-                  padding: "8px 20px", borderRadius: 6, border: "none",
+                  padding: "8px 20px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
                   background: importing ? "var(--pf-t--global--background--color--disabled--default)" : "var(--pf-t--global--background--color--primary--default)",
                   color: "#fff", cursor: importing ? "not-allowed" : "pointer", fontWeight: 500,
                 }}
