@@ -53,24 +53,17 @@ def _find_cluster_cidr(topology):
 
 
 def _find_sno_node_ip(topology):
-    """Find the SNO node's cluster IP from the topology.
-
-    Matches 'sno' in the name, or the first cp-* node if it's the only one
-    (YAML templates name SNO nodes 'cp-0' not 'sno-0').
-    """
-    cp_nodes = []
+    """Find the SNO node's cluster IP — the single controller VM."""
     for node in topology.get("nodes", []):
         if node.get("type") != "vmNode":
             continue
-        name = node.get("data", {}).get("name", "")
+        tags = node.get("data", {}).get("tags", {})
+        if tags.get("AnsibleGroup") != "controllers":
+            continue
         nics = node.get("data", {}).get("nics", [])
         ip = nics[0].get("ip") if nics else None
-        if "sno" in name and ip:
+        if ip:
             return ip
-        if (name.startswith("cp-") or name.startswith("hub-cp-")) and ip:
-            cp_nodes.append(ip)
-    if len(cp_nodes) == 1:
-        return cp_nodes[0]
     return None
 
 
@@ -95,45 +88,36 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     ssh_keys = config.get("ssh_keys", [])
     resolved = config.get("resolved", {})
 
-    # Derive VIPs from topology — first CP node IP is API VIP, next IP is ingress VIP
-    cluster_cidr = _find_cluster_cidr(topology)
-    net = ipaddress.ip_network(cluster_cidr, strict=False)
-    api_vip = str(net.network_address + 2)
-    ingress_vip = str(net.network_address + 3)
+    # Read VIPs from template ocp section if available, otherwise derive from topology
+    ocp_cfg = resolved.get("ocp", {})
+    api_vip = ocp_cfg.get("api_vip", "")
+    ingress_vip = ocp_cfg.get("ingress_vip", "")
 
-    # If there are CP nodes with explicit IPs, use the first CP's IP as API VIP
-    for n in topology.get("nodes", []):
-        if (
-            n.get("type") == "vmNode"
-            and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
-        ):
-            cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
-            if cp_ip:
-                api_vip = cp_ip
-                ingress_vip_num = int(ipaddress.IPv4Address(cp_ip)) + 1
-                ingress_vip = str(ipaddress.IPv4Address(ingress_vip_num))
-                break
+    if not api_vip or not ingress_vip:
+        cluster_cidr = _find_cluster_cidr(topology)
+        net = ipaddress.ip_network(cluster_cidr, strict=False)
+        if not api_vip:
+            api_vip = str(net.network_address + 2)
+        if not ingress_vip:
+            ingress_vip = str(net.network_address + 3)
+        for n in topology.get("nodes", []):
+            if (
+                n.get("type") == "vmNode"
+                and n.get("data", {}).get("tags", {}).get("AnsibleGroup")
+                == "controllers"
+            ):
+                cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
+                if cp_ip:
+                    if not ocp_cfg.get("api_vip"):
+                        api_vip = cp_ip
+                    if not ocp_cfg.get("ingress_vip"):
+                        ingress_vip = str(
+                            ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1)
+                        )
+                    break
 
-    # Detect SNO by counting VMs tagged as controllers
-    cp_count = sum(
-        1
-        for n in topology.get("nodes", [])
-        if n.get("type") == "vmNode"
-        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
-    )
-    is_sno = cp_count == 1
-
-    if is_sno:
-        sno_ip = _find_sno_node_ip(topology)
-        if sno_ip:
-            dns_api = sno_ip
-            dns_ingress = sno_ip
-        else:
-            dns_api = api_vip
-            dns_ingress = ingress_vip
-    else:
-        dns_api = api_vip
-        dns_ingress = ingress_vip
+    dns_api = api_vip
+    dns_ingress = ingress_vip
 
     _setup_dns_records(
         topology, cluster_name, base_domain, dns_api, dns_ingress, resolved
