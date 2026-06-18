@@ -277,12 +277,13 @@ def _setup_bastion_cloud_init(
             continue
 
         # When auto_install_ocp is false, agnosticd handles everything
-        # via Ansible roles — only set the password so exec/SSH works
+        # via Ansible roles — only inject SSH keys so exec API can connect
         if not auto_install_ocp:
             node["data"]["cloudInit"] = True
-            cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
-            if cloud_user_pw:
-                node["data"]["ciCloudUserPassword"] = cloud_user_pw
+            if ssh_key_ids:
+                node["data"]["ciSshKeyIds"] = ssh_key_ids
+            if ssh_keys:
+                node["data"]["ciSshKeys"] = ssh_keys
             break
 
         node["data"]["cloudInit"] = True
