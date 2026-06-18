@@ -20,6 +20,21 @@ _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 
 
+def _find_bastion_ip(topology):
+    """Find the bastion's cluster network IP."""
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if data.get("name") == "bastion" or "bastions" in data.get("tags", {}).get(
+            "AnsibleGroup", ""
+        ):
+            nics = data.get("nics", [])
+            if nics and nics[0].get("ip"):
+                return nics[0]["ip"]
+    return None
+
+
 def _find_cluster_cidr(topology):
     """Find the cluster network CIDR from topology."""
     default = "10.0.0.0/24"
@@ -82,16 +97,12 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         api_vip = "192.168.125.10"
         ingress_vip = "192.168.125.11"
 
-    # Detect SNO by counting CP nodes instead of only checking template_id
+    # Detect SNO by counting VMs tagged as controllers
     cp_count = sum(
         1
         for n in topology.get("nodes", [])
         if n.get("type") == "vmNode"
-        and (
-            n.get("data", {}).get("name", "").startswith("cp-")
-            or n.get("data", {}).get("name", "").startswith("hub-cp-")
-            or "sno" in n.get("data", {}).get("name", "")
-        )
+        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
     )
     is_sno = cp_count == 1 or template_id == "ocp-sno"
 
@@ -157,11 +168,15 @@ def _setup_dns_records(topology, cluster_name, base_domain, api_vip, ingress_vip
         ):
             node["data"]["dns"] = True
             node["data"]["dnsDomain"] = base_domain
-            node["data"]["dnsRecords"] = [
+            records = [
                 {"name": f"api.{cluster_name}.{base_domain}", "ip": api_vip},
                 {"name": f"api-int.{cluster_name}.{base_domain}", "ip": api_vip},
                 {"name": f".apps.{cluster_name}.{base_domain}", "ip": ingress_vip},
             ]
+            bastion_ip = _find_bastion_ip(topology)
+            if bastion_ip:
+                records.append({"name": f"infra.{base_domain}", "ip": bastion_ip})
+            node["data"]["dnsRecords"] = records
             break
 
 
@@ -442,6 +457,16 @@ def _setup_bastion_cloud_init(
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/mutter/dynamic-workspaces false\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/num-workspaces 1\n"
             "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/button-layout \"'appmenu:minimize,maximize,close'\"\n"
+            "    # Ptyxis terminal: Hurtado palette (dark theme with readable Ansible output)\n"
+            "    if rpm -q ptyxis >/dev/null 2>&1; then\n"
+            '      PROFILE_UUID=$(sudo -u cloud-user dbus-run-session dconf read /org/gnome/Ptyxis/default-profile-uuid 2>/dev/null | tr -d "\'")\n'
+            '      if [ -z "$PROFILE_UUID" ]; then\n'
+            "        PROFILE_UUID=$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)\n"
+            "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/default-profile-uuid \"'$PROFILE_UUID'\"\n"
+            "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/profile-uuids \"['$PROFILE_UUID']\"\n"
+            "      fi\n"
+            "      sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/Profiles/$PROFILE_UUID/palette \"'Hurtado'\"\n"
+            "    fi\n"
             "    MONITORS_XML='<monitors version=\"2\"><configuration><logicalmonitor><x>0</x><y>0</y><scale>1</scale><primary>yes</primary><monitor><monitorspec><connector>Virtual-1</connector><vendor>unknown</vendor><product>unknown</product><serial>unknown</serial></monitorspec><mode><width>1920</width><height>1080</height><rate>60</rate></mode></monitor></logicalmonitor></configuration></monitors>'\n"
             "    for u in root cloud-user; do\n"
             "      d=$(eval echo ~$u)\n"
