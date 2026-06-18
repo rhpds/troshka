@@ -465,17 +465,22 @@ def _generate_topology_from_vms(
             disk_id = _id()
             if di == 0:
                 boot_device_ids.append(disk_id)
+            disk_data = {
+                "label": f"{vm_name}-disk{di}",
+                "name": f"{vm_name}-disk{di}",
+                "size": disk_cfg.get("size_gb", 50),
+                "format": "qcow2",
+                "icon": "\U0001f6e2",
+            }
+            if disk_cfg.get("library_item_id"):
+                disk_data["libraryItemId"] = disk_cfg["library_item_id"]
+            if disk_cfg.get("library_item_name"):
+                disk_data["libraryItemName"] = disk_cfg["library_item_name"]
             disk_node = {
                 "id": disk_id,
                 "type": "storageNode",
                 "position": {"x": vm_x - 190, "y": VM_ROW_Y + 70 + di * 100},
-                "data": {
-                    "label": f"{vm_name}-disk{di}",
-                    "name": f"{vm_name}-disk{di}",
-                    "size": disk_cfg.get("size_gb", 50),
-                    "format": "qcow2",
-                    "icon": "\U0001f6e2",
-                },
+                "data": disk_data,
             }
             disk_edge = {
                 "id": _id(),
@@ -518,6 +523,10 @@ def _generate_topology_from_vms(
         }
         if bmc_ip:
             vm_data["bmcIp"] = bmc_ip
+        if vm_cfg.get("pxe_boot_iso_id"):
+            vm_data["pxeBootIsoId"] = vm_cfg["pxe_boot_iso_id"]
+        if vm_cfg.get("pxe_boot_iso_name"):
+            vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
         if role == "control-plane":
             vm_data["tags"] = {"AnsibleGroup": "controllers"}
         elif role == "bastion":
@@ -667,14 +676,24 @@ def export_topology_to_template(topology: dict) -> dict:
                 # Match by edge targetHandle containing controller id
                 for e in vm_edges:
                     if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
-                        size = sn.get("data", {}).get("size", 50)
-                        disks.append({"size_gb": size})
+                        sd = sn.get("data", {})
+                        disk_out = {"size_gb": sd.get("size", 50)}
+                        if sd.get("libraryItemId"):
+                            disk_out["library_item_id"] = sd["libraryItemId"]
+                        if sd.get("libraryItemName"):
+                            disk_out["library_item_name"] = sd["libraryItemName"]
+                        disks.append(disk_out)
                         break
         if not disks:
             for dc in disk_controllers:
                 if not dc.get("name", "").startswith("cdrom"):
                     disks.append({"size_gb": 50})
         vm_out["disks"] = disks
+
+        if d.get("pxeBootIsoId"):
+            vm_out["pxe_boot_iso_id"] = d["pxeBootIsoId"]
+        if d.get("pxeBootIsoName"):
+            vm_out["pxe_boot_iso_name"] = d["pxeBootIsoName"]
 
         # NICs
         nics_out = []

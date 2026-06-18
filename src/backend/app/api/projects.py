@@ -404,6 +404,31 @@ def import_template(
             status_code=400, detail="Template must contain a 'networks' section"
         )
 
+    # Validate library item references exist
+    from app.models.library import LibraryItem
+
+    missing = []
+    vms_def = template_yaml.get("vms", {})
+    for vm_name, vm_cfg in vms_def.items():
+        for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
+            item_id = disk_cfg.get("library_item_id")
+            if item_id:
+                item = db.query(LibraryItem).filter_by(id=item_id).first()
+                if not item:
+                    missing.append(
+                        f"VM '{vm_name}' disk {di}: library item '{item_id}' not found"
+                    )
+        iso_id = vm_cfg.get("pxe_boot_iso_id")
+        if iso_id:
+            item = db.query(LibraryItem).filter_by(id=iso_id).first()
+            if not item:
+                missing.append(f"VM '{vm_name}': PXE boot ISO '{iso_id}' not found")
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Library items not found:\n" + "\n".join(missing),
+        )
+
     try:
         resolved = resolve_inline_template(template_yaml)
         topology = generate_topology_from_template(resolved)

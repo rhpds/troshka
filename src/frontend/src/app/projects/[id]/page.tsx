@@ -28,6 +28,7 @@ export default function ProjectCanvasPage() {
   const [showPatternModal, setShowPatternModal] = useState(false);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [importYaml, setImportYaml] = useState("");
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -582,18 +583,7 @@ export default function ProjectCanvasPage() {
             <button
               className="project-publish-btn"
               style={{ opacity: 0.85 }}
-              onClick={async () => {
-                const resp = await fetch(`/api/v1/projects/${projectId}/export-template`);
-                if (!resp.ok) return;
-                const yaml = await resp.text();
-                const blob = new Blob([yaml], { type: "text/yaml" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `${projectName || "project"}-template.yaml`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
+              onClick={() => setShowExportModal(true)}
             >
               Export Template
             </button>
@@ -1090,6 +1080,54 @@ export default function ProjectCanvasPage() {
                 }}
               >
                 {importing ? "Importing..." : "Import"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showExportModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex",
+          alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowExportModal(false); }}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 480, maxWidth: "90vw",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 12 }}>Export Template</div>
+            <div style={{
+              fontSize: 13, padding: "12px 16px", borderRadius: 8, marginBottom: 16,
+              background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+              color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
+            }}>
+              This only exports the infrastructure topology (VMs, networks, disks sizes) — not any disk images or installed software. To capture a fully built environment with all data, use <strong>Save as Pattern</strong> instead.
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowExportModal(false)}
+                style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
+                  background: "transparent", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const resp = await fetch(`/api/v1/projects/${projectId}/export-template`);
+                  if (!resp.ok) return;
+                  const yaml = await resp.text();
+                  const blob = new Blob([yaml], { type: "text/yaml" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${projectName || "project"}-template.yaml`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setShowExportModal(false);
+                }}
+                style={{
+                  padding: "8px 20px", borderRadius: 6, border: "none",
+                  background: "var(--pf-t--global--background--color--primary--default)",
+                  color: "#fff", cursor: "pointer", fontWeight: 500,
+                }}
+              >
+                Download YAML
               </button>
             </div>
           </div>
