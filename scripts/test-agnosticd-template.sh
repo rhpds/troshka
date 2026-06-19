@@ -20,6 +20,8 @@ AGD_DIR="$HOME/agnosticd-v2"
 AGV_DIR="$HOME/agnosticv"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 GUID="${1:-$(head -c4 /dev/urandom | xxd -p | cut -c1-5)}"
+shift 2>/dev/null || true
+EXTRA_ARGS="$*"
 CI_PATH="troshka/OCP4-RAN-TK/dev.yaml"
 
 echo "=== Troshka Template Deploy Test ==="
@@ -79,7 +81,7 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
     -e output_dir=/tmp/agnosticd-output \
-    -v
+    -v $EXTRA_ARGS
 
 STATUS=$?
 
