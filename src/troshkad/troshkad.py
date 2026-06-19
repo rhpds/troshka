@@ -6472,11 +6472,13 @@ def _handle_vm_ssh_exec(job, params):
     ns = f"troshka-{project_id[:8]}" if project_id else ""
     ns_prefix = ["ip", "netns", "exec", ns] if ns else []
 
+    import tempfile as _tf
+
     key_file = None
     ssh_cmd = ns_prefix[:]
     try:
         if private_key:
-            key_file = tempfile.NamedTemporaryFile(
+            key_file = _tf.NamedTemporaryFile(
                 mode="w", suffix=".pem", delete=False
             )
             key_file.write(private_key)
