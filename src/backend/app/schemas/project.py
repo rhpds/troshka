@@ -24,6 +24,7 @@ class ProjectUpdate(BaseModel):
     state: str | None = None
     topology: dict | None = None
     tags: dict | None = None
+    guid: str | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -51,6 +52,7 @@ class ProjectResponse(BaseModel):
     deployed_topology: dict | None = None
     deploy_error: str | None = None
     tags: dict | None = None
+    guid: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
