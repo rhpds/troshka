@@ -30,6 +30,7 @@ interface Project {
   host_type: string;
   poweroff_mode: string;
   tags: Record<string, any> | null;
+  guid: string | null;
   created_at: string;
   host_instance_id: string | null;
   host_ip: string | null;
@@ -912,6 +913,11 @@ export default function ProjectsPage() {
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <strong>{p.name}</strong>
+                    {p.guid && (
+                      <span style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", fontFamily: "monospace" }}>
+                        {p.guid}
+                      </span>
+                    )}
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 4,
                       background: `${stateColors[p.state] || "#94a3b8"}22`,

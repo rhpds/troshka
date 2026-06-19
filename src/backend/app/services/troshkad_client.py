@@ -340,6 +340,9 @@ def cancel_job(host, job_id):
 def wait_for_job(host, job_id, timeout=600, poll_interval=5):
     """Poll until job completes or fails. Returns final job state.
 
+    Uses fast initial polling (0.1s, 0.3s, 0.5s, 1s) then falls back
+    to poll_interval for long-running jobs.
+
     Raises:
         TroshkadError: If timeout reached or connection lost
     """
@@ -348,6 +351,8 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
 
     consecutive_failures = 0
     max_consecutive_failures = 12
+    poll_count = 0
+    fast_delays = [0.1, 0.3, 0.5, 1.0]
 
     while time.time() < deadline:
         try:
@@ -389,7 +394,11 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
         if job["status"] in ("completed", "failed"):
             return job
 
-        time.sleep(poll_interval)
+        delay = (
+            fast_delays[poll_count] if poll_count < len(fast_delays) else poll_interval
+        )
+        poll_count += 1
+        time.sleep(delay)
 
     raise TroshkadError(f"Job {job_id} timed out after {timeout}s on {host.ip_address}")
 
