@@ -227,7 +227,6 @@ def _poll_hosts():
                         )
                 else:
                     hosts_failed += 1
-                    _skip_until[host.id] = time.time() + 60
                     if host.agent_status == "connected" and host.last_health_at:
                         elapsed = (now_dt - host.last_health_at).total_seconds()
                         if elapsed > _DISCONNECT_AFTER_SECONDS:
@@ -238,6 +237,16 @@ def _poll_hosts():
                                 host.id[:8],
                                 int(elapsed),
                             )
+                        else:
+                            _skip_until[host.id] = time.time() + 60
+                    elif host.agent_status == "disconnected":
+                        prev = _skip_until.get(host.id, 0)
+                        elapsed_since_skip = max(now - prev, 0)
+                        backoff = min(elapsed_since_skip * 2, 1800)
+                        backoff = max(backoff, 300)
+                        _skip_until[host.id] = time.time() + backoff
+                    else:
+                        _skip_until[host.id] = time.time() + 60
             except Exception:
                 hosts_failed += 1
                 logger.debug(

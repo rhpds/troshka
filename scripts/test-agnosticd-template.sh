@@ -21,7 +21,7 @@ AGV_DIR="$HOME/agnosticv"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
 GUID="${1:-$(head -c4 /dev/urandom | xxd -p | cut -c1-5)}"
 shift 2>/dev/null || true
-EXTRA_ARGS="$*"
+EXTRA_ARGS=("$@")
 CI_PATH="troshka/OCP4-RAN-TK/dev.yaml"
 
 echo "=== Troshka Template Deploy Test ==="
@@ -38,6 +38,26 @@ else
     exit 1
 fi
 echo "  API key:    ${API_KEY:0:15}..."
+
+# --- Pull secret ---
+PULL_SECRET_FILE="$HOME/secrets/ocp4-pull-secret.json"
+if [[ -f "$PULL_SECRET_FILE" ]]; then
+    echo "  Pull secret: $PULL_SECRET_FILE"
+else
+    echo "  WARNING: $PULL_SECRET_FILE not found — disconnected mirror will fail"
+    echo "  Get yours from https://console.redhat.com/openshift/install/pull-secret"
+    PULL_SECRET_FILE=""
+fi
+
+if [[ -n "$PULL_SECRET_FILE" ]]; then
+    python3 -c "
+import json, yaml, os
+ps = open('$PULL_SECRET_FILE').read().strip()
+fd = os.open('/tmp/troshka-pull-secret-vars.yaml', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, 'w') as f:
+    yaml.dump({'ocp4_pull_secret': ps, 'pull_secret': ps}, f)
+"
+fi
 
 # --- Merge agnosticv CI ---
 echo ""
@@ -81,7 +101,8 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
     -e output_dir=/tmp/agnosticd-output \
-    -v $EXTRA_ARGS
+    ${PULL_SECRET_FILE:+-e @/tmp/troshka-pull-secret-vars.yaml} \
+    -v "${EXTRA_ARGS[@]}"
 
 STATUS=$?
 

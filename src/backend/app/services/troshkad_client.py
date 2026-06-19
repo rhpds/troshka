@@ -67,12 +67,28 @@ def _get_pool(host):
     return pool
 
 
-def troshkad_request(host, method, path, body=None, timeout=DEFAULT_TIMEOUT, retries=3):
+def troshkad_request(
+    host,
+    method,
+    path,
+    body=None,
+    timeout=DEFAULT_TIMEOUT,
+    retries=3,
+    allow_disconnected=False,
+):
     """Make an HTTPS request to a host's troshkad agent with automatic retry.
 
     Retries on connection errors and 503s. Non-retryable errors (auth, 4xx) fail immediately.
     Uses urllib3 connection pooling for better performance and reliability.
+
+    If the host is marked disconnected, fails immediately (circuit breaker)
+    unless allow_disconnected=True (used by health poller to probe for reconnection).
     """
+    if not allow_disconnected and getattr(host, "agent_status", None) == "disconnected":
+        raise TroshkadError(
+            f"Host {host.ip_address} is disconnected — skipping request"
+        )
+
     pool = _get_pool(host)  # Get or create pool (validates fingerprint exists)
     last_error = None
 
@@ -408,9 +424,12 @@ def check_health(host):
 
     Uses retries=1 (no retry) since the health poller calls this every 30s —
     retrying here just multiplies the load on unreachable hosts.
+    Passes allow_disconnected=True so the health poller can probe for reconnection.
     """
     try:
-        return troshkad_request(host, "GET", "/health", timeout=10, retries=1)
+        return troshkad_request(
+            host, "GET", "/health", timeout=10, retries=1, allow_disconnected=True
+        )
     except TroshkadError:
         return None
 

@@ -26,6 +26,7 @@ import socketserver
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    request_queue_size = 16
 
 
 VERSION = "dev"  # stamped by backend at push time; self-hashes if unstamped
@@ -400,7 +401,12 @@ def _match_route(method, path):
 class TroshkadHandler(BaseHTTPRequestHandler):
     """HTTPS request handler with auth and JSON routing."""
 
-    timeout = 60
+    timeout = 30
+    protocol_version = "HTTP/1.1"
+
+    def end_headers(self):
+        self.send_header("Connection", "close")
+        super().end_headers()
 
     def log_message(self, format, *args):
         logger.info("%s %s", self.client_address[0], format % args)
@@ -5601,10 +5607,31 @@ _REQUIRED_SERVICES = [
 ]
 
 
+_watchdog_http_failures = 0
+
+
 def _watchdog_loop():
     """Periodically check dnsmasq instances + system services, restart if dead."""
+    global _watchdog_http_failures
     time.sleep(10)
     while True:
+        # Self-health check: verify our HTTP server is responsive
+        try:
+            import socket as _sock
+
+            s = _sock.create_connection(("127.0.0.1", _config["port"]), timeout=5)
+            s.close()
+            _watchdog_http_failures = 0
+        except Exception:
+            _watchdog_http_failures += 1
+            logger.warning(
+                "watchdog: HTTP server self-check failed (%d/3)",
+                _watchdog_http_failures,
+            )
+            if _watchdog_http_failures >= 3:
+                logger.error("watchdog: HTTP server unresponsive, forcing restart")
+                os._exit(1)
+
         try:
             _check_and_restart_dnsmasq()
         except Exception as e:
@@ -5844,6 +5871,10 @@ def _handle_bmc_setup(job, params):
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        subprocess.run(
+            ["nmcli", "dev", "set", bridge, "managed", "no"],
+            capture_output=True, timeout=5,
+        )
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
     _job_log(job, f"BMC bridge {bridge} created in namespace {ns}")
@@ -5867,6 +5898,47 @@ def _handle_bmc_setup(job, params):
             ],
             timeout=10,
         )
+
+    # 2b. Start dnsmasq for DHCP on BMC bridge (static reservations)
+    dhcp_hosts = params.get("dhcp_hosts", [])
+    if dhcp_hosts:
+        net_base = bmc_cidr.rsplit(".", 1)[0]
+        dnsmasq_conf = f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf"
+        dnsmasq_pid_file = f"/run/troshka-dnsmasq-bmc-{pid}.pid"
+        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases"
+        conf_lines = [
+            f"interface={bridge}",
+            "bind-dynamic",
+            "except-interface=lo",
+            "no-resolv",
+            "no-hosts",
+            f"pid-file={dnsmasq_pid_file}",
+            f"dhcp-leasefile={dnsmasq_lease}",
+            f"dhcp-range={net_base}.100,{net_base}.199,24h",
+        ]
+        for dh in dhcp_hosts:
+            safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
+            hostname_part = f",{safe_name}" if safe_name else ""
+            conf_lines.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
+        with open(dnsmasq_conf, "w") as f:
+            f.write("\n".join(conf_lines) + "\n")
+
+        # Kill existing dnsmasq for this BMC network
+        if os.path.exists(dnsmasq_pid_file):
+            try:
+                with open(dnsmasq_pid_file) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+
+        subprocess.Popen(
+            ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _job_log(job, f"BMC dnsmasq started with {len(dhcp_hosts)} DHCP reservations")
 
     # 3. Create htpasswd file for sushy basic auth (bcrypt format required by sushy-tools)
     htpasswd_path = os.path.join(bmc_dir, "htpasswd")
@@ -6121,6 +6193,10 @@ def _handle_bmc_create_bridge(job, params):
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
+        subprocess.run(
+            ["nmcli", "dev", "set", bridge, "managed", "no"],
+            capture_output=True, timeout=5,
+        )
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
     # Assign BMC IPs to the bridge
@@ -6198,6 +6274,27 @@ def _handle_bmc_teardown(job, params):
         _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
     except RuntimeError:
         pass
+
+    # Kill BMC dnsmasq
+    dnsmasq_pid_file = f"/run/troshka-dnsmasq-bmc-{pid}.pid"
+    if os.path.exists(dnsmasq_pid_file):
+        try:
+            with open(dnsmasq_pid_file) as f:
+                p = int(f.read().strip())
+            os.kill(p, signal.SIGTERM)
+            killed += 1
+            _job_log(job, f"Killed BMC dnsmasq PID {p}")
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+    for f_path in [
+        f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf",
+        dnsmasq_pid_file,
+        f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases",
+    ]:
+        try:
+            os.remove(f_path)
+        except FileNotFoundError:
+            pass
 
     # Destroy libvirt storage pool for virtual media
     pool_name = f"troshka-vmedia-{pid}"

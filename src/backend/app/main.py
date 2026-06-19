@@ -236,6 +236,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
     from app.services.agent_deployer import (
         deploy_agent,
         get_provider_data_disk,
+        get_provider_ssh_port,
         get_provider_ssh_user,
         wait_for_ssh,
     )
@@ -250,15 +251,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
         provider = pool.provider
         ssh_user = get_provider_ssh_user(provider.type)
         ssh_host = host.ip_address
-        ssh_port = 22
-
-        if provider.type == "ocpvirt":
-            from app.services.providers.ocpvirt import OcpVirtDriver
-
-            svc = OcpVirtDriver()._get_ssh_service(provider, host.instance_id)
-            if svc:
-                ssh_host = svc.get("host", ssh_host)
-                ssh_port = svc.get("port", 22)
+        ssh_port = get_provider_ssh_port(provider.type)
 
         if not wait_for_ssh(
             ssh_host, host.private_key, port=ssh_port, ssh_user=ssh_user, timeout=120

@@ -225,10 +225,11 @@ def _provision_pattern_buffer(pool_id: str):
         host.ip_address = result["public_ip"]
         db.commit()
         logger.info(
-            "Pattern buffer %s ready for pool %s (using private IP %s)",
+            "Pattern buffer %s ready for pool %s (public %s, private %s)",
             host_id[:8],
             pool_id[:8],
             host.ip_address,
+            host.private_ip,
         )
 
     except Exception as e:

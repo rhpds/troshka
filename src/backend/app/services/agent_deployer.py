@@ -23,6 +23,15 @@ def get_provider_ssh_user(provider_type: str) -> str:
     raise ValueError(f"Unknown provider type: {provider_type}")
 
 
+def get_provider_ssh_port(provider_type: str) -> int:
+    """Return the SSH port for a given provider type."""
+    if provider_type == "ocpvirt":
+        from app.services.providers.ocpvirt import SSH_LB_PORT
+
+        return SSH_LB_PORT
+    return 22
+
+
 def get_provider_data_disk(provider_type: str) -> str:
     """Return the data disk device path for a given provider type."""
     if provider_type in ("ec2", "ocpvirt"):

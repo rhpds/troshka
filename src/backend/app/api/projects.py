@@ -1010,6 +1010,17 @@ def get_all_vm_states(
 
     states = {}
     progress = {}
+
+    if host.agent_status != "connected":
+        for node in (project.topology or {}).get("nodes", []):
+            if node.get("type") == "vmNode":
+                states[node["id"]] = "unknown"
+        return {"states": states, "progress": progress}
+
+    from app.services.troshkad_client import get_all_vm_states as troshkad_batch_states
+
+    batch = troshkad_batch_states(host) or {}
+
     for node in (project.topology or {}).get("nodes", []):
         if node.get("type") != "vmNode":
             continue
@@ -1018,15 +1029,15 @@ def get_all_vm_states(
             states[node["id"]] = "redeploying"
             progress[node["id"]] = _redeploy_progress[dom_name]
         else:
-            state = troshkad_get_vm_state(host, dom_name)["state"]
-            if state == "not_found":
-                states[node["id"]] = "not_found"
-            elif state == "running":
+            raw = batch.get(dom_name, "unknown")
+            if raw == "not_found" or raw == "unknown":
+                states[node["id"]] = raw
+            elif raw == "running":
                 states[node["id"]] = "running"
-            elif state == "shut_off":
+            elif raw == "shut_off":
                 states[node["id"]] = "stopped"
             else:
-                states[node["id"]] = state
+                states[node["id"]] = raw
     return {"states": states, "progress": progress}
 
 
@@ -1385,7 +1396,7 @@ def vm_exec(
     if not password and vm_node:
         password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
-    timeout = min(body.get("timeout", 10), 3600)
+    timeout = min(body.get("timeout", 600), 3600)
     method = body.get("method", "auto")  # auto, ssh, serial
     # backward compat
     if body.get("use_ssh"):

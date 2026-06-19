@@ -11,6 +11,8 @@ from app.services.providers.base import ProviderDriver
 
 logger = logging.getLogger(__name__)
 
+SSH_LB_PORT = 22000
+
 CLOUD_INIT_TEMPLATE = """#cloud-config
 user: cloud-user
 ssh_authorized_keys:
@@ -360,7 +362,7 @@ class OCPVirtDriver(ProviderDriver):
                 selector={"kubevirt.io/domain": hostname},
                 ports=[
                     client.V1ServicePort(
-                        name="ssh", port=22000, target_port=22, protocol="TCP"
+                        name="ssh", port=SSH_LB_PORT, target_port=22, protocol="TCP"
                     ),
                     client.V1ServicePort(
                         name="agent", port=31337, target_port=31337, protocol="TCP"
@@ -425,7 +427,7 @@ class OCPVirtDriver(ProviderDriver):
             "storage_size_gb": storage_size_gb,
             "max_eips": 100,
             "_ssh_host": external_ip,
-            "_ssh_port": 22000,
+            "_ssh_port": SSH_LB_PORT,
         }
 
     def terminate_host(self, provider, instance_id):

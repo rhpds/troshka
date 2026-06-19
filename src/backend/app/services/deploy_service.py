@@ -426,9 +426,40 @@ def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:
     if not bmc_vms:
         return None
 
+    # Collect DHCP hosts — VMs with a static IP on their BMC NIC
+    dhcp_hosts = []
+    bmc_net_id = bmc_network["id"]
+    edges = topology.get("edges", [])
+    nodes = topology.get("nodes", [])
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        for edge in edges:
+            vm_id = node["id"]
+            if edge.get("source") == vm_id:
+                handle = edge.get("sourceHandle", "")
+                net_id = edge.get("target")
+            elif edge.get("target") == vm_id:
+                handle = edge.get("targetHandle", "")
+                net_id = edge.get("source")
+            else:
+                continue
+            if net_id != bmc_net_id or not handle.startswith("nic-"):
+                continue
+            for nic in node.get("data", {}).get("nics", []):
+                if nic["id"] in handle and nic.get("ip") and nic.get("mac"):
+                    dhcp_hosts.append(
+                        {
+                            "mac": nic["mac"],
+                            "ip": nic["ip"],
+                            "name": node["data"].get("name", ""),
+                        }
+                    )
+
     return {
         "bmc_network": bmc_network["data"],
         "vms": bmc_vms,
+        "dhcp_hosts": dhcp_hosts,
     }
 
 
@@ -448,6 +479,7 @@ def _setup_bmc_via_troshkad(host, project_id: str, bmc_config: dict):
             {"domain_name": vm["domain_name"], "bmc_ip": vm["bmc_ip"]}
             for vm in bmc_config["vms"]
         ],
+        "dhcp_hosts": bmc_config.get("dhcp_hosts", []),
     }
     job_id = start_job(host, "/bmc/setup", params)
     job = wait_for_job(host, job_id, timeout=120)
