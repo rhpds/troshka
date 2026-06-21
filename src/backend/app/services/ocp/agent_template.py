@@ -236,6 +236,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     ssh_key_ids = config.get("ssh_key_ids", [])
     ssh_keys = config.get("ssh_keys", [])
     resolved = config.get("resolved", {})
+    pull_through_registry = resolved.get("pull_through_registry")
 
     # Read VIPs from template ocp section if available, otherwise derive from topology
     ocp_cfg = resolved.get("ocp", {})
@@ -289,6 +290,7 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         api_vip,
         ingress_vip,
         bastion_bmc_ip,
+        pull_through_registry=pull_through_registry,
     )
 
     return topology
@@ -417,6 +419,7 @@ def _setup_bastion_cloud_init(
     api_vip,
     ingress_vip,
     bastion_bmc_ip,
+    pull_through_registry=None,
 ):
     for node in topology.get("nodes", []):
         if (
@@ -436,6 +439,25 @@ def _setup_bastion_cloud_init(
                 node["data"]["ciSshKeyIds"] = ssh_key_ids
             if ssh_keys:
                 node["data"]["ciSshKeys"] = ssh_keys
+
+            # Inject pull-through registry config for podman on bastion
+            if pull_through_registry and pull_through_registry.get("enabled"):
+                ptr_url = pull_through_registry["url"]
+                if "ciUserData" not in node["data"]:
+                    node["data"]["ciUserData"] = "runcmd:\n"
+                node["data"]["ciUserData"] += (
+                    "  - |\n"
+                    "    mkdir -p /etc/containers/registries.conf.d\n"
+                    "    cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n"
+                )
+                for source, org in pull_through_registry.get("orgs", {}).items():
+                    node["data"]["ciUserData"] += (
+                        f"    [[registry]]\n"
+                        f'      prefix = "{source}"\n'
+                        f'      location = "{ptr_url}/{org}"\n'
+                        f"\n"
+                    )
+                node["data"]["ciUserData"] += "    EOF\n"
             break
 
         node["data"]["cloudInit"] = True
@@ -501,6 +523,24 @@ def _setup_bastion_cloud_init(
                 "    chmod 600 /home/cloud-user/pull-secret.json\n"
             )
 
+        # Pull-through registry mirror config for podman
+        if pull_through_registry and pull_through_registry.get("enabled"):
+            ptr_url = pull_through_registry["url"]
+            node["data"]["ciUserData"] += (
+                "  - |\n"
+                + _guard
+                + "    mkdir -p /etc/containers/registries.conf.d\n"
+                + "    cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n"
+            )
+            for source, org in pull_through_registry.get("orgs", {}).items():
+                node["data"]["ciUserData"] += (
+                    f"    [[registry]]\n"
+                    f'      prefix = "{source}"\n'
+                    f'      location = "{ptr_url}/{org}"\n'
+                    f"\n"
+                )
+            node["data"]["ciUserData"] += "    EOF\n"
+
         # Build install-config.yaml and agent-config.yaml
         install_config = _build_install_config(
             topology,
@@ -512,6 +552,7 @@ def _setup_bastion_cloud_init(
             password,
             pull_secret_json,
             ssh_pub_key,
+            pull_through_registry=pull_through_registry,
         )
         agent_config = _build_agent_config(
             topology,
