@@ -86,6 +86,7 @@ def resolve_template(
         "dns_records",
         "disconnected",
         "bastion_services",
+        "pull_through_registry",
     ):
         if tmpl.get(section):
             resolved[section] = tmpl[section]
@@ -129,6 +130,7 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
         "bastion_services",
         "start_order",
         "hidden_nodes",
+        "pull_through_registry",
     ):
         if tmpl.get(section):
             resolved[section] = tmpl[section]

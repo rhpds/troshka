@@ -336,3 +336,61 @@ def test_export_import_round_trip():
     topo2 = generate_topology_from_template(resolved2)
     net_edges2 = [e for e in topo2["edges"] if "nic-" in e.get("targetHandle", "")]
     assert len(net_edges2) > 0, "Re-imported topology must have network edges"
+
+
+def test_resolve_inline_template_pull_through_registry():
+    from app.services.template_loader import resolve_inline_template
+
+    tmpl = {
+        "template_name": "test-ptr",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "vms": {
+            "bastion": {
+                "role": "bastion",
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel9",
+                "disks": [{"size_gb": 50}],
+                "nics": [{"network": "cluster"}],
+            }
+        },
+        "pull_through_registry": {
+            "enabled": True,
+            "url": "registry-quay-quay-enterprise.apps.example.com",
+            "orgs": {
+                "registry.redhat.io": "registry_redhat_io",
+                "quay.io": "quay_io",
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    assert resolved["pull_through_registry"]["enabled"] is True
+    assert (
+        resolved["pull_through_registry"]["url"]
+        == "registry-quay-quay-enterprise.apps.example.com"
+    )
+    assert (
+        resolved["pull_through_registry"]["orgs"]["registry.redhat.io"]
+        == "registry_redhat_io"
+    )
+
+
+def test_resolve_inline_template_no_pull_through_registry():
+    from app.services.template_loader import resolve_inline_template
+
+    tmpl = {
+        "template_name": "test-no-ptr",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "vms": {
+            "bastion": {
+                "role": "bastion",
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel9",
+                "disks": [{"size_gb": 50}],
+                "nics": [{"network": "cluster"}],
+            }
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    assert "pull_through_registry" not in resolved
