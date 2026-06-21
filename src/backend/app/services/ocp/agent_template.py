@@ -725,6 +725,7 @@ def _build_install_config(
     password,
     pull_secret_json,
     ssh_pub_key,
+    pull_through_registry=None,
 ):
     # Count actual CP and worker nodes from topology
     cp_nodes_count = sum(
@@ -813,6 +814,18 @@ def _build_install_config(
         ic_lines.append(f"pullSecret: '{pull_secret_json}'")
     if ssh_pub_key:
         ic_lines.append(f"sshKey: '{ssh_pub_key}'")
+
+    if pull_through_registry and pull_through_registry.get("enabled"):
+        ptr_url = pull_through_registry["url"]
+        ic_lines.append("imageDigestMirrorSet:")
+        for source, org in pull_through_registry.get("orgs", {}).items():
+            ic_lines.extend(
+                [
+                    "- mirrors:",
+                    f"  - {ptr_url}/{org}",
+                    f"  source: {source}",
+                ]
+            )
 
     return "\n".join(ic_lines)
 
