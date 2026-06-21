@@ -86,8 +86,8 @@ try:
             push_update(h, script_bytes, version, force=force)
             if vncd_bytes and h.host_type != 'pattern_buffer':
                 push_vncd_update(h, vncd_bytes)
-            # Wait for restart
-            for _ in range(30):
+            # Wait for restart (agent drains running jobs before shutdown, up to 120s)
+            for _ in range(60):
                 time.sleep(3)
                 health = check_health(h)
                 if health and health.get('version') == version:

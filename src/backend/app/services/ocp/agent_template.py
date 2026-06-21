@@ -52,6 +52,155 @@ def _find_cluster_cidr(topology):
     return default
 
 
+def _collect_ocp_mounts(topology):
+    """Find storage nodes with ocpMount and return list of (disk_index, mount_path).
+
+    disk_index is the 0-based position of the disk on its parent VM (vda=0, vdb=1, etc.).
+    """
+    mounts = []
+    edges = topology.get("edges", [])
+    nodes = {n["id"]: n for n in topology.get("nodes", [])}
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        mount_path = node.get("data", {}).get("ocpMount")
+        if not mount_path:
+            continue
+        for edge in edges:
+            if edge.get("source") == node["id"]:
+                vm_id = edge.get("target")
+            elif edge.get("target") == node["id"]:
+                vm_id = edge.get("source")
+            else:
+                continue
+            vm_node = nodes.get(vm_id)
+            if not vm_node or vm_node.get("type") != "vmNode":
+                continue
+            if vm_node.get("data", {}).get("os") != "rhcos":
+                continue
+            handle = edge.get("targetHandle") or edge.get("sourceHandle", "")
+            dcs = vm_node.get("data", {}).get("diskControllers", [])
+            disk_index = next(
+                (i for i, dc in enumerate(dcs) if dc["id"] in handle),
+                -1,
+            )
+            if disk_index >= 0:
+                dev = f"/dev/vd{chr(ord('a') + disk_index)}"
+                mounts.append({"device": dev, "mount": mount_path})
+            break
+    return mounts
+
+
+def _generate_ocp_mount_script(topology):
+    """Generate shell script lines to create MachineConfig extra manifests for ocp_mount disks.
+
+    Follows the Red Hat Solution 4952011 pattern:
+    - systemd-mkfs service to format the disk
+    - systemd mount unit with prjquota
+    - restorecon service for SELinux contexts
+    """
+    import base64 as _b64
+    import yaml as _yaml
+
+    mounts = _collect_ocp_mounts(topology)
+    if not mounts:
+        return ""
+
+    lines = "    # Create extra manifests for disk mounts\n"
+    lines += "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+    for m in mounts:
+        dev = m["device"]
+        mount_path = m["mount"]
+        mount_unit = mount_path.strip("/").replace("/", "-")
+        dev_unit = dev.replace("/dev/", "dev-").replace("/", "-")
+        mc = {
+            "apiVersion": "machineconfiguration.openshift.io/v1",
+            "kind": "MachineConfig",
+            "metadata": {
+                "labels": {"machineconfiguration.openshift.io/role": "master"},
+                "name": f"98-{mount_unit}",
+            },
+            "spec": {
+                "config": {
+                    "ignition": {"version": "3.2.0"},
+                    "systemd": {
+                        "units": [
+                            {
+                                "name": f"systemd-mkfs@{dev_unit}.service",
+                                "enabled": True,
+                                "contents": (
+                                    f"[Unit]\n"
+                                    f"Description=Make File System on {dev}\n"
+                                    f"DefaultDependencies=no\n"
+                                    f"BindsTo={dev_unit}.device\n"
+                                    f"After={dev_unit}.device var.mount\n"
+                                    f"Before=systemd-fsck@{dev_unit}.service\n"
+                                    f"\n"
+                                    f"[Service]\n"
+                                    f"Type=oneshot\n"
+                                    f"RemainAfterExit=yes\n"
+                                    f'ExecStart=-/bin/bash -c "/bin/rm -rf {mount_path}/*"\n'
+                                    f"ExecStart=/usr/lib/systemd/systemd-makefs xfs {dev}\n"
+                                    f"TimeoutSec=0\n"
+                                    f"\n"
+                                    f"[Install]\n"
+                                    f"WantedBy={mount_unit}.mount\n"
+                                ),
+                            },
+                            {
+                                "name": f"{mount_unit}.mount",
+                                "enabled": True,
+                                "contents": (
+                                    f"[Unit]\n"
+                                    f"Description=Mount {dev} to {mount_path}\n"
+                                    f"Before=local-fs.target\n"
+                                    f"Requires=systemd-mkfs@{dev_unit}.service\n"
+                                    f"After=systemd-mkfs@{dev_unit}.service\n"
+                                    f"\n"
+                                    f"[Mount]\n"
+                                    f"What={dev}\n"
+                                    f"Where={mount_path}\n"
+                                    f"Type=xfs\n"
+                                    f"Options=defaults,prjquota\n"
+                                    f"\n"
+                                    f"[Install]\n"
+                                    f"WantedBy=local-fs.target\n"
+                                ),
+                            },
+                            {
+                                "name": f"restorecon-{mount_unit}.service",
+                                "enabled": True,
+                                "contents": (
+                                    f"[Unit]\n"
+                                    f"Description=Restore recursive SELinux security contexts\n"
+                                    f"DefaultDependencies=no\n"
+                                    f"After={mount_unit}.mount\n"
+                                    f"Before=crio.service\n"
+                                    f"\n"
+                                    f"[Service]\n"
+                                    f"Type=oneshot\n"
+                                    f"RemainAfterExit=yes\n"
+                                    f"ExecStart=/sbin/restorecon -R {mount_path}/\n"
+                                    f"TimeoutSec=0\n"
+                                    f"\n"
+                                    f"[Install]\n"
+                                    f"WantedBy=multi-user.target graphical.target\n"
+                                ),
+                            },
+                        ]
+                    },
+                }
+            },
+        }
+        mc_yaml = _yaml.dump(mc, default_flow_style=False)
+        mc_b64 = _b64.b64encode(mc_yaml.encode()).decode()
+        fname = f"98-{mount_unit}.yaml"
+        lines += f"    echo '{mc_b64}' | base64 -d > /home/cloud-user/ocp-install/openshift/{fname}\n"
+        lines += f"    echo 'Created MachineConfig for {mount_path} on {dev}'\n"
+    return lines
+
+
 def _find_sno_node_ip(topology):
     """Find the SNO node's cluster IP — the single controller VM."""
     for node in topology.get("nodes", []):
@@ -403,6 +552,7 @@ def _setup_bastion_cloud_init(
             bmc_ips_str,
             cluster_name,
             base_domain,
+            topology=topology,
         )
 
         # Write install-config.yaml
@@ -753,6 +903,7 @@ def _build_install_script(
     bmc_ips_str="",
     cluster_name="ocp",
     base_domain="ocp.local",
+    topology=None,
 ):
     return (
         "  - |\n"
@@ -819,7 +970,9 @@ def _build_install_script(
             "    cd /home/cloud-user/ocp-install\n"
             "    cp install-config.yaml install-config.yaml.bak\n"
             "    cp agent-config.yaml agent-config.yaml.bak\n"
-            '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
+            "    [ -d openshift ] && cp -a openshift openshift.bak\n"
+            + _generate_ocp_mount_script(topology or {})
+            + '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
             "    \n"
             "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
             "    # Serve the ISO on port 8080\n"

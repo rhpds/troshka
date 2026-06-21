@@ -95,6 +95,7 @@ export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
+    -e @ansible/configs/troshka/default_vars.yml \
     -e @"$MERGED_FILE" \
     -e config=troshka \
     -e troshka_api_url="$TROSHKA_API_URL" \
@@ -102,7 +103,7 @@ ansible-navigator run ansible/main.yml \
     -e guid="$GUID" \
     -e output_dir=/tmp/agnosticd-output \
     ${PULL_SECRET_FILE:+-e @/tmp/troshka-pull-secret-vars.yaml} \
-    -v "${EXTRA_ARGS[@]}"
+    -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 STATUS=$?
 

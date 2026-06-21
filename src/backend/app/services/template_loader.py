@@ -180,136 +180,6 @@ def _bmc_mac():
     )
 
 
-def _vm_node(name, vcpus, ram, x, y, disk_gb=50, bmc_ip="", cluster_ip="", tags=None):
-    nic = {"id": f"nic-{_id()}", "name": "eth0", "mac": _mac(), "model": "virtio"}
-    if cluster_ip:
-        nic["ip"] = cluster_ip
-    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
-    dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
-    disk_id = _id()
-    disk_node = {
-        "id": disk_id,
-        "type": "storageNode",
-        "position": {"x": x - 190, "y": y + 70},
-        "data": {
-            "label": f"{name}-disk",
-            "name": f"{name}-disk",
-            "size": disk_gb,
-            "format": "qcow2",
-            "icon": "\U0001f6e2",
-        },
-    }
-    vm_data = {
-        "label": name,
-        "name": name,
-        "vcpus": vcpus,
-        "ram": ram,
-        "os": "rhcos",
-        "icon": "\U0001f5a5",
-        "nics": [nic],
-        "diskControllers": [dc, dc_cdrom],
-        "bmcEnabled": True,
-        "firmware": "uefi",
-        "secureBoot": False,
-        "bootDevices": [disk_id],
-        "bootMethod": "disk",
-        "powerOnAtDeploy": True,
-    }
-    if bmc_ip:
-        vm_data["bmcIp"] = bmc_ip
-    if tags:
-        vm_data["tags"] = tags
-    vm_node = {
-        "id": _id(),
-        "type": "vmNode",
-        "position": {"x": x, "y": y},
-        "data": vm_data,
-    }
-    disk_edge = {
-        "id": _id(),
-        "source": disk_id,
-        "target": vm_node["id"],
-        "sourceHandle": "right",
-        "targetHandle": f"dp-{dc['id']}-left",
-        "type": "smoothstep",
-        "style": {
-            "stroke": "rgba(251,191,36,0.6)",
-            "strokeWidth": 2,
-            "strokeDasharray": "4 4",
-        },
-        "animated": False,
-        "className": "edge-storage-pulse",
-    }
-    return vm_node, disk_node, disk_edge
-
-
-def _bastion_node(x, y, bastion_cfg, cluster_ip="10.0.0.50"):
-    nic_cluster = {
-        "id": f"nic-{_id()}",
-        "name": "eth0",
-        "mac": _mac(),
-        "model": "virtio",
-        "ip": cluster_ip,
-    }
-    nic_bmc = {
-        "id": f"nic-{_id()}",
-        "name": "eth1",
-        "mac": _bmc_mac(),
-        "model": "virtio",
-    }
-    dc = {"id": f"dp-{_id()}", "name": "disk0", "bus": "virtio"}
-    disk_id = _id()
-    disk_node = {
-        "id": disk_id,
-        "type": "storageNode",
-        "position": {"x": x - 190, "y": y + 70},
-        "data": {
-            "label": "bastion-disk",
-            "name": "bastion-disk",
-            "size": bastion_cfg.get("disk_gb", 20),
-            "format": "qcow2",
-            "icon": "\U0001f6e2",
-        },
-    }
-    vm_node = {
-        "id": _id(),
-        "type": "vmNode",
-        "position": {"x": x, "y": y},
-        "data": {
-            "label": "bastion",
-            "name": "bastion",
-            "vcpus": bastion_cfg.get("vcpus", 2),
-            "ram": bastion_cfg.get("ram_gb", 4),
-            "os": bastion_cfg.get("image", "rhel-10"),
-            "icon": "\U0001f5a5",
-            "nics": [nic_cluster, nic_bmc],
-            "diskControllers": [dc],
-            "firmware": "uefi",
-            "secureBoot": False,
-            "bootDevices": [disk_id],
-            "bootMethod": "disk",
-            "powerOnAtDeploy": True,
-            "tags": {"AnsibleGroup": "bastions,showroom"},
-        },
-    }
-    disk_edge = {
-        "id": _id(),
-        "source": disk_id,
-        "target": vm_node["id"],
-        "sourceHandle": "right",
-        "targetHandle": f"dp-{dc['id']}-left",
-        "type": "smoothstep",
-        "style": {
-            "stroke": "rgba(251,191,36,0.6)",
-            "strokeWidth": 2,
-            "strokeDasharray": "4 4",
-        },
-        "animated": False,
-        "className": "edge-storage-pulse",
-    }
-    return vm_node, disk_node, disk_edge
-
-
 def _net_edge(net_id, vm_node, nic_index=0, vm_handle="top"):
     nic = vm_node["data"]["nics"][nic_index]
     return {
@@ -345,10 +215,6 @@ def _gw_net_edge(gw_id, net_id):
     }
 
 
-# Keep for backward compat with imports
-_generate_mac = _mac
-
-
 def _generate_topology_from_vms(
     tmpl,
     bmc_password="password",  # pragma: allowlist secret
@@ -382,7 +248,7 @@ def _generate_topology_from_vms(
             "label": net_name,
             "subtype": "network",
             "cidr": net_cfg.get("cidr", "10.0.0.0/24"),
-            "dhcp": net_cfg.get("dhcp", False),
+            "dhcp": net_cfg.get("dhcp", not is_bmc),
             "icon": "\U0001f310",
         }
         if net_cfg.get("domain"):
@@ -408,6 +274,60 @@ def _generate_topology_from_vms(
 
     # ── Gateway ──
     gw_outbound = gw_def.get("outbound_ports", [])
+    ocp_port_forwards = []
+    if external_access:
+        eip_id = _id()
+        external_ips = [{"id": eip_id, "label": "OCP"}]
+        ocp_cfg = tmpl.get("ocp", {})
+        bastion_ip = ""
+        for vm_name, vm_cfg in vms_def.items():
+            if vm_cfg.get("role") == "bastion":
+                for nic_cfg in vm_cfg.get("nics", []):
+                    if nic_cfg.get("ip"):
+                        bastion_ip = nic_cfg["ip"]
+                        break
+                break
+        api_vip = ocp_cfg.get("api_vip", "")
+        ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+        if bastion_ip:
+            ocp_port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": "22",
+                    "intIp": bastion_ip,
+                    "intPort": "22",
+                    "proto": "tcp",
+                }
+            )
+        if api_vip:
+            ocp_port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": "6443",
+                    "intIp": api_vip,
+                    "intPort": "6443",
+                    "proto": "tcp",
+                }
+            )
+        if ingress_vip:
+            ocp_port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": "443",
+                    "intIp": ingress_vip,
+                    "intPort": "443",
+                    "proto": "tcp",
+                }
+            )
+            ocp_port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": "80",
+                    "intIp": ingress_vip,
+                    "intPort": "80",
+                    "proto": "tcp",
+                }
+            )
     gw_node = {
         "id": _id(),
         "type": "networkNode",
@@ -417,7 +337,7 @@ def _generate_topology_from_vms(
             "label": "gateway",
             "subtype": "gateway",
             "gatewayMode": "nat-portforward" if external_access else "nat",
-            "portForwards": [],
+            "portForwards": ocp_port_forwards,
             "outboundPolicy": "restrict" if gw_outbound else "allow-all",
             "outboundPorts": ",".join(str(p) for p in gw_outbound),
             "icon": "\U0001f310",
@@ -492,6 +412,8 @@ def _generate_topology_from_vms(
                 disk_data["source"] = "library"
             if disk_cfg.get("library_item_name"):
                 disk_data["libraryItemName"] = disk_cfg["library_item_name"]
+            if disk_cfg.get("ocp_mount"):
+                disk_data["ocpMount"] = disk_cfg["ocp_mount"]
             disk_node = {
                 "id": disk_id,
                 "type": "storageNode",
@@ -549,6 +471,8 @@ def _generate_topology_from_vms(
             vm_data["tags"] = vm_cfg["tags"]
         elif role == "control-plane":
             vm_data["tags"] = {"AnsibleGroup": "controllers"}
+        elif role == "worker":
+            vm_data["tags"] = {"AnsibleGroup": "workers"}
         elif role == "bastion":
             vm_data["tags"] = {"AnsibleGroup": "bastions,showroom"}
 
@@ -927,161 +851,11 @@ def generate_topology_from_template(
     bmc_password: str = "password",
     external_access: bool = False,  # pragma: allowlist secret
 ) -> dict:
-    # Fully-declarative templates with a `vms` section use the generic generator
-    if resolved.get("vms"):
-        topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
-        from app.services.auto_layout import auto_layout
+    if not resolved.get("vms"):
+        raise ValueError("Template must have a 'vms' section")
 
-        topo["nodes"], topo["edges"] = auto_layout(topo["nodes"], topo["edges"])
-        return topo
+    topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
+    from app.services.auto_layout import auto_layout
 
-    nodes = []
-    edges = []
-    external_ips = []
-
-    VM_SPACING = 400
-    GW_Y = 0
-    NET_ROW_Y = 150
-    VM_ROW_Y = 350
-    WORKER_ROW_Y = VM_ROW_Y + 370
-
-    control_count = resolved.get("control_count", 3)
-    worker_count = resolved.get("worker_count", 0)
-    bastion_cfg = resolved.get("bastion", {})
-    cluster_net = resolved["networks"].get("cluster", {})
-    bmc_net = resolved["networks"].get("bmc", {})
-    gateway_cfg = resolved.get("gateway", {})
-    gateway_outbound_ports = gateway_cfg.get("outbound_ports", [])
-
-    vm_x_start = 150
-    bast_x = vm_x_start + control_count * VM_SPACING
-    net_x = vm_x_start + int((control_count / 2) * VM_SPACING) - 120
-
-    # Port forwards for external access
-    ocp_port_forwards = []
-    if external_access:
-        eip_id = _id()
-        external_ips = [{"id": eip_id, "label": "OCP"}]
-        ocp_port_forwards = [
-            {
-                "extIpId": eip_id,
-                "extPort": "22",
-                "intIp": "10.0.0.50",
-                "intPort": "22",
-                "proto": "tcp",
-            },
-            {
-                "extIpId": eip_id,
-                "extPort": "6443",
-                "intIp": "10.0.0.2",
-                "intPort": "6443",
-                "proto": "tcp",
-            },
-            {
-                "extIpId": eip_id,
-                "extPort": "443",
-                "intIp": "10.0.0.3",
-                "intPort": "443",
-                "proto": "tcp",
-            },
-            {
-                "extIpId": eip_id,
-                "extPort": "80",
-                "intIp": "10.0.0.3",
-                "intPort": "80",
-                "proto": "tcp",
-            },
-        ]
-
-    # Network nodes
-    net = {
-        "id": _id(),
-        "type": "networkNode",
-        "position": {"x": net_x, "y": NET_ROW_Y},
-        "data": {
-            "name": "cluster-network",
-            "label": "cluster-network",
-            "subtype": "network",
-            "cidr": cluster_net.get("cidr", "10.0.0.0/24"),
-            "dhcp": cluster_net.get("dhcp", True),
-            "icon": "\U0001f310",
-        },
-    }
-    bmc = {
-        "id": _id(),
-        "type": "networkNode",
-        "position": {"x": bast_x, "y": NET_ROW_Y},
-        "data": {
-            "name": "bmc",
-            "label": "bmc",
-            "subtype": "network",
-            "cidr": bmc_net.get("cidr", "192.168.100.0/24"),
-            "dhcp": False,
-            "networkType": "bmc",
-            "bmcUsername": "admin",
-            "bmcPassword": bmc_password,
-            "icon": "\U0001f310",
-        },
-    }
-    gw = {
-        "id": _id(),
-        "type": "networkNode",
-        "position": {"x": net_x, "y": GW_Y},
-        "data": {
-            "name": "gateway",
-            "label": "gateway",
-            "subtype": "gateway",
-            "gatewayMode": "nat-portforward" if external_access else "nat",
-            "portForwards": ocp_port_forwards,
-            "outboundPolicy": "restrict" if gateway_outbound_ports else "allow-all",
-            "outboundPorts": ",".join(str(p) for p in gateway_outbound_ports),
-            "icon": "\U0001f310",
-        },
-    }
-    nodes.extend([net, bmc, gw])
-    edges.append(_gw_net_edge(gw["id"], net["id"]))
-
-    # Bastion
-    bast_vm, bast_disk, bast_disk_edge = _bastion_node(bast_x, VM_ROW_Y, bastion_cfg)
-    nodes.extend([bast_vm, bast_disk])
-    edges.extend(
-        [
-            bast_disk_edge,
-            _net_edge(net["id"], bast_vm, 0),
-            _net_edge(bmc["id"], bast_vm, 1, "bottom"),
-        ]
-    )
-
-    # Control plane nodes
-    for i in range(control_count):
-        vm, disk, disk_edge = _vm_node(
-            f"cp-{i}",
-            resolved.get("control_vcpus", 4),
-            resolved.get("control_ram_gb", 16),
-            vm_x_start + i * VM_SPACING,
-            VM_ROW_Y,
-            disk_gb=resolved.get("control_disk_gb", 120),
-            bmc_ip=f"192.168.100.{10 + i}",
-            cluster_ip=f"10.0.0.{10 + i}",
-            tags={"AnsibleGroup": "controllers"},
-        )
-        nodes.extend([vm, disk])
-        edges.extend([disk_edge, _net_edge(net["id"], vm)])
-
-    # Worker nodes
-    for i in range(worker_count):
-        vm, disk, disk_edge = _vm_node(
-            f"worker-{i}",
-            resolved.get("worker_vcpus", 4),
-            resolved.get("worker_ram_gb", 16),
-            vm_x_start + i * VM_SPACING,
-            WORKER_ROW_Y,
-            disk_gb=resolved.get("worker_disk_gb", 120),
-            bmc_ip=f"192.168.100.{20 + i}",
-            cluster_ip=f"10.0.0.{20 + i}",
-            tags={"AnsibleGroup": "workers"},
-        )
-        nodes.extend([vm, disk])
-        edges.extend([disk_edge, _net_edge(net["id"], vm)])
-
-    return {"nodes": nodes, "edges": edges, "externalIps": external_ips}
+    topo["nodes"], topo["edges"] = auto_layout(topo["nodes"], topo["edges"])
+    return topo

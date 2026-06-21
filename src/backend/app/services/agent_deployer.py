@@ -362,6 +362,8 @@ ExecStart=/usr/bin/python3 /opt/troshka/troshkad.py
 WorkingDirectory=/opt/troshka
 Restart=always
 RestartSec=5
+KillMode=process
+TimeoutStopSec=130
 
 [Install]
 WantedBy=multi-user.target
@@ -583,6 +585,8 @@ Wants=network-online.target
 ExecStart=/usr/bin/python3 /opt/troshka/troshkad.py
 Restart=always
 RestartSec=5
+KillMode=process
+TimeoutStopSec=130
 
 [Install]
 WantedBy=multi-user.target

@@ -4,11 +4,88 @@ description: "3 combined CP + worker nodes — 4 vCPU, 16 GB, 120 GB each"
 category: openshift
 install_method: agent
 deploy_time: "~25 min"
-extends: ocp-cluster
-defaults:
-  control_count: 3
-  control_vcpus: 4
-  control_ram_gb: 16
-  control_disk_gb: 120
-  control_schedulable: true
-  worker_count: 0
+
+ocp:
+  cluster_name: ocp
+  base_domain: ocp.local
+  api_vip: 10.0.0.2
+  ingress_vip: 10.0.0.3
+
+gateway:
+  outbound_ports:
+    - 53
+    - 80
+    - 443
+    - 123
+    - icmp
+
+networks:
+  cluster:
+    cidr: 10.0.0.0/24
+    gateway: true
+    domain: ocp.local
+    dns_records:
+      - name: api.ocp.ocp.local
+        ip: 10.0.0.2
+      - name: api-int.ocp.ocp.local
+        ip: 10.0.0.2
+      - name: .apps.ocp.ocp.local
+        ip: 10.0.0.3
+  bmc:
+    type: bmc
+    cidr: 192.168.100.0/24
+
+vms:
+  bastion:
+    role: bastion
+    vcpus: 2
+    ram_gb: 4
+    os: rhel
+    disks:
+      - size_gb: 50
+    nics:
+      - network: cluster
+        ip: 10.0.0.50
+      - network: bmc
+
+  cp-0:
+    role: control-plane
+    vcpus: 4
+    ram_gb: 16
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    bmc_ip: 192.168.100.10
+    disks:
+      - size_gb: 120
+    nics:
+      - network: cluster
+        ip: 10.0.0.10
+
+  cp-1:
+    role: control-plane
+    vcpus: 4
+    ram_gb: 16
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    bmc_ip: 192.168.100.11
+    disks:
+      - size_gb: 120
+    nics:
+      - network: cluster
+        ip: 10.0.0.11
+
+  cp-2:
+    role: control-plane
+    vcpus: 4
+    ram_gb: 16
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    bmc_ip: 192.168.100.12
+    disks:
+      - size_gb: 120
+    nics:
+      - network: cluster
+        ip: 10.0.0.12

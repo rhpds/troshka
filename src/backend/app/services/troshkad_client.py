@@ -376,16 +376,16 @@ def wait_for_job(host, job_id, timeout=600, poll_interval=5):
             consecutive_failures = 0
         except TroshkadError as e:
             if e.status_code == 404:
-                logger.warning(
-                    "Job %s not found on %s (agent may have restarted), assuming completed",
+                logger.error(
+                    "Job %s not found on %s (agent may have restarted) — treating as failed",
                     job_id[:8],
                     host.ip_address,
                 )
                 return {
                     "job_id": job_id,
-                    "status": "completed",
+                    "status": "failed",
                     "output": [],
-                    "result": {},
+                    "result": {"error": "Job lost — agent may have restarted"},
                 }
             consecutive_failures += 1
             if consecutive_failures >= max_consecutive_failures:

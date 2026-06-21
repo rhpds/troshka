@@ -467,6 +467,11 @@ def _setup_bmc_via_troshkad(host, project_id: str, bmc_config: dict):
     """Start BMC endpoints (Redfish + IPMI) on the host for this project."""
     from app.services.troshkad_client import start_job, wait_for_job
 
+    try:
+        _teardown_bmc_via_troshkad(host, project_id)
+    except Exception:
+        pass
+
     net_data = bmc_config["bmc_network"]
     cidr = net_data.get("cidr", "192.168.100.0/24")
     params = {
@@ -1818,7 +1823,19 @@ def deploy_project_async(
                     raise
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
+        has_bmc_vms = any(
+            n.get("type") == "vmNode" and n.get("data", {}).get("bmcEnabled")
+            for n in topology.get("nodes", [])
+        )
         bmc_config = _extract_bmc_config(topology, project_id)
+        if has_bmc_vms and not bmc_config:
+            error_msg = "VMs have BMC enabled but no BMC network (type: bmc) is defined"
+            logger.error("Deploy %s: %s", project_id[:8], error_msg)
+            project.state = "error"
+            project.deploy_error = error_msg
+            s.commit()
+            _deploy_progress.pop(project_id, None)
+            return
         if bmc_config:
             _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
             notify_project(
@@ -2063,7 +2080,9 @@ def maybe_start_ocp_health_monitor(project_id: str):
         topo = project.deployed_topology or project.topology or {}
         if not _is_ocp_topology(topo):
             return
-        deploy_start = project.updated_at.timestamp() if project.updated_at else 0
+        if project.ocp_install_elapsed is not None:
+            return
+        deploy_start = 0
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,

@@ -2062,14 +2062,21 @@ def reconfigure_project(
                     sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
                 )
                 _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
+                disk_only_change = (
+                    current_cfg["disks"] != desired_disks
+                    and current_cfg["boot_devs"] == boot_devs
+                    and current_cfg["vcpus"] == vm["vcpus"]
+                    and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
+                    and current_bridges == desired_bridges
+                    and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+                )
                 needs_restart = (
                     vm["node_id"] in restart_vm_ids
                     or current_cfg["boot_devs"] != boot_devs
                     or current_cfg["vcpus"] != vm["vcpus"]
                     or current_cfg["ram_mb"] != vm["ram_gb"] * 1024
                     or current_bridges != desired_bridges
-                    or current_cfg["disks"] != desired_disks
-                )
+                ) and not disk_only_change
                 try:
                     troshkad_reconfigure_vm(
                         h,

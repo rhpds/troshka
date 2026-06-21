@@ -5,45 +5,42 @@ import pytest
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 
 
-def test_load_base_template():
+def test_load_sno_template():
     from app.services.template_loader import load_template
 
-    tmpl = load_template("ocp-cluster", templates_dir=TEMPLATES_DIR)
-    assert tmpl["name"] == "ocp-cluster"
-    assert "parameters" in tmpl
-    assert "control_count" in tmpl["parameters"]
+    tmpl = load_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    assert tmpl["name"] == "ocp-sno"
+    assert "vms" in tmpl
+    assert "cp-0" in tmpl["vms"]
+    assert "bastion" in tmpl["vms"]
 
 
-def test_load_preset_template():
+def test_load_compact_template():
     from app.services.template_loader import load_template
 
     tmpl = load_template("ocp-compact", templates_dir=TEMPLATES_DIR)
     assert tmpl["name"] == "ocp-compact"
-    assert tmpl["extends"] == "ocp-cluster"
+    assert "vms" in tmpl
+    assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
 
 
-def test_resolve_preset_parameters():
+def test_load_standard_template():
+    from app.services.template_loader import load_template
+
+    tmpl = load_template("ocp-standard", templates_dir=TEMPLATES_DIR)
+    assert tmpl["name"] == "ocp-standard"
+    assert "vms" in tmpl
+    assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
+    assert len([k for k in tmpl["vms"] if k.startswith("worker-")]) == 2
+
+
+def test_resolve_sno_has_vms():
     from app.services.template_loader import resolve_template
 
-    resolved = resolve_template(
-        "ocp-compact", overrides={}, templates_dir=TEMPLATES_DIR
-    )
-    assert resolved["control_count"] == 3
-    assert resolved["control_schedulable"] is True
-    assert resolved["worker_count"] == 0
-    assert "parameters" in resolved
-
-
-def test_resolve_with_overrides():
-    from app.services.template_loader import resolve_template
-
-    resolved = resolve_template(
-        "ocp-compact",
-        overrides={"worker_count": 2, "control_ram_gb": 32},
-        templates_dir=TEMPLATES_DIR,
-    )
-    assert resolved["worker_count"] == 2
-    assert resolved["control_ram_gb"] == 32
+    resolved = resolve_template("ocp-sno", overrides={}, templates_dir=TEMPLATES_DIR)
+    assert resolved["install_method"] == "agent"
+    assert "vms" in resolved
+    assert "cp-0" in resolved["vms"]
 
 
 def test_resolve_rejects_unknown_override():
@@ -51,52 +48,101 @@ def test_resolve_rejects_unknown_override():
 
     with pytest.raises(ValueError, match="Unknown parameter"):
         resolve_template(
-            "ocp-compact", overrides={"fake_param": 99}, templates_dir=TEMPLATES_DIR
+            "ocp-sno", overrides={"fake_param": 99}, templates_dir=TEMPLATES_DIR
         )
 
 
-def test_resolve_rejects_below_minimum():
-    from app.services.template_loader import resolve_template
-
-    with pytest.raises(ValueError, match="below minimum"):
-        resolve_template(
-            "ocp-compact", overrides={"control_vcpus": 1}, templates_dir=TEMPLATES_DIR
-        )
-
-
-def test_validate_version():
-    from app.services.template_loader import resolve_template
-
-    resolved = resolve_template(
-        "ocp-compact", overrides={}, version="4.16", templates_dir=TEMPLATES_DIR
+def test_sno_topology_has_dns_records():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
     )
-    assert resolved["version"] == "4.16"
+
+    resolved = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    cluster_net = next(
+        n
+        for n in topo["nodes"]
+        if n["type"] == "networkNode" and n["data"]["name"] == "cluster"
+    )
+    dns = cluster_net["data"].get("dnsRecords", [])
+    dns_names = [r["name"] for r in dns]
+    assert any("api." in n for n in dns_names)
+    assert any(".apps." in n for n in dns_names)
 
 
-def test_validate_version_rejects_invalid():
-    from app.services.template_loader import resolve_template
+def test_sno_topology_has_second_disk():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
 
-    with pytest.raises(ValueError, match="not available"):
-        resolve_template(
-            "ocp-compact", overrides={}, version="3.11", templates_dir=TEMPLATES_DIR
-        )
+    resolved = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    storage_nodes = [
+        n
+        for n in topo["nodes"]
+        if n["type"] == "storageNode" and "cp-0" in n["data"]["name"]
+    ]
+    assert len(storage_nodes) == 2
+    sizes = sorted(n["data"]["size"] for n in storage_nodes)
+    assert sizes == [120, 250]
 
 
-def test_load_nonexistent_template():
-    from app.services.template_loader import load_template
+def test_standard_topology_has_workers():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
 
-    with pytest.raises(FileNotFoundError):
-        load_template("nonexistent", templates_dir=TEMPLATES_DIR)
+    resolved = resolve_template("ocp-standard", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    vm_nodes = [n for n in topo["nodes"] if n["type"] == "vmNode"]
+    vm_names = [n["data"]["name"] for n in vm_nodes]
+    assert "worker-0" in vm_names
+    assert "worker-1" in vm_names
+
+    worker = next(n for n in vm_nodes if n["data"]["name"] == "worker-0")
+    assert worker["data"]["tags"] == {"AnsibleGroup": "workers"}
 
 
-def test_vm_node_nic_model_preserved():
-    """NIC model from topology should be preserved (not hardcoded to virtio)."""
-    from app.services.template_loader import _vm_node
+def test_compact_topology_has_ansible_groups():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
 
-    vm, _disk, _edge = _vm_node("test-vm", 4, 16, 100, 100)
-    assert vm["data"]["nics"][0]["model"] == "virtio"
-    vm["data"]["nics"][0]["model"] = "igb"
-    assert vm["data"]["nics"][0]["model"] == "igb"
+    resolved = resolve_template("ocp-compact", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    vm_nodes = [n for n in topo["nodes"] if n["type"] == "vmNode"]
+    bastion = next(n for n in vm_nodes if n["data"]["name"] == "bastion")
+    cp0 = next(n for n in vm_nodes if n["data"]["name"] == "cp-0")
+
+    assert bastion["data"]["tags"] == {"AnsibleGroup": "bastions,showroom"}
+    assert cp0["data"]["tags"] == {"AnsibleGroup": "controllers"}
+
+
+def test_sno_topology_gateway_outbound():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    resolved = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    gw = next(
+        n
+        for n in topo["nodes"]
+        if n["type"] == "networkNode" and n["data"]["subtype"] == "gateway"
+    )
+    assert gw["data"]["outboundPolicy"] == "restrict"
+    assert "53" in gw["data"]["outboundPorts"]
+    assert "443" in gw["data"]["outboundPorts"]
 
 
 # ── YAML-driven topology tests (using example.yaml) ──

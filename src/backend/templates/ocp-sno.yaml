@@ -1,14 +1,65 @@
 name: ocp-sno
 display_name: "OpenShift SNO (Agent Installer)"
-description: "Single Node OpenShift — 8 vCPU, 32 GB RAM, 50 GB disk"
+description: "Single Node OpenShift — 8 vCPU, 32 GB RAM, 120 GB + 250 GB container storage"
 category: openshift
 install_method: agent
 deploy_time: "~20 min"
-extends: ocp-cluster
-defaults:
-  control_count: 1
-  control_vcpus: 8
-  control_ram_gb: 32
-  control_disk_gb: 120
-  control_schedulable: true
-  worker_count: 0
+
+ocp:
+  cluster_name: ocp
+  base_domain: ocp.local
+  api_vip: 10.0.0.10
+  ingress_vip: 10.0.0.10
+
+gateway:
+  outbound_ports:
+    - 53
+    - 80
+    - 443
+    - 123
+    - icmp
+
+networks:
+  cluster:
+    cidr: 10.0.0.0/24
+    gateway: true
+    domain: ocp.local
+    dns_records:
+      - name: api.ocp.ocp.local
+        ip: 10.0.0.10
+      - name: api-int.ocp.ocp.local
+        ip: 10.0.0.10
+      - name: .apps.ocp.ocp.local
+        ip: 10.0.0.10
+  bmc:
+    type: bmc
+    cidr: 192.168.100.0/24
+
+vms:
+  bastion:
+    role: bastion
+    vcpus: 2
+    ram_gb: 4
+    os: rhel
+    disks:
+      - size_gb: 50
+    nics:
+      - network: cluster
+        ip: 10.0.0.50
+      - network: bmc
+
+  cp-0:
+    role: control-plane
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    bmc_ip: 192.168.100.10
+    disks:
+      - size_gb: 120
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    nics:
+      - network: cluster
+        ip: 10.0.0.10

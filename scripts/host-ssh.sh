@@ -20,10 +20,21 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     exit 1
 fi
 
+BACKGROUND=false
+LOG_FILE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --bg|--background) BACKGROUND=true; shift ;;
+        --log|-l) LOG_FILE="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+
 HOST_PREFIX="${1:-}"
 
 if [[ -z "$HOST_PREFIX" ]]; then
-    echo "Usage: host-ssh.sh <host-id-prefix> [command]"
+    echo "Usage: host-ssh.sh [--bg] [--log <path>] <host-id-prefix> [command]"
     echo "       host-ssh.sh --list"
     echo "       host-ssh.sh pb"
     exit 1
@@ -95,7 +106,14 @@ trap "rm -f '$KEY_FILE'" EXIT
 SSH_OPTS=(-p "$SSH_PORT" -i "$KEY_FILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -o LogLevel=ERROR)
 
 if [[ $# -gt 0 ]]; then
-    exec ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST_IP" "$@"
+    if [[ "$BACKGROUND" == "true" ]]; then
+        if [[ -z "$LOG_FILE" ]]; then
+            LOG_FILE="/tmp/host-ssh-bg-$(date +%s).log"
+        fi
+        ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST_IP" "nohup bash -c '$*' > $LOG_FILE 2>&1 & echo \"PID: \$!\"; echo \"Log: $LOG_FILE\""
+    else
+        exec ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST_IP" "$@"
+    fi
 else
     echo "Connecting to $SSH_USER@$HOST_IP:$SSH_PORT..."
     exec ssh "${SSH_OPTS[@]}" "$SSH_USER@$HOST_IP"

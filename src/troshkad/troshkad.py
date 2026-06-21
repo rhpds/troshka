@@ -58,6 +58,36 @@ _config = {}
 _jobs = {}  # job_id -> Job dict
 _jobs_lock = threading.Lock()
 _draining = False
+_my_pid = os.getpid()
+
+
+def _safe_kill(pid, sig, expected_cmdline_substring=None):
+    """Kill a PID only if it's not us and optionally matches expected command.
+
+    Returns True if the signal was sent, False if skipped.
+    """
+    if pid <= 0:
+        logger.warning("Refusing to kill PID %d (would signal process group)", pid)
+        return False
+    if pid == _my_pid or pid == os.getpid():
+        logger.warning("Refusing to kill own PID %d", pid)
+        return False
+    if expected_cmdline_substring:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode(errors="replace")
+            if expected_cmdline_substring not in cmdline:
+                logger.warning(
+                    "PID %d cmdline '%s' doesn't match expected '%s', skipping kill",
+                    pid,
+                    cmdline[:120],
+                    expected_cmdline_substring,
+                )
+                return False
+        except (FileNotFoundError, PermissionError):
+            pass
+    os.kill(pid, sig)
+    return True
 
 _vm_state_cache = {}
 _vm_state_cache_lock = threading.Lock()
@@ -1191,6 +1221,49 @@ def _handle_vm_reconfigure(job, params):
         state_result.returncode == 0 and "running" in state_result.stdout.lower()
     )
 
+    # Hot-attach new disks without restart if that's the only change
+    if was_active and disks is not None and not restart:
+        cur_xml = subprocess.run(
+            ["virsh", "dumpxml", domain], capture_output=True, text=True, timeout=10
+        ).stdout
+        cur_root = ET.fromstring(cur_xml)
+        cur_disk_paths = {
+            d.find("source").get("file")
+            for d in cur_root.find("devices").findall("disk")
+            if d.get("device") != "cdrom" and d.find("source") is not None
+        }
+        new_disks = [d for d in disks if d["path"] not in cur_disk_paths]
+        if new_disks and not vcpus and not ram_mb and not nics:
+            target_letters = "bcdefghijklmnop"
+            used = {
+                d.find("target").get("dev")
+                for d in cur_root.find("devices").findall("disk")
+                if d.find("target") is not None
+            }
+            for d in new_disks:
+                tgt = None
+                for letter in target_letters:
+                    dev = f"vd{letter}"
+                    if dev not in used:
+                        tgt = dev
+                        used.add(dev)
+                        break
+                if not tgt:
+                    continue
+                _run_cmd(
+                    job,
+                    [
+                        "virsh", "attach-disk", domain, d["path"], tgt,
+                        "--driver", "qemu",
+                        "--subdriver", d.get("format", "qcow2"),
+                        "--targetbus", d.get("bus", "virtio"),
+                        "--persistent",
+                    ],
+                    timeout=30,
+                )
+                _job_log(job, f"Hot-attached {d['path']} as {tgt} to {domain}")
+            return {"domain": domain, "status": "reconfigured", "restarted": False}
+
     if restart and was_active:
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
 
@@ -2302,7 +2375,7 @@ def _handle_network_full_setup(job, params):
         bmc_bridge = f"br-bmc-{pid}"
         conf_lines = [
             f"interface={bridge}",
-            "bind-dynamic",
+            "bind-interfaces",
             "except-interface=lo",
             f"no-dhcp-interface={bmc_bridge}",
             "no-resolv",
@@ -5157,49 +5230,57 @@ def _drain_and_update(script_path, new_path, force):
     global _draining
     _draining = True
     _drain_cancel.clear()
-    logger.info("Drain started, force=%s", force)
+    logger.info("Update drain started, force=%s", force)
 
-    # Short-lived polling jobs that should never block an update
-    _SKIP_DRAIN = {"vms/state", "host/disk-usage", "gc/discover"}
-    if not force:
-        start = time.time()
-        while time.time() - start < 10:
-            with _jobs_lock:
-                blocking = [
-                    j
-                    for j in _jobs.values()
-                    if j["status"] == "running"
-                    and j.get("command", "") not in _SKIP_DRAIN
-                ]
-            if not blocking:
-                break
-            if _drain_cancel.is_set():
-                logger.info("Drain cancelled — new work arrived")
-                _draining = False
-                try:
-                    os.remove(new_path)
-                except OSError:
-                    pass
-                return
-            logger.info(
-                "Drain waiting on %d job(s): %s",
-                len(blocking),
-                ", ".join(j.get("command", "?") for j in blocking),
-            )
-            time.sleep(1)
+    _SKIP_DRAIN = {"vms/state", "vms/states", "host/disk-usage", "gc/discover"}
+    drain_timeout = 5 if force else 120
+
+    start = time.time()
+    while time.time() - start < drain_timeout:
+        with _jobs_lock:
+            blocking = [
+                j
+                for j in _jobs.values()
+                if j["status"] == "running"
+                and j.get("command", "") not in _SKIP_DRAIN
+            ]
+        if not blocking:
+            break
+        if _drain_cancel.is_set():
+            logger.info("Update drain cancelled — new work arrived")
+            _draining = False
+            try:
+                os.remove(new_path)
+            except OSError:
+                pass
+            return
+        logger.info(
+            "Update drain waiting on %d job(s): %s",
+            len(blocking),
+            ", ".join(
+                f"{j['job_id'][:8]}({j.get('command', '?')})" for j in blocking
+            ),
+        )
+        time.sleep(2)
 
     if _drain_cancel.is_set():
-        logger.info("Drain cancelled before restart")
+        logger.info("Update drain cancelled before restart")
         _draining = False
         return
 
+    # Terminate any jobs that didn't finish in time
     with _jobs_lock:
         for job in _jobs.values():
             if job["status"] == "running" and job.get("_process"):
                 try:
                     job["_process"].terminate()
-                except Exception as e:
-                    logger.warning("Failed to terminate job %s: %s", job["job_id"], e)
+                    logger.warning(
+                        "Terminated job %s for update (%s)",
+                        job["job_id"][:8],
+                        job.get("command", "?"),
+                    )
+                except Exception:
+                    pass
 
     _do_update_restart(script_path, new_path)
 
@@ -5384,11 +5465,83 @@ def create_server(config):
 # ── Main ──
 
 
+def _drain_running_jobs(timeout=120):
+    """Wait for running jobs to finish, kill any remaining after timeout."""
+    _SKIP_DRAIN = {"vms/state", "vms/states", "host/disk-usage", "gc/discover"}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _jobs_lock:
+            running = [
+                j
+                for j in _jobs.values()
+                if j["status"] == "running"
+                and j.get("command", "") not in _SKIP_DRAIN
+            ]
+        if not running:
+            break
+        names = [
+            f"{j['job_id'][:8]}({j.get('command', '?')})" for j in running
+        ]
+        logger.info(
+            "Draining: %d job(s) still running: %s", len(running), ", ".join(names)
+        )
+        time.sleep(2)
+
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job["status"] == "running" and job.get("_process"):
+                try:
+                    job["_process"].kill()
+                    logger.warning(
+                        "Killed job %s subprocess (drain timeout)",
+                        job["job_id"][:8],
+                    )
+                except Exception:
+                    pass
+
+
 def main():
     global _config, _start_time
     conf_path = sys.argv[1] if len(sys.argv) > 1 else "/opt/troshka/troshkad.conf"
     _config = load_config(conf_path)
     _start_time = time.time()
+
+    # Global exception handler — log unhandled exceptions instead of silent exit
+    def _unhandled_exception(exc_type, exc_value, exc_tb):
+        if exc_type is KeyboardInterrupt:
+            return
+        logger.critical(
+            "Unhandled exception in main thread",
+            exc_info=(exc_type, exc_value, exc_tb),
+        )
+
+    sys.excepthook = _unhandled_exception
+
+    def _thread_exception(args):
+        if args.exc_type is SystemExit:
+            return
+        logger.error(
+            "Unhandled exception in thread %s: %s",
+            args.thread.name if args.thread else "unknown",
+            args.exc_value,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _thread_exception
+
+    # Install signal handler EARLY — before any restore code that might
+    # accidentally SIGTERM us (stale PID file with recycled PID).
+    _server_ref = [None]
+
+    def shutdown(signum, frame):
+        global _draining
+        logger.info("Received signal %d, requesting shutdown", signum)
+        _draining = True
+        if _server_ref[0]:
+            threading.Thread(target=_server_ref[0].shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
 
     cleanup_thread = threading.Thread(target=_job_cleanup_loop, daemon=True)
     cleanup_thread.start()
@@ -5407,39 +5560,16 @@ def main():
     _start_libvirt_event_loop()
 
     server = create_server(_config)
+    _server_ref[0] = server
     logger.info("troshkad %s listening on port %d", VERSION, _config["port"])
-
-    def shutdown(signum, frame):
-        logger.info("Received signal %d, shutting down", signum)
-        # Kill all running job subprocesses immediately
-        with _jobs_lock:
-            for job in _jobs.values():
-                if job["status"] == "running" and job.get("_process"):
-                    try:
-                        job["_process"].kill()
-                        logger.info("Killed job %s subprocess", job["job_id"])
-                    except Exception:
-                        pass
-
-        # Shutdown server in a thread with a hard timeout
-        def _do_shutdown():
-            server.shutdown()
-
-        t = threading.Thread(target=_do_shutdown, daemon=True)
-        t.start()
-        t.join(timeout=5)
-        if t.is_alive():
-            logger.warning("Server shutdown timed out after 5s, forcing exit")
-            os._exit(0)
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        logger.info("Server stopped accepting requests, draining jobs...")
+        _drain_running_jobs(timeout=120)
         server.server_close()
         logger.info("troshkad stopped")
 
@@ -5615,6 +5745,9 @@ def _watchdog_loop():
     global _watchdog_http_failures
     time.sleep(10)
     while True:
+        if _draining:
+            time.sleep(30)
+            continue
         # Self-health check: verify our HTTP server is responsive
         try:
             import socket as _sock
@@ -5625,11 +5758,14 @@ def _watchdog_loop():
         except Exception:
             _watchdog_http_failures += 1
             logger.warning(
-                "watchdog: HTTP server self-check failed (%d/3)",
+                "watchdog: HTTP server self-check failed (%d/6)",
                 _watchdog_http_failures,
             )
-            if _watchdog_http_failures >= 3:
-                logger.error("watchdog: HTTP server unresponsive, forcing restart")
+            if _watchdog_http_failures >= 6:
+                logger.error(
+                    "watchdog: HTTP server unresponsive for %d checks, forcing restart",
+                    _watchdog_http_failures,
+                )
                 os._exit(1)
 
         try:
@@ -5711,7 +5847,7 @@ def _restore_bmc_services():
                     try:
                         with open(pid_path) as f:
                             old_pid = int(f.read().strip())
-                        os.kill(old_pid, signal.SIGTERM)
+                        _safe_kill(old_pid, signal.SIGTERM, "sushy-emulator")
                     except (ValueError, ProcessLookupError, PermissionError):
                         pass
                 proc = subprocess.Popen(
@@ -5745,13 +5881,13 @@ def _restore_bmc_services():
                 try:
                     with open(vbmcd_pid_path) as f:
                         old_pid = int(f.read().strip())
-                    os.kill(old_pid, signal.SIGTERM)
-                    for _ in range(10):
-                        time.sleep(0.5)
-                        try:
-                            os.kill(old_pid, 0)
-                        except ProcessLookupError:
-                            break
+                    if _safe_kill(old_pid, signal.SIGTERM, "vbmcd"):
+                        for _ in range(10):
+                            time.sleep(0.5)
+                            try:
+                                os.kill(old_pid, 0)
+                            except ProcessLookupError:
+                                break
                 except (ValueError, ProcessLookupError, PermissionError):
                     pass
                 try:
@@ -5908,7 +6044,7 @@ def _handle_bmc_setup(job, params):
         dnsmasq_lease = f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases"
         conf_lines = [
             f"interface={bridge}",
-            "bind-dynamic",
+            "bind-interfaces",
             "except-interface=lo",
             "no-resolv",
             "no-hosts",
@@ -6620,9 +6756,11 @@ def _handle_vm_ssh_exec(job, params):
             text=True,
             timeout=timeout_secs + 5,
         )
-        output = result.stdout.strip()
-        error = result.stderr.strip() if result.returncode != 0 else ""
-        return {"output": output, "error": error, "exit_code": result.returncode}
+        return {
+            "output": result.stdout,
+            "error": result.stderr,
+            "exit_code": result.returncode,
+        }
     finally:
         if key_file and os.path.exists(key_file.name):
             os.unlink(key_file.name)
