@@ -248,6 +248,7 @@ def _extract_vms(topology: dict) -> list[dict]:
                 "secure_boot": data.get("secureBoot", False),
                 "video_model": data.get("videoModel", "virtio"),
                 "input_model": data.get("inputModel", "virtio"),
+                "uuid": data.get("uuid"),
             }
         )
     return vms
