@@ -148,16 +148,25 @@ def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dic
                 continue
             if not (tmpl.get("extends") or tmpl.get("vms")):
                 continue
-            result.append(
-                {
-                    "id": tmpl.get("name", f.stem),
-                    "name": tmpl.get("display_name", tmpl.get("name", f.stem)),
-                    "description": tmpl.get("description", ""),
-                    "category": tmpl.get("category", ""),
-                    "install_method": tmpl.get("install_method", ""),
-                    "deploy_time": tmpl.get("deploy_time", ""),
-                }
-            )
+            bastion_image_name = ""
+            for vm_cfg in (tmpl.get("vms") or {}).values():
+                if vm_cfg.get("role") == "bastion":
+                    for disk in vm_cfg.get("disks", []):
+                        if disk.get("library_item_name"):
+                            bastion_image_name = disk["library_item_name"]
+                            break
+                    break
+            entry = {
+                "id": tmpl.get("name", f.stem),
+                "name": tmpl.get("display_name", tmpl.get("name", f.stem)),
+                "description": tmpl.get("description", ""),
+                "category": tmpl.get("category", ""),
+                "install_method": tmpl.get("install_method", ""),
+                "deploy_time": tmpl.get("deploy_time", ""),
+            }
+            if bastion_image_name:
+                entry["bastion_image_name"] = bastion_image_name
+            result.append(entry)
         except Exception as e:
             result.append(
                 {
@@ -476,6 +485,14 @@ def _generate_topology_from_vms(
             "bootMethod": "disk",
             "powerOnAtDeploy": power_on,
         }
+        if vm_cfg.get("uuid"):
+            try:
+                uuid.UUID(vm_cfg["uuid"])
+            except ValueError:
+                raise ValueError(
+                    f"VM '{vm_name}': invalid uuid '{vm_cfg['uuid']}' — must be UUID format"
+                )
+            vm_data["uuid"] = vm_cfg["uuid"]
         if bmc_ip:
             vm_data["bmcIp"] = bmc_ip
         if vm_cfg.get("pxe_boot_iso_id"):
@@ -595,8 +612,22 @@ def _generate_topology_from_vms(
             so["delay"] = entry["delay"]
         start_order.append(so)
 
-    # Apply top-level dns_records (with target resolution)
-    top_dns = tmpl.get("dns_records", [])
+    # Apply top-level dns_records (with target resolution) + auto-generate OCP records
+    top_dns = list(tmpl.get("dns_records", []))
+    ocp_cfg = tmpl.get("ocp", {})
+    if ocp_cfg.get("cluster_name") and ocp_cfg.get("base_domain"):
+        cn = ocp_cfg["cluster_name"]
+        bd = ocp_cfg["base_domain"]
+        api_vip = ocp_cfg.get("api_vip", "")
+        ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+        if api_vip:
+            for rec_name in [f"api.{cn}.{bd}", f"api-int.{cn}.{bd}"]:
+                if not any(r.get("name") == rec_name for r in top_dns):
+                    top_dns.append({"name": rec_name, "ip": api_vip})
+            apps_name = f".apps.{cn}.{bd}"
+            if not any(r.get("name") == apps_name for r in top_dns):
+                top_dns.append({"name": apps_name, "ip": ingress_vip})
+
     if top_dns:
         vm_ips = {}
         for n in nodes:
@@ -611,16 +642,28 @@ def _generate_topology_from_vms(
                 and net_node.get("data", {}).get("networkType") != "bmc"
             ):
                 existing = net_node["data"].get("dnsRecords", [])
+                existing_names = {r["name"] for r in existing}
                 for rec in top_dns:
                     target = rec.get("target", "")
                     ip = rec.get("ip", "")
                     if target and not ip:
                         ip = vm_ips.get(target, "")
-                    if ip and rec.get("name"):
+                    if ip and rec.get("name") and rec["name"] not in existing_names:
                         existing.append({"name": rec["name"], "ip": ip})
                 if existing:
                     net_node["data"]["dnsRecords"] = existing
                 break
+
+    # Validate UUID uniqueness
+    seen_uuids = {}
+    for n in nodes:
+        if n.get("type") == "vmNode" and n.get("data", {}).get("uuid"):
+            u = n["data"]["uuid"]
+            if u in seen_uuids:
+                raise ValueError(
+                    f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{n['data'].get('name')}'"
+                )
+            seen_uuids[u] = n["data"].get("name", "")
 
     # Build hiddenNodeIds from template
     hidden_ids = []

@@ -772,6 +772,7 @@ def _handle_vm_create(job, params):
     boot_devs = params.get("boot_devs", [])
     video_model = params.get("video_model", "virtio")
     input_model = params.get("input_model", "virtio")
+    domain_uuid = params.get("uuid")
 
     cmd = [
         "virt-install",
@@ -788,6 +789,9 @@ def _handle_vm_create(job, params):
         "--check",
         "mac_in_use=off",
     ]
+
+    if domain_uuid:
+        cmd.extend(["--uuid", domain_uuid])
 
     # Build --boot flag: firmware + boot device order
     boot_parts = []

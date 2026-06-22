@@ -1,6 +1,6 @@
 name: bastion-builder
 display_name: "Bastion Builder"
-description: "Build a pre-configured bastion image with packages, desktop, and tools. Save as library image for fast bastion deploys."
+description: "Build a pre-configured bastion image with packages, desktop, tools, and GNOME defaults. Save as library image for fast bastion deploys."
 category: utility
 
 networks:
@@ -17,6 +17,7 @@ vms:
     os: rhel10
     disks:
       - size_gb: 80
+        library_item_name: "RHEL 10.2 KVM Guest Image"
     nics:
       - network: mgmt
         ip: 10.0.0.10
@@ -28,6 +29,19 @@ vms:
       - nmstate
       - podman
       - skopeo
+      - python3
+      - unzip
+      - bash-completion
+      - tmux
+      - wget
+      - nano
+      - vim-enhanced
+      - httpd-tools
+      - tree
+      - jq
+      - acl
+      - dconf
+      - gdm
     user_data: |
       mounts:
         - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]
@@ -45,6 +59,88 @@ vms:
       runcmd:
         - dnf groupinstall -y "Server with GUI"
         - dnf install -y firefox ptyxis gnome-shell-extension-dash-to-dock google-noto-sans-fonts google-noto-sans-mono-fonts dejavu-sans-fonts desktop-backgrounds-gnome
+        - pip install kubernetes selenium
+        - dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null || true
+        - systemctl disable --now rhsmcertd 2>/dev/null; systemctl mask rhsmcertd 2>/dev/null || true
+        - sed -i 's|^ExecStart=.*gsd-subman|#ExecStart=/usr/libexec/gsd-subman|' /lib/systemd/user/org.gnome.SettingsDaemon.Subscription.service 2>/dev/null || true
+        - mkdir -p /etc/skel/.config && echo yes > /etc/skel/.config/gnome-initial-setup-done
+        - |
+          mkdir -p /etc/dconf/db/local.d /etc/dconf/profile
+          cat > /etc/dconf/profile/user << 'DCONFPROFILE'
+          user-db:user
+          system-db:local
+          DCONFPROFILE
+          cat > /etc/dconf/db/local.d/00-bastion << 'DCONFEOF'
+          [org/gnome/shell]
+          favorite-apps=['org.gnome.Ptyxis.desktop', 'firefox.desktop']
+
+          [org/gnome/desktop/interface]
+          overlay-scrolling=false
+          color-scheme='prefer-dark'
+          gtk-theme='Adwaita-dark'
+
+          [org/gnome/desktop/screensaver]
+          lock-enabled=false
+
+          [org/gnome/desktop/session]
+          idle-delay=uint32 0
+
+          [org/gnome/settings-daemon/plugins/power]
+          sleep-inactive-ac-type='nothing'
+          idle-dim=false
+
+          [org/gnome/mutter]
+          dynamic-workspaces=false
+
+          [org/gnome/desktop/wm/preferences]
+          num-workspaces=1
+          button-layout='appmenu:minimize,maximize,close'
+
+          [org/gnome/shell/extensions/dash-to-dock]
+          dock-fixed=false
+          autohide=true
+          intellihide=true
+          show-trash=false
+          show-mounts=false
+          DCONFEOF
+          dconf update
+        - |
+          MONITORS_XML='<monitors version="2"><configuration><logicalmonitor><x>0</x><y>0</y><scale>1</scale><primary>yes</primary><monitor><monitorspec><connector>Virtual-1</connector><vendor>unknown</vendor><product>unknown</product><serial>unknown</serial></monitorspec><mode><width>1920</width><height>1080</height><rate>60</rate></mode></monitor></logicalmonitor></configuration></monitors>'
+          mkdir -p /etc/skel/.config /var/lib/gdm/.config
+          echo "$MONITORS_XML" > /etc/skel/.config/monitors.xml
+          echo "$MONITORS_XML" > /var/lib/gdm/.config/monitors.xml
+          chown -R gdm:gdm /var/lib/gdm/.config
+        - sed -i '/^\[daemon\]/a AutomaticLoginEnable=True\nAutomaticLogin=cloud-user' /etc/gdm/custom.conf
         - systemctl set-default graphical.target
         - systemctl enable gdm.service
-        - pip install kubernetes
+        - |
+          mkdir -p /etc/firefox/policies
+          cat > /etc/firefox/policies/policies.json << 'FPEOF'
+          {
+            "policies": {
+              "OverrideFirstRunPage": "",
+              "OverridePostUpdatePage": "",
+              "UserMessaging": {"WhatsNew": false, "ExtensionRecommendations": false, "FeatureRecommendations": false, "UrlbarInterventions": false, "SkipOnboarding": true, "MoreFromMozilla": false},
+              "DisableTelemetry": true,
+              "Certificates": {"ImportEnterpriseRoots": true},
+              "NoDefaultBookmarks": true,
+              "DontCheckDefaultBrowser": true,
+              "DisableAppUpdate": true
+            }
+          }
+          FPEOF
+        - |
+          FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)
+          if [ -n "$FIREFOX_DIR" ]; then
+            mkdir -p $FIREFOX_DIR/defaults/pref
+            cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'
+          pref("browser.sessionstore.resume_from_crash", false);
+          pref("browser.shell.checkDefaultBrowser", false);
+          pref("browser.startup.homepage_override.mstone", "ignore");
+          pref("browser.disableResetPrompt", true);
+          pref("browser.slowStartup.notificationDisabled", true);
+          pref("browser.laterrun.enabled", false);
+          ACEOF
+          fi
+        - curl -sL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | tar xz -C /usr/local/bin/
+        - touch /etc/troshka-bastion-built

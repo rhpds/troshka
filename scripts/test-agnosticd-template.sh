@@ -95,12 +95,15 @@ if [ -d "$HOME/troshka-ansible-collection" ]; then
 fi
 
 # --- Run ---
+LOG_FILE="/tmp/troshka-ran-${GUID}.log"
 echo ""
 echo "=== Running agnosticd-v2 lifecycle ==="
+echo "  Log: $LOG_FILE"
 echo ""
 
 cd "$AGD_DIR"
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+export PYTHONUNBUFFERED=1
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
@@ -110,13 +113,13 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_url="$TROSHKA_API_URL" \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
-    -e "troshka_project_name=RAN $GUID" \
+    -e troshka_project_name="RAN_${GUID}" \
     -e output_dir=/tmp/agnosticd-output \
     ${PULL_SECRET_FILE:+-e @/tmp/troshka-pull-secret-vars.yaml} \
     ${PTR_CREDS_FILE:+-e @"$PTR_CREDS_FILE"} \
-    -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 | tee "$LOG_FILE"
 
-STATUS=$?
+STATUS=${PIPESTATUS[0]}
 
 # --- Cleanup ---
 rm -f "$MERGED_FILE"

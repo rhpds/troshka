@@ -1230,6 +1230,7 @@ def _create_vm_via_troshkad(
 
     params = {
         "domain_name": vm_name,
+        "uuid": vm.get("uuid") or vm["node_id"],
         "vcpus": vm["vcpus"],
         "ram_mb": vm["ram_gb"] * 1024,
         "disks": disks,

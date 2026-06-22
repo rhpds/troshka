@@ -63,6 +63,7 @@ interface TemplateSummary {
   description: string;
   category: string;
   deploy_time?: string;
+  bastion_image_name?: string;
 }
 
 function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
@@ -345,6 +346,17 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                     setName(versionedName(t.name, ocpVersion));
                     setNameAutoSet(true);
                     setMode("template");
+                    if (t.bastion_image_name) {
+                      const match = libraryImages.find((i) => i.name === t.bastion_image_name);
+                      if (match) {
+                        setBastionImageId(match.id);
+                        const ver = match.name.match(/(\d+\.\d+)/);
+                        if (ver) {
+                          const iso = libraryIsos.find((i) => i.name.includes(ver[1]) && /dvd|binary/i.test(i.name));
+                          if (iso) setBastionIsoId(iso.id);
+                        }
+                      }
+                    }
                   }}
                 >
                   <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}>

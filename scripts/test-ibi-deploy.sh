@@ -94,13 +94,16 @@ if [ -d "$HOME/troshka-ansible-collection" ]; then
 fi
 
 # --- Run ---
+LOG_FILE="/tmp/troshka-ibi-${GUID}.log"
 echo ""
 echo "=== Running agnosticd-v2 lifecycle (IBI SNO) ==="
 echo "  Expected time: ~20-25 min (5 min infra + 15 min IBI)"
+echo "  Log: $LOG_FILE"
 echo ""
 
 cd "$AGD_DIR"
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+export PYTHONUNBUFFERED=1
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
@@ -110,13 +113,13 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_url="$TROSHKA_API_URL" \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
-    -e "troshka_project_name=IBI $GUID" \
+    -e troshka_project_name="IBI_${GUID}" \
     -e output_dir=/tmp/agnosticd-output \
     -e @/tmp/troshka-pull-secret-vars.yaml \
     ${PTR_CREDS_FILE:+-e @"$PTR_CREDS_FILE"} \
-    -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 | tee "$LOG_FILE"
 
-STATUS=$?
+STATUS=${PIPESTATUS[0]}
 
 # --- Cleanup ---
 rm -f "$MERGED_FILE"
