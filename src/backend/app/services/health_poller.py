@@ -23,7 +23,7 @@ _INTERVAL_SECONDS = (
     getattr(_health_config, "interval_seconds", 30) if _health_config else 30
 )
 _DISCONNECT_AFTER_SECONDS = (
-    getattr(_health_config, "disconnect_after_seconds", 90) if _health_config else 90
+    getattr(_health_config, "disconnect_after_seconds", 180) if _health_config else 180
 )
 
 _WARNING_PCT = 85
@@ -231,20 +231,16 @@ def _poll_hosts():
                         elapsed = (now_dt - host.last_health_at).total_seconds()
                         if elapsed > _DISCONNECT_AFTER_SECONDS:
                             host.agent_status = "disconnected"
-                            _skip_until[host.id] = time.time() + 300
+                            _skip_until[host.id] = time.time() + 30
                             logger.warning(
-                                "Host %s marked disconnected (no health for %ds, backing off 5m)",
+                                "Host %s marked disconnected (no health for %ds, retrying in 30s)",
                                 host.id[:8],
                                 int(elapsed),
                             )
                         else:
-                            _skip_until[host.id] = time.time() + 60
+                            _skip_until[host.id] = time.time() + 15
                     elif host.agent_status == "disconnected":
-                        prev = _skip_until.get(host.id, 0)
-                        elapsed_since_skip = max(now - prev, 0)
-                        backoff = min(elapsed_since_skip * 2, 1800)
-                        backoff = max(backoff, 300)
-                        _skip_until[host.id] = time.time() + backoff
+                        _skip_until[host.id] = time.time() + 30
                     else:
                         _skip_until[host.id] = time.time() + 60
             except Exception:

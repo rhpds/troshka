@@ -1,0 +1,50 @@
+name: bastion-builder
+display_name: "Bastion Builder"
+description: "Build a pre-configured bastion image with packages, desktop, and tools. Save as library image for fast bastion deploys."
+category: utility
+
+networks:
+  mgmt:
+    cidr: 10.0.0.0/24
+    dhcp: true
+    gateway: true
+
+vms:
+  bastion:
+    role: bastion
+    vcpus: 4
+    ram_gb: 8
+    os: rhel10
+    disks:
+      - size_gb: 80
+    nics:
+      - network: mgmt
+        ip: 10.0.0.10
+    packages:
+      - git
+      - ansible-core
+      - python3-pip
+      - bind-utils
+      - nmstate
+      - podman
+      - skopeo
+    user_data: |
+      mounts:
+        - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]
+      yum_repos:
+        rhel-dvd-baseos:
+          name: RHEL DVD BaseOS
+          baseurl: file:///mnt/rhel-dvd/BaseOS
+          enabled: true
+          gpgcheck: false
+        rhel-dvd-appstream:
+          name: RHEL DVD AppStream
+          baseurl: file:///mnt/rhel-dvd/AppStream
+          enabled: true
+          gpgcheck: false
+      runcmd:
+        - dnf groupinstall -y "Server with GUI"
+        - dnf install -y firefox ptyxis gnome-shell-extension-dash-to-dock google-noto-sans-fonts google-noto-sans-mono-fonts dejavu-sans-fonts desktop-backgrounds-gnome
+        - systemctl set-default graphical.target
+        - systemctl enable gdm.service
+        - pip install kubernetes

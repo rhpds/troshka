@@ -142,16 +142,31 @@ def list_yaml_templates(templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> list[dic
     result = []
     templates_path = Path(templates_dir)
     for f in sorted(templates_path.glob("*.yaml")):
-        tmpl = yaml.safe_load(f.read_text())
-        if tmpl.get("extends") or tmpl.get("vms"):
+        try:
+            tmpl = yaml.safe_load(f.read_text())
+            if not isinstance(tmpl, dict):
+                continue
+            if not (tmpl.get("extends") or tmpl.get("vms")):
+                continue
             result.append(
                 {
-                    "id": tmpl["name"],
-                    "name": tmpl.get("display_name", tmpl["name"]),
+                    "id": tmpl.get("name", f.stem),
+                    "name": tmpl.get("display_name", tmpl.get("name", f.stem)),
                     "description": tmpl.get("description", ""),
                     "category": tmpl.get("category", ""),
-                    "install_method": tmpl.get("install_method", "agent"),
+                    "install_method": tmpl.get("install_method", ""),
                     "deploy_time": tmpl.get("deploy_time", ""),
+                }
+            )
+        except Exception as e:
+            result.append(
+                {
+                    "id": f.stem,
+                    "name": f"{f.stem} (error)",
+                    "description": f"Failed to load: {e}",
+                    "category": "error",
+                    "install_method": "",
+                    "deploy_time": "",
                 }
             )
     return result
@@ -579,6 +594,33 @@ def _generate_topology_from_vms(
         if entry.get("delay"):
             so["delay"] = entry["delay"]
         start_order.append(so)
+
+    # Apply top-level dns_records (with target resolution)
+    top_dns = tmpl.get("dns_records", [])
+    if top_dns:
+        vm_ips = {}
+        for n in nodes:
+            if n.get("type") == "vmNode":
+                nics = n.get("data", {}).get("nics", [])
+                if nics:
+                    vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
+        for net_node in nodes:
+            if (
+                net_node.get("type") == "networkNode"
+                and net_node.get("data", {}).get("subtype") == "network"
+                and net_node.get("data", {}).get("networkType") != "bmc"
+            ):
+                existing = net_node["data"].get("dnsRecords", [])
+                for rec in top_dns:
+                    target = rec.get("target", "")
+                    ip = rec.get("ip", "")
+                    if target and not ip:
+                        ip = vm_ips.get(target, "")
+                    if ip and rec.get("name"):
+                        existing.append({"name": rec["name"], "ip": ip})
+                if existing:
+                    net_node["data"]["dnsRecords"] = existing
+                break
 
     # Build hiddenNodeIds from template
     hidden_ids = []

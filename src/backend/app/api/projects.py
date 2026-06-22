@@ -326,25 +326,48 @@ def create_project_from_template(
 
     from app.services.ocp.agent_template import customize_topology as customize_ocp
 
-    customize_ocp(
-        topology,
-        template_id,
-        {
-            "cluster_name": body.get("cluster_name", "ocp"),
-            "base_domain": body.get("base_domain", "ocp.local"),
-            "ocp_version": body.get("ocp_version", "4.20"),
-            "common_password": common_password,
-            "pull_secret_json": pull_secret_json,
-            "ssh_pub_key": ssh_pub_key,
-            "ssh_key_ids": ssh_key_ids,
-            "ssh_keys": ssh_keys,
-            "bastion_image": bastion_image,
-            "bastion_iso": bastion_iso,
-            "bastion_bmc_ip": bmc_ip_raw,
-            "auto_install_ocp": body.get("auto_install_ocp", True),
-            "resolved": resolved,
-        },
-    )
+    if resolved.get("category") != "openshift":
+        # Non-OCP template — attach bastion image, set password and SSH keys
+        from app.services.ocp.agent_template import (
+            _attach_bastion_image,
+            _attach_bastion_iso,
+        )
+
+        _attach_bastion_image(topology, bastion_image)
+        _attach_bastion_iso(topology, bastion_iso)
+        for node in topology.get("nodes", []):
+            if (
+                node.get("type") == "vmNode"
+                and node.get("data", {}).get("name") == "bastion"
+            ):
+                node["data"]["cloudInit"] = True
+                if common_password:
+                    node["data"]["ciCloudUserPassword"] = common_password
+                if ssh_key_ids:
+                    node["data"]["ciSshKeyIds"] = ssh_key_ids
+                if ssh_keys:
+                    node["data"]["ciSshKeys"] = ssh_keys
+                break
+    else:
+        customize_ocp(
+            topology,
+            template_id,
+            {
+                "cluster_name": body.get("cluster_name", "ocp"),
+                "base_domain": body.get("base_domain", "ocp.local"),
+                "ocp_version": body.get("ocp_version", "4.20"),
+                "common_password": common_password,
+                "pull_secret_json": pull_secret_json,
+                "ssh_pub_key": ssh_pub_key,
+                "ssh_key_ids": ssh_key_ids,
+                "ssh_keys": ssh_keys,
+                "bastion_image": bastion_image,
+                "bastion_iso": bastion_iso,
+                "bastion_bmc_ip": bmc_ip_raw,
+                "auto_install_ocp": body.get("auto_install_ocp", True),
+                "resolved": resolved,
+            },
+        )
 
     desc_parts = [resolved.get("description", "")]
     cluster_name = body.get("cluster_name", "ocp")

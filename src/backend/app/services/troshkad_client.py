@@ -308,7 +308,12 @@ def start_job(host, path, params, request_timeout=30):
     while True:
         try:
             result = troshkad_request(
-                host, "POST", f"/commands{path}", body=params, timeout=request_timeout
+                host,
+                "POST",
+                f"/commands{path}",
+                body=params,
+                timeout=request_timeout,
+                allow_disconnected=True,
             )
             return result["job_id"]
         except TroshkadError as e:
@@ -316,6 +321,7 @@ def start_job(host, path, params, request_timeout=30):
                 e.status_code == 503
                 or "Cannot connect" in str(e)
                 or "timed out" in str(e)
+                or "is disconnected" in str(e)
             )
             if retryable:
                 if time.time() >= deadline:
@@ -345,7 +351,9 @@ def start_job(host, path, params, request_timeout=30):
 
 def poll_job(host, job_id):
     """Poll job status on a host. Returns job dict."""
-    return troshkad_request(host, "GET", f"/jobs/{job_id}", timeout=15)
+    return troshkad_request(
+        host, "GET", f"/jobs/{job_id}", timeout=15, allow_disconnected=True
+    )
 
 
 def cancel_job(host, job_id):

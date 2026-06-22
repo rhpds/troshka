@@ -792,10 +792,14 @@ def _handle_vm_create(job, params):
     # Build --boot flag: firmware + boot device order
     boot_parts = []
     if firmware == "uefi":
-        boot_parts.append("uefi")
         if secure_boot:
-            boot_parts.append("firmware.feature0.name=secure-boot")
-            boot_parts.append("firmware.feature0.enabled=yes")
+            boot_parts.append("uefi")
+        else:
+            boot_parts.append("loader=/usr/share/edk2/ovmf/OVMF_CODE.fd")
+            boot_parts.append("loader.readonly=yes")
+            boot_parts.append("loader.type=pflash")
+            boot_parts.append("loader.secure=no")
+            boot_parts.append("nvram.template=/usr/share/edk2/ovmf/OVMF_VARS.fd")
     if boot_devs:
         boot_parts.extend(boot_devs)
     else:
@@ -1518,6 +1522,28 @@ def _handle_disk_create(job, params):
     if backing:
         backing = _validate_path(backing)
         _job_log(job, f"Using backing image: {os.path.basename(backing)}")
+        # Ensure overlay is at least as large as backing file
+        try:
+            info = subprocess.run(
+                ["qemu-img", "info", "--output=json", backing],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if info.returncode == 0:
+                import json as _json
+
+                backing_vsize = _json.loads(info.stdout).get("virtual-size", 0)
+                requested = size_gb * 1073741824
+                if requested < backing_vsize:
+                    backing_gb = (backing_vsize + 1073741823) // 1073741824
+                    _job_log(
+                        job,
+                        f"Overlay {size_gb}G < backing {backing_gb}G, expanding to {backing_gb}G",
+                    )
+                    size_gb = backing_gb
+        except Exception:
+            pass
         cmd.extend(["-b", backing, "-F", fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
@@ -1830,7 +1856,7 @@ def _handle_pxe_setup(job, params):
             try:
                 with open(dnsmasq_pid) as f:
                     old_pid = int(f.read().strip())
-                os.kill(old_pid, signal.SIGTERM)
+                _safe_kill(old_pid, signal.SIGTERM)
                 import time as _t2
 
                 _t2.sleep(0.5)
@@ -1850,7 +1876,7 @@ def _handle_pxe_setup(job, params):
         try:
             with open(pid_file) as f:
                 old_pid = int(f.read().strip())
-            os.kill(old_pid, signal.SIGTERM)
+            _safe_kill(old_pid, signal.SIGTERM)
         except (ValueError, ProcessLookupError, PermissionError):
             pass
 
@@ -2435,7 +2461,7 @@ def _handle_network_full_setup(job, params):
             try:
                 with open(dnsmasq_pid) as f:
                     old_pid = int(f.read().strip())
-                os.kill(old_pid, signal.SIGTERM)
+                _safe_kill(old_pid, signal.SIGTERM)
                 for _ in range(20):
                     try:
                         os.kill(old_pid, 0)
@@ -2443,7 +2469,7 @@ def _handle_network_full_setup(job, params):
                     except ProcessLookupError:
                         break
                 else:
-                    os.kill(old_pid, signal.SIGKILL)
+                    _safe_kill(old_pid, signal.SIGKILL)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
             try:
@@ -3315,7 +3341,7 @@ def _handle_network_full_teardown(job, params):
         try:
             with open(pidfile) as f:
                 dnsmasq_pid = int(f.read().strip())
-            os.kill(dnsmasq_pid, 9)
+            _safe_kill(dnsmasq_pid, 9)
             _job_log(job, f"Killed dnsmasq PID {dnsmasq_pid}")
         except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
             pass
@@ -3428,7 +3454,7 @@ def _handle_network_full_teardown(job, params):
             try:
                 with open(pid_file) as f:
                     http_pid = int(f.read().strip())
-                os.kill(http_pid, signal.SIGTERM)
+                _safe_kill(http_pid, signal.SIGTERM)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
             try:
@@ -4040,7 +4066,7 @@ def _handle_gc_clean(job, params):
                     try:
                         with open(pid_path) as f:
                             p = int(f.read().strip())
-                        os.kill(p, signal.SIGTERM)
+                        _safe_kill(p, signal.SIGTERM)
                         _job_log(job, f"Killed BMC process PID {p} ({fname})")
                     except (
                         ValueError,
@@ -6064,7 +6090,7 @@ def _handle_bmc_setup(job, params):
             try:
                 with open(dnsmasq_pid_file) as f:
                     old_pid = int(f.read().strip())
-                os.kill(old_pid, signal.SIGTERM)
+                _safe_kill(old_pid, signal.SIGTERM)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
 
@@ -6151,7 +6177,7 @@ def _handle_bmc_setup(job, params):
             try:
                 with open(pid_path) as f:
                     old_pid = int(f.read().strip())
-                os.kill(old_pid, signal.SIGTERM)
+                _safe_kill(old_pid, signal.SIGTERM)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
 
@@ -6196,7 +6222,7 @@ def _handle_bmc_setup(job, params):
         try:
             with open(vbmcd_pid_path) as f:
                 old_pid = int(f.read().strip())
-            os.kill(old_pid, signal.SIGTERM)
+            _safe_kill(old_pid, signal.SIGTERM)
             # Wait for process to exit before removing PID file
             for _ in range(10):
                 time.sleep(0.5)
@@ -6380,7 +6406,7 @@ def _handle_bmc_teardown(job, params):
                 try:
                     with open(pid_path) as f:
                         p = int(f.read().strip())
-                    os.kill(p, signal.SIGTERM)
+                    _safe_kill(p, signal.SIGTERM)
                     killed += 1
                     _job_log(job, f"Killed sushy-emulator PID {p}")
                 except (ValueError, ProcessLookupError, PermissionError):
@@ -6392,7 +6418,7 @@ def _handle_bmc_teardown(job, params):
         try:
             with open(vbmcd_pid_path) as f:
                 p = int(f.read().strip())
-            os.kill(p, signal.SIGTERM)
+            _safe_kill(p, signal.SIGTERM)
             killed += 1
             _job_log(job, f"Killed vbmcd PID {p}")
         except (ValueError, ProcessLookupError, PermissionError):
@@ -6417,7 +6443,7 @@ def _handle_bmc_teardown(job, params):
         try:
             with open(dnsmasq_pid_file) as f:
                 p = int(f.read().strip())
-            os.kill(p, signal.SIGTERM)
+            _safe_kill(p, signal.SIGTERM)
             killed += 1
             _job_log(job, f"Killed BMC dnsmasq PID {p}")
         except (ValueError, ProcessLookupError, PermissionError):

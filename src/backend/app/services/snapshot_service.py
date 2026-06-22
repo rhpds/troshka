@@ -132,6 +132,8 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                 return
 
         item.size_bytes = sum(d.size_bytes for d in item.item_disks)
+        if item.item_disks:
+            item.s3_key = item.item_disks[0].s3_key
         item.state = "ready"
         db.commit()
 

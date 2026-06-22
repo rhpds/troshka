@@ -41,6 +41,15 @@ else
 fi
 echo "  API key:    ${API_KEY:0:15}..."
 
+# --- Pull-through registry creds ---
+PTR_CREDS_FILE="$HOME/secrets/troshka-pull-through-registry.yaml"
+if [[ -f "$PTR_CREDS_FILE" ]]; then
+    echo "  PTR creds:  $PTR_CREDS_FILE"
+else
+    echo "  WARNING: $PTR_CREDS_FILE not found — pull-through registry auth will fail"
+    PTR_CREDS_FILE=""
+fi
+
 # --- Pull secret ---
 PULL_SECRET_FILE="$HOME/secrets/ocp4-pull-secret.json"
 if [[ -f "$PULL_SECRET_FILE" ]]; then
@@ -92,11 +101,6 @@ echo ""
 
 cd "$AGD_DIR"
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-VAULT_ARGS=""
-if [[ -f "$HOME/secrets/vault_pw.txt" ]]; then
-    VAULT_ARGS="--vault-password-file $HOME/secrets/vault_pw.txt"
-fi
-
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
@@ -106,9 +110,10 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_url="$TROSHKA_API_URL" \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
+    -e "troshka_project_name=IBI $GUID" \
     -e output_dir=/tmp/agnosticd-output \
     -e @/tmp/troshka-pull-secret-vars.yaml \
-    $VAULT_ARGS \
+    ${PTR_CREDS_FILE:+-e @"$PTR_CREDS_FILE"} \
     -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 STATUS=$?

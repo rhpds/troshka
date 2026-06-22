@@ -66,7 +66,7 @@ interface TemplateSummary {
 }
 
 function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
-  const [mode, setMode] = useState<"choose" | "blank" | "pattern" | "template">("choose");
+  const [mode, setMode] = useState<"choose" | "blank" | "pattern" | "template" | "template-picker">("choose");
   const [name, setName] = useState("");
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -276,7 +276,8 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
     }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{
         background: "var(--pf-t--global--background--color--primary--default)",
-        borderRadius: 12, padding: 24, width: 500, maxWidth: "90vw",
+        borderRadius: 12, padding: 24, width: mode === "template-picker" ? 640 : 500, maxWidth: "90vw",
+        transition: "width 0.2s ease",
         boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
         border: "1px solid var(--pf-t--global--border--color--default)",
       }}>
@@ -303,23 +304,67 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
             </div>
             {templates.length > 0 && (
               <div style={{ display: "flex", gap: 12 }}>
-                {templates.map((t) => (
-                  <div key={t.id} style={optionStyle(false)} onClick={() => { setSelectedTemplate(t.id); setName(versionedName(t.name, ocpVersion)); setNameAutoSet(true); setMode("template"); }}>
-                    <div style={{ marginBottom: 4, display: "flex", justifyContent: "center" }}>
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M21.665,11.812c-0.11-1.377-0.476-2.724-1.08-3.966L24,6.599c-0.268-0.556-0.585-1.092-0.943-1.595 l-1.601,0.583c-3.534-4.95-10.412-6.098-15.363-2.565c-3.144,2.244-4.883,5.972-4.582,9.823l1.604-0.584 c0.051,0.615,0.153,1.224,0.305,1.822L0,15.335c0.338,1.339,0.922,2.604,1.721,3.731l1.812-0.659 c3.526,4.95,10.398,6.106,15.349,2.58c1.555-1.107,2.796-2.6,3.599-4.332c0.802-1.715,1.144-3.61,0.991-5.497L21.665,11.812z M16.925,9.177c0.687,1.227,0.998,2.629,0.895,4.032l1.809-0.657c-0.063,0.856-0.282,1.694-0.646,2.471 c-1.67,3.584-5.928,5.138-9.514,3.472c-0.782-0.365-1.491-0.87-2.092-1.49l-1.813,0.66c-0.979-1.01-1.64-2.285-1.903-3.667 l3.426-1.242c-0.121-0.624-0.159-1.262-0.111-1.896H6.97l-1.604,0.583c0.294-3.932,3.72-6.881,7.652-6.587 c0.868,0.065,1.716,0.288,2.504,0.658V5.508c0.778,0.364,1.483,0.867,2.082,1.483l1.599-0.582c0.002,0.002,0.004,0.003,0.006,0.005 c0.441,0.454,0.82,0.965,1.128,1.518L16.925,9.177z"/>
-                      </svg>
-                    </div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</div>
-                    <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>{t.description}</div>
-                    {t.deploy_time && <div style={{ fontSize: 11, opacity: 0.5, marginTop: 4 }}>⏱ {t.deploy_time}</div>}
-                  </div>
-                ))}
+                <div
+                  style={{ ...optionStyle(false), flex: 1 }}
+                  onClick={() => setMode("template-picker" as any)}
+                >
+                  <div style={{ fontSize: 28, marginBottom: 4 }}>🚀</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>From Template</div>
+                  <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Quick deploy</div>
+                </div>
               </div>
             )}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
               <button onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Cancel
+              </button>
+            </div>
+          </div>
+        ) : mode === "template-picker" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <button onClick={() => setMode("choose")} style={{ background: "none", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 16, padding: 0 }}>
+                ←
+              </button>
+              <span style={{ fontWeight: 600, fontSize: 14 }}>Choose a Template</span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+              {templates.map((t) => (
+                <div
+                  key={t.id}
+                  style={{
+                    ...optionStyle(false),
+                    flex: "none",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: "16px 12px",
+                  }}
+                  onClick={() => {
+                    setSelectedTemplate(t.id);
+                    setName(versionedName(t.name, ocpVersion));
+                    setNameAutoSet(true);
+                    setMode("template");
+                  }}
+                >
+                  <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}>
+                    {t.category === "openshift" ? (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M21.665,11.812c-0.11-1.377-0.476-2.724-1.08-3.966L24,6.599c-0.268-0.556-0.585-1.092-0.943-1.595 l-1.601,0.583c-3.534-4.95-10.412-6.098-15.363-2.565c-3.144,2.244-4.883,5.972-4.582,9.823l1.604-0.584 c0.051,0.615,0.153,1.224,0.305,1.822L0,15.335c0.338,1.339,0.922,2.604,1.721,3.731l1.812-0.659 c3.526,4.95,10.398,6.106,15.349,2.58c1.555-1.107,2.796-2.6,3.599-4.332c0.802-1.715,1.144-3.61,0.991-5.497L21.665,11.812z M16.925,9.177c0.687,1.227,0.998,2.629,0.895,4.032l1.809-0.657c-0.063,0.856-0.282,1.694-0.646,2.471 c-1.67,3.584-5.928,5.138-9.514,3.472c-0.782-0.365-1.491-0.87-2.092-1.49l-1.813,0.66c-0.979-1.01-1.64-2.285-1.903-3.667 l3.426-1.242c-0.121-0.624-0.159-1.262-0.111-1.896H6.97l-1.604,0.583c0.294-3.932,3.72-6.881,7.652-6.587 c0.868,0.065,1.716,0.288,2.504,0.658V5.508c0.778,0.364,1.483,0.867,2.082,1.483l1.599-0.582c0.002,0.002,0.004,0.003,0.006,0.005 c0.441,0.454,0.82,0.965,1.128,1.518L16.925,9.177z"/>
+                      </svg>
+                    ) : (
+                      <img src="/images/troshka-logo-32.png" alt="" width={32} height={32} />
+                    )}
+                  </div>
+                  <div style={{ fontWeight: 600, fontSize: 13, textAlign: "center" }}>{t.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, textAlign: "center", lineHeight: 1.3 }}>{t.description}</div>
+                  {t.deploy_time && <div style={{ fontSize: 11, opacity: 0.5, marginTop: 6 }}>⏱ {t.deploy_time}</div>}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setMode("choose")} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+                Back
               </button>
             </div>
           </div>
@@ -336,17 +381,20 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
               />
             </div>
-            {mode === "template" && selectedTemplate && (
+            {mode === "template" && selectedTemplate && (() => {
+              const _selTmpl = templates.find((t) => t.id === selectedTemplate);
+              const _isOcp = _selTmpl?.category === "openshift";
+              return (
               <>
                 <div style={{
                   padding: "8px 12px", borderRadius: 6,
                   background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.3)",
                   fontSize: 12,
                 }}>
-                  Template: <strong>{templates.find((t) => t.id === selectedTemplate)?.name}</strong>
-                  <div style={{ opacity: 0.6, marginTop: 2 }}>{templates.find((t) => t.id === selectedTemplate)?.description}</div>
+                  Template: <strong>{_selTmpl?.name}</strong>
+                  <div style={{ opacity: 0.6, marginTop: 2 }}>{_selTmpl?.description}</div>
                 </div>
-                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+                {_isOcp && <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
                   <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Cluster DNS</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <div style={{ flex: 1 }}>
@@ -387,9 +435,9 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                   <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
                     api.{clusterName}.{baseDomain} → 10.0.0.2 (LB)
                   </div>
-                </div>
+                </div>}
                 <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Bastion Configuration</div>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>{_isOcp ? "Bastion Configuration" : "Configuration"}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
@@ -426,14 +474,14 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                         ))}
                       </select>
                     </div>
-                    <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    {_isOcp && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
                       {hasPullSecret ? (
                         <span style={{ color: "#4ade80" }}>configured ✓</span>
                       ) : (
                         <span style={{ color: "#f87171" }}>not set — <a href="/settings" style={{ color: "#3b82f6" }}>configure in Settings</a></span>
                       )}
-                    </div>
+                    </div>}
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
                       <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
@@ -455,7 +503,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                         >Copy</button>
                       </div>
                     </div>
-                    <div>
+                    {_isOcp && <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <label style={{ fontSize: 12 }}>Bastion BMC IP</label>
                         <div style={{ position: "relative", display: "inline-block" }}>
@@ -503,7 +551,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                         placeholder="192.168.100.50"
                       />
                       {bmcIpError && <div style={{ fontSize: 11, color: "#f87171", marginTop: 2 }}>{bmcIpError}</div>}
-                    </div>
+                    </div>}
                   </div>
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
                     {userRole === "admin" && availableHosts.length > 0 && (
@@ -532,11 +580,11 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                       <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
                       External access (allocate EIP)
                     </label>
-                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
+                    {_isOcp && <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={blockOutbound} onChange={(e) => setBlockOutbound(e.target.checked)} />
                       Restrict outbound ports to install OCP only
-                    </label>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    </label>}
+                    {_isOcp && <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                         <input type="checkbox" checked={autoInstallOcp} onChange={(e) => setAutoInstallOcp(e.target.checked)} />
                         Auto-run OCP installer on bastion
@@ -566,11 +614,12 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                           </div>
                         </div>
                       </div>
-                    </div>
+                    </div>}
                   </div>
                 </div>
               </>
-            )}
+              );
+            })()}
             {mode === "pattern" && (
               <div style={{ position: "relative" }}>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Pattern</label>
@@ -668,12 +717,12 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
               </button>
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))}
+                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || !commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)))) ? 0.4 : 1,
                 }}
               >
                 {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}

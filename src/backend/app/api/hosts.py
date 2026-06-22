@@ -1552,6 +1552,23 @@ def update_agent(
     if not host.agent_token:
         raise HTTPException(status_code=400, detail="No agent credentials")
 
+    if not force:
+        from app.models.project import Project
+
+        active_deploys = (
+            db.query(Project)
+            .filter(
+                Project.host_id == host_id,
+                Project.state == "deploying",
+            )
+            .count()
+        )
+        if active_deploys:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot update agent: {active_deploys} deploy(s) running on this host. Use force=true to override.",
+            )
+
     # Read the current troshkad.py
     import os
 
