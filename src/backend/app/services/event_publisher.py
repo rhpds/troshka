@@ -6,7 +6,7 @@ Fails silently — never blocks deploys or state transitions.
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -68,7 +68,7 @@ def publish_event(project_id: str, event_type: str, payload: dict) -> None:
     payload = {
         **payload,
         "project_id": project_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
     _push_to_deepfield(event_type, payload)
@@ -98,7 +98,7 @@ def _push_to_deepfield(event_type: str, payload: dict) -> None:
         "source": "troshka",
         "event_type": f"troshka.{event_type}",
         "event_id": str(uuid.uuid4()),
-        "timestamp": payload.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        "timestamp": payload.get("timestamp", datetime.now(UTC).isoformat()),
         "payload": {
             "signal_type": signal_type,
             "severity": severity,

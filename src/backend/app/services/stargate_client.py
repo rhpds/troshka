@@ -6,7 +6,7 @@ to get structured failure classification for troshka deployments.
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.core.config import config
 from app.services.event_publisher import _get_session, _ssl_verify
@@ -82,7 +82,7 @@ def submit_evidence(project_id: str, stage: str, observed: dict, result: str = "
                 "source": "troshka",
                 "observed": observed,
                 "result": result,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
             headers=_headers(),
             timeout=10,
