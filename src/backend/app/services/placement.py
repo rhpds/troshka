@@ -154,9 +154,43 @@ def find_available_host(
     if not candidates:
         return None
 
+    # Optionally boost scoring with StarGate cluster health data
+    candidates = _apply_stargate_scores(candidates)
+
     # Pick the host with the most free RAM (spreads load across hosts)
     candidates.sort(key=lambda x: x[2], reverse=True)
     return candidates[0][0]
+
+
+def _apply_stargate_scores(candidates: list) -> list:
+    """Optionally weight candidates by StarGate cluster health scores."""
+    from app.core.config import config
+    stargate_url = config.get("integration.stargate_url", "")
+    if not stargate_url or not config.get("integration.enabled", False):
+        return candidates
+    try:
+        from app.services.event_publisher import _get_session, _ssl_verify
+        api_key = config.get("integration.api_key", "")
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        resp = _get_session().get(
+            f"{stargate_url}/api/v1/clusters/capacity",
+            headers=headers, timeout=5, verify=_ssl_verify(),
+        )
+        if resp.status_code != 200:
+            return candidates
+        cluster_scores = {c["cluster"]: c.get("score", 50) for c in resp.json().get("clusters", [])}
+        if not cluster_scores:
+            return candidates
+        boosted = []
+        for host, free_vcpus, free_ram in candidates:
+            score = cluster_scores.get(host.ip_address, 50) / 100.0
+            boosted.append((host, free_vcpus, int(free_ram * score)))
+        return boosted
+    except Exception as e:
+        logger.debug("StarGate capacity query skipped: %s", e)
+        return candidates
 
 
 def _auto_select_pool(db: Session) -> str | None:
