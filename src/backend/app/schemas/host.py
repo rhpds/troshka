@@ -43,5 +43,7 @@ class HostResponse(BaseModel):
     auto_extend_max_gb: int | None = None
     console_domain: str | None = None
     provider_type: str | None = None
+    ssh_port: int | None = None
+    ssh_user: str | None = None
 
     model_config = {"from_attributes": True}

@@ -766,6 +766,75 @@ def capture_pattern_disks(
                     db.commit()
                     return
 
+        # Capture container images
+        from app.services.deploy_service import _extract_containers
+        from app.services.troshkad_client import start_job, wait_for_job
+
+        containers = _extract_containers(topology)
+        for ctr in containers:
+            if not ctr["image"]:
+                log.info(
+                    "Pattern %s: skipping container %s (no image)",
+                    pattern_id[:8],
+                    ctr["node_id"][:8],
+                )
+                continue
+
+            ctr_id = ctr["node_id"]
+            tar_filename = f"container-{ctr_id[:8]}-image.tar.gz"
+            save_path = (
+                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{tar_filename}"
+            )
+            s3_key = f"patterns/{pattern_id}/{tar_filename}"
+
+            log.info(
+                "Pattern %s: saving container image %s...",
+                pattern_id[:8],
+                ctr["image"],
+            )
+            try:
+                # Save image to local tar.gz
+                job_id = start_job(
+                    host,
+                    "/containers/save-image",
+                    {
+                        "image": ctr["image"],
+                        "output_path": save_path,
+                    },
+                )
+                wait_for_job(host, job_id, timeout=600)
+
+                # Upload to S3 (reuse existing upload pattern)
+                job_id = start_job(
+                    host,
+                    "/patterns/upload-and-cache",
+                    {
+                        "local_path": save_path,
+                        "s3_bucket": s3_storage._bucket(),
+                        "s3_key": s3_key,
+                        "cache_path": save_path,
+                        "aws_access_key_id": creds.get("access_key_id", ""),
+                        "aws_secret_access_key": creds.get("secret_access_key", ""),
+                        "aws_region": creds.get("region", "us-east-1"),
+                    },
+                )
+                wait_for_job(host, job_id, timeout=1200)
+                log.info(
+                    "Pattern %s: container image %s saved to S3",
+                    pattern_id[:8],
+                    ctr["image"],
+                )
+            except TroshkadError as e:
+                log.error(
+                    "Failed to capture container image %s for pattern %s: %s",
+                    ctr["image"],
+                    pattern_id[:8],
+                    str(e),
+                )
+                pattern.state = "error"
+                db.commit()
+                return
+
         # Update pattern topology: point storage nodes to captured pattern disks
         topo = pattern.topology or {}
         disk_map = {d.source_disk_id: d for d in pattern.disks}

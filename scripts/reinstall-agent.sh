@@ -23,7 +23,8 @@ cd "$BACKEND_DIR" && exec "$VENV_PYTHON" -c "
 import sys, time
 from app.core.database import SessionLocal
 from app.models.host import Host
-from app.services.agent_deployer import deploy_agent
+from app.models.provider import Provider
+from app.services.agent_deployer import deploy_agent, get_provider_ssh_port, get_provider_ssh_user
 from app.services.troshkad_client import check_health
 
 prefix = '${HOST_PREFIX}'
@@ -31,10 +32,8 @@ prefix = '${HOST_PREFIX}'
 db = SessionLocal()
 try:
     if prefix:
-        hosts = db.query(Host).filter(Host.id == prefix).all()
-        if not hosts:
-            from sqlalchemy import cast, String
-            hosts = db.query(Host).filter(cast(Host.id, String).like(prefix + '%')).all()
+        from sqlalchemy import cast, String
+        hosts = db.query(Host).filter(cast(Host.id, String).like(prefix + '%')).all()
     else:
         hosts = db.query(Host).filter(Host.agent_status == 'connected').all()
 
@@ -43,9 +42,18 @@ try:
         sys.exit(1)
 
     for h in hosts:
-        print(f'{h.id[:8]} ({h.ip_address}): reinstalling...', end=' ', flush=True)
+        if not h.provider_id:
+            print(f'{h.id[:8]}: no provider, skipping')
+            continue
+        prov = db.query(Provider).filter_by(id=h.provider_id).first()
+        if not prov:
+            print(f'{h.id[:8]}: provider not found, skipping')
+            continue
+        ssh_port = get_provider_ssh_port(prov.type)
+        ssh_user = get_provider_ssh_user(prov.type)
+        print(f'{h.id[:8]} ({h.ip_address}:{ssh_port}): reinstalling...', end=' ', flush=True)
         try:
-            result = deploy_agent(h.ip_address, h.private_key, h.id)
+            result = deploy_agent(h.ip_address, h.private_key, h.id, ssh_port=ssh_port, ssh_user=ssh_user)
             if not result.get('success'):
                 print('FAILED')
                 continue

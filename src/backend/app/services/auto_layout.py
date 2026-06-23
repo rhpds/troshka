@@ -36,7 +36,11 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         and n.get("data", {}).get("subtype") == "gateway"
     ]
     vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
+    container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
     storage_nodes = [n for n in nodes if n.get("type") == "storageNode"]
+
+    # Combine VMs and containers for layout purposes (treat them identically)
+    workload_nodes = vm_nodes + container_nodes
 
     # Build connection maps
     vm_to_storage: dict[str, list[str]] = {}
@@ -47,10 +51,12 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         tgt = _find(nodes, e.get("target", ""))
         if not src or not tgt:
             continue
-        if src.get("type") == "vmNode" and tgt.get("type") == "storageNode":
+        src_type = src.get("type", "")
+        tgt_type = tgt.get("type", "")
+        if src_type in ("vmNode", "containerNode") and tgt_type == "storageNode":
             vm_to_storage.setdefault(src["id"], []).append(tgt["id"])
             storage_to_vm[tgt["id"]] = src["id"]
-        if tgt.get("type") == "vmNode" and src.get("type") == "storageNode":
+        if tgt_type in ("vmNode", "containerNode") and src_type == "storageNode":
             vm_to_storage.setdefault(tgt["id"], []).append(src["id"])
             storage_to_vm[src["id"]] = tgt["id"]
 
@@ -61,9 +67,11 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         tgt = _find(nodes, e.get("target", ""))
         if not src or not tgt:
             continue
-        if src.get("type") == "vmNode" and tgt.get("type") == "networkNode":
+        src_type = src.get("type", "")
+        tgt_type = tgt.get("type", "")
+        if src_type in ("vmNode", "containerNode") and tgt_type == "networkNode":
             network_to_vms.setdefault(tgt["id"], []).append(src["id"])
-        if tgt.get("type") == "vmNode" and src.get("type") == "networkNode":
+        if tgt_type in ("vmNode", "containerNode") and src_type == "networkNode":
             network_to_vms.setdefault(src["id"], []).append(tgt["id"])
 
     # Sizing constants (match frontend)
@@ -87,14 +95,16 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             continue
         s_h = (e.get("sourceHandle") or "").lower()
         t_h = (e.get("targetHandle") or "").lower()
-        if src.get("type") == "vmNode" and tgt.get("type") == "networkNode":
+        src_type = src.get("type", "")
+        tgt_type = tgt.get("type", "")
+        if src_type in ("vmNode", "containerNode") and tgt_type == "networkNode":
             if "top" in s_h:
                 top_net_ids.add(tgt["id"])
             elif "bottom" in s_h:
                 bottom_net_ids.add(tgt["id"])
             else:
                 top_net_ids.add(tgt["id"])
-        if tgt.get("type") == "vmNode" and src.get("type") == "networkNode":
+        if tgt_type in ("vmNode", "containerNode") and src_type == "networkNode":
             if "top" in t_h:
                 top_net_ids.add(src["id"])
             elif "bottom" in t_h:
@@ -161,12 +171,12 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
                 net_x += net_w + gap_x
         current_y += net_h + gap_y
 
-    # Row 2: VMs with disks
+    # Row 2: VMs and containers with disks
     vm_row_y = current_y
     cursor_x = 40
     max_vm_bottom = vm_row_y
 
-    for vm in vm_nodes:
+    for vm in workload_nodes:
         disks = vm_to_storage.get(vm["id"], [])
         has_disk = len(disks) > 0
 
@@ -237,16 +247,18 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         if not src or not tgt:
             new_edges.append(e)
             continue
+        src_type = src.get("type", "")
+        tgt_type = tgt.get("type", "")
         if (
-            src.get("type") == "networkNode"
-            and tgt.get("type") == "vmNode"
+            src_type == "networkNode"
+            and tgt_type in ("vmNode", "containerNode")
             and src["id"] in bottom_net_id_set
         ):
             handle = (e.get("targetHandle") or "").replace("-top", "-bottom")
             new_edges.append({**e, "sourceHandle": "top", "targetHandle": handle})
         elif (
-            tgt.get("type") == "networkNode"
-            and src.get("type") == "vmNode"
+            tgt_type == "networkNode"
+            and src_type in ("vmNode", "containerNode")
             and tgt["id"] in bottom_net_id_set
         ):
             handle = (e.get("sourceHandle") or "").replace("-top", "-bottom")

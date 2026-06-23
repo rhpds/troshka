@@ -112,6 +112,16 @@ def list_hosts(
             prov = db.query(Provider).filter_by(id=host.provider_id).first()
             if prov:
                 resp.provider_type = prov.type
+                from app.services.agent_deployer import (
+                    get_provider_ssh_port,
+                    get_provider_ssh_user,
+                )
+
+                try:
+                    resp.ssh_port = get_provider_ssh_port(prov.type)
+                    resp.ssh_user = get_provider_ssh_user(prov.type)
+                except ValueError:
+                    pass
         results.append(resp)
     return results
 

@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, setLatestVmStates } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -293,6 +293,17 @@ export default function ProjectCanvasPage() {
         if (data.states && Object.keys(data.states).length > 0) {
           setLatestVmStates(data.states);
         }
+        if (data.container_states && Object.keys(data.container_states).length > 0) {
+          setLatestContainerStates(data.container_states);
+        }
+        const allIds = new Set<string>([
+          ...Object.keys(data.states || {}),
+          ...Object.keys(data.container_states || {}),
+        ]);
+        if (allIds.size > 0) {
+          setDeployedVmIds(allIds);
+          useCanvasStore.setState({ deployedVmIds: allIds });
+        }
       } catch { /* ignore */ }
     };
     const timer = setInterval(poll, 5000);
@@ -431,17 +442,23 @@ export default function ProjectCanvasPage() {
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
+  const containerCount = nodes.filter((n) => n.type === "containerNode").length;
   const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network").length;
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
 
   const handlePublish = async () => {
-    if (vmCount === 0) {
-      alert("Add at least one VM before publishing.");
+    if (vmCount === 0 && containerCount === 0) {
+      alert("Add at least one VM or container before publishing.");
       return;
     }
+    const parts = [];
+    if (vmCount > 0) parts.push(`${vmCount} VM${vmCount !== 1 ? "s" : ""}`);
+    if (containerCount > 0) parts.push(`${containerCount} container${containerCount !== 1 ? "s" : ""}`);
+    parts.push(`${netCount} network${netCount !== 1 ? "s" : ""}`);
+    parts.push(`${diskCount} disk${diskCount !== 1 ? "s" : ""}`);
     if (!window.confirm(
       `Deploy this environment?\n\n` +
-      `${vmCount} VM${vmCount !== 1 ? "s" : ""}, ${netCount} network${netCount !== 1 ? "s" : ""}, ${diskCount} disk${diskCount !== 1 ? "s" : ""}\n\n` +
+      `${parts.join(", ")}\n\n` +
       `This will provision real infrastructure.`
     )) return;
 
@@ -563,7 +580,7 @@ export default function ProjectCanvasPage() {
         </div>
         <div className="project-action-bar-center">
           <span className="project-action-stats">
-            {vmCount} VM{vmCount !== 1 ? "s" : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
+            {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 ? ` · ${containerCount} container${containerCount !== 1 ? "s" : ""}` : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
           </span>
         </div>
         <div className="project-action-bar-right">

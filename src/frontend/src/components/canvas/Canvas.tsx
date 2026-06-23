@@ -18,6 +18,7 @@ import "@xyflow/react/dist/style.css";
 import VMNode from "./nodes/VMNode";
 import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
+import { ContainerNode } from "./nodes/ContainerNode";
 import CanvasToolbar from "./CanvasToolbar";
 import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
@@ -27,6 +28,7 @@ const nodeTypes = {
   vmNode: VMNode,
   networkNode: NetworkNode,
   storageNode: StorageNode,
+  containerNode: ContainerNode,
 };
 
 interface ContextMenuState {
@@ -305,6 +307,37 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
             size: item.type === "iso" ? 4 : 20,
             format: item.type === "iso" ? "iso" : "qcow2",
             icon: item.type === "iso" ? "💿" : "🛢",
+          },
+        };
+      } else if (item.type === "container") {
+        const name = nextName("ctr");
+        newNode = {
+          id,
+          type: "containerNode",
+          position,
+          data: {
+            label: name,
+            name,
+            image: "",
+            registryCredentialId: null,
+            cpus: 1,
+            memory: 512,
+            status: "stopped" as const,
+            icon: "📦",
+            nics: [
+              {
+                id: generateNicId(),
+                name: "eth0",
+                mac: generateMac(),
+                model: "virtio",
+              },
+            ],
+            envVars: [],
+            ports: [],
+            command: null,
+            restartPolicy: "always" as const,
+            privileged: false,
+            mounts: [],
           },
         };
       } else if (item.type === "snapshot") {

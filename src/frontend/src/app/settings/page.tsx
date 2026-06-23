@@ -42,6 +42,14 @@ export default function SettingsPage() {
   const [pullSecretSaving, setPullSecretSaving] = useState(false);
   const [pullSecretEdit, setPullSecretEdit] = useState(false);
 
+  // Registry Credentials
+  const [registryCreds, setRegistryCreds] = useState<
+    Array<{ id: string; name: string; registry: string; username: string }>
+  >([]);
+  const [showAddCred, setShowAddCred] = useState(false);
+  const [editCredId, setEditCredId] = useState<string | null>(null);
+  const [credForm, setCredForm] = useState({ name: "", registry: "", username: "", password: "" });
+
   useEffect(() => {
     fetch("/api/v1/api-keys/")
       .then((r) => r.json())
@@ -54,6 +62,10 @@ export default function SettingsPage() {
     fetch("/api/v1/auth/ocp-pull-secret")
       .then((r) => r.json())
       .then((data) => { setHasPullSecret(data.has_secret); setPullSecretMasked(data.masked || ""); })
+      .catch(() => {});
+    fetch("/api/v1/auth/registry-credentials")
+      .then((r) => r.json())
+      .then((data) => setRegistryCreds(data))
       .catch(() => {});
   }, []);
 
@@ -90,6 +102,36 @@ export default function SettingsPage() {
     if (!window.confirm("Revoke this API key? This cannot be undone.")) return;
     await fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
     setKeys(keys.filter((k) => k.id !== id));
+  };
+
+  const fetchCreds = () => {
+    fetch("/api/v1/auth/registry-credentials")
+      .then((r) => r.json())
+      .then((data) => setRegistryCreds(data))
+      .catch(() => {});
+  };
+
+  const saveCred = async () => {
+    const method = editCredId ? "PUT" : "POST";
+    const url = editCredId
+      ? `/api/v1/auth/registry-credentials/${editCredId}`
+      : "/api/v1/auth/registry-credentials";
+    const resp = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credForm),
+    });
+    if (resp.ok) {
+      setShowAddCred(false);
+      setEditCredId(null);
+      setCredForm({ name: "", registry: "", username: "", password: "" });
+      fetchCreds();
+    }
+  };
+
+  const deleteCred = async (id: string) => {
+    await fetch(`/api/v1/auth/registry-credentials/${id}`, { method: "DELETE" });
+    fetchCreds();
   };
 
   return (
@@ -235,6 +277,117 @@ export default function SettingsPage() {
               </div>
             </CardBody>
           </Card>
+        )}
+      </PageSection>
+      <PageSection>
+        <Title headingLevel="h2" style={{ marginBottom: 12 }}>Registry Credentials</Title>
+        <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+          Container registry credentials for pulling private images. Referenced by name in container nodes.
+        </p>
+        {registryCreds.length > 0 && (
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 12, border: "1px solid var(--pf-t--global--border--color--default)" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 12 }}>Name</th>
+                <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 12 }}>Registry</th>
+                <th style={{ textAlign: "left", padding: "6px 8px", fontSize: 12 }}>Username</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", fontSize: 12 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {registryCreds.map((c) => (
+                <tr key={c.id} style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+                  <td style={{ padding: "6px 8px", fontSize: 13 }}>{c.name}</td>
+                  <td style={{ padding: "6px 8px", fontSize: 13, fontFamily: "monospace" }}>{c.registry}</td>
+                  <td style={{ padding: "6px 8px", fontSize: 13 }}>{c.username}</td>
+                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setEditCredId(c.id);
+                        setCredForm({ name: c.name, registry: c.registry, username: c.username, password: "" });
+                        setShowAddCred(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      style={{ marginLeft: 6 }}
+                      onClick={() => deleteCred(c.id)}
+                    >
+                      Delete
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {showAddCred ? (
+          <Card>
+            <CardBody>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
+                  <input
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    placeholder="e.g., Quay.io prod"
+                    value={credForm.name}
+                    onChange={(e) => setCredForm({ ...credForm, name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Registry</label>
+                  <input
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    placeholder="e.g., quay.io"
+                    value={credForm.registry}
+                    onChange={(e) => setCredForm({ ...credForm, registry: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Username</label>
+                  <input
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    value={credForm.username}
+                    onChange={(e) => setCredForm({ ...credForm, username: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password</label>
+                  <input
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
+                    type="password"
+                    placeholder={editCredId ? "(unchanged)" : ""}
+                    value={credForm.password}
+                    onChange={(e) => setCredForm({ ...credForm, password: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button variant="primary" onClick={saveCred}>
+                  {editCredId ? "Update" : "Add"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setShowAddCred(false);
+                    setEditCredId(null);
+                    setCredForm({ name: "", registry: "", username: "", password: "" });
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <Button variant="primary" onClick={() => setShowAddCred(true)}>
+            + Add Registry Credential
+          </Button>
         )}
       </PageSection>
     </>

@@ -30,6 +30,10 @@ def sync_host_capacity(db: Session, host) -> dict:
                 d = n.get("data", {})
                 total_vcpus += d.get("vcpus", 0)
                 total_ram_mb += d.get("ram", 0) * 1024
+            elif n.get("type") == "containerNode":
+                d = n.get("data", {})
+                total_vcpus += d.get("cpus", 0)
+                total_ram_mb += d.get("memory", 0)
 
     host.used_vcpus = total_vcpus
     host.used_ram_mb = total_ram_mb
@@ -146,6 +150,7 @@ def clean_orphans(host, orphans: dict, db: Session = None) -> dict:
         {
             "orphan_dirs": list(set(orphans.get("orphan_dirs", []))),
             "orphan_domains": list(set(orphans.get("orphan_domains", []))),
+            "orphan_containers": orphans.get("orphan_containers", []),
             "orphan_bridges": orphans.get("orphan_bridges", []),
             "orphan_namespaces": orphans.get("orphan_namespaces", []),
             "cache_items": cache_items,
@@ -158,6 +163,7 @@ def clean_orphans(host, orphans: dict, db: Session = None) -> dict:
     cleaned = (
         len(orphans.get("orphan_dirs", []))
         + len(orphans.get("orphan_domains", []))
+        + len(orphans.get("orphan_containers", []))
         + len(orphans.get("orphan_bridges", []))
         + len(orphans.get("orphan_namespaces", []))
         + len(orphans.get("orphaned_bmc_project_ids", []))
@@ -368,6 +374,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
         total_orphans = (
             len(orphans.get("orphan_dirs", []))
             + len(orphans.get("orphan_domains", []))
+            + len(orphans.get("orphan_containers", []))
             + len(orphans.get("orphan_bridges", []))
             + len(orphans.get("orphan_namespaces", []))
             + len(orphans.get("orphaned_bmc_project_ids", []))
@@ -604,6 +611,7 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
             total_orphans = (
                 len(orphans.get("orphan_dirs", []))
                 + len(orphans.get("orphan_domains", []))
+                + len(orphans.get("orphan_containers", []))
                 + len(orphans.get("orphan_bridges", []))
                 + len(orphans.get("orphan_namespaces", []))
                 + len(orphans.get("orphaned_bmc_project_ids", []))

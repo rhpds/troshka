@@ -1032,36 +1032,61 @@ def get_all_vm_states(
         return {"states": {}}
 
     states = {}
+    container_states = {}
     progress = {}
 
     if host.agent_status != "connected":
         for node in (project.topology or {}).get("nodes", []):
             if node.get("type") == "vmNode":
                 states[node["id"]] = "unknown"
-        return {"states": states, "progress": progress}
+            elif node.get("type") == "containerNode":
+                container_states[node["id"]] = "unknown"
+        return {
+            "states": states,
+            "container_states": container_states,
+            "progress": progress,
+        }
 
     from app.services.troshkad_client import get_all_vm_states as troshkad_batch_states
+    from app.services.troshkad_client import get_all_container_states
 
     batch = troshkad_batch_states(host) or {}
+    container_batch = get_all_container_states(host) or {}
 
     for node in (project.topology or {}).get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        dom_name = _domain_name(project_id, node["id"])
-        if dom_name in _redeploy_progress:
-            states[node["id"]] = "redeploying"
-            progress[node["id"]] = _redeploy_progress[dom_name]
-        else:
-            raw = batch.get(dom_name, "unknown")
-            if raw == "not_found" or raw == "unknown":
-                states[node["id"]] = raw
-            elif raw == "running":
-                states[node["id"]] = "running"
-            elif raw == "shut_off":
-                states[node["id"]] = "stopped"
+        if node.get("type") == "vmNode":
+            dom_name = _domain_name(project_id, node["id"])
+            if dom_name in _redeploy_progress:
+                states[node["id"]] = "redeploying"
+                progress[node["id"]] = _redeploy_progress[dom_name]
             else:
-                states[node["id"]] = raw
-    return {"states": states, "progress": progress}
+                raw = batch.get(dom_name, "unknown")
+                if raw == "not_found" or raw == "unknown":
+                    states[node["id"]] = raw
+                elif raw == "running":
+                    states[node["id"]] = "running"
+                elif raw == "shut_off":
+                    states[node["id"]] = "stopped"
+                else:
+                    states[node["id"]] = raw
+        elif node.get("type") == "containerNode":
+            ctr_name = f"troshka-{project_id[:8]}-{node['id'][:8]}"
+            ctr_info = container_batch.get(ctr_name, {})
+            raw = (
+                ctr_info.get("state", "unknown")
+                if isinstance(ctr_info, dict)
+                else ctr_info
+            )
+            state = "stopped" if raw == "exited" else raw
+            container_states[node["id"]] = {
+                "state": state,
+                "ips": ctr_info.get("ips", []) if isinstance(ctr_info, dict) else [],
+            }
+    return {
+        "states": states,
+        "container_states": container_states,
+        "progress": progress,
+    }
 
 
 @router.post("/{project_id}/vms/{vm_id}/start")
@@ -1595,6 +1620,93 @@ def vm_download_file(
         media_type="application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/{project_id}/containers/{container_id}/logs")
+def get_container_logs(
+    project_id: str,
+    container_id: str,
+    tail: int = Query(500, description="Number of lines to retrieve from the end"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Get logs from a container."""
+    project, host = _get_project_and_host(project_id, user, db)
+    container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
+
+    try:
+        job_id = start_job(
+            host,
+            "/containers/logs",
+            {"container_name": container_name, "tail": tail},
+        )
+        result = wait_for_job(host, job_id, timeout=30)
+        logs = result.get("result", {}).get("logs", "")
+        return {"logs": logs, "container_name": container_name}
+    except TroshkadError as e:
+        logger.error("Failed to get logs for container %s: %s", container_name, e)
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/{project_id}/containers/{container_id}/start")
+def start_container(
+    project_id: str,
+    container_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project, host = _get_project_and_host(project_id, user, db)
+    container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
+    try:
+        job_id = start_job(
+            host, "/containers/start", {"container_name": container_name}
+        )
+        wait_for_job(host, job_id, timeout=30)
+        return {"status": "started", "container_name": container_name}
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/{project_id}/containers/{container_id}/stop")
+def stop_container(
+    project_id: str,
+    container_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project, host = _get_project_and_host(project_id, user, db)
+    container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
+    try:
+        job_id = start_job(
+            host, "/containers/stop", {"container_name": container_name, "timeout": 10}
+        )
+        wait_for_job(host, job_id, timeout=30)
+        return {"status": "stopped", "container_name": container_name}
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/{project_id}/containers/{container_id}/restart")
+def restart_container(
+    project_id: str,
+    container_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project, host = _get_project_and_host(project_id, user, db)
+    container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
+    try:
+        job_id = start_job(
+            host, "/containers/stop", {"container_name": container_name, "timeout": 10}
+        )
+        wait_for_job(host, job_id, timeout=30)
+        job_id = start_job(
+            host, "/containers/start", {"container_name": container_name}
+        )
+        wait_for_job(host, job_id, timeout=30)
+        return {"status": "restarted", "container_name": container_name}
+    except TroshkadError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post("/{project_id}/reconfigure")

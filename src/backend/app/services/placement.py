@@ -22,10 +22,12 @@ def calculate_project_requirements(topology: dict) -> dict:
     """Calculate total resource requirements from a project's topology."""
     nodes = topology.get("nodes", [])
     vms = [n for n in nodes if n.get("type") == "vmNode"]
+    containers = [n for n in nodes if n.get("type") == "containerNode"]
 
     total_vcpus = 0
     total_ram_mb = 0
     vm_count = 0
+    container_count = 0
 
     for vm in vms:
         data = vm.get("data", {})
@@ -33,10 +35,17 @@ def calculate_project_requirements(topology: dict) -> dict:
         total_ram_mb += data.get("ram", 4) * 1024
         vm_count += 1
 
+    for ctr in containers:
+        data = ctr.get("data", {})
+        total_vcpus += data.get("cpus", 1)
+        total_ram_mb += data.get("memory", 512)
+        container_count += 1
+
     external_ips = topology.get("externalIps", [])
 
     return {
         "vm_count": vm_count,
+        "container_count": container_count,
         "total_vcpus": total_vcpus,
         "total_ram_mb": total_ram_mb,
         "requested_eips": len(external_ips),

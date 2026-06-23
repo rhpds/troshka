@@ -339,6 +339,7 @@ from app.api import patterns as pattern_routes  # noqa: E402
 from app.api import portal as portal_routes  # noqa: E402
 from app.api import projects as project_routes  # noqa: E402
 from app.api import providers as provider_routes  # noqa: E402
+from app.api import registry_credential_routes as registry_cred_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
 from app.api import templates as template_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
@@ -360,6 +361,7 @@ app.include_router(storage_pool_routes.router, prefix="/api/v1")
 app.include_router(dns_provider_routes.router, prefix="/api/v1")
 app.include_router(portal_routes.router, prefix="/api/v1")
 app.include_router(template_routes.router, prefix="/api/v1")
+app.include_router(registry_cred_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

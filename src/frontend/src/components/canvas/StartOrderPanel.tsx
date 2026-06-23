@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
-import type { StartOrderEntry, VMNodeData } from "@/stores/canvasStore";
+import type { StartOrderEntry, VMNodeData, ContainerNodeData } from "@/stores/canvasStore";
 
 interface Props {
   onClose: () => void;
@@ -14,11 +14,13 @@ export default function StartOrderPanel({ onClose }: Props) {
   const setStartOrder = useCanvasStore((s) => s.setStartOrder);
 
   const vmNodes = nodes.filter((n) => n.type === "vmNode");
+  const containerNodes = nodes.filter((n) => n.type === "containerNode");
+  const allNodes = [...vmNodes, ...containerNodes];
   const autoStartIds = new Set(
-    startOrder.filter((e) => e.autoStart !== false).map((e) => e.vmId)
+    startOrder.filter((e) => e.autoStart !== false).map((e) => e.vmId || e.containerId)
   );
-  const autoStartVmNodes = vmNodes.filter((v) => {
-    const entry = startOrder.find((e) => e.vmId === v.id);
+  const autoStartVmNodes = allNodes.filter((v) => {
+    const entry = startOrder.find((e) => (e.vmId || e.containerId) === v.id);
     return entry ? entry.autoStart !== false : true;
   });
 
@@ -27,20 +29,47 @@ export default function StartOrderPanel({ onClose }: Props) {
   useEffect(() => {
     if (startOrder.length > 0) {
       const validIds = new Set(autoStartVmNodes.map((v) => v.id));
-      const existing = startOrder.filter((e) => validIds.has(e.vmId) && e.autoStart !== false);
-      const missing = autoStartVmNodes.filter((v) => !existing.some((e) => e.vmId === v.id));
+      const existing = startOrder.filter((e) => validIds.has(e.vmId || e.containerId || "") && e.autoStart !== false);
+      const missing = autoStartVmNodes.filter((v) => !existing.some((e) => (e.vmId || e.containerId) === v.id));
       setOrder([
         ...existing,
-        ...missing.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })),
+        ...missing.map((v) => {
+          const isContainer = v.type === "containerNode";
+          return {
+            vmId: isContainer ? "" : v.id,
+            containerId: isContainer ? v.id : undefined,
+            entryType: (isContainer ? "container" : "vm") as "vm" | "container",
+            autoStart: true,
+            waitForVm: null,
+            waitForService: "",
+            waitForPort: "",
+            delaySeconds: 0,
+          };
+        }),
       ]);
     } else {
-      setOrder(autoStartVmNodes.map((v) => ({ vmId: v.id, autoStart: true, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 })));
+      setOrder(autoStartVmNodes.map((v) => {
+        const isContainer = v.type === "containerNode";
+        return {
+          vmId: isContainer ? "" : v.id,
+          containerId: isContainer ? v.id : undefined,
+          entryType: (isContainer ? "container" : "vm") as "vm" | "container",
+          autoStart: true,
+          waitForVm: null,
+          waitForService: "",
+          waitForPort: "",
+          delaySeconds: 0,
+        };
+      }));
     }
   }, []);
 
-  const getVmName = (id: string) => {
-    const vm = vmNodes.find((v) => v.id === id);
-    return vm ? (vm.data as unknown as VMNodeData).name : id;
+  const getNodeName = (id: string) => {
+    const node = allNodes.find((v) => v.id === id);
+    if (!node) return id;
+    return node.type === "vmNode"
+      ? (node.data as unknown as VMNodeData).name
+      : (node.data as unknown as ContainerNodeData).name;
   };
 
   const moveUp = (i: number) => {
@@ -69,10 +98,10 @@ export default function StartOrderPanel({ onClose }: Props) {
     onClose();
   };
 
-  if (vmNodes.length === 0 || autoStartVmNodes.length === 0) {
-    const msg = vmNodes.length === 0
-      ? "No VMs in this project yet."
-      : "All VMs have auto-start disabled. Enable auto-start on a VM to configure start order.";
+  if (allNodes.length === 0 || autoStartVmNodes.length === 0) {
+    const msg = allNodes.length === 0
+      ? "No VMs or containers in this project yet."
+      : "All VMs and containers have auto-start disabled. Enable auto-start to configure start order.";
     return (
       <div className="start-order-overlay" onClick={onClose}>
         <div className="start-order-modal" onClick={(e) => e.stopPropagation()}>
@@ -105,7 +134,9 @@ export default function StartOrderPanel({ onClose }: Props) {
             <div key={entry.vmId} className="start-order-item">
               <div className="start-order-item-header">
                 <span className="start-order-num">{i + 1}</span>
-                <span className="start-order-name">🖥 {getVmName(entry.vmId)}</span>
+                <span className="start-order-name">
+                  {entry.entryType === "container" ? "📦" : "🖥"} {getNodeName(entry.containerId || entry.vmId)}
+                </span>
                 <div className="start-order-arrows">
                   <button onClick={() => moveUp(i)} title="Move up" disabled={i === 0}>↑</button>
                   <button onClick={() => moveDown(i)} title="Move down" disabled={i === order.length - 1}>↓</button>
@@ -122,8 +153,8 @@ export default function StartOrderPanel({ onClose }: Props) {
                       >
                         <option value="">None (start immediately after previous)</option>
                         {order.slice(0, i).map((prev) => (
-                          <option key={prev.vmId} value={prev.vmId}>
-                            {getVmName(prev.vmId)}
+                          <option key={prev.vmId || prev.containerId} value={prev.vmId || prev.containerId}>
+                            {getNodeName(prev.containerId || prev.vmId)}
                           </option>
                         ))}
                       </select>

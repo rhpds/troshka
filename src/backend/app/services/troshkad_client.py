@@ -525,6 +525,20 @@ def get_all_vm_states(host, timeout=10):
         return None
 
 
+def get_all_container_states(host, timeout=10):
+    """Get all troshka-* container states in one batch call.
+
+    Returns dict mapping container_name -> {state, ips?}, or None on error.
+    """
+    try:
+        result = troshkad_request(
+            host, "GET", "/containers/states", timeout=timeout, retries=1
+        )
+        return result.get("containers", {})
+    except TroshkadError:
+        return None
+
+
 def get_vnc_port(host, domain_name, timeout=15):
     """Get VNC port for a VM. Returns port int or None."""
     try:

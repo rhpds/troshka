@@ -7,6 +7,7 @@ import type {
   VMNodeData,
   NetworkNodeData,
   StorageNodeData,
+  ContainerNodeData,
 } from "@/stores/canvasStore";
 
 function isDuplicateName(name: string, nodeId: string, nodeType: string): boolean {
@@ -129,6 +130,36 @@ function DiskSizeInput({ value, min, onChange }: { value: number; min: number; o
   );
 }
 
+function RegistryCredentialDropdown({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (v: string | null) => void;
+}) {
+  const [creds, setCreds] = useState<Array<{ id: string; name: string; registry: string }>>([]);
+  useEffect(() => {
+    fetch("/api/v1/auth/registry-credentials")
+      .then((r) => r.json())
+      .then(setCreds)
+      .catch(() => {});
+  }, []);
+  return (
+    <select
+      className="props-select"
+      value={value || ""}
+      onChange={(e) => onChange(e.target.value || null)}
+    >
+      <option value="">None (public)</option>
+      {creds.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name} ({c.registry})
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export default function PropertiesPanel() {
   const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
@@ -142,6 +173,7 @@ export default function PropertiesPanel() {
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
+  const [containerLogs, setContainerLogs] = useState<{ containerId: string; logs: string; containerName: string } | null>(null);
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -185,35 +217,41 @@ export default function PropertiesPanel() {
           className={`props-header-icon ${
             nodeType === "vmNode"
               ? "props-icon-vm"
-              : nodeType === "networkNode"
-                ? "props-icon-network"
-                : "props-icon-storage"
+              : nodeType === "containerNode"
+                ? "props-icon-vm"
+                : nodeType === "networkNode"
+                  ? "props-icon-network"
+                  : "props-icon-storage"
           }`}
         >
           {nodeType === "vmNode"
             ? ((data as unknown as VMNodeData).icon || "🖥")
-            : nodeType === "networkNode"
-              ? (() => {
-                  const st = (data as unknown as NetworkNodeData).subtype;
-                  if (st === "router") return "🔀";
-                  if (st === "gateway") return "🌐";
-                  return (
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="4" y="2" width="16" height="16" rx="2" /><line x1="8" y1="18" x2="8" y2="22" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="16" y1="18" x2="16" y2="22" />
-                      <rect x="6" y="5" width="12" height="6" rx="1" /><line x1="9" y1="5" x2="9" y2="11" /><line x1="12" y1="5" x2="12" y2="11" /><line x1="15" y1="5" x2="15" y2="11" />
-                    </svg>
-                  );
-                })()
-              : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
+            : nodeType === "containerNode"
+              ? "📦"
+              : nodeType === "networkNode"
+                ? (() => {
+                    const st = (data as unknown as NetworkNodeData).subtype;
+                    if (st === "router") return "🔀";
+                    if (st === "gateway") return "🌐";
+                    return (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="4" y="2" width="16" height="16" rx="2" /><line x1="8" y1="18" x2="8" y2="22" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="16" y1="18" x2="16" y2="22" />
+                        <rect x="6" y="5" width="12" height="6" rx="1" /><line x1="9" y1="5" x2="9" y2="11" /><line x1="12" y1="5" x2="12" y2="11" /><line x1="15" y1="5" x2="15" y2="11" />
+                      </svg>
+                    );
+                  })()
+                : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
         </div>
         <div>
           <div className="props-title">{data.name as string}</div>
           <div className="props-subtitle">
             {nodeType === "vmNode"
               ? `VM -- ${(data as unknown as VMNodeData).status === "running" ? "Running" : "Stopped"}`
-              : nodeType === "networkNode"
-                ? "Network"
-                : "Storage"}
+              : nodeType === "containerNode"
+                ? `Container · ${(data as unknown as ContainerNodeData).status === "running" ? "Running" : "Stopped"}`
+                : nodeType === "networkNode"
+                  ? "Network"
+                  : "Storage"}
           </div>
         </div>
       </div>
@@ -832,8 +870,8 @@ export default function PropertiesPanel() {
                             const p = ip.split(".").map(Number);
                             return p.length === 4 ? ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0 : 0;
                           };
-                          const dhcpStart = (and.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".100") : "");
-                          const dhcpEnd = (and.dhcpRangeEnd as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".200") : "");
+                          const dhcpStart = (and.dhcpRangeStart as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".10") : "");
+                          const dhcpEnd = (and.dhcpRangeEnd as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".254") : "");
                           if (dhcpStart && dhcpEnd) {
                             const ipN = ipToNum(nicIp);
                             const startN = ipToNum(dhcpStart);
@@ -1114,6 +1152,339 @@ export default function PropertiesPanel() {
         </>
       )}
 
+      {/* Container Properties */}
+      {nodeType === "containerNode" && (
+        <>
+          {/* Image section */}
+          <div className="props-section">
+            <div className="props-section-title">Image</div>
+            <div className="props-field">
+              <label className="props-label">Image</label>
+              <input
+                className="props-input"
+                placeholder="registry/org/image:tag"
+                value={(data as unknown as ContainerNodeData).image || ""}
+                onChange={(e) => update("image", e.target.value)}
+                style={{ fontFamily: "monospace", fontSize: 11 }}
+              />
+            </div>
+            <div className="props-field">
+              <label className="props-label">Registry Credential</label>
+              <RegistryCredentialDropdown
+                value={(data as unknown as ContainerNodeData).registryCredentialId}
+                onChange={(v) => update("registryCredentialId", v)}
+              />
+            </div>
+          </div>
+          <div className="props-divider" />
+
+          {/* Resources section */}
+          <div className="props-section">
+            <div className="props-section-title">Resources</div>
+            <div className="props-row">
+              <div className="props-field">
+                <label className="props-label">CPUs</label>
+                <input
+                  className="props-input"
+                  type="number"
+                  min={1}
+                  max={32}
+                  value={(data as unknown as ContainerNodeData).cpus}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => update("cpus", parseInt(e.target.value) || 1)}
+                />
+              </div>
+              <div className="props-field">
+                <label className="props-label">Memory (MB)</label>
+                <input
+                  className="props-input"
+                  type="number"
+                  min={64}
+                  max={524288}
+                  value={(data as unknown as ContainerNodeData).memory}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => update("memory", parseInt(e.target.value) || 512)}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="props-divider" />
+
+          {/* NIC section */}
+          <div className="props-section">
+            <div className="props-section-title">Network Interfaces</div>
+            {(() => {
+              let nics = ((data as unknown as ContainerNodeData).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
+              if (nics.length === 0) {
+                nics = [{ id: generateNicId(), name: "eth0", mac: generateMac(), model: "virtio" }];
+                update("nics", nics);
+              }
+              return (
+                <>
+                  {nics.map((nic, i) => (
+                    <div key={nic.id} style={{ background: "var(--troshka-surface2)", borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <input
+                          className="props-input"
+                          value={nic.name || `eth${i}`}
+                          onChange={(e) => { const updated = [...nics]; updated[i] = { ...nic, name: e.target.value }; update("nics", updated); }}
+                          style={{ fontSize: 12, fontWeight: 600, background: "transparent", border: "none", padding: 0, width: 80 }}
+                        />
+                        {nics.length > 1 && (
+                          <button
+                            style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12 }}
+                            onClick={() => update("nics", nics.filter((_, idx) => idx !== i))}
+                          >✕</button>
+                        )}
+                      </div>
+                      <div className="props-field" style={{ marginBottom: 4 }}>
+                        <label className="props-label">Model</label>
+                        <select className="props-select" value={nic.model || "virtio"} onChange={(e) => {
+                          const updated = [...nics]; updated[i] = { ...nic, model: e.target.value }; update("nics", updated);
+                        }}>
+                          <option value="virtio">virtio</option>
+                          <option value="igb">igb (SR-IOV)</option>
+                          <option value="e1000e">e1000e</option>
+                          <option value="e1000">e1000</option>
+                          <option value="rtl8139">rtl8139</option>
+                        </select>
+                      </div>
+                      <div className="props-field">
+                        <label className="props-label">MAC Address</label>
+                        <input className="props-input" value={nic.mac} style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                          const updated = [...nics]; updated[i] = { ...nic, mac: e.target.value }; update("nics", updated);
+                        }} />
+                      </div>
+                      {(() => {
+                        const nicHandleTop = `nic-${nic.id}-top`;
+                        const nicHandleBottom = `nic-${nic.id}-bottom`;
+                        const netEdge = edges.find((e) =>
+                          (e.source === node!.id && (e.sourceHandle === nicHandleTop || e.sourceHandle === nicHandleBottom)) ||
+                          (e.target === node!.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
+                        );
+                        const netNode = netEdge ? nodes.find((n) => n.id === (netEdge.source === node!.id ? netEdge.target : netEdge.source) && n.type === "networkNode") : null;
+                        const netCidr = netNode ? (netNode.data as Record<string, any>).cidr as string : "";
+                        const nicIp = (nic as Record<string, any>).ip as string || "";
+                        return netNode ? (
+                          <div className="props-field">
+                            <label className="props-label">IP Address {netCidr ? `(${netCidr})` : ""}</label>
+                            <input
+                              className="props-input"
+                              value={nicIp}
+                              placeholder="DHCP (auto)"
+                              style={{ fontFamily: "monospace", fontSize: 11 }}
+                              onChange={(e) => {
+                                const updated = [...nics]; updated[i] = { ...nic, ip: e.target.value }; update("nics", updated);
+                              }}
+                            />
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
+                  ))}
+                  {nics.length < 8 && (
+                    <button className="props-library-btn" onClick={() => {
+                      update("nics", [...nics, { id: generateNicId(), name: `eth${nics.length}`, mac: generateMac(), model: "virtio" }]);
+                    }}>+ Add NIC ({nics.length}/8)</button>
+                  )}
+                  {nics.length >= 8 && (
+                    <span style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>Maximum 8 NICs reached</span>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+          <div className="props-divider" />
+
+          {/* Environment Variables section */}
+          <div className="props-section">
+            <div className="props-section-title">Environment Variables</div>
+            {((data as unknown as ContainerNodeData).envVars || []).map((ev, i) => (
+              <div key={i} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                <input
+                  className="props-input"
+                  placeholder="KEY"
+                  value={ev.key}
+                  style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }}
+                  onChange={(e) => {
+                    const updated = [...((data as unknown as ContainerNodeData).envVars || [])];
+                    updated[i] = { ...ev, key: e.target.value };
+                    update("envVars", updated);
+                  }}
+                />
+                <span style={{ color: "var(--troshka-text-dim)" }}>=</span>
+                <input
+                  className="props-input"
+                  placeholder="value"
+                  value={ev.value}
+                  style={{ flex: 2, fontFamily: "monospace", fontSize: 11 }}
+                  onChange={(e) => {
+                    const updated = [...((data as unknown as ContainerNodeData).envVars || [])];
+                    updated[i] = { ...ev, value: e.target.value };
+                    update("envVars", updated);
+                  }}
+                />
+                <button
+                  style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12 }}
+                  onClick={() => {
+                    const updated = ((data as unknown as ContainerNodeData).envVars || []).filter((_, idx) => idx !== i);
+                    update("envVars", updated);
+                  }}
+                >✕</button>
+              </div>
+            ))}
+            <button
+              className="props-library-btn"
+              onClick={() => update("envVars", [...((data as unknown as ContainerNodeData).envVars || []), { key: "", value: "" }])}
+            >+ Add Variable</button>
+          </div>
+          <div className="props-divider" />
+
+          {/* Ports section */}
+          <div className="props-section">
+            <div className="props-section-title">Ports</div>
+            {((data as unknown as ContainerNodeData).ports || []).map((p, i) => (
+              <div key={i} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                <input
+                  className="props-input"
+                  type="number"
+                  placeholder="Container"
+                  value={p.containerPort || ""}
+                  style={{ width: 70 }}
+                  onChange={(e) => {
+                    const updated = [...((data as unknown as ContainerNodeData).ports || [])];
+                    updated[i] = { ...p, containerPort: parseInt(e.target.value) || 0 };
+                    update("ports", updated);
+                  }}
+                />
+                <span style={{ color: "var(--troshka-text-dim)", fontSize: 11 }}>→</span>
+                <input
+                  className="props-input"
+                  type="number"
+                  placeholder="Host (opt)"
+                  value={p.hostPort || ""}
+                  style={{ width: 70 }}
+                  onChange={(e) => {
+                    const updated = [...((data as unknown as ContainerNodeData).ports || [])];
+                    updated[i] = { ...p, hostPort: parseInt(e.target.value) || undefined };
+                    update("ports", updated);
+                  }}
+                />
+                <select
+                  className="props-select"
+                  value={p.protocol || "tcp"}
+                  style={{ width: 60 }}
+                  onChange={(e) => {
+                    const updated = [...((data as unknown as ContainerNodeData).ports || [])];
+                    updated[i] = { ...p, protocol: e.target.value as "tcp" | "udp" };
+                    update("ports", updated);
+                  }}
+                >
+                  <option value="tcp">TCP</option>
+                  <option value="udp">UDP</option>
+                </select>
+                <button
+                  style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", fontSize: 12 }}
+                  onClick={() => {
+                    const updated = ((data as unknown as ContainerNodeData).ports || []).filter((_, idx) => idx !== i);
+                    update("ports", updated);
+                  }}
+                >✕</button>
+              </div>
+            ))}
+            <button
+              className="props-library-btn"
+              onClick={() => update("ports", [...((data as unknown as ContainerNodeData).ports || []), { containerPort: 0, protocol: "tcp" }])}
+            >+ Add Port</button>
+          </div>
+          <div className="props-divider" />
+
+          {/* Volumes section */}
+          <div className="props-section">
+            <div className="props-section-title">Volumes</div>
+            {(() => {
+              const connectedDisks = edges
+                .filter(
+                  (e) =>
+                    (e.source === node!.id || e.target === node!.id) &&
+                    (e.sourceHandle?.startsWith("mnt-") || e.targetHandle?.startsWith("mnt-"))
+                )
+                .map((e) => {
+                  const diskId = e.source === node!.id ? e.target : e.source;
+                  return nodes.find((n) => n.id === diskId && n.type === "storageNode");
+                })
+                .filter(Boolean);
+
+              if (connectedDisks.length === 0) {
+                return <span style={{ fontSize: 11, color: "var(--troshka-text-dim)" }}>Connect a Disk node to add volumes</span>;
+              }
+
+              const mounts = (data as unknown as ContainerNodeData).mounts || [];
+              return connectedDisks.map((diskNode) => {
+                const existing = mounts.find((m) => m.diskNodeId === diskNode!.id);
+                const diskData = diskNode!.data as Record<string, any>;
+                return (
+                  <div key={diskNode!.id} style={{ display: "flex", gap: 6, marginBottom: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, minWidth: 60 }}>🛢 {diskData.name}</span>
+                    <span style={{ color: "var(--troshka-text-dim)", fontSize: 11 }}>→</span>
+                    <input
+                      className="props-input"
+                      placeholder="/mount/path"
+                      value={existing?.mountPath || ""}
+                      style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }}
+                      onChange={(e) => {
+                        const updated = mounts.filter((m) => m.diskNodeId !== diskNode!.id);
+                        updated.push({ diskNodeId: diskNode!.id, mountPath: e.target.value });
+                        update("mounts", updated);
+                      }}
+                    />
+                  </div>
+                );
+              });
+            })()}
+          </div>
+          <div className="props-divider" />
+
+          {/* Advanced section */}
+          <div className="props-section">
+            <div className="props-section-title">Advanced</div>
+            <div className="props-field">
+              <label className="props-label">Restart Policy</label>
+              <select
+                className="props-select"
+                value={(data as unknown as ContainerNodeData).restartPolicy || "always"}
+                onChange={(e) => update("restartPolicy", e.target.value)}
+              >
+                <option value="always">Always</option>
+                <option value="on-failure">On Failure</option>
+                <option value="never">Never</option>
+              </select>
+            </div>
+            <div className="props-field">
+              <label className="props-label">Command Override</label>
+              <input
+                className="props-input"
+                placeholder="Optional entrypoint override"
+                value={(data as unknown as ContainerNodeData).command || ""}
+                style={{ fontFamily: "monospace", fontSize: 11 }}
+                onChange={(e) => update("command", e.target.value || null)}
+              />
+            </div>
+            <div className="props-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={(data as unknown as ContainerNodeData).privileged || false}
+                onChange={(e) => update("privileged", e.target.checked)}
+              />
+              <label className="props-label" style={{ marginBottom: 0 }}>Privileged</label>
+            </div>
+          </div>
+          <div className="props-divider" />
+
+          {/* Actions are on the container node itself (start/stop/restart/logs) */}
+        </>
+      )}
+
       {/* Network Properties */}
       {nodeType === "networkNode" && (() => {
         const and = data as unknown as NetworkNodeData;
@@ -1190,7 +1561,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeStart as string || ""}
                             onChange={(e) => update("dhcpRangeStart", e.target.value)}
-                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".100") : "x.x.x.100"}
+                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".10") : "x.x.x.10"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -1200,7 +1571,7 @@ export default function PropertiesPanel() {
                             className="props-input"
                             value={(data as Record<string, any>).dhcpRangeEnd as string || ""}
                             onChange={(e) => update("dhcpRangeEnd", e.target.value)}
-                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".200") : "x.x.x.200"}
+                            placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".254") : "x.x.x.254"}
                             style={{ fontFamily: "monospace" }}
                           />
                         </div>
@@ -2095,6 +2466,107 @@ export default function PropertiesPanel() {
           ) : "Storage"}
         </button>
       </div>
+      {containerLogs && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+          }}
+          onClick={() => setContainerLogs(null)}
+        >
+          <div
+            style={{
+              background: "var(--troshka-surface1)",
+              border: "1px solid var(--troshka-border)",
+              borderRadius: 8,
+              maxWidth: "90vw",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: 16,
+                borderBottom: "1px solid var(--troshka-border)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: "var(--troshka-surface)",
+                borderRadius: "12px 12px 0 0",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>Container Logs</div>
+                <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4 }}>
+                  {containerLogs.containerName}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  className="props-library-btn"
+                  onClick={async () => {
+                    const projectId = useCanvasStore.getState().currentProjectId;
+                    if (!projectId) return;
+                    try {
+                      const resp = await fetch(`/api/v1/projects/${projectId}/containers/${containerLogs.containerId}/logs?tail=500`);
+                      if (!resp.ok) {
+                        alert(`Failed to refresh logs: ${resp.statusText}`);
+                        return;
+                      }
+                      const data = await resp.json();
+                      setContainerLogs({ ...containerLogs, logs: data.logs });
+                    } catch (err) {
+                      console.error("Failed to refresh logs:", err);
+                      alert(`Error refreshing logs: ${err}`);
+                    }
+                  }}
+                  style={{ marginBottom: 0 }}
+                >
+                  🔄 Refresh
+                </button>
+                <button
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--troshka-text)",
+                    cursor: "pointer",
+                    fontSize: 18,
+                    padding: 0,
+                  }}
+                  onClick={() => setContainerLogs(null)}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div
+              style={{
+                padding: 16,
+                overflow: "auto",
+                fontFamily: "monospace",
+                fontSize: 11,
+                whiteSpace: "pre-wrap",
+                background: "var(--troshka-surface2)",
+                minWidth: "60vw",
+                minHeight: "40vh",
+              }}
+            >
+              {containerLogs.logs || "(no logs)"}
+            </div>
+          </div>
+        </div>
+      )}
       {showPxeIsoPicker && node && (
         <LibraryPicker
           type="iso"

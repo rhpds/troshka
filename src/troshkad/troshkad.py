@@ -264,6 +264,26 @@ def _get_capacity():
             capacity["ram_used_mb"] = ram_used
     except Exception:
         pass
+    # Container counts
+    try:
+        result = subprocess.run(
+            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}} {{.State}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            containers = [
+                line.strip()
+                for line in result.stdout.strip().split("\n")
+                if line.strip()
+            ]
+            capacity["total_containers"] = len(containers)
+            capacity["running_containers"] = len(
+                [c for c in containers if c.split(None, 1)[-1].lower() == "running"]
+            )
+    except Exception:
+        pass
     return capacity
 
 
@@ -3773,7 +3793,31 @@ def _handle_gc_discover(job, params):
         except Exception as e:
             _job_log(job, f"Failed to scan {vms_dir}: {e}")
 
-    # 2. List all virsh domains starting with troshka- that don't belong to known projects
+    # 2a. List orphan containers (podman) starting with troshka-
+    orphan_containers = []
+    try:
+        result = subprocess.run(
+            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            for ctr_name in result.stdout.strip().split("\n"):
+                ctr_name = ctr_name.strip()
+                if not ctr_name or not ctr_name.startswith("troshka-"):
+                    continue
+                # Extract project prefix: troshka-{project_id[:8]}-{container_id[:8]}
+                parts = ctr_name.split("-", 2)
+                if len(parts) >= 2:
+                    proj_prefix = parts[1]
+                    if not any(pid.startswith(proj_prefix) for pid in known_project_ids):
+                        orphan_containers.append(ctr_name)
+                        _job_log(job, f"Orphan container: {ctr_name}")
+    except Exception as e:
+        _job_log(job, f"Failed to list podman containers: {e}")
+
+    # 2b. List all virsh domains starting with troshka- that don't belong to known projects
     known_domain_prefixes = set(known_domains)
     try:
         result = subprocess.run(
@@ -3954,6 +3998,7 @@ def _handle_gc_discover(job, params):
     return {
         "orphan_dirs": orphan_dirs,
         "orphan_domains": orphan_domains,
+        "orphan_containers": orphan_containers,
         "orphan_bridges": orphan_bridges,
         "orphan_namespaces": orphan_namespaces,
         "cache_items": cache_items,
@@ -3970,12 +4015,14 @@ def _handle_gc_clean(job, params):
     """Remove specific orphaned resources provided by the backend."""
     orphan_dirs = params.get("orphan_dirs", [])
     orphan_domains = params.get("orphan_domains", [])
+    orphan_containers = params.get("orphan_containers", [])
     orphan_bridges = params.get("orphan_bridges", [])
     orphan_namespaces = params.get("orphan_namespaces", [])
     cache_items = params.get("cache_items", [])
 
     removed_dirs = 0
     removed_domains = 0
+    removed_containers = 0
     removed_bridges = 0
     removed_namespaces = 0
     removed_cache = 0
@@ -4018,6 +4065,21 @@ def _handle_gc_clean(job, params):
             removed_domains += 1
         except Exception as e:
             _job_log(job, f"Failed to remove domain {domain}: {e}")
+
+    # 2b. Remove orphan containers (podman stop + rm)
+    for ctr in orphan_containers:
+        try:
+            if not ctr.startswith("troshka-"):
+                raise ValueError(f"Invalid container name: {ctr}")
+            try:
+                _run_cmd(job, ["podman", "stop", "-t", "5", ctr], timeout=15)
+            except RuntimeError:
+                pass
+            _run_cmd(job, ["podman", "rm", "-f", ctr], timeout=15)
+            _job_log(job, f"Removed container: {ctr}")
+            removed_containers += 1
+        except Exception as e:
+            _job_log(job, f"Failed to remove container {ctr}: {e}")
 
     # 3. Remove orphan bridges
     for bridge in orphan_bridges:
@@ -4157,6 +4219,7 @@ def _handle_gc_clean(job, params):
     return {
         "removed_dirs": removed_dirs,
         "removed_domains": removed_domains,
+        "removed_containers": removed_containers,
         "removed_bridges": removed_bridges,
         "removed_namespaces": removed_namespaces,
         "removed_cache": removed_cache,
@@ -7359,6 +7422,460 @@ def _handle_upload_and_cache(job, params):
 
 
 COMMAND_HANDLERS["patterns/upload-and-cache"] = _handle_upload_and_cache
+
+
+# ── Container handlers ──
+
+
+def _handle_container_pull(job, params):
+    image = params["image"]
+    registry = params.get("registry")
+    username = params.get("username")
+    password = params.get("password")
+
+    # Login if credentials provided
+    if registry and username and password:
+        _job_log(job, f"Logging in to {registry}...")
+        _run_cmd(
+            job,
+            ["podman", "login", registry, "-u", username, "-p", password],
+            timeout=30,
+        )
+
+    _job_log(job, f"Pulling {image}...")
+    _run_cmd(job, ["podman", "pull", image], timeout=600)
+    return {"image": image, "status": "pulled"}
+
+
+COMMAND_HANDLERS["containers/pull"] = _handle_container_pull
+
+
+def _handle_container_create(job, params):
+    name = params["container_name"]
+    image = params["image"]
+    cpus = params.get("cpus", 1)
+    memory_mb = params.get("memory_mb", 512)
+    env_vars = params.get("env_vars", [])
+    ports = params.get("ports", [])
+    networks = params.get("networks", [])
+    volumes = params.get("volumes", [])
+    command = params.get("command")
+    restart_policy = params.get("restart_policy", "always")
+    privileged = params.get("privileged", False)
+
+    # Loop-mount raw disk volumes
+    mount_dirs = []
+    for vol in volumes:
+        disk_path = _validate_path(vol["disk_path"])
+        mount_dir = _validate_path(vol["mount_dir"])
+        os.makedirs(mount_dir, exist_ok=True)
+
+        # Format if not already formatted (only works on raw disk images)
+        try:
+            blkid = subprocess.run(
+                ["blkid", disk_path], capture_output=True, text=True, timeout=5
+            )
+            if blkid.returncode != 0:
+                # Verify it's a raw image before formatting
+                file_check = subprocess.run(
+                    ["file", disk_path], capture_output=True, text=True, timeout=5
+                )
+                if "QEMU" in file_check.stdout:
+                    raise RuntimeError(
+                        f"Disk {os.path.basename(disk_path)} is qcow2 — container volumes must be raw format"
+                    )
+                _job_log(job, f"Formatting {os.path.basename(disk_path)} as ext4...")
+                _run_cmd(job, ["mkfs.ext4", "-q", "-F", disk_path], timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
+
+        _job_log(job, f"Mounting {os.path.basename(disk_path)} at {mount_dir}")
+        _run_cmd(job, ["mount", "-o", "loop", disk_path, mount_dir], timeout=10)
+        mount_dirs.append(mount_dir)
+
+    # Build podman create command
+    cmd = ["podman", "create", "--name", name]
+    cmd.extend(["--cpus", str(cpus)])
+    cmd.extend(["--memory", f"{memory_mb}m"])
+    cmd.extend(["--restart", restart_policy])
+
+    if privileged:
+        cmd.append("--privileged")
+
+    for ev in env_vars:
+        cmd.extend(["-e", f"{ev['key']}={ev['value']}"])
+
+    # Port mappings only work with podman-managed networks, not --network none.
+    # With veth bridge attachment, services are accessed via the container's bridge IP directly.
+    if not networks:
+        for p in ports:
+            port_str = f"{p['containerPort']}"
+            if p.get("hostPort"):
+                port_str = f"{p['hostPort']}:{p['containerPort']}"
+            if p.get("protocol", "tcp") == "udp":
+                port_str += "/udp"
+            cmd.extend(["-p", port_str])
+
+    # Network: start with --network none, attach to bridges after creation via veth
+    if networks:
+        cmd.extend(["--network", "none"])
+
+    for vol in volumes:
+        mount_dir = _validate_path(vol["mount_dir"])
+        mount_path = vol["mount_path"]
+        cmd.extend(["-v", f"{mount_dir}:{mount_path}"])
+
+    cmd.append(image)
+    if command:
+        cmd.extend(command.split())
+
+    _job_log(job, f"Creating container {name}...")
+    _run_cmd(job, cmd, timeout=60)
+
+    # Attach container to VXLAN bridges via veth pairs
+    if networks:
+        # Get container PID for network namespace
+        inspect = subprocess.run(
+            ["podman", "inspect", "--format", "{{.State.Pid}}", name],
+            capture_output=True, text=True, timeout=5,
+        )
+        # Container not started yet (Pid=0), start it first then attach
+        _run_cmd(job, ["podman", "start", name], timeout=30)
+
+        inspect = subprocess.run(
+            ["podman", "inspect", "--format", "{{.State.Pid}}", name],
+            capture_output=True, text=True, timeout=5,
+        )
+        if inspect.returncode != 0 or not inspect.stdout.strip():
+            raise RuntimeError(f"Failed to get container PID: {inspect.stderr}")
+        ctr_pid = inspect.stdout.strip()
+
+        # Create netns symlink so ip netns exec works
+        netns_path = f"/var/run/netns/ctr-{name[-8:]}"
+        os.makedirs("/var/run/netns", exist_ok=True)
+        try:
+            os.symlink(f"/proc/{ctr_pid}/ns/net", netns_path)
+        except FileExistsError:
+            os.remove(netns_path)
+            os.symlink(f"/proc/{ctr_pid}/ns/net", netns_path)
+        netns_name = f"ctr-{name[-8:]}"
+
+        for idx, net in enumerate(networks):
+            bridge = _validate_bridge_name(net["bridge"])
+            mac = net.get("mac", "")
+            ip = net.get("ip", "")
+            cidr = net.get("cidr", "10.0.0.0/24")
+
+            # veth pair: host side joins bridge, container side gets IP
+            veth_host = f"vc{name[-8:]}{idx}h"[:15]
+            veth_ctr = f"vc{name[-8:]}{idx}n"[:15]
+
+            _job_log(job, f"Attaching to {bridge} (eth{idx})")
+            try:
+                _run_cmd(
+                    job,
+                    ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ctr],
+                    timeout=10,
+                )
+            except RuntimeError:
+                _job_log(job, f"Veth {veth_host} already exists, reusing")
+
+            # Set MAC on container side before moving to namespace
+            if mac:
+                _run_cmd(
+                    job,
+                    ["ip", "link", "set", veth_ctr, "address", mac],
+                    timeout=5,
+                )
+
+            # Move container side into container netns
+            _run_cmd(
+                job,
+                ["ip", "link", "set", veth_ctr, "netns", netns_name],
+                timeout=10,
+            )
+
+            # Move host side into project network namespace and attach to bridge
+            # Project namespace: troshka-{project_id[:8]} (extracted from container name)
+            proj_ns = "troshka-" + name.split("-")[1]
+            _run_cmd(
+                job,
+                ["ip", "link", "set", veth_host, "netns", proj_ns],
+                timeout=10,
+            )
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "master", bridge],
+                timeout=10,
+            )
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
+                timeout=5,
+            )
+
+            # Rename and configure inside container namespace
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", netns_name, "ip", "link", "set", veth_ctr, "name", f"eth{idx}"],
+                timeout=5,
+            )
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", netns_name, "ip", "link", "set", f"eth{idx}", "up"],
+                timeout=5,
+            )
+
+            # Set IP address (assigned by deploy service — CNI-style, no DHCP client needed)
+            if ip:
+                prefix = cidr.split("/")[1] if "/" in cidr else "24"
+                _run_cmd(
+                    job,
+                    ["ip", "netns", "exec", netns_name, "ip", "addr", "add", f"{ip}/{prefix}", "dev", f"eth{idx}"],
+                    timeout=5,
+                )
+                # Add default route via gateway (.1) for the first NIC
+                if idx == 0:
+                    gw = ip.rsplit(".", 1)[0] + ".1"
+                    try:
+                        _run_cmd(
+                            job,
+                            ["ip", "netns", "exec", netns_name, "ip", "route", "add", "default", "via", gw],
+                            timeout=5,
+                        )
+                    except RuntimeError:
+                        pass
+
+        # Clean up netns symlink
+        try:
+            os.remove(netns_path)
+        except FileNotFoundError:
+            pass
+
+    return {"container_name": name, "status": "created"}
+
+
+COMMAND_HANDLERS["containers/create"] = _handle_container_create
+
+
+def _handle_container_start(job, params):
+    name = params["container_name"]
+    _job_log(job, f"Starting container {name}...")
+    _run_cmd(job, ["podman", "start", name], timeout=30)
+    return {"container_name": name, "status": "started"}
+
+
+COMMAND_HANDLERS["containers/start"] = _handle_container_start
+
+
+def _handle_container_stop(job, params):
+    name = params["container_name"]
+    timeout = params.get("timeout", 10)
+    _job_log(job, f"Stopping container {name}...")
+    _run_cmd(job, ["podman", "stop", "-t", str(timeout), name], timeout=timeout + 10)
+    return {"container_name": name, "status": "stopped"}
+
+
+COMMAND_HANDLERS["containers/stop"] = _handle_container_stop
+
+
+def _handle_container_destroy(job, params):
+    name = params["container_name"]
+    project_id = params.get("project_id", "")
+    volumes = params.get("volumes", [])
+
+    # Stop container (ignore errors if already stopped)
+    _job_log(job, f"Stopping container {name}...")
+    try:
+        _run_cmd(job, ["podman", "stop", "-t", "5", name], timeout=15)
+    except RuntimeError:
+        pass
+
+    # Remove container
+    _job_log(job, f"Removing container {name}...")
+    try:
+        _run_cmd(job, ["podman", "rm", "-f", name], timeout=15)
+    except RuntimeError:
+        pass
+
+    # Unmount loop devices
+    for vol in volumes:
+        mount_dir = vol.get("mount_dir", "")
+        if mount_dir and os.path.ismount(mount_dir):
+            _job_log(job, f"Unmounting {mount_dir}")
+            try:
+                _run_cmd(job, ["umount", mount_dir], timeout=10)
+            except RuntimeError:
+                _run_cmd(job, ["umount", "-l", mount_dir], timeout=10)
+
+    return {"container_name": name, "status": "destroyed"}
+
+
+COMMAND_HANDLERS["containers/destroy"] = _handle_container_destroy
+
+
+def _handle_container_save_image(job, params):
+    image = params["image"]
+    output_path = _validate_path(params["output_path"])
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    _job_log(job, f"Saving container image {image}...")
+
+    # podman save | gzip > output.tar.gz (streaming, no intermediate file)
+    cmd = f"podman save {image} | gzip > {output_path}"
+    proc = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    job["_process"] = proc
+    try:
+        _, stderr = proc.communicate(timeout=600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise RuntimeError(f"Image save timed out: {image}")
+    finally:
+        job["_process"] = None
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"podman save failed: {stderr}")
+
+    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    _job_log(job, f"Saved {image} ({size_mb:.1f} MB)")
+    return {"output_path": output_path, "size_bytes": os.path.getsize(output_path)}
+
+
+COMMAND_HANDLERS["containers/save-image"] = _handle_container_save_image
+
+
+def _handle_container_load_image(job, params):
+    input_path = _validate_path(params["input_path"])
+
+    if not os.path.isfile(input_path):
+        raise FileNotFoundError(f"Image file not found: {input_path}")
+
+    _job_log(job, f"Loading container image from {os.path.basename(input_path)}...")
+    cmd = f"gunzip -c {input_path} | podman load"
+    proc = subprocess.Popen(
+        cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    job["_process"] = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=600)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise RuntimeError(f"Image load timed out: {input_path}")
+    finally:
+        job["_process"] = None
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"podman load failed: {stderr}")
+
+    if stdout:
+        _job_log(job, stdout.strip())
+    return {"input_path": input_path, "status": "loaded"}
+
+
+COMMAND_HANDLERS["containers/load-image"] = _handle_container_load_image
+
+
+def _handle_container_logs(job, params):
+    name = params["container_name"]
+    tail = params.get("tail", 500)
+
+    _job_log(job, f"Fetching logs for {name}...")
+    result = subprocess.run(
+        ["podman", "logs", "--tail", str(tail), name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get logs: {result.stderr}")
+
+    return {"logs": result.stdout, "container_name": name}
+
+
+COMMAND_HANDLERS["containers/logs"] = _handle_container_logs
+
+
+def _handle_container_exec(job, params):
+    name = params["container_name"]
+    command = params.get("command", ["/bin/sh"])
+
+    _job_log(job, f"Executing command in {name}...")
+    cmd = ["podman", "exec", name] + command
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Exec failed: {result.stderr}")
+
+    return {"stdout": result.stdout, "stderr": result.stderr, "container_name": name}
+
+
+COMMAND_HANDLERS["containers/exec"] = _handle_container_exec
+
+
+@route("GET", "/containers/states")
+def handle_container_states(handler, params):
+    """Return all troshka-* container states in one call, including IPs."""
+    containers = {}
+    try:
+        result = subprocess.run(
+            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}} {{.State}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                name, state = parts
+                state_map = {
+                    "running": "running",
+                    "created": "created",
+                    "exited": "stopped",
+                    "paused": "paused",
+                    "dead": "stopped",
+                }
+                containers[name] = {"state": state_map.get(state.lower(), state.lower())}
+
+        # Query IPs for running containers via their network namespace
+        for name, info in containers.items():
+            if info["state"] != "running":
+                continue
+            try:
+                pid_result = subprocess.run(
+                    ["podman", "inspect", "--format", "{{.State.Pid}}", name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                pid = pid_result.stdout.strip()
+                if pid and pid != "0":
+                    ip_result = subprocess.run(
+                        ["nsenter", "-t", pid, "-n", "ip", "-4", "-o", "addr", "show"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    ips = []
+                    for ip_line in ip_result.stdout.strip().split("\n"):
+                        if "scope global" in ip_line:
+                            # Format: "2: eth0    inet 10.0.0.5/24 ..."
+                            addr_part = ip_line.split("inet ")[1].split("/")[0] if "inet " in ip_line else ""
+                            if addr_part:
+                                ips.append(addr_part)
+                    if ips:
+                        info["ips"] = ips
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("Failed to list container states: %s", e)
+
+    handler._send_json(200, {"containers": containers, "source": "podman"})
 
 
 if __name__ == "__main__":

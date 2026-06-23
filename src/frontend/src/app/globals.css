@@ -626,6 +626,70 @@ body {
   font-family: monospace;
 }
 
+/* ---- Container Node ---- */
+
+.canvas-node {
+  width: 180px;
+  background: rgba(108, 99, 255, 0.06);
+  border: 1.5px solid var(--troshka-border);
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: inherit;
+  color: var(--troshka-text);
+}
+
+.canvas-node-container {
+  border-left: 3px solid rgba(56, 189, 248, 0.5);
+}
+
+.canvas-node-selected {
+  box-shadow: 0 0 0 3px var(--troshka-accent-glow);
+}
+
+.canvas-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.canvas-node-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.canvas-node-label {
+  font-size: 13px;
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-node-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.canvas-node-body {
+  padding: 4px 12px 10px;
+}
+
+.canvas-node-detail {
+  font-size: 11px;
+  color: var(--troshka-text-dim);
+  margin-bottom: 2px;
+}
+
 /* ---- Properties Panel (right sidebar) ---- */
 
 .canvas-properties {

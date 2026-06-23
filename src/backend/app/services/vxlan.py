@@ -140,7 +140,10 @@ def build_host_network_config(
         pxe_boot_iso_ids = set()
         pxe_vm_boot_config = {}
         for vm_node in nodes:
-            if vm_node["id"] in connected_vm_ids and vm_node.get("type") == "vmNode":
+            if vm_node["id"] in connected_vm_ids and vm_node.get("type") in (
+                "vmNode",
+                "containerNode",
+            ):
                 vm_data = vm_node.get("data", {})
                 connected_vms.append(
                     {

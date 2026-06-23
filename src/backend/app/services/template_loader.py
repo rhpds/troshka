@@ -123,6 +123,9 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
     if tmpl.get("vms"):
         resolved["vms"] = tmpl["vms"]
 
+    if tmpl.get("containers"):
+        resolved["containers"] = tmpl["containers"]
+
     for section in (
         "ocp",
         "dns_records",
@@ -598,19 +601,156 @@ def _generate_topology_from_vms(
         vm_x += VM_SPACING
         vm_index += 1
 
+    # ── Containers ──
+    container_name_to_id = {}
+    containers_def = tmpl.get("containers", {})
+    for ctr_key, ctr_cfg in containers_def.items():
+        ctr_id = _id()
+        ctr_nics = []
+        for i, nic_cfg in enumerate(ctr_cfg.get("nics", [])):
+            nic_id = f"nic-{_id()}"
+            mac = _mac()
+            if nic_cfg.get("mac"):
+                mac = nic_cfg["mac"]
+            ctr_nics.append(
+                {
+                    "id": nic_id,
+                    "name": f"eth{i}",
+                    "mac": mac,
+                    "model": nic_cfg.get("model", "virtio"),
+                    "ip": nic_cfg.get("ip", ""),
+                }
+            )
+
+            # Create edge from container NIC to network node
+            net_name = nic_cfg.get("network", "")
+            net_node_id = net_ids.get(net_name)
+            if net_node_id:
+                edges.append(
+                    {
+                        "id": _id(),
+                        "source": ctr_id,
+                        "target": net_node_id,
+                        "sourceHandle": f"{nic_id}-bottom",
+                        "targetHandle": "top",
+                        "type": "smoothstep",
+                        "style": {"stroke": "rgba(96,165,250,0.5)", "strokeWidth": 2},
+                    }
+                )
+
+        # Create storage nodes + mount entries for container disks
+        ctr_mounts = []
+        for disk_idx, disk_cfg in enumerate(ctr_cfg.get("disks", [])):
+            disk_id = _id()
+            disk_node = {
+                "id": disk_id,
+                "type": "storageNode",
+                "position": {"x": vm_x - 190, "y": VM_ROW_Y + 70 + disk_idx * 100},
+                "data": {
+                    "label": f"{ctr_key}-vol{disk_idx}",
+                    "name": f"{ctr_key}-vol{disk_idx}",
+                    "size": disk_cfg.get("size_gb", 10),
+                    "format": "raw",
+                    "icon": "\U0001f6e2",
+                },
+            }
+            nodes.append(disk_node)
+            ctr_mounts.append(
+                {
+                    "diskNodeId": disk_id,
+                    "mountPath": disk_cfg.get("mount_path", ""),
+                }
+            )
+            # Edge from storage to container mount handle
+            edges.append(
+                {
+                    "id": _id(),
+                    "source": disk_id,
+                    "target": ctr_id,
+                    "sourceHandle": "right",
+                    "targetHandle": f"mnt-{disk_id}-left",
+                    "type": "smoothstep",
+                    "style": {
+                        "stroke": "rgba(251,191,36,0.6)",
+                        "strokeWidth": 2,
+                        "strokeDasharray": "4 4",
+                    },
+                }
+            )
+
+        # Build env vars
+        env_vars = []
+        for k, v in (ctr_cfg.get("env") or {}).items():
+            env_vars.append({"key": k, "value": str(v)})
+
+        # Build ports
+        ports = []
+        for p in ctr_cfg.get("ports", []):
+            ports.append(
+                {
+                    "containerPort": p.get("container_port", 0),
+                    "hostPort": p.get("host_port"),
+                    "protocol": p.get("protocol", "tcp"),
+                }
+            )
+
+        # Container node
+        ctr_node = {
+            "id": ctr_id,
+            "type": "containerNode",
+            "position": {"x": vm_x, "y": VM_ROW_Y},
+            "data": {
+                "label": ctr_key,
+                "name": ctr_key,
+                "image": ctr_cfg.get("image", ""),
+                "registryCredentialId": None,
+                "registryCredentialName": ctr_cfg.get("registry_credential"),
+                "cpus": ctr_cfg.get("cpus", 1),
+                "memory": ctr_cfg.get("memory_mb", 512),
+                "nics": ctr_nics,
+                "envVars": env_vars,
+                "ports": ports,
+                "command": ctr_cfg.get("command"),
+                "restartPolicy": ctr_cfg.get("restart_policy", "always"),
+                "privileged": ctr_cfg.get("privileged", False),
+                "mounts": ctr_mounts,
+                "status": "stopped",
+                "icon": "\U0001f4e6",
+            },
+        }
+        nodes.append(ctr_node)
+        container_name_to_id[ctr_key] = ctr_id
+        vm_x += VM_SPACING
+
     # Build startOrder from template
     start_order = []
     for entry in tmpl.get("start_order", []):
-        vm_id = vm_name_to_id.get(entry.get("vm", ""), "")
-        if not vm_id:
-            continue
-        so = {"vmId": vm_id, "autoStart": entry.get("auto_start", True)}
-        wait_name = entry.get("wait_for", "")
-        if wait_name and wait_name in vm_name_to_id:
-            so["waitForVm"] = vm_name_to_id[wait_name]
-        if entry.get("delay"):
-            so["delay"] = entry["delay"]
-        start_order.append(so)
+        if "container" in entry:
+            ctr_name = entry["container"]
+            ctr_id = container_name_to_id.get(ctr_name, "")
+            if ctr_id:
+                so = {
+                    "vmId": ctr_id,
+                    "containerId": ctr_id,
+                    "entryType": "container",
+                    "autoStart": True,
+                    "waitForVm": None,
+                    "waitForService": "none",
+                    "waitForPort": "",
+                    "delaySeconds": entry.get("delay", 0),
+                }
+                start_order.append(so)
+        elif "vm" in entry:
+            vm_id = vm_name_to_id.get(entry.get("vm", ""), "")
+            if not vm_id:
+                continue
+            so = {"vmId": vm_id, "autoStart": entry.get("auto_start", True)}
+            wait_name = entry.get("wait_for", "")
+            if wait_name and wait_name in vm_name_to_id:
+                so["waitForVm"] = vm_name_to_id[wait_name]
+            if entry.get("delay"):
+                so["delay"] = entry["delay"]
+            start_order.append(so)
 
     # Apply top-level dns_records (with target resolution) + auto-generate OCP records
     top_dns = list(tmpl.get("dns_records", []))
@@ -667,7 +807,7 @@ def _generate_topology_from_vms(
 
     # Build hiddenNodeIds from template
     hidden_ids = []
-    all_name_to_id = {**vm_name_to_id, **net_ids}
+    all_name_to_id = {**vm_name_to_id, **container_name_to_id, **net_ids}
     for name in tmpl.get("hidden_nodes", []):
         nid = all_name_to_id.get(name)
         if nid:
@@ -906,6 +1046,99 @@ def export_topology_to_template(topology: dict) -> dict:
         result["gateway"] = gateway
     result["vms"] = vms
 
+    # ── Containers ──
+    container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
+    if container_nodes:
+        all_storage_nodes = {
+            n["id"]: n for n in nodes if n.get("type") == "storageNode"
+        }
+        containers = {}
+        for ctr_node in container_nodes:
+            cd = ctr_node.get("data", {})
+            ctr_name = cd.get("name", "container")
+
+            # Resolve NIC → network connections (same edge-walking as VMs)
+            nics_export = []
+            for nic in cd.get("nics", []):
+                nic_id = nic.get("id", "")
+                handle_top = f"nic-{nic_id}-top"
+                handle_bottom = f"nic-{nic_id}-bottom"
+                net_name = None
+                for edge in edges:
+                    if edge.get("source") == ctr_node["id"] and edge.get(
+                        "sourceHandle"
+                    ) in (handle_top, handle_bottom):
+                        net_node = net_nodes.get(edge["target"])
+                        if net_node:
+                            net_name = net_node.get("data", {}).get("name")
+                    elif edge.get("target") == ctr_node["id"] and edge.get(
+                        "targetHandle"
+                    ) in (handle_top, handle_bottom):
+                        net_node = net_nodes.get(edge["source"])
+                        if net_node:
+                            net_name = net_node.get("data", {}).get("name")
+                nic_entry = {}
+                if net_name:
+                    nic_entry["network"] = net_name
+                if nic.get("ip"):
+                    nic_entry["ip"] = nic["ip"]
+                if nic.get("model") and nic["model"] != "virtio":
+                    nic_entry["model"] = nic["model"]
+                if nic_entry:
+                    nics_export.append(nic_entry)
+
+            # Resolve mount → storage connections
+            disks_export = []
+            for mount in cd.get("mounts", []):
+                disk_node = all_storage_nodes.get(mount.get("diskNodeId", ""))
+                if disk_node:
+                    dd = disk_node.get("data", {})
+                    disks_export.append(
+                        {
+                            "size_gb": dd.get("size", 10),
+                            "mount_path": mount.get("mountPath", ""),
+                        }
+                    )
+
+            ctr_export = {"image": cd.get("image", "")}
+            if cd.get("registryCredentialName"):
+                ctr_export["registry_credential"] = cd["registryCredentialName"]
+            if cd.get("cpus", 1) != 1:
+                ctr_export["cpus"] = cd["cpus"]
+            if cd.get("memory", 512) != 512:
+                ctr_export["memory_mb"] = cd["memory"]
+            if cd.get("privileged"):
+                ctr_export["privileged"] = True
+            if cd.get("restartPolicy", "always") != "always":
+                ctr_export["restart_policy"] = cd["restartPolicy"]
+            if cd.get("command"):
+                ctr_export["command"] = cd["command"]
+            if nics_export:
+                ctr_export["nics"] = nics_export
+            if cd.get("envVars"):
+                ctr_export["env"] = {
+                    ev["key"]: ev["value"] for ev in cd["envVars"] if ev.get("key")
+                }
+            if cd.get("ports"):
+                ctr_export["ports"] = [
+                    {
+                        "container_port": p["containerPort"],
+                        **({"host_port": p["hostPort"]} if p.get("hostPort") else {}),
+                        **(
+                            {"protocol": p["protocol"]}
+                            if p.get("protocol", "tcp") != "tcp"
+                            else {}
+                        ),
+                    }
+                    for p in cd["ports"]
+                ]
+            if disks_export:
+                ctr_export["disks"] = disks_export
+
+            containers[ctr_name] = ctr_export
+
+        result["containers"] = containers
+
     # Map node IDs to names for start_order and hidden_nodes
     id_to_name = {}
     for n in nodes:
@@ -916,14 +1149,30 @@ def export_topology_to_template(topology: dict) -> dict:
     if start_order:
         so_out = []
         for entry in start_order:
-            so_entry = {"vm": id_to_name.get(entry.get("vmId", ""), "")}
-            if entry.get("waitForVm"):
-                so_entry["wait_for"] = id_to_name.get(entry["waitForVm"], "")
-            if "autoStart" in entry:
-                so_entry["auto_start"] = entry["autoStart"]
-            if entry.get("delay"):
-                so_entry["delay"] = entry["delay"]
-            so_out.append(so_entry)
+            if entry.get("entryType") == "container":
+                ctr_node = next(
+                    (
+                        n
+                        for n in container_nodes
+                        if n["id"] == entry.get("containerId", entry.get("vmId", ""))
+                    ),
+                    None,
+                )
+                if ctr_node:
+                    so_entry = {"container": ctr_node["data"]["name"]}
+                    if entry.get("delaySeconds"):
+                        so_entry["delay"] = entry["delaySeconds"]
+                    so_out.append(so_entry)
+            else:
+                # VM start order entry
+                so_entry = {"vm": id_to_name.get(entry.get("vmId", ""), "")}
+                if entry.get("waitForVm"):
+                    so_entry["wait_for"] = id_to_name.get(entry["waitForVm"], "")
+                if "autoStart" in entry:
+                    so_entry["auto_start"] = entry["autoStart"]
+                if entry.get("delay"):
+                    so_entry["delay"] = entry["delay"]
+                so_out.append(so_entry)
         result["start_order"] = so_out
 
     hidden = topology.get("hiddenNodeIds", [])

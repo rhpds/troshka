@@ -6,7 +6,9 @@ then sends structured commands to the troshkad agent on the host.
 """
 
 import datetime
+import ipaddress
 import logging
+import os
 import threading
 import time as _time
 
@@ -26,8 +28,10 @@ DEPLOY_STEPS = [
     "networks",
     "seeds",
     "images",
+    "container_pull",
     "disks",
     "vms",
+    "containers",
     "starting",
     "dns",
     "done",
@@ -254,6 +258,34 @@ def _extract_vms(topology: dict) -> list[dict]:
     return vms
 
 
+def _extract_containers(topology: dict) -> list[dict]:
+    """Extract container nodes with their properties."""
+    containers = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "containerNode":
+            continue
+        data = node.get("data", {})
+        containers.append(
+            {
+                "node_id": node["id"],
+                "name": data.get("name", "container"),
+                "image": data.get("image", ""),
+                "registry_credential_id": data.get("registryCredentialId"),
+                "registry_credential_name": data.get("registryCredentialName"),
+                "cpus": data.get("cpus", 1),
+                "memory_mb": data.get("memory", 512),
+                "nics": data.get("nics", []),
+                "env_vars": data.get("envVars", []),
+                "ports": data.get("ports", []),
+                "command": data.get("command"),
+                "restart_policy": data.get("restartPolicy", "always"),
+                "privileged": data.get("privileged", False),
+                "mounts": data.get("mounts", []),
+            }
+        )
+    return containers
+
+
 def _find_vm_networks(
     vm_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:
@@ -329,6 +361,61 @@ def _find_vm_networks(
     return networks
 
 
+def _find_container_networks(
+    container_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
+) -> list[dict]:
+    """Find networks connected to a container via NIC handles."""
+    results = []
+    container_node = next(
+        (n for n in topology.get("nodes", []) if n["id"] == container_node_id), None
+    )
+    if not container_node:
+        return results
+
+    nics_by_id = {
+        nic["id"]: nic for nic in container_node.get("data", {}).get("nics", [])
+    }
+
+    for edge in topology.get("edges", []):
+        src, tgt = edge.get("source"), edge.get("target")
+        src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+
+        nic_id = None
+        net_node_id = None
+        if src == container_node_id and src_h.startswith("nic-"):
+            nic_id = src_h.split("-", 1)[1].rsplit("-", 1)[0]
+            net_node_id = tgt
+        elif tgt == container_node_id and tgt_h.startswith("nic-"):
+            nic_id = tgt_h.split("-", 1)[1].rsplit("-", 1)[0]
+            net_node_id = src
+
+        if not nic_id or not net_node_id:
+            continue
+
+        nic = nics_by_id.get(nic_id, {})
+        vni = vni_map.get(net_node_id)
+        if not vni:
+            continue
+
+        net_node = next(
+            (n for n in topology.get("nodes", []) if n["id"] == net_node_id), None
+        )
+        cidr = net_node.get("data", {}).get("cidr", "") if net_node else ""
+
+        results.append(
+            {
+                "bridge": f"br-{vni}",
+                "mac": nic.get("mac", ""),
+                "nic_id": nic_id,
+                "model": nic.get("model", "virtio"),
+                "ip": nic.get("ip", ""),
+                "cidr": cidr,
+            }
+        )
+
+    return results
+
+
 def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     """Find storage nodes connected to a VM via disk controller handles."""
     edges = topology.get("edges", [])
@@ -388,6 +475,65 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
         )
 
     return disks
+
+
+def _find_container_volumes(
+    container_node_id: str, topology: dict, project_id: str, pool=None
+) -> list[dict]:
+    """Find storage nodes connected to a container via mount handles."""
+    container_node = next(
+        (n for n in topology.get("nodes", []) if n["id"] == container_node_id), None
+    )
+    if not container_node:
+        return []
+
+    mounts = container_node.get("data", {}).get("mounts", [])
+    mounts_by_disk = {m["diskNodeId"]: m for m in mounts}
+
+    results = []
+    for edge in topology.get("edges", []):
+        src, tgt = edge.get("source"), edge.get("target")
+        src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+
+        disk_node_id = None
+        if src == container_node_id and (tgt_h or "").startswith("mnt-"):
+            disk_node_id = tgt
+        elif tgt == container_node_id and (src_h or "").startswith("mnt-"):
+            disk_node_id = src
+        elif tgt == container_node_id and (tgt_h or "").startswith("mnt-"):
+            disk_node_id = src
+        elif src == container_node_id and (src_h or "").startswith("mnt-"):
+            disk_node_id = tgt
+
+        if not disk_node_id:
+            continue
+
+        disk_node = next(
+            (
+                n
+                for n in topology.get("nodes", [])
+                if n["id"] == disk_node_id and n.get("type") == "storageNode"
+            ),
+            None,
+        )
+        if not disk_node:
+            continue
+
+        mount_info = mounts_by_disk.get(disk_node_id, {})
+        dd = disk_node.get("data", {})
+        disk_path = _disk_path(project_id, container_node_id, disk_node_id, "raw", pool)
+        mount_dir = os.path.join(_vm_dir(project_id, pool), f"mnt-{disk_node_id[:8]}")
+        results.append(
+            {
+                "disk_path": disk_path,
+                "mount_dir": mount_dir,
+                "mount_path": mount_info.get("mountPath", "/data"),
+                "size_gb": dd.get("size", 10),
+                "node_id": disk_node_id,
+            }
+        )
+
+    return results
 
 
 # ── Script generators ──
@@ -1375,6 +1521,159 @@ def _project_deleted(project_id: str) -> bool:
         check_s.close()
 
 
+def _auto_assign_container_ips(topology: dict) -> None:
+    """Assign IPs to container NICs that don't have static IPs.
+
+    Mutates topology in-place. Picks IPs from the connected network's CIDR,
+    avoiding all IPs already used by VMs or other containers.
+    """
+    nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+    used_ips = _collect_used_ips(topology)
+
+    # Also reserve .1 (gateway) and DHCP range for each network
+    net_nodes = {n["id"]: n for n in nodes if n.get("type") == "networkNode"}
+
+    for node in nodes:
+        if node.get("type") != "containerNode":
+            continue
+        data = node.get("data", {})
+        for nic in data.get("nics", []):
+            if nic.get("ip"):
+                continue
+
+            # Find connected network via edges
+            nic_handle_top = f"nic-{nic['id']}-top"
+            nic_handle_bottom = f"nic-{nic['id']}-bottom"
+            net_node = None
+            for edge in edges:
+                src, tgt = edge.get("source"), edge.get("target")
+                sh, th = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+                if src == node["id"] and sh in (nic_handle_top, nic_handle_bottom):
+                    net_node = net_nodes.get(tgt)
+                elif tgt == node["id"] and th in (nic_handle_top, nic_handle_bottom):
+                    net_node = net_nodes.get(src)
+                if net_node:
+                    break
+
+            if not net_node:
+                continue
+
+            cidr = net_node.get("data", {}).get("cidr", "")
+            if not cidr:
+                continue
+
+            net_data = net_node.get("data", {})
+            dhcp_range = _get_dhcp_range(net_data)
+            if not dhcp_range:
+                continue
+            start_int, end_int = dhcp_range
+            for addr_int in range(start_int, end_int + 1):
+                candidate_str = str(ipaddress.ip_address(addr_int))
+                if candidate_str not in used_ips:
+                    nic["ip"] = candidate_str
+                    used_ips.add(candidate_str)
+                    logger.info(
+                        "Auto-assigned %s to container %s NIC %s (from DHCP range)",
+                        candidate_str,
+                        data.get("name"),
+                        nic.get("name"),
+                    )
+                    break
+
+
+def _collect_used_ips(topology: dict) -> set[str]:
+    """Collect all IPs already assigned: static IPs on VMs/containers + gateway IPs."""
+    used = set()
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        for nic in data.get("nics", []):
+            ip = nic.get("ip", "")
+            if ip:
+                used.add(ip)
+        if node.get("type") == "networkNode":
+            cidr = data.get("cidr", "")
+            if cidr:
+                try:
+                    net = ipaddress.ip_network(cidr, strict=False)
+                    used.add(str(net.network_address + 1))
+                except ValueError:
+                    pass
+    return used
+
+
+def _get_dhcp_range(net_data: dict) -> tuple[int, int] | None:
+    """Return the DHCP range as (start_int, end_int) for a network node's data.
+
+    Matches the auto-generation logic in vxlan.py: hosts[9] to hosts[-1].
+    """
+    range_start = net_data.get("dhcpRangeStart", "")
+    range_end = net_data.get("dhcpRangeEnd", "")
+    if not range_start or not range_end:
+        cidr = net_data.get("cidr", "")
+        if cidr:
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+                hosts = list(net.hosts())
+                if len(hosts) > 10:
+                    if not range_start:
+                        range_start = str(hosts[min(9, len(hosts) - 2)])
+                    if not range_end:
+                        range_end = str(hosts[-1])
+            except ValueError:
+                pass
+    if range_start and range_end:
+        try:
+            return (
+                int(ipaddress.ip_address(range_start)),
+                int(ipaddress.ip_address(range_end)),
+            )
+        except ValueError:
+            pass
+    return None
+
+
+def _create_and_start_container(host, project_id, ctr, topology, vni_map, pool=None):
+    """Create and start a container via troshkad."""
+    container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+    networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
+    volumes = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
+
+    create_params = {
+        "container_name": container_name,
+        "image": ctr["image"],
+        "cpus": ctr["cpus"],
+        "memory_mb": ctr["memory_mb"],
+        "env_vars": ctr["env_vars"],
+        "ports": ctr["ports"],
+        "networks": [
+            {
+                "bridge": n["bridge"],
+                "ip": n.get("ip"),
+                "mac": n.get("mac"),
+                "cidr": n.get("cidr"),
+            }
+            for n in networks
+        ],
+        "volumes": [
+            {
+                "disk_path": v["disk_path"],
+                "mount_dir": v["mount_dir"],
+                "mount_path": v["mount_path"],
+            }
+            for v in volumes
+        ],
+        "command": ctr.get("command"),
+        "restart_policy": ctr.get("restart_policy", "always"),
+        "privileged": ctr.get("privileged", False),
+    }
+    job_id = start_job(host, "/containers/create", create_params)
+    wait_for_job(host, job_id, timeout=120)
+
+    job_id = start_job(host, "/containers/start", {"container_name": container_name})
+    wait_for_job(host, job_id, timeout=30)
+
+
 def deploy_project_async(
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
@@ -1537,6 +1836,10 @@ def deploy_project_async(
             project.topology = topology
             s.commit()
 
+        # Auto-assign IPs to container NICs without static IPs (before network setup
+        # so dnsmasq gets static host entries for containers)
+        _auto_assign_container_ips(topology)
+
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
         _checkpoint(s, project_id, "networks")
         _update_deploy_progress(project_id, "networking", "waiting for lock")
@@ -1686,7 +1989,97 @@ def deploy_project_async(
         logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
         _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
-        # Step 3c: Validate BMC configuration
+        # Step 3c: Pull container images
+        _checkpoint(s, project_id, "container_pull")
+        containers = _extract_containers(topology)
+        logger.info(
+            "Deploy %s: found %d containers to pull", project_id[:8], len(containers)
+        )
+        if containers:
+            is_pattern_deploy = _is_pattern_deploy(topology)
+            pattern_id = None
+            if is_pattern_deploy:
+                # Extract pattern_id from any storage node
+                for node in topology.get("nodes", []):
+                    if node.get("type") == "storageNode":
+                        pattern_id = node.get("data", {}).get("patternId")
+                        if pattern_id:
+                            break
+
+            _update_deploy_progress(
+                project_id, step="container_pull", detail="Pulling container images..."
+            )
+            logger.info("Deploy %s: pulling container images", project_id[:8])
+            for ctr in containers:
+                if not ctr["image"]:
+                    continue
+
+                if is_pattern_deploy and pattern_id:
+                    # Load from pattern cache instead of pulling
+                    tar_filename = f"container-{ctr['node_id'][:8]}-image.tar.gz"
+                    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{tar_filename}"
+                    s3_key = f"patterns/{pattern_id}/{tar_filename}"
+
+                    from app.services.s3_storage import _bucket, _get_s3_config
+
+                    creds = _get_s3_config()
+
+                    # Download from S3 if not cached
+                    logger.info(
+                        "Deploy %s: downloading container image %s from pattern cache",
+                        project_id[:8],
+                        ctr["image"],
+                    )
+                    job_id = start_job(
+                        host,
+                        "/images/cache",
+                        {
+                            "url": f"s3://{_bucket()}/{s3_key}",
+                            "cache_path": cache_path,
+                            "aws_access_key_id": creds.get("access_key_id", ""),
+                            "aws_secret_access_key": creds.get("secret_access_key", ""),
+                            "aws_region": creds.get("region", "us-east-1"),
+                        },
+                    )
+                    wait_for_job(host, job_id, timeout=600)
+
+                    # Load image from tar.gz
+                    logger.info(
+                        "Deploy %s: loading container image %s from cache",
+                        project_id[:8],
+                        ctr["image"],
+                    )
+                    job_id = start_job(
+                        host, "/containers/load-image", {"input_path": cache_path}
+                    )
+                    wait_for_job(host, job_id, timeout=300)
+                else:
+                    # Normal pull from registry
+                    pull_params = {"image": ctr["image"]}
+
+                    # Resolve registry credentials
+                    cred_id = ctr.get("registry_credential_id")
+                    if cred_id:
+                        from app.models.registry_credential import RegistryCredential
+                        from app.core.encryption import decrypt
+
+                        cred = s.query(RegistryCredential).filter_by(id=cred_id).first()
+                        if cred:
+                            pull_params["registry"] = cred.registry_url
+                            pull_params["username"] = cred.username
+                            pull_params["password"] = decrypt(cred.password)
+
+                    job_id = start_job(host, "/containers/pull", pull_params)
+                    wait_for_job(host, job_id, timeout=600)
+
+        if _project_deleted(project_id):
+            logger.info(
+                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            )
+            _deploy_progress.pop(project_id, None)
+            return
+
+        # Step 3d: Validate BMC configuration
         bmc_network_exists = any(
             n.get("type") == "networkNode"
             and n.get("data", {}).get("networkType") == "bmc"
@@ -1757,7 +2150,7 @@ def deploy_project_async(
         logger.info("Deploy %s: creating VMs", project_id[:8])
         vms = _extract_vms(topology)
 
-        # Fire all disk creation jobs in parallel
+        # Fire all disk creation jobs in parallel (VMs + container volumes)
         _update_deploy_progress(project_id, "creating disks", "preparing VM disks")
         disk_jobs = []
         for vm in vms:
@@ -1766,6 +2159,24 @@ def deploy_project_async(
                 host, project_id, vm, vm_disks, pool
             )
             disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+
+        # Create raw volumes for containers
+        containers = _extract_containers(topology)
+        for ctr in containers:
+            ctr_vols = _find_container_volumes(
+                ctr["node_id"], topology, project_id, pool
+            )
+            for vol in ctr_vols:
+                jid = start_job(
+                    host,
+                    "/disks/create",
+                    {
+                        "path": vol["disk_path"],
+                        "size_gb": vol["size_gb"],
+                        "format": "raw",
+                    },
+                )
+                disk_jobs.append(jid)
         for di, jid in enumerate(disk_jobs):
             try:
                 _update_deploy_progress(
@@ -1859,6 +2270,48 @@ def deploy_project_async(
                 s.commit()
                 _deploy_progress.pop(project_id, None)
                 return
+
+        # Step 4c: Create and start containers
+        _checkpoint(s, project_id, "containers")
+        containers = _extract_containers(topology)
+        logger.info(
+            "Deploy %s: found %d containers to create", project_id[:8], len(containers)
+        )
+        if containers:
+            _update_deploy_progress(
+                project_id, step="containers", detail="Creating containers..."
+            )
+            logger.info("Deploy %s: creating containers", project_id[:8])
+
+            # Respect start order for containers
+            start_order = topology.get("startOrder", [])
+            ordered_ids = set()
+            for entry in start_order:
+                if entry.get("entryType") == "container":
+                    ctr_id = entry.get("containerId", entry.get("vmId", ""))
+                    ctr = next((c for c in containers if c["node_id"] == ctr_id), None)
+                    if ctr:
+                        ordered_ids.add(ctr_id)
+                        delay = entry.get("delaySeconds", 0)
+                        if delay > 0:
+                            _time.sleep(delay)
+                        _create_and_start_container(
+                            host, project_id, ctr, topology, vni_map, pool
+                        )
+
+            # Create any containers not in start order
+            for ctr in containers:
+                if ctr["node_id"] not in ordered_ids:
+                    _create_and_start_container(
+                        host, project_id, ctr, topology, vni_map, pool
+                    )
+
+        if _project_deleted(project_id):
+            logger.info(
+                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            )
+            _deploy_progress.pop(project_id, None)
+            return
 
         # Step 5: Start VMs (unless auto_start is disabled)
         _checkpoint(s, project_id, "starting")
@@ -3082,6 +3535,31 @@ def destroy_project_sync(ctx: dict):
 
         vni_map = ctx.get("vni_map", {})
         topo = ctx.get("topology", {})
+
+        # Destroy containers first (before networks teardown)
+        pool = _get_host_pool(host, s)
+        containers = _extract_containers(topo)
+        for ctr in containers:
+            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+            volumes = _find_container_volumes(ctr["node_id"], topo, project_id, pool)
+            try:
+                job_id = start_job(
+                    host,
+                    "/containers/destroy",
+                    {
+                        "container_name": container_name,
+                        "project_id": project_id,
+                        "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
+                    },
+                )
+                wait_for_job(host, job_id, timeout=30)
+            except TroshkadError as e:
+                logger.warning(
+                    "Destroy %s: failed to destroy container %s: %s",
+                    project_id[:8],
+                    container_name,
+                    e,
+                )
 
         # Destroy VMs via troshkad
         vms = _extract_vms(topo)

@@ -68,7 +68,43 @@ export interface StorageNodeData {
   [key: string]: any;
 }
 
-export type CanvasNodeData = VMNodeData | NetworkNodeData | StorageNodeData;
+export interface ContainerMount {
+  diskNodeId: string;
+  mountPath: string;
+}
+
+export interface ContainerPort {
+  containerPort: number;
+  hostPort?: number;
+  protocol: "tcp" | "udp";
+}
+
+export interface ContainerEnvVar {
+  key: string;
+  value: string;
+}
+
+export interface ContainerNodeData {
+  label: string;
+  name: string;
+  image: string;
+  registryCredentialId: string | null;
+  cpus: number;
+  memory: number;
+  nics: VMNic[];
+  envVars: ContainerEnvVar[];
+  ports: ContainerPort[];
+  command: string | null;
+  restartPolicy: "always" | "on-failure" | "never";
+  privileged: boolean;
+  mounts: ContainerMount[];
+  status: "running" | "stopped" | "created";
+  icon: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+export type CanvasNodeData = VMNodeData | NetworkNodeData | StorageNodeData | ContainerNodeData;
 
 export interface ExternalIp {
   id: string;
@@ -80,6 +116,8 @@ export interface ExternalIp {
 
 export interface StartOrderEntry {
   vmId: string;
+  containerId?: string;
+  entryType?: "vm" | "container";
   autoStart: boolean;
   waitForVm: string | null;
   waitForService: string;
@@ -174,6 +212,28 @@ export function setLatestVmStates(states: Record<string, string>) {
     if (newStatus && (n.data as Record<string, unknown>).status !== newStatus) {
       changed = true;
       return { ...n, data: { ...(n.data as Record<string, unknown>), status: newStatus } };
+    }
+    return n;
+  });
+  if (changed) useCanvasStore.setState({ nodes: updated });
+}
+
+let _latestContainerStates: Record<string, { state: string; ips?: string[] }> = {};
+export function setLatestContainerStates(states: Record<string, { state: string; ips?: string[] }>) {
+  _latestContainerStates = states;
+  const store = useCanvasStore.getState();
+  if (!store.nodes.length) return;
+  let changed = false;
+  const updated = store.nodes.map((n) => {
+    if (n.type !== "containerNode" || !n.id) return n;
+    const info = states[n.id];
+    if (!info) return n;
+    const d = n.data as Record<string, unknown>;
+    const newStatus = info.state;
+    const newIps = info.ips || [];
+    if (d.status !== newStatus || JSON.stringify(d.liveIps) !== JSON.stringify(newIps)) {
+      changed = true;
+      return { ...n, data: { ...d, status: newStatus, liveIps: newIps } };
     }
     return n;
   });
@@ -283,8 +343,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const tIsRouter = tType === "networkNode" && tSub === "router";
     const sIsGateway = sType === "networkNode" && sSub === "gateway";
     const tIsGateway = tType === "networkNode" && tSub === "gateway";
-    const sIsNetwork = sType === "networkNode" && !sIsRouter && !sIsGateway;
-    const tIsNetwork = tType === "networkNode" && !tIsRouter && !tIsGateway;
+    const sIsLoadBalancer = sType === "networkNode" && sSub === "loadbalancer";
+    const tIsLoadBalancer = tType === "networkNode" && tSub === "loadbalancer";
+    const sIsNetwork = sType === "networkNode" && !sIsRouter && !sIsGateway && !sIsLoadBalancer;
+    const tIsNetwork = tType === "networkNode" && !tIsRouter && !tIsGateway && !tIsLoadBalancer;
+    const sIsContainer = sType === "containerNode";
+    const tIsContainer = tType === "containerNode";
+
+    // Containers can only connect to networks (via NIC handles) and storage (via mount handles)
+    if (sIsContainer || tIsContainer) {
+      const otherType = sIsContainer ? tType : sType;
+      if (otherType !== "networkNode" && otherType !== "storageNode") return;
+      // Containers cannot connect to routers/gateways/loadbalancers directly
+      const otherSub = sIsContainer
+        ? (targetNode.data as Record<string, any>).subtype
+        : (sourceNode.data as Record<string, any>).subtype;
+      if (otherSub === "router" || otherSub === "gateway" || otherSub === "loadbalancer") return;
+    }
 
     // Router/Gateway can only connect to networks
     if (sIsRouter || sIsGateway) {
@@ -310,9 +385,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       if (alreadyConnected) return;
     }
 
-    // Storage can only connect to VMs, and only one VM per disk (ISOs exempt)
-    if (sType === "storageNode" && tType !== "vmNode") return;
-    if (tType === "storageNode" && sType !== "vmNode") return;
+    // Storage can only connect to VMs and containers, and only one VM/container per disk (ISOs exempt)
+    if (sType === "storageNode" && tType !== "vmNode" && tType !== "containerNode") return;
+    if (tType === "storageNode" && sType !== "vmNode" && sType !== "containerNode") return;
 
     const storageId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
     if (storageId) {
@@ -419,6 +494,22 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         get().edges,
       ),
     });
+
+    // Force disk format to raw when connecting storage to a container
+    const diskId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
+    const containerConnected = sType === "containerNode" || tType === "containerNode";
+    if (diskId && containerConnected) {
+      const storageData = (sType === "storageNode" ? sourceNode : targetNode).data as Record<string, unknown>;
+      if (storageData.format !== "raw" && storageData.format !== "iso") {
+        set({
+          nodes: get().nodes.map((n) =>
+            n.id === diskId
+              ? { ...n, data: { ...n.data, format: "raw" } }
+              : n
+          ),
+        });
+      }
+    }
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
@@ -572,9 +663,22 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             if (n.type === "vmNode" && n.data?.status) {
               prevStatusMap[n.id] = (n.data as Record<string, unknown>).status as string;
             }
+            if (n.type === "containerNode" && n.data?.status) {
+              prevStatusMap[n.id] = (n.data as Record<string, unknown>).status as string;
+            }
           }
           const deployed = get().deployedVmIds;
           const nodes = (t.nodes || []).map((n: Record<string, unknown>) => {
+            if (n.type === "containerNode" && n.id) {
+              const ctrState = _latestContainerStates[n.id as string];
+              if (ctrState) {
+                return { ...n, data: { ...(n.data as Record<string, unknown>), status: ctrState } };
+              }
+              const prev = prevStatusMap[n.id as string];
+              if (prev) {
+                return { ...n, data: { ...(n.data as Record<string, unknown>), status: prev } };
+              }
+            }
             if (n.type === "vmNode" && n.id) {
               const wsState = _latestVmStates[n.id as string];
               if (wsState) {

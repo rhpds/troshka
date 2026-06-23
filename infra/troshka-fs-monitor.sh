@@ -21,7 +21,7 @@ while true; do
     total=$(du -sh "$proj_dir" 2>/dev/null | cut -f1)
     short_dir=${proj_dir#$BASE/}
     echo "── Project $short_dir ($total) ──"
-    for f in "$proj_dir"*.qcow2 "$proj_dir"*.iso "$proj_dir".nfs*; do
+    for f in "$proj_dir"*.qcow2 "$proj_dir"*.raw "$proj_dir"*.iso "$proj_dir".nfs*; do
       [ -f "$f" ] || continue
       links=$(stat -c '%h' "$f" 2>/dev/null)
       sz=$(ls -lh "$f" | awk '{print $5}')
@@ -30,8 +30,39 @@ while true; do
       if [ "$links" -gt 1 ] 2>/dev/null; then tag=" (hardlink)"; fi
       printf "  %-40s %6s  %s%s\n" "$(basename "$f")" "$sz" "$mod" "$tag"
     done
+    for mnt in "$proj_dir"mnt-*/; do
+      [ -d "$mnt" ] || continue
+      if mountpoint -q "$mnt" 2>/dev/null; then
+        mnt_sz=$(df -h "$mnt" | tail -1 | awk '{print $3 "/" $2 " (" $5 ")"}')
+        printf "  %-40s %s  (loop-mounted)\n" "$(basename "$mnt")/" "$mnt_sz"
+      else
+        printf "  %-40s        (unmounted)\n" "$(basename "$mnt")/"
+      fi
+    done
     echo
   done
+  # Containers
+  ctr_list=$(podman ps -a --filter "name=troshka-" --format "{{.Names}} {{.State}} {{.Image}} {{.Size}}" 2>/dev/null)
+  if [ -n "$ctr_list" ]; then
+    ctr_count=$(echo "$ctr_list" | wc -l)
+    ctr_running=$(echo "$ctr_list" | grep -c " running " 2>/dev/null || true)
+    echo "── Containers ($ctr_running/$ctr_count running) ──"
+    echo "$ctr_list" | while read name state image size; do
+      icon="○"
+      [ "$state" = "running" ] && icon="●"
+      printf "  %s %-32s %-8s %s\n" "$icon" "$name" "$state" "$image"
+    done
+    echo
+  fi
+  # Podman storage
+  podman_root=$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null)
+  if [ -n "$podman_root" ] && [ -d "$podman_root" ]; then
+    podman_sz=$(du -sh "$podman_root" 2>/dev/null | cut -f1)
+    podman_imgs=$(podman images --filter "reference=*" --format "{{.Repository}}:{{.Tag}}" 2>/dev/null | wc -l)
+    echo "── Podman Storage $podman_root ($podman_sz, $podman_imgs images) ──"
+    podman images --format "  {{.Repository}}:{{.Tag}}  {{.Size}}" 2>/dev/null
+    echo
+  fi
   IMG_DIR=""
   for d in $BASE/images $BASE/shared/images; do
     [ -d "$d" ] && [ "$(ls -A "$d" 2>/dev/null)" ] && IMG_DIR="$d" && break
@@ -62,7 +93,7 @@ while true; do
     echo
   fi
   # Active flatten/upload temp files
-  tmp_files=$(find $BASE/local/tmp/ $BASE/tmp/ -name "*.qcow2" -o -name "*.iso" 2>/dev/null)
+  tmp_files=$(find $BASE/local/tmp/ $BASE/tmp/ -name "*.qcow2" -o -name "*.raw" -o -name "*.iso" -o -name "*.tar.gz" 2>/dev/null)
   if [ -n "$tmp_files" ]; then
     echo "── Active Temp Files {local/,}tmp/ ──"
     echo "$tmp_files" | while read f; do
