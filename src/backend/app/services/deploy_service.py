@@ -416,6 +416,18 @@ def _find_container_networks(
     return results
 
 
+def _find_vm_name_by_ip(topology, ip):
+    """Find the VM name that has a NIC with the given IP address."""
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        for nic in data.get("nics", []):
+            if nic.get("ip") == ip:
+                return data.get("name", node["id"][:8])
+    return ip.replace(".", "-")
+
+
 def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     """Find storage nodes connected to a VM via disk controller handles."""
     edges = topology.get("edges", [])
@@ -1849,6 +1861,55 @@ def deploy_project_async(
 
             project.topology = topology
             s.commit()
+
+            # Create Route-based access for OCP Virt port forwards on 443/80
+            if provider and provider.type == "ocpvirt":
+                driver = get_provider_driver(provider)
+                external_endpoints = []
+                for node in topology.get("nodes", []):
+                    node_data = node.get("data", {})
+                    if node_data.get("subtype") != "gateway":
+                        continue
+                    for pf in node_data.get("portForwards", []):
+                        ext_port = int(pf.get("extPort", 0))
+                        if ext_port not in (80, 443):
+                            continue
+                        int_ip = pf.get("intIp", "")
+                        vm_name = _find_vm_name_by_ip(topology, int_ip)
+                        try:
+                            result = driver.create_route_access(
+                                provider, host, project_id, vm_name, int_ip, ext_port
+                            )
+                            external_endpoints.append(
+                                {
+                                    "vmName": vm_name,
+                                    "vmIp": int_ip,
+                                    "port": ext_port,
+                                    "type": "route",
+                                    "hostname": result["hostname"],
+                                }
+                            )
+                            logger.info(
+                                "Deploy %s: created Route for %s:%d → %s",
+                                project_id[:8],
+                                vm_name,
+                                ext_port,
+                                result["hostname"],
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Deploy %s: Route creation failed for %s:%d, continuing",
+                                project_id[:8],
+                                vm_name,
+                                ext_port,
+                                exc_info=True,
+                            )
+                    if external_endpoints:
+                        node_data["externalEndpoints"] = external_endpoints
+                    break
+
+                project.topology = topology
+                s.commit()
 
         # Auto-assign IPs to container NICs without static IPs (before network setup
         # so dnsmasq gets static host entries for containers)
@@ -3789,6 +3850,27 @@ def destroy_project_sync(ctx: dict):
         except Exception as e:
             logger.warning(
                 "Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e
+            )
+
+        # Clean up Route-based external access (OCP Virt only)
+        try:
+            from app.models.provider import Provider
+            from app.services.providers import get_provider_driver
+
+            provider = None
+            if host and host.provider_id:
+                provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider and provider.type == "ocpvirt":
+                driver = get_provider_driver(provider)
+                driver.delete_route_access(provider, project_id)
+                logger.info(
+                    "Destroy %s: cleaned up Route access resources", project_id[:8]
+                )
+        except Exception:
+            logger.warning(
+                "Destroy %s: Route cleanup failed (non-fatal)",
+                project_id[:8],
+                exc_info=True,
             )
 
         # Release all EIPs for this project

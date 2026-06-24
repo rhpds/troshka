@@ -87,3 +87,12 @@ class ProviderDriver:
         ports is a list of dicts: [{port, targetPort, name}].
         No-op for providers that don't need it."""
         pass
+
+    def create_route_access(self, provider, host, project_id, vm_name, int_ip, port):
+        """Create Route-based external access for a VM port (OCP Virt only).
+        Returns dict with hostname, route_name, service_name."""
+        raise NotImplementedError
+
+    def delete_route_access(self, provider, project_id):
+        """Delete all Route-based external access resources for a project."""
+        pass
