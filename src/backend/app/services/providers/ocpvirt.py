@@ -6,6 +6,7 @@ The VMs run troshkad identically to EC2 instances.
 
 import logging
 import time
+from typing import Any, cast
 
 from app.services.providers.base import ProviderDriver
 
@@ -377,15 +378,18 @@ class OCPVirtDriver(ProviderDriver):
 
         # Wait for VMI to reach Running
         pod_ip = None
-        for attempt in range(120):
+        for _ in range(120):
             time.sleep(5)
             try:
-                vmi = custom_api.get_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachineinstances",
-                    name=hostname,
+                vmi = cast(
+                    dict[str, Any],
+                    custom_api.get_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachineinstances",
+                        name=hostname,
+                    ),
                 )
                 phase = vmi.get("status", {}).get("phase")
                 if phase == "Running":
@@ -403,10 +407,14 @@ class OCPVirtDriver(ProviderDriver):
         # Wait for LoadBalancer external IP assignment (MetalLB)
         external_ip = None
         for _ in range(60):
-            lb_svc = core_api.read_namespaced_service(
-                f"troshka-lb-{host_id[:8]}", namespace
+            lb_svc = cast(
+                Any,
+                core_api.read_namespaced_service(
+                    f"troshka-lb-{host_id[:8]}", namespace
+                ),
             )
-            ingress = (lb_svc.status.load_balancer or {}).ingress
+            lb_status = lb_svc.status.load_balancer
+            ingress = lb_status.ingress if lb_status else None
             if ingress and ingress[0].ip:
                 external_ip = ingress[0].ip
                 break
@@ -496,7 +504,7 @@ class OCPVirtDriver(ProviderDriver):
                 namespace,
                 label_selector=f"troshka/host-id={host_short}",
             )
-            for svc in eip_svcs.items:
+            for svc in cast(Any, eip_svcs).items:
                 if svc.metadata.name.startswith("troshka-eip-"):
                     try:
                         core_api.delete_namespaced_service(svc.metadata.name, namespace)
@@ -532,12 +540,15 @@ class OCPVirtDriver(ProviderDriver):
         custom_api, _ = _get_k8s_clients(creds)
 
         try:
-            vmi = custom_api.get_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-                name=instance_id,
+            vmi = cast(
+                dict[str, Any],
+                custom_api.get_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=instance_id,
+                ),
             )
             phase = vmi.get("status", {}).get("phase", "Unknown")
             interfaces = vmi.get("status", {}).get("interfaces", [])
@@ -655,7 +666,7 @@ class OCPVirtDriver(ProviderDriver):
                 plural="routes",
                 body=route,
             )
-            return result.get("spec", {}).get("host", "")
+            return cast(dict[str, Any], result).get("spec", {}).get("host", "")
         except client.ApiException as e:
             if e.status == 409:
                 return f"{route_name}-{namespace}.{hostname}"
@@ -747,23 +758,29 @@ class OCPVirtDriver(ProviderDriver):
             },
         }
         try:
-            result = custom_api.create_namespaced_custom_object(
-                group="route.openshift.io",
-                version="v1",
-                namespace=namespace,
-                plural="routes",
-                body=route,
+            result = cast(
+                dict[str, Any],
+                custom_api.create_namespaced_custom_object(
+                    group="route.openshift.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="routes",
+                    body=route,
+                ),
             )
             hostname = result.get("spec", {}).get("host", "")
         except client.ApiException as e:
             if e.status == 409:
                 try:
-                    existing = custom_api.get_namespaced_custom_object(
-                        group="route.openshift.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="routes",
-                        name=resource_name,
+                    existing = cast(
+                        dict[str, Any],
+                        custom_api.get_namespaced_custom_object(
+                            group="route.openshift.io",
+                            version="v1",
+                            namespace=namespace,
+                            plural="routes",
+                            name=resource_name,
+                        ),
                     )
                     hostname = existing.get("spec", {}).get("host", "")
                 except client.ApiException:
@@ -793,8 +810,11 @@ class OCPVirtDriver(ProviderDriver):
         )
 
         try:
-            svcs = core_api.list_namespaced_service(
-                namespace, label_selector=label_selector
+            svcs = cast(
+                Any,
+                core_api.list_namespaced_service(
+                    namespace, label_selector=label_selector
+                ),
             )
             for svc in svcs.items:
                 try:
@@ -806,12 +826,15 @@ class OCPVirtDriver(ProviderDriver):
             pass
 
         try:
-            routes = custom_api.list_namespaced_custom_object(
-                group="route.openshift.io",
-                version="v1",
-                namespace=namespace,
-                plural="routes",
-                label_selector=label_selector,
+            routes = cast(
+                dict[str, Any],
+                custom_api.list_namespaced_custom_object(
+                    group="route.openshift.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="routes",
+                    label_selector=label_selector,
+                ),
             )
             for route in routes.get("items", []):
                 try:
@@ -896,8 +919,9 @@ class OCPVirtDriver(ProviderDriver):
         external_ip = None
         for _ in range(60):
             time.sleep(2)
-            lb_svc = core_api.read_namespaced_service(svc_name, namespace)
-            ingress = (lb_svc.status.load_balancer or {}).ingress
+            lb_svc = cast(Any, core_api.read_namespaced_service(svc_name, namespace))
+            lb_status = lb_svc.status.load_balancer
+            ingress = lb_status.ingress if lb_status else None
             if ingress and ingress[0].ip:
                 external_ip = ingress[0].ip
                 break

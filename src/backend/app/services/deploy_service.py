@@ -82,7 +82,7 @@ def validate_topology_passwords(topology: dict) -> list[str]:
 def _update_deploy_progress(
     project_id: str, step: str, detail: str = "", items: list | None = None
 ):
-    progress = {"step": step, "detail": detail}
+    progress: dict = {"step": step, "detail": detail}
     if items is not None:
         progress["items"] = items
     _deploy_progress[project_id] = progress
@@ -3812,7 +3812,7 @@ def destroy_project_sync(ctx: dict):
         # Clean up security group rules for this project
         try:
             from app.models.provider import Provider
-            from app.services.eip_service import _get_ec2_client
+            from app.services.provider_gc_service import _get_ec2_client
 
             provider = (
                 s.query(Provider).filter_by(id=host.provider_id).first()
