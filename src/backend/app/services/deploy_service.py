@@ -1812,6 +1812,27 @@ def deploy_project_async(
 
             for ext_ip in external_ips:
                 canvas_id = ext_ip.get("id", "")
+
+                # OCP Virt: skip EIP allocation when all port forwards are
+                # routable via OCP Routes (443/80) — Routes replace EIPs
+                if provider.type == "ocpvirt":
+                    pf_ports = set()
+                    for node in topology.get("nodes", []):
+                        node_data = node.get("data", {})
+                        if node_data.get("subtype") == "gateway":
+                            for pf in node_data.get("portForwards", []):
+                                if pf.get("extIpId") == canvas_id:
+                                    pf_ports.add(int(pf.get("extPort", 0)))
+                            break
+                    if pf_ports and pf_ports.issubset({80, 443}):
+                        logger.info(
+                            "Deploy %s: skipping EIP for %s — all ports (%s) handled by Routes",
+                            project_id[:8],
+                            canvas_id[:8],
+                            pf_ports,
+                        )
+                        continue
+
                 existing = (
                     s.query(ElasticIp)
                     .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
