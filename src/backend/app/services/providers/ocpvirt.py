@@ -695,7 +695,9 @@ class OCPVirtDriver(ProviderDriver):
         except client.ApiException:
             pass
 
-    def create_route_access(self, provider, host, project_id, vm_name, int_ip, port):
+    def create_route_access(
+        self, provider, host, project_id, vm_name, int_ip, port, target_port=None
+    ):
         """Create a ClusterIP Service + OCP Route for external access to a VM port.
 
         Returns dict with hostname, route_name, service_name.
@@ -727,7 +729,7 @@ class OCPVirtDriver(ProviderDriver):
                 ports=[
                     client.V1ServicePort(
                         port=port,
-                        target_port=port,
+                        target_port=target_port or port,
                         name=f"pf-{port}",
                     )
                 ],
@@ -739,7 +741,7 @@ class OCPVirtDriver(ProviderDriver):
             if e.status != 409:
                 raise
 
-        tls_termination = "passthrough" if port == 443 else "edge"
+        tls_termination = "edge"
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -750,7 +752,7 @@ class OCPVirtDriver(ProviderDriver):
             },
             "spec": {
                 "to": {"kind": "Service", "name": resource_name},
-                "port": {"targetPort": port},
+                "port": {"targetPort": target_port or port},
                 "tls": {
                     "termination": tls_termination,
                     "insecureEdgeTerminationPolicy": "Redirect",

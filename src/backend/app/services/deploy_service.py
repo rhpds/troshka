@@ -1831,6 +1831,7 @@ def deploy_project_async(
                             canvas_id[:8],
                             pf_ports,
                         )
+                        ext_ip["_skip"] = True
                         continue
 
                 existing = (
@@ -1880,6 +1881,9 @@ def deploy_project_async(
                 if eip.port_map:
                     ext_ip["_transit_port_map"] = eip.port_map
 
+            # Remove skipped EIP entries (OCP Virt Routes replace them)
+            topology["externalIps"] = [e for e in external_ips if not e.get("_skip")]
+
             project.topology = topology
             s.commit()
 
@@ -1899,7 +1903,12 @@ def deploy_project_async(
                         vm_name = _find_vm_name_by_ip(topology, int_ip)
                         try:
                             result = driver.create_route_access(
-                                provider, host, project_id, vm_name, int_ip, ext_port
+                                provider,
+                                host,
+                                project_id,
+                                vm_name,
+                                int_ip,
+                                ext_port,
                             )
                             external_endpoints.append(
                                 {

@@ -123,9 +123,12 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
               {(() => {
                 const projectIps = useCanvasStore.getState().externalIps;
                 const withIps = projectIps.filter((eip) => eip.ip);
-                return withIps.length > 0 ? (
+                const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
+                const routeHostnames = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
+                return (withIps.length > 0 || routeHostnames.length > 0) ? (
                   <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3 }}>
                     {withIps.map((eip) => <div key={eip.id}>{eip.ip}</div>)}
+                    {routeHostnames.map((ep, i) => <div key={`rt-${i}`} style={{ wordBreak: "break-all" }}><a href={`https://${ep.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }} onClick={(e) => e.stopPropagation()}>{ep.hostname}</a></div>)}
                   </div>
                 ) : null;
               })()}
@@ -134,7 +137,9 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                 const hasIncomplete = portForwards.some((pf) =>
                   !(pf as Record<string, string>).extIpId || !pf.extPort || !pf.intIp || !pf.intPort
                 );
-                const noIps = externalIps.length === 0 && portForwards.length > 0;
+                const gwEndpoints = (gw.externalEndpoints as Array<{type?: string}>) || [];
+                const hasRoutes = gwEndpoints.some((ep) => ep.type === "route");
+                const noIps = externalIps.length === 0 && portForwards.length > 0 && !hasRoutes;
                 return (
                   <>
                     {portForwards.length > 0 && (
@@ -148,7 +153,9 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                         {fwdExpanded && portForwards.map((pf, i) => {
                           const extIpId = (pf as Record<string, string>).extIpId;
                           const eip = externalIps.find((e) => e.id === extIpId);
-                          const ipLabel = eip ? (eip.ip || "auto") : "";
+                          const routeEndpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
+                          const routeMatch = routeEndpoints.find((ep) => ep.type === "route" && String(ep.port) === String(pf.extPort));
+                          const ipLabel = routeMatch ? "route" : eip ? (eip.ip || "auto") : "";
                           return (
                             <div key={i} style={{ marginBottom: 2 }}>
                               {ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} →

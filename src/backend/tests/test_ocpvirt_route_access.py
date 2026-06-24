@@ -135,9 +135,9 @@ def test_create_route_access_creates_service_and_route(mock_clients):
     assert mock_core.create_namespaced_service.call_count == 1
     assert mock_custom.create_namespaced_custom_object.call_count == 1
 
-    # Verify TLS termination is passthrough for 443
+    # Verify TLS termination is edge (OCP router handles TLS, backend is plaintext)
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
-    assert route_body["spec"]["tls"]["termination"] == "passthrough"
+    assert route_body["spec"]["tls"]["termination"] == "edge"
 
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
