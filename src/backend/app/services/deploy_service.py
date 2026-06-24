@@ -1309,7 +1309,14 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
 
 
 def _create_vm_via_troshkad(
-    host, project_id, vm, topology, vni_map, pool=None, disk_cache=None
+    host,
+    project_id,
+    vm,
+    topology,
+    vni_map,
+    pool=None,
+    disk_cache=None,
+    clock_offset=None,
 ):
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
@@ -1390,6 +1397,8 @@ def _create_vm_via_troshkad(
     }
     if disk_cache:
         params["disk_cache"] = disk_cache
+    if clock_offset is not None:
+        params["clock_offset"] = clock_offset
 
     job_id = start_job(host, "/vms/create", params)
     return job_id
@@ -1740,6 +1749,11 @@ def deploy_project_async(
             return
 
         topology = project.topology or {}
+        clock_offset = None
+        if project.clock_target:
+            from app.services.clock_service import compute_clock_offset
+
+            clock_offset = compute_clock_offset(project.clock_target)
         vni_map = project.vni_map or {}
         if not vni_map:
             from app.services.vxlan import allocate_vnis_for_project
@@ -1954,6 +1968,38 @@ def deploy_project_async(
             )
             _deploy_progress.pop(project_id, None)
             return
+
+        # Step 1c: Inject gateway IP for NTP into VM data (before seed ISOs)
+        gateway_ip = None
+        for node in topology.get("nodes", []):
+            if node.get("type") == "gatewayNode":
+                for edge in topology.get("edges", []):
+                    if edge.get("source") == node["id"]:
+                        target_node = next(
+                            (n for n in topology["nodes"] if n["id"] == edge["target"]),
+                            None,
+                        )
+                        if target_node and target_node.get("type") == "networkNode":
+                            net_data = target_node.get("data", {})
+                            cidr = net_data.get("cidr", "192.168.1.0/24")
+                            import ipaddress
+
+                            network = ipaddress.ip_network(cidr, strict=False)
+                            gateway_ip = str(network.network_address + 1)
+                            break
+                break
+
+        if gateway_ip:
+            for node in topology.get("nodes", []):
+                if node.get("type") == "vmNode" and node.get("data", {}).get(
+                    "cloudInit"
+                ):
+                    node["data"]["gateway_ip"] = gateway_ip
+            logger.info(
+                "Deploy %s: injected gateway_ip %s into VM cloud-init data",
+                project_id[:8],
+                gateway_ip,
+            )
 
         # Step 2: Create cloud-init seed ISOs
         _checkpoint(s, project_id, "seeds")
@@ -2222,7 +2268,7 @@ def deploy_project_async(
                 pass
 
             job_id = _create_vm_via_troshkad(
-                host, project_id, vm, topology, vni_map, pool, disk_cache
+                host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
             )
             if job_id:
                 try:
@@ -2312,6 +2358,13 @@ def deploy_project_async(
             )
             _deploy_progress.pop(project_id, None)
             return
+
+        # Step 4d: Clean kubelet certs on RHCOS disks (pattern + OCP only)
+        if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
+            _update_deploy_progress(
+                project_id, "certs", "cleaning kubelet certificates"
+            )
+            _clean_kubelet_certs(host, project_id, topology, pool)
 
         # Step 5: Start VMs (unless auto_start is disabled)
         _checkpoint(s, project_id, "starting")
@@ -2487,6 +2540,69 @@ def deploy_project_async(
             pass
     finally:
         s.close()
+
+
+def _clean_kubelet_certs(host, project_id, topology, pool):
+    """Delete stale kubelet PKI from RHCOS disks before VM startup.
+
+    Uses guestfish via troshkad /vms/modify-fs to remove expired certs
+    so kubelet bootstraps fresh ones on boot instead of retrying stale certs.
+    Non-fatal — deploy continues regardless of outcome.
+    """
+    vms = _extract_vms(topology)
+    rhcos_vms = [vm for vm in vms if vm.get("os") == "rhcos"]
+    if not rhcos_vms:
+        return
+
+    operations = [
+        {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
+        {"action": "rm-f", "path": "/var/lib/kubelet/kubeconfig"},
+    ]
+
+    for vm in rhcos_vms:
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        boot_disk = next(
+            (d for d in vm_disks if d.get("format") == "qcow2"),
+            None,
+        )
+        if not boot_disk:
+            logger.warning(
+                "Deploy %s: no qcow2 boot disk for RHCOS VM %s, skipping cert cleanup",
+                project_id[:8],
+                vm.get("name", vm["node_id"][:8]),
+            )
+            continue
+
+        disk = _disk_path(
+            project_id, vm["node_id"], boot_disk["node_id"], boot_disk["format"], pool
+        )
+        vm_name = vm.get("name", vm["node_id"][:8])
+        logger.info(
+            "Deploy %s: cleaning kubelet certs from %s", project_id[:8], vm_name
+        )
+        try:
+            job_id = start_job(
+                host, "/vms/modify-fs", {"disk": disk, "operations": operations}
+            )
+            job = wait_for_job(host, job_id, timeout=120)
+            if job.get("status") == "failed":
+                logger.warning(
+                    "Deploy %s: cert cleanup failed for %s: %s",
+                    project_id[:8],
+                    vm_name,
+                    job.get("result", {}).get("error", "unknown"),
+                )
+            else:
+                logger.info(
+                    "Deploy %s: cert cleanup complete for %s", project_id[:8], vm_name
+                )
+        except Exception:
+            logger.warning(
+                "Deploy %s: cert cleanup error for %s, continuing",
+                project_id[:8],
+                vm_name,
+                exc_info=True,
+            )
 
 
 def _is_ocp_topology(topology: dict) -> bool:
