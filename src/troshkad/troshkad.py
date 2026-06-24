@@ -824,8 +824,7 @@ def _handle_vm_create(job, params):
     if firmware == "uefi":
         cmd.extend(["--machine", "q35"])
 
-    if domain_uuid:
-        cmd.extend(["--sysinfo", f"type=smbios,system.uuid={domain_uuid}"])
+    _hwuuid = domain_uuid
 
     # Build --boot flag: firmware + boot device order
     boot_parts = []
@@ -898,6 +897,23 @@ def _handle_vm_create(job, params):
     if clock_offset is not None:
         cmd.extend(["--clock", f"offset=variable,adjustment={int(clock_offset)}"])
     _run_cmd(job, cmd, timeout=600)
+
+    if _hwuuid:
+        import xml.etree.ElementTree as ET
+
+        xml_str = subprocess.check_output(
+            ["virsh", "dumpxml", domain], text=True, timeout=10
+        )
+        root = ET.fromstring(xml_str)
+        uuid_elem = root.find("uuid")
+        hwuuid_elem = ET.Element("hwuuid")
+        hwuuid_elem.text = _hwuuid
+        root.insert(list(root).index(uuid_elem) + 1, hwuuid_elem)
+        tmp = f"/tmp/troshka-hwuuid-{domain}.xml"
+        ET.ElementTree(root).write(tmp, xml_declaration=False)
+        _run_cmd(job, ["virsh", "define", tmp], timeout=10)
+        os.unlink(tmp)
+        _job_log(job, f"Set hwuuid={_hwuuid} on {domain}")
 
     return {"domain": domain, "status": "created"}
 
@@ -1676,6 +1692,88 @@ def _handle_vm_set_clock(job, params):
 
 
 COMMAND_HANDLERS["vms/set-clock"] = _handle_vm_set_clock
+
+
+def _handle_vm_modify_fs(job, params):
+    """Modify a guest filesystem offline using guestfish.
+
+    Params:
+        disk: path to qcow2 disk image (must not be in use by a running VM)
+        operations: list of dicts, each with 'action' and action-specific fields
+            - rm-rf: remove directory recursively (path)
+            - rm-f: remove file, no error if missing (path)
+            - mkdir-p: create directory with parents (path)
+            - write: write content to file (path, content)
+            - upload: upload local file to guest (local_path, path)
+            - chmod: change permissions (mode, path)
+    """
+    disk = params.get("disk", "")
+    operations = params.get("operations", [])
+    if not disk or not operations:
+        raise RuntimeError("disk and operations are required")
+    if not os.path.exists(disk):
+        raise RuntimeError(f"disk not found: {disk}")
+
+    ALLOWED_ACTIONS = {"rm-rf", "rm-f", "mkdir-p", "write", "upload", "chmod"}
+    guestfish_cmds = []
+    for op in operations:
+        action = op.get("action", "")
+        if action not in ALLOWED_ACTIONS:
+            raise RuntimeError(f"unsupported action: {action}")
+        path = op.get("path", "")
+        if not path:
+            raise RuntimeError(f"path required for action: {action}")
+        if action == "rm-rf":
+            guestfish_cmds.append(f"rm-rf {path}")
+        elif action == "rm-f":
+            guestfish_cmds.append(f"rm-f {path}")
+        elif action == "mkdir-p":
+            guestfish_cmds.append(f"mkdir-p {path}")
+        elif action == "write":
+            content = op.get("content", "")
+            guestfish_cmds.append(f"write {path} \"{content}\"")
+        elif action == "upload":
+            local_path = op.get("local_path", "")
+            if not local_path:
+                raise RuntimeError("local_path required for upload")
+            guestfish_cmds.append(f"upload {local_path} {path}")
+        elif action == "chmod":
+            mode = op.get("mode", "")
+            if not mode:
+                raise RuntimeError("mode required for chmod")
+            guestfish_cmds.append(f"chmod {mode} {path}")
+
+    script = "\n".join(guestfish_cmds) + "\n"
+    _job_log(job, f"Running guestfish on {disk} ({len(operations)} operations)")
+
+    result = subprocess.run(
+        ["guestfish", "--rw", "-a", disk, "-i"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    results = []
+    if result.returncode == 0:
+        for op in operations:
+            results.append({"action": op["action"], "path": op.get("path", ""), "ok": True})
+        _job_log(job, f"All {len(operations)} operations succeeded")
+    else:
+        stderr = result.stderr.strip()
+        _job_log(job, f"guestfish failed (rc={result.returncode}): {stderr}")
+        for op in operations:
+            results.append({
+                "action": op["action"],
+                "path": op.get("path", ""),
+                "ok": False,
+                "error": stderr,
+            })
+
+    return {"results": results}
+
+
+COMMAND_HANDLERS["vms/modify-fs"] = _handle_vm_modify_fs
 
 
 # ── Storage handlers ──
@@ -7106,6 +7204,222 @@ def _handle_vm_ssh_exec(job, params):
 
 
 COMMAND_HANDLERS["vm/ssh-exec"] = _handle_vm_ssh_exec
+
+
+# ── Console exec (VNC send-key + screenshot + OCR) ──
+
+_CHAR_TO_KEYS = {}
+for _c in "abcdefghijklmnopqrstuvwxyz":
+    _CHAR_TO_KEYS[_c] = [f"KEY_{_c.upper()}"]
+    _CHAR_TO_KEYS[_c.upper()] = ["KEY_LEFTSHIFT", f"KEY_{_c.upper()}"]
+for _i, _c in enumerate("1234567890"):
+    _CHAR_TO_KEYS[_c] = [f"KEY_{_c}"]
+_SHIFT_DIGITS = {
+    "!": "KEY_1", "@": "KEY_2", "#": "KEY_3", "$": "KEY_4", "%": "KEY_5",
+    "^": "KEY_6", "&": "KEY_7", "*": "KEY_8", "(": "KEY_9", ")": "KEY_0",
+}
+for _c, _k in _SHIFT_DIGITS.items():
+    _CHAR_TO_KEYS[_c] = ["KEY_LEFTSHIFT", _k]
+_SYMBOL_KEYS = {
+    " ": ["KEY_SPACE"], "\n": ["KEY_ENTER"], "\t": ["KEY_TAB"],
+    "-": ["KEY_MINUS"], "=": ["KEY_EQUAL"],
+    "[": ["KEY_LEFTBRACE"], "]": ["KEY_RIGHTBRACE"],
+    "\\": ["KEY_BACKSLASH"], ";": ["KEY_SEMICOLON"],
+    "'": ["KEY_APOSTROPHE"], "`": ["KEY_GRAVE"],
+    ",": ["KEY_COMMA"], ".": ["KEY_DOT"], "/": ["KEY_SLASH"],
+    "_": ["KEY_LEFTSHIFT", "KEY_MINUS"],
+    "+": ["KEY_LEFTSHIFT", "KEY_EQUAL"],
+    "{": ["KEY_LEFTSHIFT", "KEY_LEFTBRACE"],
+    "}": ["KEY_LEFTSHIFT", "KEY_RIGHTBRACE"],
+    "|": ["KEY_LEFTSHIFT", "KEY_BACKSLASH"],
+    ":": ["KEY_LEFTSHIFT", "KEY_SEMICOLON"],
+    '"': ["KEY_LEFTSHIFT", "KEY_APOSTROPHE"],
+    "~": ["KEY_LEFTSHIFT", "KEY_GRAVE"],
+    "<": ["KEY_LEFTSHIFT", "KEY_COMMA"],
+    ">": ["KEY_LEFTSHIFT", "KEY_DOT"],
+    "?": ["KEY_LEFTSHIFT", "KEY_SLASH"],
+}
+_CHAR_TO_KEYS.update(_SYMBOL_KEYS)
+
+
+def _console_screenshot_ocr(domain):
+    """Take a VNC screenshot and OCR it to text."""
+    tmp_img = f"/tmp/troshka-screen-{domain}.ppm"
+    tmp_txt = f"/tmp/troshka-ocr-{domain}"
+    try:
+        result = subprocess.run(
+            ["virsh", "screenshot", domain, tmp_img],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return ""
+        result = subprocess.run(
+            ["tesseract", tmp_img, tmp_txt],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return ""
+        with open(tmp_txt + ".txt") as f:
+            return f.read()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+    finally:
+        for p in [tmp_img, tmp_txt + ".txt"]:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def _console_send_text(domain, text):
+    """Type text into a VM via virsh send-key."""
+    for ch in text:
+        keys = _CHAR_TO_KEYS.get(ch)
+        if not keys:
+            continue
+        subprocess.run(
+            ["virsh", "send-key", domain] + keys,
+            capture_output=True, timeout=5,
+        )
+
+
+def _console_send_keys(domain, *keys):
+    """Send raw key names to a VM."""
+    subprocess.run(
+        ["virsh", "send-key", domain] + list(keys),
+        capture_output=True, timeout=5,
+    )
+
+
+def _console_detect_state(ocr_text):
+    """Detect console state from OCR text."""
+    import re
+    text = ocr_text.strip()
+    if not text or len(text) < 3:
+        return "unknown"
+    last_lines = "\n".join(text.split("\n")[-5:])
+    if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login"
+    if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
+        return "password"
+    if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
+        return "shell"
+    return "unknown"
+
+
+def _console_login(job, domain, username, password):
+    """Log into the console if needed. Returns True if shell prompt reached."""
+    for attempt in range(4):
+        ocr = _console_screenshot_ocr(domain)
+        state = _console_detect_state(ocr)
+        last_line = ocr.strip().split("\n")[-1] if ocr.strip() else "(empty)"
+        _job_log(job, f"Console state: {state} (attempt {attempt + 1}, last: {last_line[:80]})")
+
+        if state == "shell":
+            return True
+
+        if state == "unknown":
+            _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
+            time.sleep(2)
+            _console_send_keys(domain, "KEY_ENTER")
+            time.sleep(1)
+            continue
+
+        if state == "login":
+            _console_send_text(domain, username + "\n")
+            time.sleep(2)
+            continue
+
+        if state == "password":
+            _console_send_text(domain, password + "\n")
+            time.sleep(3)
+            continue
+
+    return False
+
+
+def _console_extract_output(ocr_text):
+    """Extract command output between markers."""
+    import re
+    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", ocr_text, re.DOTALL)
+    if m:
+        output = m.group(1).strip()
+        exit_code = int(m.group(2)) if m.group(2) else None
+        return output, exit_code
+    return ocr_text.strip(), None
+
+
+def _handle_vm_console_exec(job, params):
+    """Execute a command via VNC console: send-key + screenshot + OCR."""
+    domain = _validate_domain_name(params["domain_name"])
+    command = params.get("command", "")
+    username = params.get("username", "root")
+    password = params.get("password", "")
+    timeout = min(int(params.get("timeout", 10)), 60)
+    force_tty = params.get("force_tty", False)
+
+    if not command:
+        raise RuntimeError("No command provided")
+    if not password:
+        raise RuntimeError("Password required for console exec")
+
+    # Verify tesseract is available
+    if subprocess.run(["which", "tesseract"], capture_output=True).returncode != 0:
+        raise RuntimeError("tesseract not installed on host")
+
+    # Verify domain is running
+    state_result = subprocess.run(
+        ["virsh", "domstate", domain], capture_output=True, text=True, timeout=10,
+    )
+    if "running" not in state_result.stdout.lower():
+        raise RuntimeError(f"{domain} is not running")
+
+    # Switch to TTY3 if requested (TTY1-2 used by Wayland/GNOME)
+    if force_tty:
+        _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
+        time.sleep(2)
+        _job_log(job, "Switched to TTY3")
+
+    # Login if needed
+    if not _console_login(job, domain, username, password):
+        return {
+            "domain": domain, "output": "", "exit_code": None,
+            "error": "Could not reach shell prompt", "method": "console",
+        }
+    _job_log(job, "Shell prompt reached")
+
+    # Clear screen, then send command with output markers
+    _console_send_text(domain, "clear\n")
+    time.sleep(0.5)
+    wrapped = f'echo TROSHKA_BEGIN; {command} 2>&1; echo TROSHKA_EXIT $?'
+    _console_send_text(domain, wrapped + "\n")
+    _job_log(job, f"Command sent, waiting for output")
+
+    # Poll for markers in OCR output (up to timeout)
+    ocr = ""
+    deadline = time.time() + min(timeout, 60)
+    while time.time() < deadline:
+        time.sleep(2)
+        ocr = _console_screenshot_ocr(domain)
+        if "TROSHKA_EXIT" in ocr:
+            break
+    output, exit_code = _console_extract_output(ocr)
+    _job_log(job, f"Output captured ({len(output)} chars)")
+
+    # Switch back to TTY1 if we switched away
+    if force_tty:
+        _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F1")
+
+    return {
+        "domain": domain,
+        "output": output,
+        "exit_code": exit_code,
+        "error": "",
+        "method": "console",
+    }
+
+
+COMMAND_HANDLERS["vm/console-exec"] = _handle_vm_console_exec
 
 
 # ── VM file transfer ──
