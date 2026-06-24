@@ -22,6 +22,8 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
 fi
 
 USERNAME="cloud-user"
+PASSWORD=""
+METHOD=""
 TIMEOUT=600
 BACKGROUND=false
 LOG_FILE=""
@@ -29,7 +31,9 @@ LOG_FILE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --user|-u) USERNAME="$2"; shift 2 ;;
+        --password|-p) PASSWORD="$2"; shift 2 ;;
         --timeout|-t) TIMEOUT="$2"; shift 2 ;;
+        --serial|-s) METHOD="serial"; shift ;;
         --bg|--background) BACKGROUND=true; shift ;;
         --log|-l) LOG_FILE="$2"; shift 2 ;;
         --help|-h)
@@ -37,6 +41,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --user, -u       SSH username (default: cloud-user)"
+            echo "  --password, -p   Password for serial console login"
             echo "  --timeout, -t    Command timeout in seconds (default: 600)"
             echo "  --bg             Run command in background on the VM (nohup)"
             echo "  --log, -l        Log file path on VM (default: /tmp/vm-exec-bg.log)"
@@ -119,11 +124,16 @@ cd "$BACKEND_DIR" && "$VENV_PYTHON" -c "
 import json, urllib.request, sys
 
 command = sys.argv[1]
-body = json.dumps({
+payload = {
     'command': command,
     'username': '${USERNAME}',
     'timeout': ${TIMEOUT},
-}).encode()
+}
+if '${PASSWORD}':
+    payload['password'] = '${PASSWORD}'
+if '${METHOD}':
+    payload['method'] = '${METHOD}'
+body = json.dumps(payload).encode()
 
 req = urllib.request.Request(
     '${API_URL}/api/v1/projects/${PROJECT_ID}/vms/${VM_ID}/exec',

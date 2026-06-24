@@ -89,6 +89,7 @@ def _safe_kill(pid, sig, expected_cmdline_substring=None):
     os.kill(pid, sig)
     return True
 
+
 _vm_state_cache = {}
 _vm_state_cache_lock = threading.Lock()
 _vm_events = []
@@ -267,7 +268,15 @@ def _get_capacity():
     # Container counts
     try:
         result = subprocess.run(
-            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}} {{.State}}"],
+            [
+                "podman",
+                "ps",
+                "-a",
+                "--filter",
+                "name=troshka-",
+                "--format",
+                "{{.Names}} {{.State}}",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
@@ -601,10 +610,10 @@ def handle_cancel_job(handler, params):
 @route("POST", "/commands/{command_path}")
 def handle_dispatch_command(handler, params):
     """Dispatch a command job and return job_id + status."""
-    # Cancel any pending drain — new work means we shouldn't restart
-    if _draining:
-        _drain_cancel.set()
     command_path = params["command_path"]
+    # Cancel any pending drain — but not for lightweight monitoring commands
+    if _draining and command_path not in _SKIP_DRAIN:
+        _drain_cancel.set()
     body = handler._read_body()
     status, response = _dispatch_job(command_path, body)
     handler._send_json(status, response)
@@ -793,6 +802,7 @@ def _handle_vm_create(job, params):
     video_model = params.get("video_model", "virtio")
     input_model = params.get("input_model", "virtio")
     domain_uuid = params.get("uuid")
+    clock_offset = params.get("clock_offset")
 
     cmd = [
         "virt-install",
@@ -810,8 +820,12 @@ def _handle_vm_create(job, params):
         "mac_in_use=off",
     ]
 
+    # UEFI requires q35 chipset — i440fx IDE controller is invisible to modern kernels
+    if firmware == "uefi":
+        cmd.extend(["--machine", "q35"])
+
     if domain_uuid:
-        cmd.extend(["--uuid", domain_uuid])
+        cmd.extend(["--sysinfo", f"type=smbios,system.uuid={domain_uuid}"])
 
     # Build --boot flag: firmware + boot device order
     boot_parts = []
@@ -881,6 +895,8 @@ def _handle_vm_create(job, params):
     cmd.extend(
         ["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"]
     )
+    if clock_offset is not None:
+        cmd.extend(["--clock", f"offset=variable,adjustment={int(clock_offset)}"])
     _run_cmd(job, cmd, timeout=600)
 
     return {"domain": domain, "status": "created"}
@@ -1281,10 +1297,17 @@ def _handle_vm_reconfigure(job, params):
                 _run_cmd(
                     job,
                     [
-                        "virsh", "attach-disk", domain, d["path"], tgt,
-                        "--driver", "qemu",
-                        "--subdriver", d.get("format", "qcow2"),
-                        "--targetbus", d.get("bus", "virtio"),
+                        "virsh",
+                        "attach-disk",
+                        domain,
+                        d["path"],
+                        tgt,
+                        "--driver",
+                        "qemu",
+                        "--subdriver",
+                        d.get("format", "qcow2"),
+                        "--targetbus",
+                        d.get("bus", "virtio"),
                         "--persistent",
                     ],
                     timeout=30,
@@ -1526,6 +1549,133 @@ def _handle_vm_undefine(job, params):
 
 
 COMMAND_HANDLERS["vms/undefine"] = _handle_vm_undefine
+
+
+def _handle_vm_set_clock(job, params):
+    """Update a VM's clock offset in libvirt XML and push time to guest."""
+    import xml.etree.ElementTree as ET
+
+    domain = _validate_domain_name(params["domain_name"])
+    offset_seconds = params.get("offset_seconds")
+    target_epoch = params.get("target_epoch")
+
+    # Check if domain is running
+    state_result = subprocess.run(
+        ["virsh", "domstate", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    is_running = (
+        state_result.returncode == 0 and "running" in state_result.stdout.lower()
+    )
+
+    # Update XML for persistence (on inactive config)
+    result = subprocess.run(
+        ["virsh", "dumpxml", "--inactive", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get XML for {domain}: {result.stderr}")
+
+    root = ET.fromstring(result.stdout)
+
+    # Find or create <clock> element
+    clock_elem = root.find("clock")
+    if clock_elem is None:
+        clock_elem = ET.SubElement(root, "clock")
+
+    if offset_seconds is not None:
+        clock_elem.set("offset", "variable")
+        clock_elem.set("adjustment", str(int(offset_seconds)))
+        if "basis" in clock_elem.attrib:
+            del clock_elem.attrib["basis"]
+    else:
+        clock_elem.set("offset", "utc")
+        for attr in ("adjustment", "basis"):
+            if attr in clock_elem.attrib:
+                del clock_elem.attrib[attr]
+
+    # Write new XML
+    new_xml = ET.tostring(root, encoding="unicode")
+    proc = subprocess.Popen(
+        ["virsh", "define", "/dev/stdin"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout, stderr = proc.communicate(input=new_xml, timeout=30)
+    if proc.returncode != 0:
+        raise RuntimeError(f"virsh define failed: {stderr}")
+    _job_log(job, f"Updated clock XML for {domain}")
+
+    # Push time to running VM
+    pushed = False
+    if is_running and target_epoch is not None:
+        # Try guest agent first (virsh domtime uses qemu-guest-agent)
+        try:
+            ga_result = subprocess.run(
+                ["virsh", "domtime", domain, "--set", "--time", str(target_epoch)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if ga_result.returncode == 0:
+                pushed = True
+                _job_log(job, f"Set time via guest agent on {domain}")
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+
+        # Fallback: exec date command via guest agent
+        if not pushed:
+            try:
+                exec_result = subprocess.run(
+                    [
+                        "virsh",
+                        "qemu-agent-command",
+                        domain,
+                        '{"execute":"guest-exec","arguments":{"path":"/usr/bin/date","arg":["-s","@'
+                        + str(target_epoch)
+                        + '"],"capture-output":true}}',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if exec_result.returncode == 0:
+                    pushed = True
+                    _job_log(job, f"Set time via guest-exec on {domain}")
+            except (subprocess.TimeoutExpired, Exception):
+                _job_log(job, f"Could not push time to {domain} (no guest agent)")
+    elif is_running and offset_seconds is None:
+        # Clearing clock — push current real time
+        import time
+
+        real_epoch = int(time.time())
+        try:
+            subprocess.run(
+                ["virsh", "domtime", domain, "--set", "--time", str(real_epoch)],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            pushed = True
+            _job_log(job, f"Reset time to real UTC on {domain}")
+        except (subprocess.TimeoutExpired, Exception):
+            pass
+
+    return {
+        "domain": domain,
+        "status": "clock_updated",
+        "xml_updated": True,
+        "time_pushed": pushed,
+    }
+
+
+COMMAND_HANDLERS["vms/set-clock"] = _handle_vm_set_clock
 
 
 # ── Storage handlers ──
@@ -2533,6 +2683,68 @@ def _handle_network_full_setup(job, params):
             pass
         _job_log(job, f"dnsmasq started for VNI {vni} on {bridge}")
 
+    # ── Chrony NTP server inside namespace ──
+    # Runs on the gateway bridge IP so VMs can sync time from the gateway.
+    # Uses `local stratum 3` — trusts the host clock (reflects libvirt offset
+    # when clock_target is set, real time otherwise).
+    chrony_dir = f"/var/lib/troshka/chrony"
+    os.makedirs(chrony_dir, exist_ok=True)
+    chrony_conf = f"{chrony_dir}/{pid}.conf"
+    chrony_pid = f"/run/troshka-chronyd-{pid}.pid"
+    chrony_drift = f"{chrony_dir}/{pid}.drift"
+
+    # Find the first gateway IP from the networks we just configured
+    chrony_bind_ip = None
+    for net in networks:
+        dhcp_cfg = net.get("dhcp_config", {})
+        gw_ip = dhcp_cfg.get("gateway", "")
+        if gw_ip:
+            chrony_bind_ip = gw_ip
+            break
+
+    if chrony_bind_ip:
+        conf_content = (
+            f"local stratum 3\n"
+            f"allow 0.0.0.0/0\n"
+            f"driftfile {chrony_drift}\n"
+            f"pidfile {chrony_pid}\n"
+            f"bindaddress {chrony_bind_ip}\n"
+            f"port 123\n"
+        )
+        with open(chrony_conf, "w") as f:
+            f.write(conf_content)
+
+        # Kill existing chronyd for this project
+        if os.path.exists(chrony_pid):
+            try:
+                with open(chrony_pid) as f:
+                    old_pid = int(f.read().strip())
+                _safe_kill(old_pid, signal.SIGTERM)
+                for _ in range(10):
+                    try:
+                        os.kill(old_pid, 0)
+                        time.sleep(0.25)
+                    except ProcessLookupError:
+                        break
+                else:
+                    _safe_kill(old_pid, signal.SIGKILL)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+            try:
+                os.remove(chrony_pid)
+            except FileNotFoundError:
+                pass
+
+        try:
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", ns, "chronyd", "-f", chrony_conf],
+                timeout=10,
+            )
+            _job_log(job, f"chronyd started on {chrony_bind_ip} in namespace {ns}")
+        except RuntimeError:
+            _job_log(job, f"chronyd not available, skipping NTP server")
+
     # ── nftables inside namespace (flush if already exists, silence expected errors) ──
     for tbl in ["filter", "nat"]:
         subprocess.run(
@@ -3384,6 +3596,30 @@ def _handle_network_full_teardown(job, params):
             except FileNotFoundError:
                 pass
 
+    # Kill chronyd for this project
+    chrony_pid_file = f"/run/troshka-chronyd-{pid}.pid"
+    if os.path.exists(chrony_pid_file):
+        try:
+            with open(chrony_pid_file) as f:
+                chrony_pid = int(f.read().strip())
+            _safe_kill(chrony_pid, 9)
+            _job_log(job, f"Killed chronyd PID {chrony_pid}")
+        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+            pass
+        try:
+            os.remove(chrony_pid_file)
+        except FileNotFoundError:
+            pass
+    # Clean up chrony config and drift files
+    for chrony_path in [
+        f"/var/lib/troshka/chrony/{pid}.conf",
+        f"/var/lib/troshka/chrony/{pid}.drift",
+    ]:
+        try:
+            os.remove(chrony_path)
+        except FileNotFoundError:
+            pass
+
     # Kill metadata service and remove script + log
     try:
         _run_cmd(
@@ -3797,7 +4033,15 @@ def _handle_gc_discover(job, params):
     orphan_containers = []
     try:
         result = subprocess.run(
-            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}}"],
+            [
+                "podman",
+                "ps",
+                "-a",
+                "--filter",
+                "name=troshka-",
+                "--format",
+                "{{.Names}}",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -3811,7 +4055,9 @@ def _handle_gc_discover(job, params):
                 parts = ctr_name.split("-", 2)
                 if len(parts) >= 2:
                     proj_prefix = parts[1]
-                    if not any(pid.startswith(proj_prefix) for pid in known_project_ids):
+                    if not any(
+                        pid.startswith(proj_prefix) for pid in known_project_ids
+                    ):
                         orphan_containers.append(ctr_name)
                         _job_log(job, f"Orphan container: {ctr_name}")
     except Exception as e:
@@ -5316,6 +5562,14 @@ def _do_update_restart(script_path, new_path):
 
 
 _drain_cancel = threading.Event()
+_SKIP_DRAIN = {
+    "vms/state",
+    "vms/states",
+    "host/disk-usage",
+    "gc/discover",
+    "vm/ssh-exec",
+    "containers/states",
+}
 
 
 def _drain_and_update(script_path, new_path, force):
@@ -5324,8 +5578,6 @@ def _drain_and_update(script_path, new_path, force):
     _draining = True
     _drain_cancel.clear()
     logger.info("Update drain started, force=%s", force)
-
-    _SKIP_DRAIN = {"vms/state", "vms/states", "host/disk-usage", "gc/discover"}
     drain_timeout = 5 if force else 120
 
     start = time.time()
@@ -5334,8 +5586,7 @@ def _drain_and_update(script_path, new_path, force):
             blocking = [
                 j
                 for j in _jobs.values()
-                if j["status"] == "running"
-                and j.get("command", "") not in _SKIP_DRAIN
+                if j["status"] == "running" and j.get("command", "") not in _SKIP_DRAIN
             ]
         if not blocking:
             break
@@ -5350,9 +5601,7 @@ def _drain_and_update(script_path, new_path, force):
         logger.info(
             "Update drain waiting on %d job(s): %s",
             len(blocking),
-            ", ".join(
-                f"{j['job_id'][:8]}({j.get('command', '?')})" for j in blocking
-            ),
+            ", ".join(f"{j['job_id'][:8]}({j.get('command', '?')})" for j in blocking),
         )
         time.sleep(2)
 
@@ -5567,14 +5816,11 @@ def _drain_running_jobs(timeout=120):
             running = [
                 j
                 for j in _jobs.values()
-                if j["status"] == "running"
-                and j.get("command", "") not in _SKIP_DRAIN
+                if j["status"] == "running" and j.get("command", "") not in _SKIP_DRAIN
             ]
         if not running:
             break
-        names = [
-            f"{j['job_id'][:8]}({j.get('command', '?')})" for j in running
-        ]
+        names = [f"{j['job_id'][:8]}({j.get('command', '?')})" for j in running]
         logger.info(
             "Draining: %d job(s) still running: %s", len(running), ", ".join(names)
         )
@@ -6102,7 +6348,8 @@ def _handle_bmc_setup(job, params):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
         subprocess.run(
             ["nmcli", "dev", "set", bridge, "managed", "no"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
@@ -6424,7 +6671,8 @@ def _handle_bmc_create_bridge(job, params):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
         subprocess.run(
             ["nmcli", "dev", "set", bridge, "managed", "no"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
@@ -6804,9 +7052,7 @@ def _handle_vm_ssh_exec(job, params):
     ssh_cmd = ns_prefix[:]
     try:
         if private_key:
-            key_file = _tf.NamedTemporaryFile(
-                mode="w", suffix=".pem", delete=False
-            )
+            key_file = _tf.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
             key_file.write(private_key)
             key_file.close()
             os.chmod(key_file.name, 0o600)
@@ -7537,14 +7783,18 @@ def _handle_container_create(job, params):
         # Get container PID for network namespace
         inspect = subprocess.run(
             ["podman", "inspect", "--format", "{{.State.Pid}}", name],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         # Container not started yet (Pid=0), start it first then attach
         _run_cmd(job, ["podman", "start", name], timeout=30)
 
         inspect = subprocess.run(
             ["podman", "inspect", "--format", "{{.State.Pid}}", name],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if inspect.returncode != 0 or not inspect.stdout.strip():
             raise RuntimeError(f"Failed to get container PID: {inspect.stderr}")
@@ -7574,7 +7824,17 @@ def _handle_container_create(job, params):
             try:
                 _run_cmd(
                     job,
-                    ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ctr],
+                    [
+                        "ip",
+                        "link",
+                        "add",
+                        veth_host,
+                        "type",
+                        "veth",
+                        "peer",
+                        "name",
+                        veth_ctr,
+                    ],
                     timeout=10,
                 )
             except RuntimeError:
@@ -7605,7 +7865,18 @@ def _handle_container_create(job, params):
             )
             _run_cmd(
                 job,
-                ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "master", bridge],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    proj_ns,
+                    "ip",
+                    "link",
+                    "set",
+                    veth_host,
+                    "master",
+                    bridge,
+                ],
                 timeout=10,
             )
             _run_cmd(
@@ -7617,12 +7888,33 @@ def _handle_container_create(job, params):
             # Rename and configure inside container namespace
             _run_cmd(
                 job,
-                ["ip", "netns", "exec", netns_name, "ip", "link", "set", veth_ctr, "name", f"eth{idx}"],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    netns_name,
+                    "ip",
+                    "link",
+                    "set",
+                    veth_ctr,
+                    "name",
+                    f"eth{idx}",
+                ],
                 timeout=5,
             )
             _run_cmd(
                 job,
-                ["ip", "netns", "exec", netns_name, "ip", "link", "set", f"eth{idx}", "up"],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    netns_name,
+                    "ip",
+                    "link",
+                    "set",
+                    f"eth{idx}",
+                    "up",
+                ],
                 timeout=5,
             )
 
@@ -7631,7 +7923,18 @@ def _handle_container_create(job, params):
                 prefix = cidr.split("/")[1] if "/" in cidr else "24"
                 _run_cmd(
                     job,
-                    ["ip", "netns", "exec", netns_name, "ip", "addr", "add", f"{ip}/{prefix}", "dev", f"eth{idx}"],
+                    [
+                        "ip",
+                        "netns",
+                        "exec",
+                        netns_name,
+                        "ip",
+                        "addr",
+                        "add",
+                        f"{ip}/{prefix}",
+                        "dev",
+                        f"eth{idx}",
+                    ],
                     timeout=5,
                 )
                 # Add default route via gateway (.1) for the first NIC
@@ -7640,7 +7943,18 @@ def _handle_container_create(job, params):
                     try:
                         _run_cmd(
                             job,
-                            ["ip", "netns", "exec", netns_name, "ip", "route", "add", "default", "via", gw],
+                            [
+                                "ip",
+                                "netns",
+                                "exec",
+                                netns_name,
+                                "ip",
+                                "route",
+                                "add",
+                                "default",
+                                "via",
+                                gw,
+                            ],
                             timeout=5,
                         )
                     except RuntimeError:
@@ -7826,7 +8140,15 @@ def handle_container_states(handler, params):
     containers = {}
     try:
         result = subprocess.run(
-            ["podman", "ps", "-a", "--filter", "name=troshka-", "--format", "{{.Names}} {{.State}}"],
+            [
+                "podman",
+                "ps",
+                "-a",
+                "--filter",
+                "name=troshka-",
+                "--format",
+                "{{.Names}} {{.State}}",
+            ],
             capture_output=True,
             text=True,
             timeout=10,
@@ -7844,7 +8166,9 @@ def handle_container_states(handler, params):
                     "paused": "paused",
                     "dead": "stopped",
                 }
-                containers[name] = {"state": state_map.get(state.lower(), state.lower())}
+                containers[name] = {
+                    "state": state_map.get(state.lower(), state.lower())
+                }
 
         # Query IPs for running containers via their network namespace
         for name, info in containers.items():
@@ -7853,19 +8177,27 @@ def handle_container_states(handler, params):
             try:
                 pid_result = subprocess.run(
                     ["podman", "inspect", "--format", "{{.State.Pid}}", name],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 pid = pid_result.stdout.strip()
                 if pid and pid != "0":
                     ip_result = subprocess.run(
                         ["nsenter", "-t", pid, "-n", "ip", "-4", "-o", "addr", "show"],
-                        capture_output=True, text=True, timeout=5,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
                     )
                     ips = []
                     for ip_line in ip_result.stdout.strip().split("\n"):
                         if "scope global" in ip_line:
                             # Format: "2: eth0    inet 10.0.0.5/24 ..."
-                            addr_part = ip_line.split("inet ")[1].split("/")[0] if "inet " in ip_line else ""
+                            addr_part = (
+                                ip_line.split("inet ")[1].split("/")[0]
+                                if "inet " in ip_line
+                                else ""
+                            )
                             if addr_part:
                                 ips.append(addr_part)
                     if ips:
