@@ -631,6 +631,9 @@ class OCPVirtDriver(ProviderDriver):
             "metadata": {
                 "name": route_name,
                 "namespace": namespace,
+                "annotations": {
+                    "haproxy.router.openshift.io/timeout": "3600s",
+                },
             },
             "spec": {
                 "to": {
@@ -678,6 +681,152 @@ class OCPVirtDriver(ProviderDriver):
                 plural="routes",
                 name=f"troshka-console-{host_short}",
             )
+        except client.ApiException:
+            pass
+
+    def create_route_access(self, provider, host, project_id, vm_name, int_ip, port):
+        """Create a ClusterIP Service + OCP Route for external access to a VM port.
+
+        Returns dict with hostname, route_name, service_name.
+        """
+        import re
+        from kubernetes import client
+
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, core_api = _get_k8s_clients(creds)
+
+        safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
+        resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
+
+        labels = {
+            "app": "troshka",
+            "troshka/project-id": project_id[:8],
+            "troshka/access-type": "route",
+        }
+
+        svc = client.V1Service(
+            metadata=client.V1ObjectMeta(
+                name=resource_name,
+                namespace=namespace,
+                labels=labels,
+            ),
+            spec=client.V1ServiceSpec(
+                selector={"kubevirt.io/domain": host.instance_id},
+                ports=[
+                    client.V1ServicePort(
+                        port=port,
+                        target_port=port,
+                        name=f"pf-{port}",
+                    )
+                ],
+            ),
+        )
+        try:
+            core_api.create_namespaced_service(namespace=namespace, body=svc)
+        except client.ApiException as e:
+            if e.status != 409:
+                raise
+
+        tls_termination = "passthrough" if port == 443 else "edge"
+        route = {
+            "apiVersion": "route.openshift.io/v1",
+            "kind": "Route",
+            "metadata": {
+                "name": resource_name,
+                "namespace": namespace,
+                "labels": labels,
+            },
+            "spec": {
+                "to": {"kind": "Service", "name": resource_name},
+                "port": {"targetPort": port},
+                "tls": {
+                    "termination": tls_termination,
+                    "insecureEdgeTerminationPolicy": "Redirect",
+                },
+            },
+        }
+        try:
+            result = custom_api.create_namespaced_custom_object(
+                group="route.openshift.io",
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                body=route,
+            )
+            hostname = result.get("spec", {}).get("host", "")
+        except client.ApiException as e:
+            if e.status == 409:
+                try:
+                    existing = custom_api.get_namespaced_custom_object(
+                        group="route.openshift.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="routes",
+                        name=resource_name,
+                    )
+                    hostname = existing.get("spec", {}).get("host", "")
+                except client.ApiException:
+                    hostname = ""
+            else:
+                raise
+
+        logger.info(
+            "Created Route %s → %s:%d (host: %s)", resource_name, int_ip, port, hostname
+        )
+        return {
+            "hostname": hostname,
+            "route_name": resource_name,
+            "service_name": resource_name,
+        }
+
+    def delete_route_access(self, provider, project_id):
+        """Delete all Route and Service resources created for a project's external access."""
+        from kubernetes import client
+
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, core_api = _get_k8s_clients(creds)
+
+        label_selector = (
+            f"troshka/project-id={project_id[:8]},troshka/access-type=route"
+        )
+
+        try:
+            svcs = core_api.list_namespaced_service(
+                namespace, label_selector=label_selector
+            )
+            for svc in svcs.items:
+                try:
+                    core_api.delete_namespaced_service(svc.metadata.name, namespace)
+                    logger.info("Deleted Route access Service %s", svc.metadata.name)
+                except client.ApiException:
+                    pass
+        except client.ApiException:
+            pass
+
+        try:
+            routes = custom_api.list_namespaced_custom_object(
+                group="route.openshift.io",
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                label_selector=label_selector,
+            )
+            for route in routes.get("items", []):
+                try:
+                    custom_api.delete_namespaced_custom_object(
+                        group="route.openshift.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="routes",
+                        name=route["metadata"]["name"],
+                    )
+                    logger.info(
+                        "Deleted Route access Route %s", route["metadata"]["name"]
+                    )
+                except client.ApiException:
+                    pass
         except client.ApiException:
             pass
 
