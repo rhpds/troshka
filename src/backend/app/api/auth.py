@@ -156,30 +156,64 @@ def delete_ssh_key(
 @router.get("/ocp-pull-secret")
 def get_ocp_pull_secret(user: User = Depends(get_current_user)):
     if not user.ocp_pull_secret:
-        return {"has_secret": False, "masked": ""}
+        return {
+            "has_secret": False,
+            "masked": "",
+            "pull_through_registry": user.pull_through_registry,
+            "pull_through_registry_url": user.pull_through_registry_url or "",
+        }
     from app.core.encryption import decrypt
 
     raw = decrypt(user.ocp_pull_secret)
     masked = raw[:20] + "..." if len(raw) > 20 else raw
-    return {"has_secret": True, "masked": masked}
+    return {
+        "has_secret": True,
+        "masked": masked,
+        "pull_through_registry": user.pull_through_registry,
+        "pull_through_registry_url": user.pull_through_registry_url or "",
+    }
 
 
 @router.put("/ocp-pull-secret")
 def set_ocp_pull_secret(
     body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
-    secret = body.get("pull_secret", "").strip()
-    if not secret:
-        raise HTTPException(status_code=400, detail="Pull secret is required")
+    import base64
     import json
 
-    try:
-        json.loads(secret)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Pull secret must be valid JSON")
     from app.core.encryption import encrypt
 
-    user.ocp_pull_secret = encrypt(secret)
+    if body.get("pull_through_registry"):
+        url = body.get("pull_through_registry_url", "").strip()
+        ptr_user = body.get("pull_through_registry_user", "").strip()
+        ptr_pass = body.get("pull_through_registry_password", "").strip()
+        if not url or not ptr_user or not ptr_pass:
+            raise HTTPException(
+                status_code=400,
+                detail="Registry URL, username, and password are all required",
+            )
+        auth_b64 = base64.b64encode(f"{ptr_user}:{ptr_pass}".encode()).decode()
+        pull_secret = json.dumps({"auths": {url: {"auth": auth_b64}}})
+        user.ocp_pull_secret = encrypt(pull_secret)
+        user.pull_through_registry = True
+        user.pull_through_registry_url = url
+        user.pull_through_registry_user = ptr_user
+        user.pull_through_registry_password = encrypt(ptr_pass)
+    else:
+        secret = body.get("pull_secret", "").strip()
+        if not secret:
+            raise HTTPException(status_code=400, detail="Pull secret is required")
+        try:
+            json.loads(secret)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400, detail="Pull secret must be valid JSON"
+            )
+        user.ocp_pull_secret = encrypt(secret)
+        user.pull_through_registry = False
+        user.pull_through_registry_url = None
+        user.pull_through_registry_user = None
+        user.pull_through_registry_password = None
     db.commit()
     return {"status": "saved"}
 
@@ -190,6 +224,16 @@ def delete_ocp_pull_secret(
 ):
     user.ocp_pull_secret = None
     db.commit()
+
+
+@router.patch("/ocp-pull-secret")
+def patch_ocp_pull_secret(
+    body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    if "pull_through_registry" in body:
+        user.pull_through_registry = bool(body["pull_through_registry"])
+    db.commit()
+    return {"status": "updated"}
 
 
 # ── Red Hat Offline Token ──

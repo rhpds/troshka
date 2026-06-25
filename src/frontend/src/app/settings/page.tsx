@@ -8,6 +8,7 @@ import {
   PageSection,
   Title,
   Alert,
+  Switch,
 } from "@patternfly/react-core";
 
 interface ApiKey {
@@ -42,6 +43,13 @@ export default function SettingsPage() {
   const [pullSecretSaving, setPullSecretSaving] = useState(false);
   const [pullSecretEdit, setPullSecretEdit] = useState(false);
 
+  // Pull-Through Registry
+  const [pullThroughRegistry, setPullThroughRegistry] = useState(false);
+  const [ptrUrl, setPtrUrl] = useState("");
+  const [ptrUser, setPtrUser] = useState("");
+  const [ptrPassword, setPtrPassword] = useState("");
+  const [ptrSaving, setPtrSaving] = useState(false);
+
   // Registry Credentials
   const [registryCreds, setRegistryCreds] = useState<
     Array<{ id: string; name: string; registry: string; username: string }>
@@ -61,7 +69,12 @@ export default function SettingsPage() {
       .catch(() => {});
     fetch("/api/v1/auth/ocp-pull-secret")
       .then((r) => r.json())
-      .then((data) => { setHasPullSecret(data.has_secret); setPullSecretMasked(data.masked || ""); })
+      .then((data) => {
+        setHasPullSecret(data.has_secret);
+        setPullSecretMasked(data.masked || "");
+        setPullThroughRegistry(data.pull_through_registry || false);
+        setPtrUrl(data.pull_through_registry_url || "");
+      })
       .catch(() => {});
     fetch("/api/v1/auth/registry-credentials")
       .then((r) => r.json())
@@ -251,32 +264,139 @@ export default function SettingsPage() {
           Required for OpenShift installation. Get yours from{" "}
           <a href="https://console.redhat.com/openshift/install/pull-secret" target="_blank" rel="noreferrer" style={{ color: "#3b82f6" }}>console.redhat.com</a>.
         </p>
-        {hasPullSecret && !pullSecretEdit ? (
-          <Card>
-            <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{pullSecretMasked}</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button variant="secondary" onClick={() => setPullSecretEdit(true)}>Replace</Button>
-                <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/ocp-pull-secret", { method: "DELETE" }); setHasPullSecret(false); setPullSecretMasked(""); }}>Delete</Button>
-              </div>
-            </CardBody>
-          </Card>
+        <Card style={{ marginBottom: 12 }}>
+          <CardBody>
+            <Switch
+              id="ptr-toggle"
+              label="Use a pull-through registry"
+              isChecked={pullThroughRegistry}
+              onChange={async (_event, checked) => {
+                if (!checked && hasPullSecret) {
+                  await fetch("/api/v1/auth/ocp-pull-secret", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_through_registry: false }) });
+                }
+                setPullThroughRegistry(checked);
+              }}
+            />
+          </CardBody>
+        </Card>
+        {pullThroughRegistry ? (
+          hasPullSecret && !pullSecretEdit ? (
+            <Card>
+              <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 13 }}>Registry: <span style={{ fontFamily: "monospace", opacity: 0.8 }}>{ptrUrl}</span></div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button variant="secondary" onClick={() => { setPullSecretEdit(true); setPtrPassword(""); }}>Update</Button>
+                  <Button variant="danger" onClick={async () => {
+                    await fetch("/api/v1/auth/ocp-pull-secret", { method: "DELETE" });
+                    setHasPullSecret(false);
+                    setPullSecretMasked("");
+                    setPullThroughRegistry(false);
+                    setPtrUrl("");
+                    setPtrUser("");
+                    setPtrPassword("");
+                  }}>Delete</Button>
+                </div>
+              </CardBody>
+            </Card>
+          ) : (
+            <Card>
+              <CardBody>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Registry URL</label>
+                    <input
+                      style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                      value={ptrUrl}
+                      onChange={(e) => setPtrUrl(e.target.value)}
+                      placeholder="e.g., registry.example.com"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Username</label>
+                    <input
+                      style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                      value={ptrUser}
+                      onChange={(e) => setPtrUser(e.target.value)}
+                      placeholder="Registry username"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Password</label>
+                    <input
+                      type="password"
+                      style={{ width: "100%", padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                      value={ptrPassword}
+                      onChange={(e) => setPtrPassword(e.target.value)}
+                      placeholder={pullSecretEdit ? "(leave blank to keep existing)" : ""}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                  {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPtrUrl(ptrUrl); setPtrUser(""); setPtrPassword(""); }}>Cancel</Button>}
+                  <Button
+                    variant="primary"
+                    isDisabled={!ptrUrl.trim() || !ptrUser.trim() || (!ptrPassword.trim() && !pullSecretEdit) || ptrSaving}
+                    onClick={async () => {
+                      setPtrSaving(true);
+                      const body: Record<string, unknown> = {
+                        pull_through_registry: true,
+                        pull_through_registry_url: ptrUrl,
+                        pull_through_registry_user: ptrUser,
+                      };
+                      if (ptrPassword) body.pull_through_registry_password = ptrPassword;
+                      const resp = await fetch("/api/v1/auth/ocp-pull-secret", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body),
+                      });
+                      if (resp.ok) {
+                        setHasPullSecret(true);
+                        setPullSecretEdit(false);
+                        setPtrPassword("");
+                        const data = await fetch("/api/v1/auth/ocp-pull-secret").then(r => r.json());
+                        setPullSecretMasked(data.masked || "");
+                        setPtrUrl(data.pull_through_registry_url || "");
+                      } else {
+                        const err = await resp.json().catch(() => ({ detail: "Save failed" }));
+                        alert(err.detail || "Save failed");
+                      }
+                      setPtrSaving(false);
+                    }}
+                  >
+                    {ptrSaving ? "Saving..." : "Save"}
+                  </Button>
+                </div>
+              </CardBody>
+            </Card>
+          )
         ) : (
-          <Card>
-            <CardBody>
-              <textarea style={{ width: "100%", minHeight: 80, padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", resize: "vertical", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={pullSecretInput} onChange={(e) => setPullSecretInput(e.target.value)} placeholder='{"auths":{"cloud.openshift.com":...}}' />
-              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
-                {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPullSecretInput(""); }}>Cancel</Button>}
-                <Button variant="primary" isDisabled={!pullSecretInput.trim() || pullSecretSaving} onClick={async () => {
-                  setPullSecretSaving(true);
-                  const resp = await fetch("/api/v1/auth/ocp-pull-secret", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_secret: pullSecretInput }) });
-                  if (resp.ok) { setHasPullSecret(true); setPullSecretEdit(false); setPullSecretInput(""); const data = await fetch("/api/v1/auth/ocp-pull-secret").then(r => r.json()); setPullSecretMasked(data.masked || ""); }
-                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
-                  setPullSecretSaving(false);
-                }}>{pullSecretSaving ? "Saving..." : "Save Pull Secret"}</Button>
-              </div>
-            </CardBody>
-          </Card>
+          hasPullSecret && !pullSecretEdit ? (
+            <Card>
+              <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 11, fontFamily: "monospace", opacity: 0.6, wordBreak: "break-all" }}>{pullSecretMasked}</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button variant="secondary" onClick={() => setPullSecretEdit(true)}>Replace</Button>
+                  <Button variant="danger" onClick={async () => { await fetch("/api/v1/auth/ocp-pull-secret", { method: "DELETE" }); setHasPullSecret(false); setPullSecretMasked(""); }}>Delete</Button>
+                </div>
+              </CardBody>
+            </Card>
+          ) : (
+            <Card>
+              <CardBody>
+                <textarea style={{ width: "100%", minHeight: 80, padding: "8px 10px", borderRadius: 6, fontSize: 12, fontFamily: "monospace", resize: "vertical", border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }} value={pullSecretInput} onChange={(e) => setPullSecretInput(e.target.value)} placeholder='{"auths":{"cloud.openshift.com":...}}' />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                  {pullSecretEdit && <Button variant="secondary" onClick={() => { setPullSecretEdit(false); setPullSecretInput(""); }}>Cancel</Button>}
+                  <Button variant="primary" isDisabled={!pullSecretInput.trim() || pullSecretSaving} onClick={async () => {
+                    setPullSecretSaving(true);
+                    const resp = await fetch("/api/v1/auth/ocp-pull-secret", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_secret: pullSecretInput }) });
+                    if (resp.ok) { setHasPullSecret(true); setPullSecretEdit(false); setPullSecretInput(""); const data = await fetch("/api/v1/auth/ocp-pull-secret").then(r => r.json()); setPullSecretMasked(data.masked || ""); }
+                    else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
+                    setPullSecretSaving(false);
+                  }}>{pullSecretSaving ? "Saving..." : "Save Pull Secret"}</Button>
+                </div>
+              </CardBody>
+            </Card>
+          )
         )}
       </PageSection>
       <PageSection>

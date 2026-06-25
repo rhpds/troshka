@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,18 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(255))
     quota_overrides: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ocp_pull_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pull_through_registry: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    pull_through_registry_url: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    pull_through_registry_user: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    pull_through_registry_password: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     rh_offline_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

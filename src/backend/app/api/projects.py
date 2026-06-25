@@ -199,6 +199,17 @@ def auto_layout_topology(body: dict, user: User = Depends(get_current_user)):
     return {"nodes": new_nodes, "edges": new_edges}
 
 
+def _build_pull_through_config(registry_url: str) -> dict:
+    return {
+        "enabled": True,
+        "url": registry_url,
+        "orgs": {
+            "registry.redhat.io": "registry_redhat_io",
+            "quay.io": "quay_io",
+        },
+    }
+
+
 @router.post("/from-template", status_code=201)
 def create_project_from_template(
     body: dict,
@@ -318,6 +329,12 @@ def create_project_from_template(
         from app.core.encryption import decrypt
 
         pull_secret_json = decrypt(user.ocp_pull_secret)
+
+    if not resolved.get("pull_through_registry") and user.pull_through_registry:
+        if user.pull_through_registry_url:
+            resolved["pull_through_registry"] = _build_pull_through_config(
+                user.pull_through_registry_url
+            )
 
     import ipaddress as _ipaddr
 
@@ -2880,6 +2897,16 @@ def import_vm_from_snapshot(
             "diskControllers": [
                 {**dc, "id": f"dp-{uuid_mod.uuid4()}"}
                 for dc in vm_config.get("diskControllers", [])
+            ]
+            + [
+                {"id": f"dp-{uuid_mod.uuid4()}"}
+                for _ in range(
+                    max(
+                        0,
+                        len(vm_config.get("disks", []))
+                        - len(vm_config.get("diskControllers", [])),
+                    )
+                )
             ],
             "bootMethod": vm_config.get("bootMethod"),
             "cloudInit": vm_config.get("cloudInit"),
@@ -2926,6 +2953,8 @@ def import_vm_from_snapshot(
                 "format": disk_info.get("format", "qcow2"),
                 "source": "snapshot",
                 "snapshotItemId": item.id,
+                "libraryItemId": disk_info.get("libraryItemId"),
+                "libraryItemName": disk_info.get("libraryItemName"),
                 "icon": (
                     "\U0001f6e2" if disk_info.get("format") != "iso" else "\U0001f4bf"
                 ),
