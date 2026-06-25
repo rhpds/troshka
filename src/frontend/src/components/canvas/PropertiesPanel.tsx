@@ -161,7 +161,7 @@ function RegistryCredentialDropdown({
 }
 
 export default function PropertiesPanel() {
-  const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
+  const nodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
@@ -182,7 +182,7 @@ export default function PropertiesPanel() {
       .catch(() => {});
   }, []);
 
-  const node = nodes.find((n) => n.id === selectedNodeId);
+  const node = nodes.find((n) => n.id === nodeId);
 
   if (!node) {
     return (
@@ -1144,7 +1144,7 @@ export default function PropertiesPanel() {
       {nodeType === "containerNode" && (
         <>
           {(() => {
-            const isPod = !!(selectedNode?.data as Record<string, unknown>)?.isPod;
+            const isPod = !!(node?.data as Record<string, unknown>)?.isPod;
             return (
               <>
                 {!isPod && (
@@ -1488,7 +1488,7 @@ export default function PropertiesPanel() {
             <div className="props-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               Init Containers
               <button className="props-library-btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => {
-                const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                const containers = [...((node?.data as any)?.initContainers || [])];
                 containers.push({
                   name: `init-${containers.length}`,
                   image: "",
@@ -1496,10 +1496,10 @@ export default function PropertiesPanel() {
                   envVars: [],
                   mounts: []
                 });
-                updateNodeData(selectedNode!.id, { initContainers: containers });
+                updateNodeData(node!.id, { initContainers: containers });
               }}>+ Add</button>
             </div>
-            {((selectedNode?.data as any)?.initContainers || []).map((container: any, i: number) => (
+            {((node?.data as any)?.initContainers || []).map((container: any, i: number) => (
               <details key={i} style={{ marginBottom: 8 }}>
                 <summary style={{ cursor: "pointer", padding: "6px 8px", background: "var(--troshka-surface2)", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>{container.name || `init-${i}`}</span>
@@ -1507,9 +1507,9 @@ export default function PropertiesPanel() {
                     style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }}
                     onClick={(e) => {
                       e.stopPropagation();
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       containers.splice(i, 1);
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }}
                   >✕</button>
                 </summary>
@@ -1517,25 +1517,25 @@ export default function PropertiesPanel() {
                   <div className="props-field">
                     <label className="props-label">Name</label>
                     <input className="props-input" value={container.name || ""} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, name: e.target.value };
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }} />
                   </div>
                   <div className="props-field">
                     <label className="props-label">Image</label>
                     <input className="props-input" value={container.image || ""} placeholder="registry/org/image:tag" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, image: e.target.value };
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }} />
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
                     <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }} />
                   </div>
                   <div className="props-field">
@@ -1543,35 +1543,35 @@ export default function PropertiesPanel() {
                     {(container.envVars || []).map((ev: any, evIdx: number) => (
                       <div key={evIdx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                         <input className="props-input" placeholder="KEY" value={ev.key || ""} style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                          const containers = [...((node?.data as any)?.initContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars[evIdx] = { ...ev, key: e.target.value };
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { initContainers: containers });
+                          updateNodeData(node!.id, { initContainers: containers });
                         }} />
                         <span style={{ color: "var(--troshka-text-dim)" }}>=</span>
                         <input className="props-input" placeholder="value" value={ev.value || ""} style={{ flex: 2, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                          const containers = [...((node?.data as any)?.initContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars[evIdx] = { ...ev, value: e.target.value };
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { initContainers: containers });
+                          updateNodeData(node!.id, { initContainers: containers });
                         }} />
                         <button style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }} onClick={() => {
-                          const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                          const containers = [...((node?.data as any)?.initContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars.splice(evIdx, 1);
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { initContainers: containers });
+                          updateNodeData(node!.id, { initContainers: containers });
                         }}>✕</button>
                       </div>
                     ))}
                     <button style={{ fontSize: 10, padding: "2px 6px" }} className="props-library-btn" onClick={() => {
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       const envVars = [...(containers[i].envVars || [])];
                       envVars.push({ key: "", value: "" });
                       containers[i] = { ...container, envVars };
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }}>+ Env Var</button>
                   </div>
                   <div className="props-field">
@@ -1579,27 +1579,27 @@ export default function PropertiesPanel() {
                     {(container.mounts || []).map((mount: any, mIdx: number) => (
                       <div key={mIdx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                         <input className="props-input" placeholder="/mount/path" value={mount.mountPath || ""} style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                          const containers = [...((node?.data as any)?.initContainers || [])];
                           const mounts = [...(containers[i].mounts || [])];
                           mounts[mIdx] = { ...mount, mountPath: e.target.value };
                           containers[i] = { ...container, mounts };
-                          updateNodeData(selectedNode!.id, { initContainers: containers });
+                          updateNodeData(node!.id, { initContainers: containers });
                         }} />
                         <button style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }} onClick={() => {
-                          const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                          const containers = [...((node?.data as any)?.initContainers || [])];
                           const mounts = [...(containers[i].mounts || [])];
                           mounts.splice(mIdx, 1);
                           containers[i] = { ...container, mounts };
-                          updateNodeData(selectedNode!.id, { initContainers: containers });
+                          updateNodeData(node!.id, { initContainers: containers });
                         }}>✕</button>
                       </div>
                     ))}
                     <button style={{ fontSize: 10, padding: "2px 6px" }} className="props-library-btn" onClick={() => {
-                      const containers = [...((selectedNode?.data as any)?.initContainers || [])];
+                      const containers = [...((node?.data as any)?.initContainers || [])];
                       const mounts = [...(containers[i].mounts || [])];
                       mounts.push({ diskNodeId: "", mountPath: "" });
                       containers[i] = { ...container, mounts };
-                      updateNodeData(selectedNode!.id, { initContainers: containers });
+                      updateNodeData(node!.id, { initContainers: containers });
                     }}>+ Mount</button>
                   </div>
                 </div>
@@ -1613,7 +1613,7 @@ export default function PropertiesPanel() {
             <div className="props-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               Main Containers
               <button className="props-library-btn" style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => {
-                const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                const containers = [...((node?.data as any)?.podContainers || [])];
                 containers.push({
                   name: `container-${containers.length}`,
                   image: "",
@@ -1624,10 +1624,10 @@ export default function PropertiesPanel() {
                   ports: [],
                   mounts: []
                 });
-                updateNodeData(selectedNode!.id, { podContainers: containers });
+                updateNodeData(node!.id, { podContainers: containers });
               }}>+ Add</button>
             </div>
-            {((selectedNode?.data as any)?.podContainers || []).map((container: any, i: number) => (
+            {((node?.data as any)?.podContainers || []).map((container: any, i: number) => (
               <details key={i} open style={{ marginBottom: 8 }}>
                 <summary style={{ cursor: "pointer", padding: "6px 8px", background: "var(--troshka-surface2)", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>{container.name || `container-${i}`}</span>
@@ -1635,9 +1635,9 @@ export default function PropertiesPanel() {
                     style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }}
                     onClick={(e) => {
                       e.stopPropagation();
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       containers.splice(i, 1);
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }}
                   >✕</button>
                 </summary>
@@ -1645,43 +1645,43 @@ export default function PropertiesPanel() {
                   <div className="props-field">
                     <label className="props-label">Name</label>
                     <input className="props-input" value={container.name || ""} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       containers[i] = { ...container, name: e.target.value };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }} />
                   </div>
                   <div className="props-field">
                     <label className="props-label">Image</label>
                     <input className="props-input" value={container.image || ""} placeholder="registry/org/image:tag" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       containers[i] = { ...container, image: e.target.value };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }} />
                   </div>
                   <div className="props-row">
                     <div className="props-field">
                       <label className="props-label">CPUs</label>
                       <input className="props-input" type="number" min={1} max={32} value={container.cpus || 1} onChange={(e) => {
-                        const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                        const containers = [...((node?.data as any)?.podContainers || [])];
                         containers[i] = { ...container, cpus: parseInt(e.target.value) || 1 };
-                        updateNodeData(selectedNode!.id, { podContainers: containers });
+                        updateNodeData(node!.id, { podContainers: containers });
                       }} />
                     </div>
                     <div className="props-field">
                       <label className="props-label">Memory (MB)</label>
                       <input className="props-input" type="number" min={64} step={64} value={container.memory || 512} onChange={(e) => {
-                        const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                        const containers = [...((node?.data as any)?.podContainers || [])];
                         containers[i] = { ...container, memory: parseInt(e.target.value) || 512 };
-                        updateNodeData(selectedNode!.id, { podContainers: containers });
+                        updateNodeData(node!.id, { podContainers: containers });
                       }} />
                     </div>
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
                     <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }} />
                   </div>
                   <div className="props-field">
@@ -1689,35 +1689,35 @@ export default function PropertiesPanel() {
                     {(container.envVars || []).map((ev: any, evIdx: number) => (
                       <div key={evIdx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                         <input className="props-input" placeholder="KEY" value={ev.key || ""} style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars[evIdx] = { ...ev, key: e.target.value };
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }} />
                         <span style={{ color: "var(--troshka-text-dim)" }}>=</span>
                         <input className="props-input" placeholder="value" value={ev.value || ""} style={{ flex: 2, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars[evIdx] = { ...ev, value: e.target.value };
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }} />
                         <button style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }} onClick={() => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const envVars = [...(containers[i].envVars || [])];
                           envVars.splice(evIdx, 1);
                           containers[i] = { ...container, envVars };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }}>✕</button>
                       </div>
                     ))}
                     <button style={{ fontSize: 10, padding: "2px 6px" }} className="props-library-btn" onClick={() => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       const envVars = [...(containers[i].envVars || [])];
                       envVars.push({ key: "", value: "" });
                       containers[i] = { ...container, envVars };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }}>+ Env Var</button>
                   </div>
                   <div className="props-field">
@@ -1725,37 +1725,37 @@ export default function PropertiesPanel() {
                     {(container.ports || []).map((port: any, pIdx: number) => (
                       <div key={pIdx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                         <input className="props-input" type="number" placeholder="Port" value={port.containerPort || ""} style={{ width: 70 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const ports = [...(containers[i].ports || [])];
                           ports[pIdx] = { ...port, containerPort: parseInt(e.target.value) || 0 };
                           containers[i] = { ...container, ports };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }} />
                         <select className="props-select" value={port.protocol || "tcp"} style={{ width: 60 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const ports = [...(containers[i].ports || [])];
                           ports[pIdx] = { ...port, protocol: e.target.value as "tcp" | "udp" };
                           containers[i] = { ...container, ports };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }}>
                           <option value="tcp">TCP</option>
                           <option value="udp">UDP</option>
                         </select>
                         <button style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }} onClick={() => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const ports = [...(containers[i].ports || [])];
                           ports.splice(pIdx, 1);
                           containers[i] = { ...container, ports };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }}>✕</button>
                       </div>
                     ))}
                     <button style={{ fontSize: 10, padding: "2px 6px" }} className="props-library-btn" onClick={() => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       const ports = [...(containers[i].ports || [])];
                       ports.push({ containerPort: 0, protocol: "tcp" });
                       containers[i] = { ...container, ports };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }}>+ Port</button>
                   </div>
                   <div className="props-field">
@@ -1763,27 +1763,27 @@ export default function PropertiesPanel() {
                     {(container.mounts || []).map((mount: any, mIdx: number) => (
                       <div key={mIdx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                         <input className="props-input" placeholder="/mount/path" value={mount.mountPath || ""} style={{ flex: 1, fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const mounts = [...(containers[i].mounts || [])];
                           mounts[mIdx] = { ...mount, mountPath: e.target.value };
                           containers[i] = { ...container, mounts };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }} />
                         <button style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12 }} onClick={() => {
-                          const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                          const containers = [...((node?.data as any)?.podContainers || [])];
                           const mounts = [...(containers[i].mounts || [])];
                           mounts.splice(mIdx, 1);
                           containers[i] = { ...container, mounts };
-                          updateNodeData(selectedNode!.id, { podContainers: containers });
+                          updateNodeData(node!.id, { podContainers: containers });
                         }}>✕</button>
                       </div>
                     ))}
                     <button style={{ fontSize: 10, padding: "2px 6px" }} className="props-library-btn" onClick={() => {
-                      const containers = [...((selectedNode?.data as any)?.podContainers || [])];
+                      const containers = [...((node?.data as any)?.podContainers || [])];
                       const mounts = [...(containers[i].mounts || [])];
                       mounts.push({ diskNodeId: "", mountPath: "" });
                       containers[i] = { ...container, mounts };
-                      updateNodeData(selectedNode!.id, { podContainers: containers });
+                      updateNodeData(node!.id, { podContainers: containers });
                     }}>+ Mount</button>
                   </div>
                 </div>
@@ -1832,7 +1832,7 @@ export default function PropertiesPanel() {
                     {(() => {
                       const currentCidr = and?.cidr;
                       const conflict = nodes.some(
-                        (n) => n.type === "networkNode" && n.id !== selectedNodeId &&
+                        (n) => n.type === "networkNode" && n.id !== nodeId &&
                           cidrsOverlap(currentCidr, (n.data as unknown as NetworkNodeData).cidr)
                       );
                       return (

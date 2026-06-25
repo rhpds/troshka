@@ -36,6 +36,7 @@ interface Project {
   host_ip: string | null;
   host_provider_name: string | null;
   host_provider_type: string | null;
+  auto_stopped?: boolean;
 }
 
 const API_BASE = "";

@@ -621,6 +621,34 @@ def _setup_bastion_cloud_init(
                 "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
             )
 
+        # Write ImageTagMirrorSet for pull-through registry (tag-based pulls like catalog sources)
+        if pull_through_registry and pull_through_registry.get("enabled"):
+            ptr_url = pull_through_registry["url"]
+            itms_yaml = (
+                "apiVersion: config.openshift.io/v1\n"
+                "kind: ImageTagMirrorSet\n"
+                "metadata:\n"
+                "  name: pull-through-registry-tags\n"
+                "spec:\n"
+                "  imageTagMirrors:\n"
+            )
+            for source, org in pull_through_registry.get("orgs", {}).items():
+                itms_yaml += (
+                    f"    - source: {source}\n"
+                    f"      mirrors:\n"
+                    f"        - {ptr_url}/{org}\n"
+                )
+            indented_itms = "\n".join("    " + line for line in itms_yaml.split("\n"))
+            node["data"]["ciUserData"] += (
+                "  - |\n"
+                + _guard
+                + "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+                "    cat > /home/cloud-user/ocp-install/openshift/itms-pull-through.yaml << 'ITMSEOF'\n"
+                f"{indented_itms}\n"
+                "    ITMSEOF\n"
+                "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install/openshift\n"
+            )
+
         # Launch OCP installer in background
         node["data"][
             "ciUserData"
