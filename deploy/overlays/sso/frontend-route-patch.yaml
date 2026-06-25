@@ -1,0 +1,13 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: troshka
+  namespace: troshka
+spec:
+  tls:
+    termination: reencrypt
+  to:
+    kind: Service
+    name: troshka-oauth-proxy
+  port:
+    targetPort: proxy

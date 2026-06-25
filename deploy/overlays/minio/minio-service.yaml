@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-minio
+  namespace: troshka
+  labels:
+    app.kubernetes.io/name: troshka-minio
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: s3
+    - port: 9001
+      targetPort: 9001
+      name: console

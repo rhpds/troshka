@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: troshka-postgres
+  namespace: troshka
+  labels:
+    app.kubernetes.io/name: troshka-postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: troshka-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-postgres
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: troshka
+            - name: POSTGRESQL_PASSWORD
+              value: troshka
+            - name: POSTGRESQL_DATABASE
+              value: troshka
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "troshka", "-d", "troshka"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

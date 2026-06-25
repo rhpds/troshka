@@ -1,0 +1,8 @@
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: troshka
+grantMethod: auto
+secret: "CHANGE_ME"
+redirectURIs:
+  - "https://CHANGE_ME/oauth/callback"
