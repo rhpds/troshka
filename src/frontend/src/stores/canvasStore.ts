@@ -84,6 +84,18 @@ export interface ContainerEnvVar {
   value: string;
 }
 
+export interface PodContainer {
+  name: string;
+  image: string;
+  registryCredentialId?: string | null;
+  cpus: number;
+  memory: number;
+  envVars: ContainerEnvVar[];
+  ports: ContainerPort[];
+  command: string | null;
+  mounts: ContainerMount[];
+}
+
 export interface ContainerNodeData {
   label: string;
   name: string;
@@ -100,6 +112,9 @@ export interface ContainerNodeData {
   mounts: ContainerMount[];
   status: "running" | "stopped" | "created";
   icon: string;
+  isPod?: boolean;
+  initContainers?: PodContainer[];
+  podContainers?: PodContainer[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }

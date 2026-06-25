@@ -394,3 +394,239 @@ def test_resolve_inline_template_no_pull_through_registry():
     }
     resolved = resolve_inline_template(tmpl)
     assert "pull_through_registry" not in resolved
+
+
+def test_resolve_inline_clock_target():
+    from app.services.template_loader import resolve_inline_template
+
+    tmpl = {
+        "name": "test-clock",
+        "clock_target": "2025-01-15T00:00:00Z",
+        "networks": {"net1": {"cidr": "192.168.1.0/24"}},
+        "vms": {"vm1": {"vcpus": 2, "ram_gb": 4, "os": "rhel-9"}},
+    }
+    resolved = resolve_inline_template(tmpl)
+    assert resolved["clock_target"] == "2025-01-15T00:00:00Z"
+
+
+def test_resolve_inline_no_clock_target():
+    from app.services.template_loader import resolve_inline_template
+
+    tmpl = {
+        "name": "test-no-clock",
+        "networks": {"net1": {"cidr": "192.168.1.0/24"}},
+        "vms": {"vm1": {"vcpus": 2, "ram_gb": 4, "os": "rhel-9"}},
+    }
+    resolved = resolve_inline_template(tmpl)
+    assert resolved.get("clock_target") is None
+
+
+def test_pod_import_creates_pod_node():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "pod-test",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "vms": {},
+        "containers": {
+            "showroom": {
+                "type": "pod",
+                "nics": [{"network": "cluster", "ip": "10.0.0.100"}],
+                "init_containers": [
+                    {
+                        "name": "git-cloner",
+                        "image": "quay.io/rhpds/showroom-git-cloner:latest",
+                        "env": {"GIT_REPO_URL": "https://example.com/repo"},
+                    },
+                ],
+                "containers": [
+                    {
+                        "name": "nginx",
+                        "image": "quay.io/rhpds/nginx:1.25",
+                        "cpus": 1,
+                        "memory_mb": 256,
+                        "ports": [80],
+                    },
+                    {
+                        "name": "wetty",
+                        "image": "quay.io/rhpds/wetty:v2.7.6",
+                        "cpus": 1,
+                        "memory_mb": 512,
+                        "ports": [3000],
+                        "env": {"SSH_HOST": "10.0.0.50"},
+                    },
+                ],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    ctr_nodes = [n for n in topo["nodes"] if n.get("type") == "containerNode"]
+    assert len(ctr_nodes) == 1
+    pod = ctr_nodes[0]
+    assert pod["data"]["isPod"] is True
+    assert pod["data"]["icon"] == "🫛"
+    assert len(pod["data"]["initContainers"]) == 1
+    assert pod["data"]["initContainers"][0]["name"] == "git-cloner"
+    assert pod["data"]["initContainers"][0]["envVars"] == [
+        {"key": "GIT_REPO_URL", "value": "https://example.com/repo"}
+    ]
+    assert len(pod["data"]["podContainers"]) == 2
+    assert pod["data"]["podContainers"][0]["name"] == "nginx"
+    assert pod["data"]["podContainers"][0]["cpus"] == 1
+    assert pod["data"]["podContainers"][0]["memory"] == 256
+    assert pod["data"]["podContainers"][0]["ports"] == [
+        {"containerPort": 80, "hostPort": None, "protocol": "tcp"}
+    ]
+    assert pod["data"]["podContainers"][1]["name"] == "wetty"
+    assert pod["data"]["podContainers"][1]["envVars"] == [
+        {"key": "SSH_HOST", "value": "10.0.0.50"}
+    ]
+    assert len(pod["data"]["nics"]) == 1
+    assert pod["data"]["nics"][0]["ip"] == "10.0.0.100"
+
+
+def test_pod_export_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "pod-round-trip",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "vms": {},
+        "containers": {
+            "showroom": {
+                "type": "pod",
+                "nics": [{"network": "cluster", "ip": "10.0.0.100"}],
+                "init_containers": [
+                    {"name": "builder", "image": "quay.io/rhpds/antora:v1"},
+                ],
+                "containers": [
+                    {
+                        "name": "nginx",
+                        "image": "nginx:1.25",
+                        "ports": [80],
+                        "cpus": 2,
+                        "memory_mb": 1024,
+                    },
+                    {"name": "wetty", "image": "wetty:v2", "ports": [3000]},
+                ],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+    exported = export_topology_to_template(topo)
+
+    assert "showroom" in exported["containers"]
+    sr = exported["containers"]["showroom"]
+    assert sr["type"] == "pod"
+    assert len(sr["init_containers"]) == 1
+    assert sr["init_containers"][0]["name"] == "builder"
+    assert len(sr["containers"]) == 2
+    assert sr["containers"][0]["name"] == "nginx"
+    assert sr["containers"][0]["cpus"] == 2
+    assert sr["containers"][0]["memory_mb"] == 1024
+    assert sr["containers"][1]["name"] == "wetty"
+
+
+def test_pod_with_shared_volumes_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "pod-vol-test",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "vms": {},
+        "containers": {
+            "showroom": {
+                "type": "pod",
+                "nics": [{"network": "cluster", "ip": "10.0.0.100"}],
+                "disks": [{"size_gb": 20}],
+                "init_containers": [
+                    {
+                        "name": "builder",
+                        "image": "antora:v1",
+                        "env": {"OUTPUT_DIR": "/shared/html"},
+                    },
+                ],
+                "containers": [
+                    {
+                        "name": "nginx",
+                        "image": "nginx:1.25",
+                        "ports": [80],
+                    },
+                ],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    ctr_nodes = [n for n in topo["nodes"] if n.get("type") == "containerNode"]
+    assert len(ctr_nodes) == 1
+    pod = ctr_nodes[0]
+    assert pod["data"]["isPod"] is True
+    assert len(pod["data"]["mounts"]) == 1
+
+    storage_nodes = [n for n in topo["nodes"] if n.get("type") == "storageNode"]
+    assert any(s["data"].get("size") == 20 for s in storage_nodes)
+
+    pod_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("target") == pod["id"] and "mnt-" in e.get("targetHandle", "")
+    ]
+    assert len(pod_edges) == 1
+
+    exported = export_topology_to_template(topo)
+    assert exported["containers"]["showroom"]["type"] == "pod"
+    assert exported["containers"]["showroom"]["init_containers"][0]["name"] == "builder"
+    assert exported["containers"]["showroom"]["containers"][0]["name"] == "nginx"
+
+
+def test_single_container_unchanged_after_pod_support():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "single-ctr-test",
+        "networks": {"mgmt": {"cidr": "10.0.0.0/24"}},
+        "vms": {},
+        "containers": {
+            "registry": {
+                "image": "registry:2",
+                "cpus": 2,
+                "memory_mb": 1024,
+                "nics": [{"network": "mgmt", "ip": "10.0.0.5"}],
+                "ports": [{"container_port": 5000}],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    ctr_nodes = [n for n in topo["nodes"] if n.get("type") == "containerNode"]
+    assert len(ctr_nodes) == 1
+    ctr = ctr_nodes[0]
+    assert ctr["data"].get("isPod") is not True
+    assert ctr["data"]["image"] == "registry:2"
+    assert ctr["data"]["cpus"] == 2
+
+    exported = export_topology_to_template(topo)
+    assert "registry" in exported["containers"]
+    assert exported["containers"]["registry"]["image"] == "registry:2"
+    assert "type" not in exported["containers"]["registry"]

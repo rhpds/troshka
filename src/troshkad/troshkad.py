@@ -8671,6 +8671,281 @@ def _handle_container_exec(job, params):
 COMMAND_HANDLERS["containers/exec"] = _handle_container_exec
 
 
+def _handle_pod_create(job, params):
+    pod_name = params["pod_name"]
+    project_id = params.get("project_id", "")
+    networks = params.get("networks", [])
+    init_containers = params.get("init_containers", [])
+    containers = params.get("containers", [])
+    restart_policy = params.get("restart_policy", "always")
+    privileged = params.get("privileged", False)
+
+    full_pod_name = f"troshka-{project_id[:8]}-{pod_name}"
+
+    cmd = [
+        "podman",
+        "pod",
+        "create",
+        "--name",
+        full_pod_name,
+        "--network",
+        "none",
+        "--infra-name",
+        f"{full_pod_name}-infra",
+    ]
+    _run_cmd(job, cmd)
+    _job_log(job, f"Pod created: {full_pod_name}")
+
+    infra_name = f"{full_pod_name}-infra"
+    out = _run_cmd(job, ["podman", "inspect", "--format", "{{.State.Pid}}", infra_name])
+    infra_pid = int(out.strip())
+
+    if infra_pid == 0:
+        _run_cmd(job, ["podman", "start", infra_name])
+        out = _run_cmd(
+            job, ["podman", "inspect", "--format", "{{.State.Pid}}", infra_name]
+        )
+        infra_pid = int(out.strip())
+
+    if networks:
+        netns_name = f"ctr-{full_pod_name[-8:]}"
+        os.makedirs("/var/run/netns", exist_ok=True)
+        ns_path = f"/var/run/netns/{netns_name}"
+        proc_ns = f"/proc/{infra_pid}/ns/net"
+        if os.path.exists(ns_path):
+            os.unlink(ns_path)
+        os.symlink(proc_ns, ns_path)
+
+        proj_ns = f"troshka-{project_id[:8]}"
+        for idx, net in enumerate(networks):
+            bridge = _validate_bridge_name(net["bridge"])
+            mac = net.get("mac", "")
+            ip_addr = net.get("ip", "")
+            cidr = net.get("cidr", "")
+
+            veth_host = f"vp{full_pod_name[-8:]}{idx}h"[:15]
+            veth_ctr = f"vp{full_pod_name[-8:]}{idx}n"[:15]
+
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "link",
+                    "add",
+                    veth_host,
+                    "type",
+                    "veth",
+                    "peer",
+                    "name",
+                    veth_ctr,
+                ],
+            )
+
+            if mac:
+                _run_cmd(job, ["ip", "link", "set", veth_ctr, "address", mac])
+
+            _run_cmd(job, ["ip", "link", "set", veth_ctr, "netns", netns_name])
+
+            _run_cmd(job, ["ip", "link", "set", veth_host, "netns", proj_ns])
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    proj_ns,
+                    "ip",
+                    "link",
+                    "set",
+                    veth_host,
+                    "master",
+                    bridge,
+                ],
+            )
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
+            )
+
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    netns_name,
+                    "ip",
+                    "link",
+                    "set",
+                    veth_ctr,
+                    "name",
+                    f"eth{idx}",
+                ],
+            )
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    netns_name,
+                    "ip",
+                    "link",
+                    "set",
+                    f"eth{idx}",
+                    "up",
+                ],
+            )
+
+            if ip_addr and cidr:
+                prefix = cidr.split("/")[1] if "/" in cidr else "24"
+                _run_cmd(
+                    job,
+                    [
+                        "ip",
+                        "netns",
+                        "exec",
+                        netns_name,
+                        "ip",
+                        "addr",
+                        "add",
+                        f"{ip_addr}/{prefix}",
+                        "dev",
+                        f"eth{idx}",
+                    ],
+                )
+
+                if idx == 0:
+                    parts = ip_addr.split(".")
+                    gw = f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+                    _run_cmd(
+                        job,
+                        [
+                            "ip",
+                            "netns",
+                            "exec",
+                            netns_name,
+                            "ip",
+                            "route",
+                            "add",
+                            "default",
+                            "via",
+                            gw,
+                        ],
+                        check=False,
+                    )
+
+    for ic in init_containers:
+        ic_name = f"{full_pod_name}-init-{ic['name']}"
+        cmd = ["podman", "create", "--pod", full_pod_name, "--name", ic_name]
+        for k, v in (ic.get("env") or {}).items():
+            cmd.extend(["-e", f"{k}={v}"])
+        for vol in ic.get("mounts") or []:
+            cmd.extend(["-v", vol])
+        if ic.get("command"):
+            cmd.extend(["--entrypoint", ic["command"]])
+        cmd.append(ic["image"])
+        _run_cmd(job, cmd)
+        _job_log(job, f"Init container created: {ic['name']}")
+
+    for ctr in containers:
+        ctr_name = f"{full_pod_name}-{ctr['name']}"
+        cmd = [
+            "podman",
+            "create",
+            "--pod",
+            full_pod_name,
+            "--name",
+            ctr_name,
+            "--restart",
+            restart_policy,
+        ]
+        if ctr.get("cpus"):
+            cmd.extend(["--cpus", str(ctr["cpus"])])
+        if ctr.get("memory"):
+            cmd.extend(["--memory", f"{ctr['memory']}m"])
+        for k, v in (ctr.get("env") or {}).items():
+            cmd.extend(["-e", f"{k}={v}"])
+        for vol in ctr.get("mounts") or []:
+            cmd.extend(["-v", vol])
+        if privileged:
+            cmd.append("--privileged")
+        if ctr.get("command"):
+            cmd.extend(["--entrypoint", ctr["command"]])
+        cmd.append(ctr["image"])
+        _run_cmd(job, cmd)
+        _job_log(job, f"Main container created: {ctr['name']}")
+
+    return {"pod_name": full_pod_name, "status": "created"}
+
+
+COMMAND_HANDLERS["pods/create"] = _handle_pod_create
+
+
+def _handle_pod_start(job, params):
+    pod_name = params["pod_name"]
+
+    out = _run_cmd(
+        job,
+        [
+            "podman",
+            "ps",
+            "-a",
+            "--filter",
+            f"name={pod_name}-init-",
+            "--format",
+            "{{.Names}}",
+        ],
+        check=False,
+    )
+    init_names = [n.strip() for n in out.strip().split("\n") if n.strip()]
+
+    for ic_name in sorted(init_names):
+        _job_log(job, f"Starting init container: {ic_name}")
+        _run_cmd(job, ["podman", "start", ic_name])
+        out = _run_cmd(job, ["podman", "wait", ic_name])
+        exit_code = int(out.strip())
+        if exit_code != 0:
+            logs = _run_cmd(
+                job, ["podman", "logs", "--tail", "50", ic_name], check=False
+            )
+            raise RuntimeError(
+                f"Init container {ic_name} failed with exit code {exit_code}: {logs}"
+            )
+        _job_log(job, f"Init container {ic_name} completed (exit 0)")
+
+    _run_cmd(job, ["podman", "pod", "start", pod_name])
+    _job_log(job, f"Pod started: {pod_name}")
+    return {"pod_name": pod_name, "status": "started"}
+
+
+COMMAND_HANDLERS["pods/start"] = _handle_pod_start
+
+
+def _handle_pod_destroy(job, params):
+    pod_name = params["pod_name"]
+    project_id = params.get("project_id", "")
+    volumes = params.get("volumes", [])
+
+    netns_name = f"ctr-{pod_name[-8:]}"
+    ns_path = f"/var/run/netns/{netns_name}"
+    if os.path.exists(ns_path):
+        os.unlink(ns_path)
+
+    _run_cmd(job, ["podman", "pod", "rm", "-f", pod_name], check=False)
+    _job_log(job, f"Pod destroyed: {pod_name}")
+
+    for vol in volumes:
+        mount_dir = vol.get("mount_dir", "")
+        if mount_dir and os.path.ismount(mount_dir):
+            _run_cmd(job, ["umount", mount_dir], check=False)
+
+    return {"pod_name": pod_name, "status": "destroyed"}
+
+
+COMMAND_HANDLERS["pods/destroy"] = _handle_pod_destroy
+
+
 @route("GET", "/containers/states")
 def handle_container_states(handler, params):
     """Return all troshka-* container states in one call, including IPs."""
@@ -8744,7 +9019,42 @@ def handle_container_states(handler, params):
     except Exception as e:
         logger.warning("Failed to list container states: %s", e)
 
-    handler._send_json(200, {"containers": containers, "source": "podman"})
+    pods = {}
+    try:
+        pod_out = subprocess.run(
+            [
+                "podman",
+                "pod",
+                "ps",
+                "--filter",
+                "name=troshka-",
+                "--format",
+                "{{.Name}} {{.Status}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in pod_out.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.strip().split(None, 1)
+            if len(parts) < 2:
+                continue
+            name, status = parts[0], parts[1].lower()
+            if "running" in status:
+                state = "running"
+            elif "degraded" in status:
+                state = "running"
+            else:
+                state = "stopped"
+            pods[name] = {"state": state}
+    except Exception:
+        pass
+
+    handler._send_json(
+        200, {"containers": containers, "pods": pods, "source": "podman"}
+    )
 
 
 if __name__ == "__main__":

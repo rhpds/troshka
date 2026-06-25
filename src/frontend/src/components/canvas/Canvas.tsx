@@ -340,6 +340,51 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
             mounts: [],
           },
         };
+      } else if (item.type === "pod") {
+        const name = nextName("pod");
+        newNode = {
+          id,
+          type: "containerNode",
+          position,
+          data: {
+            label: name,
+            name,
+            image: "",
+            registryCredentialId: null,
+            cpus: 1,
+            memory: 512,
+            status: "stopped" as const,
+            icon: "🫛",
+            isPod: true,
+            nics: [
+              {
+                id: generateNicId(),
+                name: "eth0",
+                mac: generateMac(),
+                model: "virtio",
+              },
+            ],
+            envVars: [],
+            ports: [],
+            command: null,
+            restartPolicy: "always" as const,
+            privileged: false,
+            mounts: [],
+            initContainers: [],
+            podContainers: [
+              {
+                name: "main",
+                image: "",
+                cpus: 1,
+                memory: 512,
+                envVars: [],
+                ports: [],
+                command: null,
+                mounts: [],
+              },
+            ],
+          },
+        };
       } else if (item.type === "snapshot") {
         const snapshotId = (item.defaults as Record<string, any>)?.snapshotId as string;
         if (!snapshotId) return;

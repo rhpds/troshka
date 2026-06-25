@@ -65,6 +65,13 @@ const sections: PaletteSection[] = [
         icon: "📦",
         iconClass: "palette-icon-container",
       },
+      {
+        type: "pod",
+        label: "Pod",
+        desc: "Container group (shared network)",
+        icon: "🫛",
+        iconClass: "palette-icon-container",
+      },
     ],
   },
   {
@@ -207,7 +214,7 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
@@ -225,6 +232,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [hostInfo, setHostInfo] = useState<{ instance_id: string; ip_address: string; provider_type: string; provider_name: string } | null>(null);
   const [customStopOpen, setCustomStopOpen] = useState(false);
   const [customDeleteOpen, setCustomDeleteOpen] = useState(false);
+  const [clockOpen, setClockOpen] = useState(!!clockTarget);
+  const [clockDraft, setClockDraft] = useState(clockTarget ? clockTarget.slice(0, 16) : "");
   const [customStopH, setCustomStopH] = useState(0);
   const [customStopM, setCustomStopM] = useState(0);
   const [customDeleteH, setCustomDeleteH] = useState(0);
@@ -688,6 +697,76 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                       if (total > 0) { onAutoDeleteChange?.(total); setCustomDeleteOpen(false); }
                     }}
                       style={{ fontSize: 10, padding: "2px 6px", borderRadius: 3, border: "1px solid var(--pf-t--global--border--color--default)", background: "rgba(239,68,68,0.2)", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer" }}
+                    >Set</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Clock Target */}
+            <div className="palette-item" style={{ cursor: "default" }}>
+              <div className="palette-icon" style={{ background: "rgba(147,51,234,0.15)" }}>🕐</div>
+              <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="palette-item-label">Clock</div>
+                  <div
+                    onClick={() => {
+                      if (clockOpen) {
+                        setClockOpen(false);
+                        setClockDraft("");
+                        onClockTargetChange?.(null);
+                      } else {
+                        setClockOpen(true);
+                        const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+                        setClockDraft(d.toISOString().slice(0, 16));
+                      }
+                    }}
+                    style={{
+                      width: 28, height: 14, borderRadius: 7, cursor: "pointer", flexShrink: 0,
+                      background: clockOpen ? "rgba(108,99,255,0.7)" : "rgba(255,255,255,0.15)",
+                      position: "relative", transition: "background 0.2s",
+                    }}
+                  >
+                    <div style={{
+                      width: 10, height: 10, borderRadius: 5,
+                      background: "#fff", position: "absolute", top: 2,
+                      left: clockOpen ? 16 : 2, transition: "left 0.2s",
+                    }} />
+                  </div>
+                </div>
+                <div className="palette-item-desc">{clockTarget ? (() => {
+                  const target = new Date(clockTarget);
+                  const now = new Date();
+                  const diffMs = now.getTime() - target.getTime();
+                  const days = Math.floor(Math.abs(diffMs) / 86400000);
+                  const months = Math.floor(days / 30);
+                  const remDays = days % 30;
+                  const label = months > 0 ? `${months}mo ${remDays}d` : `${days}d`;
+                  return diffMs > 0 ? `${label} behind real time` : `${label} ahead`;
+                })() : "Backdate VM clocks"}</div>
+                {clockOpen && (
+                  <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                    <input
+                      type="datetime-local"
+                      value={clockDraft}
+                      onChange={(e) => setClockDraft(e.target.value)}
+                      style={{
+                        fontSize: 10, padding: "2px 4px", borderRadius: 3,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--secondary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                        flex: 1, minWidth: 0, boxSizing: "border-box",
+                      }}
+                    />
+                    <button
+                      onClick={() => { if (clockDraft) onClockTargetChange?.(clockDraft + ":00Z"); }}
+                      style={{
+                        fontSize: 10, padding: "2px 6px", borderRadius: 3, flexShrink: 0,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "rgba(108,99,255,0.2)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                        cursor: "pointer",
+                      }}
                     >Set</button>
                   </div>
                 )}

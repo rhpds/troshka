@@ -19,6 +19,10 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logContent, setLogContent] = useState("");
+  const [podExpanded, setPodExpanded] = useState(true);
+  const isPod = !!((d as Record<string, unknown>).isPod);
+  const podContainers = ((d as Record<string, unknown>).podContainers || []) as Array<{name: string; image: string; ports: Array<{containerPort: number}>}>;
+  const initContainers = ((d as Record<string, unknown>).initContainers || []) as Array<{name: string; image: string}>;
 
   const nicCount = (d.nics || []).length;
   const mountCount = (d.mounts || []).length;
@@ -54,7 +58,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
       }}
     >
       <div className="canvas-node-header">
-        <span className="canvas-node-icon">📦</span>
+        <span className="canvas-node-icon">{isPod ? "🫛" : "📦"}</span>
         <span className="canvas-node-label">{d.name || "container"}</span>
         <span
           className="canvas-node-status-dot"
@@ -64,21 +68,27 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       <div className="canvas-node-body">
-        <div
-          className="canvas-node-detail"
-          style={{ fontFamily: "monospace", fontSize: 10 }}
-          title={d.image}
-        >
-          {imageName}
-        </div>
-        <div className="canvas-node-detail">
-          {d.cpus} CPU · {d.memory >= 1024 ? `${d.memory / 1024}G` : `${d.memory}M`} RAM
-        </div>
+        {!isPod && (
+          <div
+            className="canvas-node-detail"
+            style={{ fontFamily: "monospace", fontSize: 10 }}
+            title={d.image}
+          >
+            {imageName}
+          </div>
+        )}
+        {!isPod && (
+          <div className="canvas-node-detail">
+            {d.cpus} CPU · {d.memory >= 1024 ? `${d.memory / 1024}G` : `${d.memory}M`} RAM
+          </div>
+        )}
         {(() => {
           const liveIps = (d as Record<string, unknown>).liveIps as string[] | undefined;
           const staticIps = (d.nics || []).map((nic) => nic.ip).filter(Boolean);
           const ips = liveIps && liveIps.length > 0 ? liveIps : staticIps;
-          const portList = (d.ports || []).map((p) => p.containerPort).filter(Boolean);
+          const portList = isPod
+            ? podContainers.flatMap((c) => (c.ports || []).map((p) => p.containerPort)).filter(Boolean)
+            : (d.ports || []).map((p) => p.containerPort).filter(Boolean);
           if (!ips.length && !portList.length) return null;
           return (
             <div className="canvas-node-detail" style={{ fontFamily: "monospace", fontSize: 10, color: "var(--troshka-green)" }}>
@@ -89,6 +99,72 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           );
         })()}
       </div>
+
+      {isPod && podContainers.length > 0 && (
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+          <div
+            className="nopan nodrag"
+            style={{
+              padding: "4px 10px",
+              fontSize: 10,
+              color: "var(--troshka-text-dim)",
+              cursor: "pointer",
+              userSelect: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setPodExpanded(!podExpanded);
+            }}
+          >
+            <span style={{ fontSize: 8 }}>{podExpanded ? "▾" : "▸"}</span>
+            {podContainers.length} container{podContainers.length !== 1 ? "s" : ""}
+          </div>
+          {podExpanded && (
+            <div style={{ padding: "0 10px 6px" }}>
+              {initContainers.map((ic) => (
+                <div
+                  key={ic.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "2px 0",
+                    fontSize: 10,
+                    color: "var(--troshka-text-dim)",
+                    opacity: 0.6,
+                  }}
+                >
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--troshka-text-dim)", flexShrink: 0 }} />
+                  <span style={{ flex: 1 }}>{ic.name}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, color: "#64748b" }}>init</span>
+                </div>
+              ))}
+              {podContainers.map((ctr) => (
+                <div
+                  key={ctr.name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 5,
+                    padding: "2px 0",
+                    fontSize: 10,
+                    color: "var(--troshka-text-dim)",
+                  }}
+                >
+                  <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--troshka-text-dim)", flexShrink: 0 }} />
+                  <span style={{ flex: 1 }}>{ctr.name}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, color: "#64748b" }}>
+                    {ctr.image ? ctr.image.split("/").pop()?.split(":")[0] : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {isDeployed && (
         <div className="vm-node-footer nopan nodrag">

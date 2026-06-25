@@ -281,6 +281,9 @@ def _extract_containers(topology: dict) -> list[dict]:
                 "restart_policy": data.get("restartPolicy", "always"),
                 "privileged": data.get("privileged", False),
                 "mounts": data.get("mounts", []),
+                "is_pod": data.get("isPod", False),
+                "init_containers": data.get("initContainers", []),
+                "pod_containers": data.get("podContainers", []),
             }
         )
     return containers
@@ -483,6 +486,7 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
                 "library_item_id": sdata.get("libraryItemId"),
                 "patternId": sdata.get("patternId"),
                 "patternDiskId": sdata.get("patternDiskId"),
+                "snapshotItemId": sdata.get("snapshotItemId"),
             }
         )
 
@@ -689,6 +693,10 @@ def _image_cache_path(item_id: str, fmt: str, pool=None) -> str:
 
 def _pattern_cache_path(pattern_id: str, disk_id: str, fmt: str, pool=None) -> str:
     return f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+
+
+def _snapshot_cache_path(item_id: str, disk_id: str, fmt: str) -> str:
+    return f"/var/lib/troshka/cache/snapshots/{item_id}/{disk_id}.{fmt}"
 
 
 def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[str]:
@@ -1304,6 +1312,27 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
             backing = _pattern_cache_path(
                 disk["patternId"], _cache_disk_id, disk["format"], pool
             )
+        elif disk.get("source") == "snapshot" and disk.get("snapshotItemId"):
+            from app.core.database import SessionLocal as _SL2
+            from app.models.library import LibraryItemDisk as _LID
+
+            _s2 = _SL2()
+            _snap_disks = (
+                _s2.query(_LID)
+                .filter_by(
+                    library_item_id=disk["snapshotItemId"], format=disk["format"]
+                )
+                .order_by(_LID.boot_order)
+                .all()
+            )
+            if _snap_disks:
+                s3_key = _snap_disks[0].s3_key
+                parts = s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
+                orig_disk_id = parts[0] if parts else _snap_disks[0].id
+                backing = _snapshot_cache_path(
+                    disk["snapshotItemId"], orig_disk_id, disk["format"]
+                )
+            _s2.close()
         elif disk.get("source") == "library" and disk.get("library_item_id"):
             backing = _image_cache_path(disk["library_item_id"], disk["format"], pool)
 
@@ -1693,6 +1722,75 @@ def _create_and_start_container(host, project_id, ctr, topology, vni_map, pool=N
 
     job_id = start_job(host, "/containers/start", {"container_name": container_name})
     wait_for_job(host, job_id, timeout=30)
+
+
+def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
+    """Create and start a pod via troshkad."""
+    pod_name = ctr["name"]
+    networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
+    volumes = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
+
+    vol_by_disk = {v["node_id"]: v for v in volumes}
+
+    def _resolve_mounts(sub_mounts):
+        result = []
+        for m in sub_mounts:
+            vol = vol_by_disk.get(m.get("diskNodeId", ""))
+            if vol:
+                result.append(f"{vol['mount_dir']}:{m.get('mountPath', '/data')}")
+        return result
+
+    create_params = {
+        "project_id": project_id,
+        "pod_name": pod_name,
+        "networks": [
+            {
+                "bridge": n["bridge"],
+                "ip": n.get("ip"),
+                "mac": n.get("mac"),
+                "cidr": n.get("cidr"),
+            }
+            for n in networks
+        ],
+        "init_containers": [
+            {
+                "name": ic["name"],
+                "image": ic.get("image", ""),
+                "env": {
+                    ev["key"]: ev["value"]
+                    for ev in ic.get("envVars", [])
+                    if ev.get("key")
+                },
+                "mounts": _resolve_mounts(ic.get("mounts", [])),
+                "command": ic.get("command"),
+            }
+            for ic in ctr.get("init_containers", [])
+        ],
+        "containers": [
+            {
+                "name": pc["name"],
+                "image": pc.get("image", ""),
+                "cpus": pc.get("cpus", 1),
+                "memory": pc.get("memory", 512),
+                "env": {
+                    ev["key"]: ev["value"]
+                    for ev in pc.get("envVars", [])
+                    if ev.get("key")
+                },
+                "mounts": _resolve_mounts(pc.get("mounts", [])),
+                "command": pc.get("command"),
+            }
+            for pc in ctr.get("pod_containers", [])
+        ],
+        "restart_policy": ctr.get("restart_policy", "always"),
+        "privileged": ctr.get("privileged", False),
+    }
+    job_id = start_job(host, "/pods/create", create_params)
+    wait_for_job(host, job_id, timeout=120)
+
+    full_pod_name = f"troshka-{project_id[:8]}-{pod_name}"
+    job_id = start_job(host, "/pods/start", {"pod_name": full_pod_name})
+    wait_for_job(host, job_id, timeout=120)
 
 
 def deploy_project_async(
@@ -2158,6 +2256,36 @@ def deploy_project_async(
             )
             logger.info("Deploy %s: pulling container images", project_id[:8])
             for ctr in containers:
+                if ctr.get("is_pod"):
+                    all_images = set()
+                    for ic in ctr.get("init_containers", []):
+                        if ic.get("image"):
+                            all_images.add(ic["image"])
+                    for pc in ctr.get("pod_containers", []):
+                        if pc.get("image"):
+                            all_images.add(pc["image"])
+                    for img in all_images:
+                        pull_params = {"image": img}
+                        cred_id = ctr.get("registry_credential_id")
+                        if cred_id:
+                            from app.models.registry_credential import (
+                                RegistryCredential,
+                            )
+                            from app.core.encryption import decrypt
+
+                            cred = (
+                                s.query(RegistryCredential)
+                                .filter_by(id=cred_id)
+                                .first()
+                            )
+                            if cred:
+                                pull_params["registry"] = cred.registry_url
+                                pull_params["username"] = cred.username
+                                pull_params["password"] = decrypt(cred.password)
+                        job_id = start_job(host, "/containers/pull", pull_params)
+                        wait_for_job(host, job_id, timeout=600)
+                    continue
+
                 if not ctr["image"]:
                     continue
 
@@ -2452,16 +2580,26 @@ def deploy_project_async(
                         delay = entry.get("delaySeconds", 0)
                         if delay > 0:
                             _time.sleep(delay)
-                        _create_and_start_container(
-                            host, project_id, ctr, topology, vni_map, pool
-                        )
+                        if ctr.get("is_pod"):
+                            _create_and_start_pod(
+                                host, project_id, ctr, topology, vni_map, pool
+                            )
+                        else:
+                            _create_and_start_container(
+                                host, project_id, ctr, topology, vni_map, pool
+                            )
 
             # Create any containers not in start order
             for ctr in containers:
                 if ctr["node_id"] not in ordered_ids:
-                    _create_and_start_container(
-                        host, project_id, ctr, topology, vni_map, pool
-                    )
+                    if ctr.get("is_pod"):
+                        _create_and_start_pod(
+                            host, project_id, ctr, topology, vni_map, pool
+                        )
+                    else:
+                        _create_and_start_container(
+                            host, project_id, ctr, topology, vni_map, pool
+                        )
 
         if _project_deleted(project_id):
             logger.info(
@@ -3767,26 +3905,52 @@ def destroy_project_sync(ctx: dict):
         pool = _get_host_pool(host, s)
         containers = _extract_containers(topo)
         for ctr in containers:
-            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
-            volumes = _find_container_volumes(ctr["node_id"], topo, project_id, pool)
-            try:
-                job_id = start_job(
-                    host,
-                    "/containers/destroy",
-                    {
-                        "container_name": container_name,
-                        "project_id": project_id,
-                        "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
-                    },
+            if ctr.get("is_pod"):
+                full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+                volumes = _find_container_volumes(
+                    ctr["node_id"], topo, project_id, pool
                 )
-                wait_for_job(host, job_id, timeout=30)
-            except TroshkadError as e:
-                logger.warning(
-                    "Destroy %s: failed to destroy container %s: %s",
-                    project_id[:8],
-                    container_name,
-                    e,
+                try:
+                    job_id = start_job(
+                        host,
+                        "/pods/destroy",
+                        {
+                            "pod_name": full_pod_name,
+                            "project_id": project_id,
+                            "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
+                        },
+                    )
+                    wait_for_job(host, job_id, timeout=30)
+                except TroshkadError as e:
+                    logger.warning(
+                        "Destroy %s: failed to destroy pod %s: %s",
+                        project_id[:8],
+                        full_pod_name,
+                        e,
+                    )
+            else:
+                container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+                volumes = _find_container_volumes(
+                    ctr["node_id"], topo, project_id, pool
                 )
+                try:
+                    job_id = start_job(
+                        host,
+                        "/containers/destroy",
+                        {
+                            "container_name": container_name,
+                            "project_id": project_id,
+                            "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
+                        },
+                    )
+                    wait_for_job(host, job_id, timeout=30)
+                except TroshkadError as e:
+                    logger.warning(
+                        "Destroy %s: failed to destroy container %s: %s",
+                        project_id[:8],
+                        container_name,
+                        e,
+                    )
 
         # Destroy VMs via troshkad
         vms = _extract_vms(topo)

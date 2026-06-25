@@ -623,6 +623,8 @@ def _generate_topology_from_vms(
     containers_def = tmpl.get("containers", {})
     for ctr_key, ctr_cfg in containers_def.items():
         ctr_id = _id()
+        is_pod = ctr_cfg.get("type") == "pod"
+
         ctr_nics = []
         for i, nic_cfg in enumerate(ctr_cfg.get("nics", [])):
             nic_id = f"nic-{_id()}"
@@ -655,30 +657,31 @@ def _generate_topology_from_vms(
                     }
                 )
 
-        # Create storage nodes + mount entries for container disks
+        disk_name_to_id = {}
         ctr_mounts = []
         for disk_idx, disk_cfg in enumerate(ctr_cfg.get("disks", [])):
             disk_id = _id()
+            disk_name = f"{ctr_key}-vol{disk_idx}"
             disk_node = {
                 "id": disk_id,
                 "type": "storageNode",
                 "position": {"x": vm_x - 190, "y": VM_ROW_Y + 70 + disk_idx * 100},
                 "data": {
-                    "label": f"{ctr_key}-vol{disk_idx}",
-                    "name": f"{ctr_key}-vol{disk_idx}",
+                    "label": disk_name,
+                    "name": disk_name,
                     "size": disk_cfg.get("size_gb", 10),
                     "format": "raw",
                     "icon": "\U0001f6e2",
                 },
             }
             nodes.append(disk_node)
+            disk_name_to_id[disk_name] = disk_id
             ctr_mounts.append(
                 {
                     "diskNodeId": disk_id,
                     "mountPath": disk_cfg.get("mount_path", ""),
                 }
             )
-            # Edge from storage to container mount handle
             edges.append(
                 {
                     "id": _id(),
@@ -695,23 +698,63 @@ def _generate_topology_from_vms(
                 }
             )
 
-        # Build env vars
+        def _parse_sub_container(sc_cfg, default_name="ctr"):
+            sc_env = [
+                {"key": k, "value": str(v)}
+                for k, v in (sc_cfg.get("env") or {}).items()
+            ]
+            sc_ports = []
+            for p in sc_cfg.get("ports", []):
+                if isinstance(p, int):
+                    sc_ports.append(
+                        {"containerPort": p, "hostPort": None, "protocol": "tcp"}
+                    )
+                else:
+                    sc_ports.append(
+                        {
+                            "containerPort": p.get("container_port", 0),
+                            "hostPort": p.get("host_port"),
+                            "protocol": p.get("protocol", "tcp"),
+                        }
+                    )
+            sc_mounts = []
+            for m in sc_cfg.get("mounts", []):
+                disk_name = m.get("disk", "")
+                sc_mounts.append(
+                    {
+                        "diskNodeId": disk_name_to_id.get(disk_name, ""),
+                        "mountPath": m.get("mount_path", ""),
+                    }
+                )
+            return {
+                "name": sc_cfg.get("name", default_name),
+                "image": sc_cfg.get("image", ""),
+                "registryCredentialId": None,
+                "cpus": sc_cfg.get("cpus", 1),
+                "memory": sc_cfg.get("memory_mb", 512),
+                "envVars": sc_env,
+                "ports": sc_ports,
+                "command": sc_cfg.get("command"),
+                "mounts": sc_mounts,
+            }
+
         env_vars = []
         for k, v in (ctr_cfg.get("env") or {}).items():
             env_vars.append({"key": k, "value": str(v)})
 
-        # Build ports
         ports = []
         for p in ctr_cfg.get("ports", []):
-            ports.append(
-                {
-                    "containerPort": p.get("container_port", 0),
-                    "hostPort": p.get("host_port"),
-                    "protocol": p.get("protocol", "tcp"),
-                }
-            )
+            if isinstance(p, int):
+                ports.append({"containerPort": p, "hostPort": None, "protocol": "tcp"})
+            else:
+                ports.append(
+                    {
+                        "containerPort": p.get("container_port", 0),
+                        "hostPort": p.get("host_port"),
+                        "protocol": p.get("protocol", "tcp"),
+                    }
+                )
 
-        # Container node
         ctr_node = {
             "id": ctr_id,
             "type": "containerNode",
@@ -735,6 +778,21 @@ def _generate_topology_from_vms(
                 "icon": "\U0001f4e6",
             },
         }
+
+        if is_pod:
+            ctr_node["data"]["isPod"] = True
+            ctr_node["data"]["icon"] = "\U0001fadb"
+
+            init_ctrs = []
+            for ic_cfg in ctr_cfg.get("init_containers", []):
+                init_ctrs.append(_parse_sub_container(ic_cfg, f"init-{len(init_ctrs)}"))
+            ctr_node["data"]["initContainers"] = init_ctrs
+
+            pod_ctrs = []
+            for pc_cfg in ctr_cfg.get("containers", []):
+                pod_ctrs.append(_parse_sub_container(pc_cfg, f"ctr-{len(pod_ctrs)}"))
+            ctr_node["data"]["podContainers"] = pod_ctrs
+
         nodes.append(ctr_node)
         container_name_to_id[ctr_key] = ctr_id
         vm_x += VM_SPACING
@@ -1058,7 +1116,7 @@ def export_topology_to_template(topology: dict) -> dict:
 
         vms[name] = vm_out
 
-    result = {"networks": networks}
+    result: dict = {"networks": networks}
     if gateway:
         result["gateway"] = gateway
     result["vms"] = vms
@@ -1069,6 +1127,13 @@ def export_topology_to_template(topology: dict) -> dict:
         all_storage_nodes = {
             n["id"]: n for n in nodes if n.get("type") == "storageNode"
         }
+
+        def _resolve_disk_name(disk_node_id, all_storage_nodes):
+            node = all_storage_nodes.get(disk_node_id)
+            if node:
+                return node.get("data", {}).get("name", disk_node_id[:8])
+            return disk_node_id[:8]
+
         containers = {}
         for ctr_node in container_nodes:
             cd = ctr_node.get("data", {})
@@ -1116,6 +1181,89 @@ def export_topology_to_template(topology: dict) -> dict:
                             "mount_path": mount.get("mountPath", ""),
                         }
                     )
+
+            if cd.get("isPod"):
+                ctr_export: dict = {"type": "pod"}
+                if nics_export:
+                    ctr_export["nics"] = nics_export
+                if cd.get("restartPolicy", "always") != "always":
+                    ctr_export["restart_policy"] = cd["restartPolicy"]
+                if cd.get("privileged"):
+                    ctr_export["privileged"] = True
+
+                init_ctrs_export = []
+                for ic in cd.get("initContainers", []):
+                    ic_entry: dict = {"name": ic["name"], "image": ic.get("image", "")}
+                    if ic.get("command"):
+                        ic_entry["command"] = ic["command"]
+                    if ic.get("envVars"):
+                        ic_entry["env"] = {
+                            ev["key"]: ev["value"]
+                            for ev in ic["envVars"]
+                            if ev.get("key")
+                        }
+                    if ic.get("mounts"):
+                        ic_entry["mounts"] = [
+                            {
+                                "disk": _resolve_disk_name(
+                                    m.get("diskNodeId", ""), all_storage_nodes
+                                ),
+                                "mount_path": m.get("mountPath", ""),
+                            }
+                            for m in ic["mounts"]
+                            if m.get("diskNodeId")
+                        ]
+                    if ic.get("ports"):
+                        ic_entry["ports"] = [
+                            p["containerPort"]
+                            for p in ic["ports"]
+                            if p.get("containerPort")
+                        ]
+                    init_ctrs_export.append(ic_entry)
+                if init_ctrs_export:
+                    ctr_export["init_containers"] = init_ctrs_export
+
+                pod_ctrs_export = []
+                for pc in cd.get("podContainers", []):
+                    pc_entry: dict = {"name": pc["name"], "image": pc.get("image", "")}
+                    if pc.get("cpus", 1) != 1:
+                        pc_entry["cpus"] = pc["cpus"]
+                    if pc.get("memory", 512) != 512:
+                        pc_entry["memory_mb"] = pc["memory"]
+                    if pc.get("command"):
+                        pc_entry["command"] = pc["command"]
+                    if pc.get("envVars"):
+                        pc_entry["env"] = {
+                            ev["key"]: ev["value"]
+                            for ev in pc["envVars"]
+                            if ev.get("key")
+                        }
+                    if pc.get("ports"):
+                        pc_entry["ports"] = [
+                            p["containerPort"]
+                            for p in pc["ports"]
+                            if p.get("containerPort")
+                        ]
+                    if pc.get("mounts"):
+                        pc_entry["mounts"] = [
+                            {
+                                "disk": _resolve_disk_name(
+                                    m.get("diskNodeId", ""), all_storage_nodes
+                                ),
+                                "mount_path": m.get("mountPath", ""),
+                            }
+                            for m in pc["mounts"]
+                            if m.get("diskNodeId")
+                        ]
+                    pod_ctrs_export.append(pc_entry)
+                if pod_ctrs_export:
+                    ctr_export["containers"] = pod_ctrs_export
+
+                if disks_export:
+                    ctr_export["disks"] = disks_export
+
+                containers[ctr_name] = ctr_export
+                continue
 
             ctr_export = {"image": cd.get("image", "")}
             if cd.get("registryCredentialName"):
@@ -1204,8 +1352,8 @@ def generate_topology_from_template(
     bmc_password: str = "password",
     external_access: bool = False,  # pragma: allowlist secret
 ) -> dict:
-    if not resolved.get("vms"):
-        raise ValueError("Template must have a 'vms' section")
+    if not resolved.get("vms") and not resolved.get("containers"):
+        raise ValueError("Template must have a 'vms' or 'containers' section")
 
     topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
     from app.services.auto_layout import auto_layout
