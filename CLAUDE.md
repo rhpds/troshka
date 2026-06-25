@@ -104,9 +104,19 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 ### Canvas
 - Topology stored as JSONB in `Project.topology` (source of truth)
 - Zustand store: `useCanvasStore` for nodes, edges, selections
-- Node types: `vmNode`, `networkNode`, `storageNode`, `containerNode` (also handles pods)
+- Node types: `vmNode`, `networkNode`, `storageNode`, `containerNode` (single containers AND pods)
 - Auto-save: debounced 1s after changes via `_saveTopologyToApi`
 - Empty canvas (draft, no nodes) shows "Import Template YAML" overlay — palette still interactive behind it
+
+### Container Nodes
+- Single containers: `containerNode` with `isPod: false` (default) — one podman container per node
+- Template YAML: `containers:` section with `type: container`, `image`, `command`, `ports`, `env`, `volumes`
+- Troshkad endpoints: `/containers/create`, `/containers/start`, `/containers/stop`, `/containers/restart`, `/containers/destroy`
+- Batch state polling: `POST /containers/states` returns all container states in one call
+- Container logs: `GET /containers/{id}/logs` via troshkad
+- Veth networking: container gets a veth pair connected to the project bridge (same as VMs)
+- Canvas: uses same `ContainerNode.tsx` component as pods, distinguished by `isPod` flag
+- Deploy service routes to container vs pod endpoints based on `isPod`
 
 ### Template Import/Export
 - **Import**: `POST /projects/{id}/import-template` — takes `template_yaml` dict, generates topology via `resolve_inline_template` + `generate_topology_from_template` (includes auto-layout), patches project in-place. Frontend validates YAML syntax and required sections (`vms`, `networks`) before sending. Only works on `draft` projects.
@@ -127,6 +137,46 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Pod-level `cpus`/`memory` hidden — each sub-container has its own resources
 - Canvas: collapsible sub-container list with ▸/▾ toggle, 🫛 icon
 - Deploy service detects `isPod` and routes to pod endpoints instead of container endpoints
+
+### Registry Credentials
+- Per-user CRUD for container registry credentials (OCP installs, mirrors, etc.)
+- API: `GET/POST /auth/registry-credentials`, `PUT/DELETE /auth/registry-credentials/{id}`
+- Passwords encrypted via Fernet before storage, omitted from list response
+- Model: `RegistryCredential` — `registry_url`, `username`, `password` (encrypted), `user_id` FK
+
+### Project Timers
+- Background daemon (`project_timer.py`) enforces auto-stop and auto-delete on projects
+- Polls every 30s, spawns daemon threads for stop/destroy operations
+- Skips projects in transitional states (deploying, stopping, starting, reconfiguring, migrating)
+- Sends 5-minute warning notifications via WebSocket before auto-stop and auto-delete
+- Project model fields: `run_timer_hours`, `lifetime_expires_at`, `poweroff_mode`
+
+### WebSocket PubSub
+- In-memory pub/sub (`ws_pubsub.py`) for real-time project/pattern state updates
+- API: `subscribe(project_id, ws)`, `unsubscribe()`, `notify_project(project_id, message)`
+- State poller: daemon thread polls every 5s, batch-fetches VM states per host (one call per host, not per VM)
+- Pushes `project-state`, `deploy-progress`, `vm-state` messages; tracks `_last_states` to only send diffs
+- Thread-safe sync-to-async bridge via `run_coroutine_threadsafe`
+- Also supports `subscribe_pattern`/`notify_pattern` for pattern capture progress
+
+### Offline Filesystem Modification
+- Troshkad endpoint: `POST /vms/modify-fs` — runs commands against a stopped VM's disk using `guestfish`
+- Requires `libguestfs-tools` (installed by agent installer)
+- Used for kubelet cert cleanup on pattern OCP deploys (removes stale certs before VM start)
+- VM must be stopped (not running) — `guestfish` needs exclusive disk access
+
+### Exec API
+- `POST /projects/{id}/vms/{vm_id}/exec` — execute commands on VMs
+- `method` parameter: `serial` (always works, no network), `ssh` (requires network + credentials), `auto` (tries SSH first, falls back to serial)
+- SSH key auth preferred over password when `ssh_key_id` is provided
+- `from-template` API accepts `ssh_pub_key` directly for agnosticv key injection
+
+### OCP Route External Access (OCP Virt)
+- OCP Virt hosts use OCP Routes instead of EIPs for external access to VMs
+- Deploy creates edge-terminated Routes for port 443/80 forwards: `{vm_name}-{port}.apps.{cluster_domain}`
+- Route annotation: `haproxy.router.openshift.io/timeout: 3600s` (required for WebSocket consoles)
+- Routes are cleaned up during project destroy
+- EIP allocation is skipped when all port forwards are routable via Routes
 
 ## Important Conventions
 

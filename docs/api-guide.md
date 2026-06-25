@@ -705,6 +705,7 @@ curl -X PATCH http://localhost:8200/api/v1/projects/{id} \
 
 Topology nodes:
 - `vmNode`: Virtual machine (data: name, vcpus, ram, os, nics, diskControllers, bootDevices)
+- `containerNode`: Container or pod (data: image, command, ports, env; pods have isPod=true, initContainers, podContainers)
 - `networkNode`: Network (data: networkType, cidr, dhcp)
 - `storageNode`: Disk/ISO (data: format, size, libraryItemId)
 
@@ -1605,9 +1606,47 @@ Store Red Hat offline token (for Image Builder).
 **Request:** `{ offline_token: string }`  
 **Response:** `{ status: "saved" }`
 
+#### PATCH /api/v1/auth/ocp-pull-secret
+
+Toggle pull-through registry mode (enable/disable without changing the secret).
+
+**Auth:** user  
+**Request:** `{ pull_through_registry: boolean, pull_through_registry_url?: string, pull_through_registry_user?: string, pull_through_registry_password?: string }`  
+**Response:** `{ status: "saved" }`
+
 #### DELETE /api/v1/auth/rh-offline-token
 
 Delete stored Red Hat offline token.
+
+**Auth:** user  
+**Response:** `204 No Content`
+
+#### GET /api/v1/auth/registry-credentials
+
+List user's registry credentials (passwords omitted).
+
+**Auth:** user  
+**Response:** `[{ id: string, name: string, registry_url: string, username: string, created_at: string }]`
+
+#### POST /api/v1/auth/registry-credentials
+
+Create a registry credential.
+
+**Auth:** user  
+**Request:** `{ name: string, registry_url: string, username: string, password: string }`  
+**Response:** `RegistryCredentialResponse` (201)
+
+#### PUT /api/v1/auth/registry-credentials/{id}
+
+Update a registry credential.
+
+**Auth:** user  
+**Request:** `{ name?: string, registry_url?: string, username?: string, password?: string }`  
+**Response:** `RegistryCredentialResponse`
+
+#### DELETE /api/v1/auth/registry-credentials/{id}
+
+Delete a registry credential.
 
 **Auth:** user  
 **Response:** `204 No Content`
@@ -2121,8 +2160,10 @@ List topology templates.
 Create project from template (e.g., OCP IPI/Agent).
 
 **Auth:** user  
-**Request:** `{ template_id: string, name: string, cluster_name: string, base_domain: string, ocp_version: string, bastion_password: string, bastion_image_id?: string, bastion_iso_id?: string, bastion_ssh_key_id?: number, auto_install_ocp?: boolean, external_access?: boolean, block_outbound?: boolean, ... }`  
+**Request:** `{ template_id: string, name: string, cluster_name: string, base_domain: string, ocp_version: string, bastion_password: string, bastion_image_id?: string, bastion_iso_id?: string, bastion_ssh_key_id?: number, auto_install_ocp?: boolean, external_access?: boolean, block_outbound?: boolean, ssh_pub_key?: string, ... }`  
 **Response:** `{ id: string, name: string }` (201)
+
+`ssh_pub_key` injects an SSH public key directly (for agnosticd key injection without requiring a stored key ID).
 
 #### GET /api/v1/projects/{project_id}
 
@@ -2204,6 +2245,13 @@ Delete project (destroys infrastructure if deployed).
 **Auth:** user  
 **Response:** `204 No Content`
 
+#### GET /api/v1/projects/{project_id}/export-template
+
+Export project topology as YAML template.
+
+**Auth:** user  
+**Response:** `text/yaml` — template YAML including VMs, networks, storage, OCP metadata, BMC config
+
 #### POST /api/v1/projects/{project_id}/import-vm
 
 Import a VM from a snapshot into project topology.
@@ -2280,8 +2328,10 @@ Get VNC console WebSocket URL.
 Execute a command on VM via SSH or serial console.
 
 **Auth:** user  
-**Request:** `{ command: string, username?: string, password?: string, timeout?: number, use_ssh?: boolean }`  
+**Request:** `{ command: string, method?: "serial"|"ssh"|"auto", username?: string, password?: string, ssh_key_id?: number, timeout?: number }`  
 **Response:** `{ output: string, error?: string, exit_code?: number }`
+
+`method`: `serial` (always works, no network), `ssh` (requires network + credentials), `auto` (tries SSH first, falls back to serial). SSH key auth is preferred over password when `ssh_key_id` is provided.
 
 #### PUT /api/v1/projects/{project_id}/vms/{vm_id}/files
 
@@ -2624,8 +2674,10 @@ Get pattern capture progress.
 Deploy pattern to new project.
 
 **Auth:** user  
-**Request:** `{ name: string, description?: string, storage_pool_id?: string, host_id?: string }`  
+**Request:** `{ name: string, description?: string, storage_pool_id?: string, host_id?: string, common_password?: string }`  
 **Response:** `ProjectResponse` (201, async)
+
+`common_password` overrides BMC and cloud-init credentials baked in the pattern's topology.
 
 #### POST /api/v1/patterns/bulk-deploy
 

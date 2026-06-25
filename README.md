@@ -97,21 +97,27 @@ Troshka eliminates this entire class of problems:
 
 ### Key Features
 
-- **Visual topology editor** — Drag-and-drop VMs, networks, routers, gateways, and storage onto a Visio-like canvas
+- **Visual topology editor** — Drag-and-drop VMs, containers, pods, networks, routers, gateways, and storage onto a Visio-like canvas
 - **Deep VM configuration** — NICs with model selection and static IP reservation, disk controllers, boot device order, cloud-init, OS types matching QEMU/libvirt
+- **Container & pod nodes** — Podman containers and multi-container pods as first-class canvas objects with veth networking
+- **Clock backdating** — Set project-wide clock targets for VMs (hypervisor offset + gateway NTP), live adjustment, pattern capture
 - **Network services** — DHCP with static IP reservations (MAC→IP), DNS, PXE boot (legacy, iPXE, UEFI HTTP), security rules per network
 - **Routing & NAT** — L3 routers between subnets, NAT gateway with port forwarding and multiple external IPs
-- **Project sharing** — Publish environments as time-limited demo labs with guest console access
+- **Project sharing** — Publish environments as time-limited demo labs with guest console access and portal tokens
 - **Patterns** — Save entire projects as reusable patterns, stamp out hundreds of identical environments for labs and demos
+- **Template import/export** — Full-fidelity YAML round-trip: import topology templates, edit on canvas, export back
 - **VM snapshots** — Capture individual VMs (config + disks) to the library, drag-and-drop into any project with auto-connected networks
 - **Bulk deployment** — Deploy 1-500 projects from a pattern with naming templates
 - **Virtual BMC** — IPMI and Redfish endpoints per VM for bare-metal simulation (PXE + BMC workflows)
 - **Shared storage & live migration** — NFS/FSx storage pools with zero-downtime VM migration between hosts
 - **Storage auto-extend** — Automatic EBS/FSx capacity expansion with threshold monitoring and admin controls
+- **Pull-through registry** — Mirror container registries for disconnected OCP installs without managing full mirrors
 - **DNS integration** — Optional Route53 DNS provider for automated record management per project
 - **Host garbage collector** — Auto-sync capacity, clean orphaned VMs/disks/bridges, repair networks, evict stale cache
+- **Project timers** — Auto-stop and auto-delete with configurable lifetimes and warnings
 - **API-first** — Full REST API with API key authentication, plus an Ansible collection for IaC
 - **Multi-provider** — Deploy to AWS EC2, Google Cloud, Azure, or OpenShift Virtualization (KubeVirt)
+- **Red Hat Image Builder** — Build custom RHEL host images with all packages pre-installed (no RHSM, no PAYG premium)
 
 ## Documentation
 
@@ -262,6 +268,7 @@ The drag-and-drop topology editor supports:
 | Node | Handles | Description |
 |------|---------|-------------|
 | VM | Blue (top/bottom) + Yellow (left/right) | Virtual machine with NICs and disk controllers |
+| Container | Blue (top/bottom) | Podman container or multi-container pod |
 | Network | Blue (top/bottom) + Orange (left/right) | Virtual bridge with DHCP, DNS, PXE |
 | Router | Orange (all sides) | L3 forwarding between subnets |
 | Gateway | Orange (left/right) | NAT with optional port forwarding |
@@ -281,11 +288,10 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 
 ## Roadmap
 
-- [ ] OCP deployment automation
-- [ ] OCP template auto-set gateway to restrict mode
-- [ ] Template mode (mode 3) end-to-end testing
-- [ ] Showroom integration testing with Troshka console
-- [ ] Multi-instance pattern portability
+- [ ] Multi-instance pattern portability (deploy patterns across different Troshka instances)
+- [ ] Recert-based SNO rename for unique DNS on pattern-deployed clusters
+- [ ] Project auto-timers via agnosticv integration (auto-stop/delete lifecycle)
+- [ ] Enhanced WebSocket state push (replace polling with full pub/sub)
 
 ## License
 

@@ -17,7 +17,7 @@ Troshka follows a three-tier architecture: browser-based frontend, REST/WebSocke
 │                   FastAPI Backend (port 8200)                   │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
 │  │   REST API   │  │  WebSocket   │  │   Services   │         │
-│  │  (16 routes) │  │   (pubsub)   │  │  (business)  │         │
+│  │  (17 routes) │  │   (pubsub)   │  │  (business)  │         │
 │  └──────────────┘  └──────────────┘  └──────────────┘         │
 └───────┬──────────────────────┬──────────────────────┬──────────┘
         │                      │                      │
@@ -58,8 +58,8 @@ Troshka follows a three-tier architecture: browser-based frontend, REST/WebSocke
 The FastAPI backend is organized into distinct layers:
 
 **API Routes** (`app/api/`)
-- 16 route modules registered in `main.py`
-- auth, projects, vms, networks, disks, library, patterns, hosts, providers, eips, storage_pools, dns_providers, api_keys, portal, templates, ws
+- 17 route modules registered in `main.py`
+- auth, projects, vms, networks, disks, library, patterns, hosts, providers, eips, storage_pools, dns_providers, api_keys, portal, templates, registry_credential_routes, ws
 
 **Models** (`app/models/`)
 - SQLAlchemy 2.0+ ORM models with `Mapped[type]` syntax
@@ -85,7 +85,7 @@ The FastAPI backend is organized into distinct layers:
 - React Flow for topology editing
 - Zustand store (`useCanvasStore`) for nodes, edges, selections
 - Auto-save debounced 1s after changes
-- Node types: `vmNode`, `networkNode`, `storageNode`
+- Node types: `vmNode`, `networkNode`, `storageNode`, `containerNode` (single containers and pods)
 
 **Topology Storage**
 - Source of truth: `Project.topology` JSONB column
@@ -156,7 +156,8 @@ All cloud-specific operations go through a unified `ProviderDriver` interface de
 - Creates KubeVirt VMs inside OpenShift namespaces
 - Ceph-NFS storage via `ocs-storagecluster-ceph-nfs` storage class
 - Console via OCP edge Routes (TLS terminated by OCP router)
-- EIPs not supported (no external access toggle)
+- External access via OCP Routes for port 443/80 forwards (no EIPs)
+- Routes created during deploy: `{vm_name}-{port}.apps.{cluster_domain}`
 - Resize requires stop → modify → start (disabled for now)
 
 ## 4. Host Agent — troshkad
@@ -207,8 +208,13 @@ All cloud-specific operations go through a unified `ProviderDriver` interface de
 **Migration** (2 handlers)
 - `vm_migrate`, `tls_update_certs`
 
-**Execution** (3 handlers)
-- `vm_serial_exec`, `vm_ssh_exec`, `vm_file_push_job`
+**Container & Pod Lifecycle** (8 handlers)
+- `container_create`, `container_start`, `container_stop`, `container_restart`, `container_destroy`
+- `container_states`, `container_logs`
+- `pod_create`, `pod_start`, `pod_destroy`
+
+**Execution** (4 handlers)
+- `vm_serial_exec`, `vm_ssh_exec`, `vm_file_push_job`, `vm_modify_fs`
 
 **Garbage Collection** (2 handlers)
 - `gc_discover`, `gc_clean`
@@ -216,10 +222,13 @@ All cloud-specific operations go through a unified `ProviderDriver` interface de
 **PXE Boot** (1 handler)
 - `pxe_setup`
 
+**Clock** (1 handler)
+- `vm_set_clock`
+
 **Utilities** (6 handlers)
 - `library_import`, `resize_storage`, `files_remove`, `files_stat`, `upload_and_cache`
 
-**Total: 50 handlers**
+**Total: 62+ handlers**
 
 ### Version Stamping & Updates
 
