@@ -10,6 +10,11 @@ os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test.db"
 
 
 class TestPollHosts(unittest.TestCase):
+    def setUp(self):
+        from app.services.health_poller import _skip_until
+
+        _skip_until.clear()
+
     @patch("app.core.database.SessionLocal")
     @patch("app.services.troshkad_client.check_health")
     def test_successful_health_updates_fields(self, mock_check, mock_session_cls):

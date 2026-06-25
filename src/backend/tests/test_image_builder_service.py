@@ -203,7 +203,7 @@ class TestBuildUploadOptions:
         provider = _make_provider("gcp")
         opts = _build_upload_options(provider)
         assert opts["share_with_accounts"] == [
-            "troshka@troshka-rhdp.iam.gserviceaccount.com"
+            "serviceAccount:troshka@troshka-rhdp.iam.gserviceaccount.com"
         ]
 
     def test_azure_upload_options(self):

@@ -83,6 +83,7 @@ class PatternDeployRequest(BaseModel):
     dns_provider_id: str | None = None
     auto_deploy: bool = True
     auto_start: bool = True
+    common_password: str | None = None
     inject_vars: dict | None = None
     ssh_keys: list[str] | None = None
     host_id: str | None = None

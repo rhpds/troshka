@@ -13,13 +13,21 @@ app.dependency_overrides[get_db] = get_test_db
 client = TestClient(app)
 
 
+_build_image_user_id = None
+_build_image_provider_id = None
+
+
 @pytest.fixture(autouse=True)
 def _setup():
     import uuid
 
+    global _build_image_user_id, _build_image_provider_id
+
     db = TestSession()
-    db.query(Provider).delete()
-    db.query(User).delete()
+    if _build_image_user_id:
+        db.query(User).filter(User.id == _build_image_user_id).delete()
+    if _build_image_provider_id:
+        db.query(Provider).filter(Provider.id == _build_image_provider_id).delete()
     user = User(id=str(uuid.uuid4()), email="admin@test.com", role="admin")
     user.rh_offline_token = "encrypted"
     db.add(user)
@@ -30,7 +38,8 @@ def _setup():
     )
     db.add(prov)
     db.commit()
-    # Store the provider ID for tests to use
+    _build_image_user_id = user.id
+    _build_image_provider_id = prov.id
     _setup.provider_id = prov.id
     db.close()
     yield

@@ -10,9 +10,9 @@ app.dependency_overrides[get_db] = get_test_db
 
 
 @pytest.fixture(autouse=True)
-def _clean_users():
+def _clean_dev_user():
     db = TestSession()
-    db.query(User).delete()
+    db.query(User).filter(User.email == "local-dev@troshka").delete()
     db.commit()
     db.close()
 

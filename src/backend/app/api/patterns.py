@@ -668,6 +668,14 @@ def deploy_pattern(
 
     nodes = new_topology.get("nodes", [])
 
+    if body.common_password:
+        for n in nodes:
+            d = n.get("data", {})
+            if n.get("type") == "networkNode" and d.get("networkType") == "bmc":
+                d["bmcPassword"] = body.common_password
+            elif n.get("type") == "vmNode" and d.get("cloudInit"):
+                d["ciCloudUserPassword"] = body.common_password
+
     if body.ssh_keys:
         for n in nodes:
             if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):

@@ -254,3 +254,33 @@ def test_extend_timer_fails_when_no_timer_active():
         headers=HEADERS,
     )
     assert resp.status_code == 400
+
+
+def test_set_clock_target():
+    create_resp = client.post(
+        "/api/v1/projects", json={"name": "Clock Test"}, headers=HEADERS
+    )
+    project_id = create_resp.json()["id"]
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"clock_target": "2025-01-15T00:00:00Z"},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clock_target"] is not None
+    assert "2025-01-15" in data["clock_target"]
+
+
+def test_clear_clock_target():
+    create_resp = client.post(
+        "/api/v1/projects", json={"name": "Clock Clear Test"}, headers=HEADERS
+    )
+    project_id = create_resp.json()["id"]
+    resp = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"clock_target": None},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["clock_target"] is None

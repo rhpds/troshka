@@ -47,7 +47,7 @@ def test_deploy_template_creates_project():
     assert len(vm_nodes) == 4
 
 
-def test_deploy_template_with_overrides():
+def test_deploy_template_rejects_unknown_overrides():
     resp = client.post(
         "/api/v1/deploy-template",
         json={
@@ -58,11 +58,8 @@ def test_deploy_template_with_overrides():
         },
         headers=HEADERS,
     )
-    assert resp.status_code == 201
-    nodes = resp.json()["topology"]["nodes"]
-    vm_nodes = [n for n in nodes if n["type"] == "vmNode"]
-    # 3 CP + 2 workers + 1 bastion = 6
-    assert len(vm_nodes) == 6
+    assert resp.status_code == 400
+    assert "Unknown parameter" in resp.json()["detail"]
 
 
 def test_deploy_template_rejects_invalid_template():

@@ -4,6 +4,7 @@ description: "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)"
 category: openshift
 install_method: agent
 deploy_time: "~30 min"
+versions: ["4.14", "4.15", "4.16", "4.17", "4.18"]
 
 ocp:
   cluster_name: ocp
