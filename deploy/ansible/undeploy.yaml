@@ -1,0 +1,27 @@
+---
+- name: Undeploy Troshka from OpenShift
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Delete OAuthClient
+      kubernetes.core.k8s:
+        state: absent
+        api_version: oauth.openshift.io/v1
+        kind: OAuthClient
+        name: "troshka-{{ troshka_namespace }}"
+      ignore_errors: true
+
+    - name: Delete namespace (removes everything)
+      kubernetes.core.k8s:
+        state: absent
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ troshka_namespace }}"
+
+    - name: Confirm deletion
+      ansible.builtin.debug:
+        msg: "Troshka undeployed. Namespace '{{ troshka_namespace }}' deleted."

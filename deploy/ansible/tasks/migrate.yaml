@@ -1,0 +1,53 @@
+---
+- name: Run Alembic migration
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "troshka-migrate-{{ ansible_date_time.epoch | default(lookup('pipe', 'date +%s')) }}"
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 600
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: migrate
+                image: "{{ troshka_backend_image }}"
+                command: ["python3", "-m", "alembic", "upgrade", "head"]
+                env:
+                  - name: TROSHKA_DATABASE__URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: database-url
+                volumeMounts:
+                  - name: config
+                    mountPath: /opt/app-root/src/config/config.yaml
+                    subPath: config.yaml
+            volumes:
+              - name: config
+                configMap:
+                  name: troshka-config
+  register: _migration_job
+
+- name: Wait for migration to complete
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    name: "{{ _migration_job.result.metadata.name }}"
+    namespace: "{{ troshka_namespace }}"
+  register: _migration_status
+  until: >-
+    (_migration_status.resources[0].status.succeeded | default(0)) >= 1
+    or (_migration_status.resources[0].status.failed | default(0)) >= 1
+  retries: 24
+  delay: 5
+
+- name: Fail if migration failed
+  ansible.builtin.fail:
+    msg: "Database migration failed. Check job logs: oc logs job/{{ _migration_job.result.metadata.name }} -n {{ troshka_namespace }}"
+  when: (_migration_status.resources[0].status.failed | default(0)) >= 1

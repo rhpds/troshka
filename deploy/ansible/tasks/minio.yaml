@@ -1,0 +1,126 @@
+---
+- name: Deploy MinIO PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: troshka-minio-data
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: "{{ troshka_minio_storage_size }}"
+
+- name: Deploy MinIO
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: troshka-minio
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-minio
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: troshka-minio
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: troshka-minio
+          spec:
+            containers:
+              - name: minio
+                image: quay.io/minio/minio:latest
+                args: ["server", "/data", "--console-address", ":9001"]
+                ports:
+                  - containerPort: 9000
+                    name: s3
+                  - containerPort: 9001
+                    name: console
+                env:
+                  - name: MINIO_ROOT_USER
+                    value: "{{ troshka_minio_root_user }}"
+                  - name: MINIO_ROOT_PASSWORD
+                    value: "{{ troshka_minio_root_password }}"
+                volumeMounts:
+                  - name: data
+                    mountPath: /data
+                readinessProbe:
+                  httpGet:
+                    path: /minio/health/ready
+                    port: 9000
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    memory: 1Gi
+            volumes:
+              - name: data
+                persistentVolumeClaim:
+                  claimName: troshka-minio-data
+
+- name: Create MinIO Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: troshka-minio
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        selector:
+          app.kubernetes.io/name: troshka-minio
+        ports:
+          - port: 9000
+            targetPort: 9000
+            name: s3
+          - port: 9001
+            targetPort: 9001
+            name: console
+
+- name: Wait for MinIO to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: troshka-minio
+    namespace: "{{ troshka_namespace }}"
+  register: _minio_deploy
+  until: (_minio_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 20
+  delay: 10
+
+- name: Create default S3 bucket
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "troshka-minio-init"
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: mc
+                image: quay.io/minio/mc:latest
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    mc alias set minio http://troshka-minio:9000 {{ troshka_minio_root_user }} {{ troshka_minio_root_password }}
+                    mc mb --ignore-existing minio/{{ troshka_s3_bucket }}

@@ -1,0 +1,42 @@
+---
+- name: Deploy Troshka on OpenShift
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create namespace
+      ansible.builtin.include_tasks: tasks/namespace.yaml
+
+    - name: Determine route host
+      ansible.builtin.include_tasks: tasks/route-host.yaml
+
+    - name: Manage secrets
+      ansible.builtin.include_tasks: tasks/secrets.yaml
+
+    - name: Deploy PostgreSQL
+      ansible.builtin.include_tasks: tasks/database.yaml
+      when: troshka_deploy_postgres | bool
+
+    - name: Deploy MinIO
+      ansible.builtin.include_tasks: tasks/minio.yaml
+      when: troshka_deploy_minio | bool
+
+    - name: Deploy backend
+      ansible.builtin.include_tasks: tasks/backend.yaml
+
+    - name: Run database migration
+      ansible.builtin.include_tasks: tasks/migrate.yaml
+
+    - name: Deploy frontend and route
+      ansible.builtin.include_tasks: tasks/frontend.yaml
+
+    - name: Configure OAuth
+      ansible.builtin.include_tasks: tasks/oauth.yaml
+      when: troshka_oauth_enabled | bool
+
+    - name: Display access info
+      ansible.builtin.debug:
+        msg: >-
+          Troshka deployed to namespace '{{ troshka_namespace }}'.
+          Route: https://{{ _troshka_route_host }}

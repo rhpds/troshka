@@ -1,0 +1,18 @@
+---
+- name: Use provided route host
+  ansible.builtin.set_fact:
+    _troshka_route_host: "{{ troshka_route_host }}"
+  when: troshka_route_host | default('', true) | length > 0
+
+- name: Get cluster domain for auto-generated host
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: Ingress
+    name: cluster
+  register: _ingress_config
+  when: troshka_route_host | default('', true) | length == 0
+
+- name: Set route host from cluster domain
+  ansible.builtin.set_fact:
+    _troshka_route_host: "troshka-{{ troshka_namespace }}.{{ _ingress_config.resources[0].spec.domain }}"
+  when: troshka_route_host | default('', true) | length == 0

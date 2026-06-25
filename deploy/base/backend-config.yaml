@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: troshka-config
+  namespace: troshka
+data:
+  config.yaml: |
+    app:
+      port: 8200
+      host: "0.0.0.0"
+      external_url: ""
+    auth:
+      oauth_enabled: false
+      admin_users: ""
+      operator_users: ""
+    defaults:
+      run_timer_hours: 8
+      lifetime_days: 30
+      max_vms_per_project: 20
+      max_projects_per_user: 10
+      user_library_quota_gb: 500
+    overcommit:
+      cpu_ratio: 4.0
+      ram_ratio: 1.5

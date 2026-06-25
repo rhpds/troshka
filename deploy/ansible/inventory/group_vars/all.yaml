@@ -1,0 +1,39 @@
+---
+troshka_namespace: troshka
+
+troshka_backend_image: quay.io/rhpds/troshka-backend:latest
+troshka_frontend_image: quay.io/rhpds/troshka-frontend:latest
+
+troshka_route_host: ""
+
+# Database — provide URL or deploy in-cluster
+troshka_db_url: ""
+troshka_deploy_postgres: false
+troshka_postgres_storage_size: 10Gi
+troshka_postgres_image: "registry.redhat.io/rhel9/postgresql-16:latest"
+troshka_postgres_password: troshka
+
+# S3
+troshka_s3_bucket: troshka-images
+troshka_s3_access_key: ""
+troshka_s3_secret_key: ""
+troshka_s3_endpoint: ""
+troshka_deploy_minio: false
+troshka_minio_storage_size: 50Gi
+troshka_minio_root_user: minioadmin
+troshka_minio_root_password: minioadmin
+
+# Auth
+troshka_oauth_enabled: false
+troshka_admin_users: ""
+troshka_operator_users: ""
+
+# Defaults
+troshka_run_timer_hours: 8
+troshka_lifetime_days: 30
+
+# Resource limits
+troshka_backend_memory_limit: 2Gi
+troshka_backend_cpu_request: 250m
+troshka_frontend_memory_limit: 512Mi
+troshka_frontend_cpu_request: 100m

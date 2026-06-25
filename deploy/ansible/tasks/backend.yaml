@@ -1,0 +1,144 @@
+---
+- name: Create backend ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: troshka-config
+        namespace: "{{ troshka_namespace }}"
+      data:
+        config.yaml: |
+          app:
+            port: 8200
+            host: "0.0.0.0"
+            external_url: "https://{{ _troshka_route_host }}"
+          auth:
+            oauth_enabled: {{ troshka_oauth_enabled | bool | lower }}
+            admin_users: "{{ troshka_admin_users }}"
+            operator_users: "{{ troshka_operator_users }}"
+          {% if troshka_deploy_minio | bool %}
+          s3:
+            endpoint_url: "http://troshka-minio.{{ troshka_namespace }}.svc:9000"
+            bucket: "{{ troshka_s3_bucket }}"
+          {% endif %}
+          defaults:
+            run_timer_hours: {{ troshka_run_timer_hours }}
+            lifetime_days: {{ troshka_lifetime_days }}
+            max_vms_per_project: 20
+            max_projects_per_user: 10
+            user_library_quota_gb: 500
+          overcommit:
+            cpu_ratio: 4.0
+            ram_ratio: 1.5
+
+- name: Deploy backend
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: troshka-backend
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-backend
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: troshka-backend
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: troshka-backend
+          spec:
+            containers:
+              - name: backend
+                image: "{{ troshka_backend_image }}"
+                ports:
+                  - containerPort: 8200
+                    name: http
+                env:
+                  - name: TROSHKA_DATABASE__URL
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: database-url
+                  - name: TROSHKA_AUTH__JWT_SECRET
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: jwt-secret
+                  - name: TROSHKA_AUTH__ENCRYPTION_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: encryption-key
+                  - name: TROSHKA_AWS__ACCESS_KEY_ID
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: s3-access-key
+                        optional: true
+                  - name: TROSHKA_AWS__SECRET_ACCESS_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: s3-secret-key
+                        optional: true
+                volumeMounts:
+                  - name: config
+                    mountPath: /opt/app-root/src/config/config.yaml
+                    subPath: config.yaml
+                readinessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8200
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /api/v1/health
+                    port: 8200
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+                resources:
+                  requests:
+                    cpu: "{{ troshka_backend_cpu_request }}"
+                    memory: 512Mi
+                  limits:
+                    memory: "{{ troshka_backend_memory_limit }}"
+            volumes:
+              - name: config
+                configMap:
+                  name: troshka-config
+
+- name: Create backend Service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: troshka-backend
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        selector:
+          app.kubernetes.io/name: troshka-backend
+        ports:
+          - port: 8200
+            targetPort: 8200
+            name: http
+
+- name: Wait for backend to be ready
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: troshka-backend
+    namespace: "{{ troshka_namespace }}"
+  register: _backend_deploy
+  until: (_backend_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10

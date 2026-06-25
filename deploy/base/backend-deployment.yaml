@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-backend
+  namespace: troshka
+  labels:
+    app.kubernetes.io/name: troshka-backend
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-backend
+        app.kubernetes.io/component: backend
+    spec:
+      containers:
+        - name: backend
+          image: quay.io/rhpds/troshka-backend:latest
+          ports:
+            - containerPort: 8200
+              name: http
+          env:
+            - name: TROSHKA_DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: database-url
+            - name: TROSHKA_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: jwt-secret
+            - name: TROSHKA_AUTH__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: encryption-key
+            - name: TROSHKA_AWS__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-access-key
+                  optional: true
+            - name: TROSHKA_AWS__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-secret-key
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /opt/app-root/src/config/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8200
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: config
+          configMap:
+            name: troshka-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-backend
+  namespace: troshka
+  labels:
+    app.kubernetes.io/name: troshka-backend
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-backend
+  ports:
+    - port: 8200
+      targetPort: 8200
+      name: http
