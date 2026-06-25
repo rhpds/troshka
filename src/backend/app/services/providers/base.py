@@ -88,11 +88,15 @@ class ProviderDriver:
         No-op for providers that don't need it."""
         pass
 
-    def create_route_access(self, provider, host, project_id, vm_name, int_ip, port):
-        """Create Route-based external access for a VM port (OCP Virt only).
-        Returns dict with hostname, route_name, service_name."""
+    def create_route_access(
+        self, provider, host, project_id, vm_name, int_ip, port, target_port=None
+    ):
+        """Create a Route/ingress for external access to a VM port.
+        Returns dict with hostname, route_name, service_name.
+        Only implemented by providers with native ingress (OCP Virt)."""
         raise NotImplementedError
 
-    def delete_route_access(self, provider, project_id):
-        """Delete all Route-based external access resources for a project."""
+    def delete_route_access(self, provider, project_id, namespace=None):
+        """Delete all Route-based access resources for a project.
+        Only implemented by providers with native ingress (OCP Virt)."""
         pass

@@ -3,13 +3,22 @@
 # Test agnosticd-v2 lifecycle with a template deploy from agnosticv merged vars.
 #
 # Usage:
-#   ./scripts/test-agnosticd-template.sh [guid]
+#   ./scripts/test-agnosticd-template.sh [options] [guid] [extra-ansible-args...]
+#   ./scripts/test-agnosticd-template.sh                                    # RAN lab (default)
+#   ./scripts/test-agnosticd-template.sh --ci troshka/OCP4-SNO-IBI-LAB/dev.yaml
+#   ./scripts/test-agnosticd-template.sh --ci troshka/OCP4-SNO-IBI-LAB/dev.yaml --pattern "IBI Lab Ready"
+#   ./scripts/test-agnosticd-template.sh --ci troshka/OCP4-SNO-IBI/common.yaml --skip-tags repos,packages
+#
+# Options:
+#   --ci <path>        agnosticv catalog item path (default: troshka/OCP4-RAN-TK/dev.yaml)
+#   --pattern <name>   Deploy from a saved pattern instead of building from scratch
+#   --guid <guid>      Use a specific GUID (default: random 5-char hex)
 #
 # Prerequisites:
 #   - Troshka backend running (http://localhost:8200)
 #   - ansible-navigator installed
 #   - ~/agnosticd-v2 repo with ansible/configs/troshka/
-#   - ~/agnosticv repo with troshka/OCP4-RAN-TK/
+#   - ~/agnosticv repo
 #   - ~/troshka-ansible-collection installed
 #   - ~/secrets/troshka-api-key.txt
 #
@@ -19,15 +28,48 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGD_DIR="$HOME/agnosticd-v2"
 AGV_DIR="$HOME/agnosticv"
 TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
-GUID="${1:-$(head -c4 /dev/urandom | xxd -p | cut -c1-5)}"
-shift 2>/dev/null || true
-EXTRA_ARGS=("$@")
-CI_PATH="troshka/OCP4-RAN-TK/dev.yaml"
+CI_PATH=""
+PATTERN_NAME=""
+GUID=""
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ci) CI_PATH="$2"; shift 2 ;;
+        --pattern) PATTERN_NAME="$2"; shift 2 ;;
+        --guid) GUID="$2"; shift 2 ;;
+        --help|-h)
+            head -15 "$0" | grep "^#" | sed 's/^# \?//'
+            exit 0
+            ;;
+        *)
+            if [[ -z "$GUID" && "$1" =~ ^[a-f0-9]+$ && ${#1} -le 8 ]]; then
+                GUID="$1"; shift
+            else
+                EXTRA_ARGS+=("$1"); shift
+            fi
+            ;;
+    esac
+done
+
+if [[ -z "$CI_PATH" ]]; then
+    echo "Error: --ci <path> is required (e.g., --ci troshka/OCP4-RAN-TK/dev.yaml)"
+    exit 1
+fi
+
+GUID="${GUID:-$(head -c4 /dev/urandom | xxd -p | cut -c1-5)}"
+
+# Derive project prefix from CI path (e.g., troshka/OCP4-SNO-IBI-LAB/dev.yaml → IBI-LAB)
+CI_DIR=$(basename "$(dirname "$CI_PATH")")
+PROJECT_PREFIX=$(echo "$CI_DIR" | sed 's/^OCP4-//; s/^OCP-//')
 
 echo "=== Troshka Template Deploy Test ==="
 echo "  GUID:       $GUID"
 echo "  API:        $TROSHKA_API_URL"
 echo "  CI:         $CI_PATH"
+if [[ -n "$PATTERN_NAME" ]]; then
+    echo "  Pattern:    $PATTERN_NAME"
+fi
 echo ""
 
 # --- API key ---
@@ -94,8 +136,16 @@ if [ -d "$HOME/troshka-ansible-collection" ]; then
         -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
 fi
 
+# --- Pattern deploy mode ---
+PATTERN_ARGS=""
+if [[ -n "$PATTERN_NAME" ]]; then
+    echo ""
+    echo "=== Pattern deploy mode: $PATTERN_NAME ==="
+    PATTERN_ARGS="-e troshka_deploy_mode=pattern -e troshka_pattern_name=$PATTERN_NAME"
+fi
+
 # --- Run ---
-LOG_FILE="/tmp/troshka-ran-${GUID}.log"
+LOG_FILE="/tmp/troshka-$(echo "$PROJECT_PREFIX" | tr '[:upper:]' '[:lower:]')-${GUID}.log"
 echo ""
 echo "=== Running agnosticd-v2 lifecycle ==="
 echo "  Log: $LOG_FILE"
@@ -113,10 +163,11 @@ ansible-navigator run ansible/main.yml \
     -e troshka_api_url="$TROSHKA_API_URL" \
     -e troshka_api_key="$API_KEY" \
     -e guid="$GUID" \
-    -e troshka_project_name="RAN_${GUID}" \
+    -e troshka_project_name="${PROJECT_PREFIX}_${GUID}" \
     -e output_dir=/tmp/agnosticd-output \
     ${PULL_SECRET_FILE:+-e @/tmp/troshka-pull-secret-vars.yaml} \
     ${PTR_CREDS_FILE:+-e @"$PTR_CREDS_FILE"} \
+    $PATTERN_ARGS \
     -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 | tee "$LOG_FILE"
 
 STATUS=${PIPESTATUS[0]}

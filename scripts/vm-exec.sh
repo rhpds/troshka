@@ -34,6 +34,8 @@ while [[ $# -gt 0 ]]; do
         --password|-p) PASSWORD="$2"; shift 2 ;;
         --timeout|-t) TIMEOUT="$2"; shift 2 ;;
         --serial|-s) METHOD="serial"; shift ;;
+        --console|-c) METHOD="console"; shift ;;
+        --console-text) METHOD="console-text"; shift ;;
         --bg|--background) BACKGROUND=true; shift ;;
         --log|-l) LOG_FILE="$2"; shift 2 ;;
         --help|-h)
@@ -42,6 +44,9 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --user, -u       SSH username (default: cloud-user)"
             echo "  --password, -p   Password for serial console login"
+            echo "  --serial, -s     Force serial console exec"
+            echo "  --console, -c    Force VNC console exec (send-key + screenshot + OCR)"
+            echo "  --console-text   Console exec, switch to TTY2 first (for graphical VMs)"
             echo "  --timeout, -t    Command timeout in seconds (default: 600)"
             echo "  --bg             Run command in background on the VM (nohup)"
             echo "  --log, -l        Log file path on VM (default: /tmp/vm-exec-bg.log)"

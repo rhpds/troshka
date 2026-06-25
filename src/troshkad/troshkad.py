@@ -915,7 +915,16 @@ def _handle_vm_create(job, params):
         os.unlink(tmp)
         _job_log(job, f"Set hwuuid={_hwuuid} on {domain}")
 
-    return {"domain": domain, "status": "created"}
+    # Return the auto-generated domain UUID so the backend can store it
+    dom_uuid = ""
+    try:
+        dom_uuid = subprocess.check_output(
+            ["virsh", "domuuid", domain], text=True, timeout=10
+        ).strip()
+    except Exception:
+        pass
+
+    return {"domain": domain, "status": "created", "domain_uuid": dom_uuid}
 
 
 COMMAND_HANDLERS["vms/create"] = _handle_vm_create
@@ -1731,7 +1740,7 @@ def _handle_vm_modify_fs(job, params):
             guestfish_cmds.append(f"mkdir-p {path}")
         elif action == "write":
             content = op.get("content", "")
-            guestfish_cmds.append(f"write {path} \"{content}\"")
+            guestfish_cmds.append(f'write {path} "{content}"')
         elif action == "upload":
             local_path = op.get("local_path", "")
             if not local_path:
@@ -1757,18 +1766,22 @@ def _handle_vm_modify_fs(job, params):
     results = []
     if result.returncode == 0:
         for op in operations:
-            results.append({"action": op["action"], "path": op.get("path", ""), "ok": True})
+            results.append(
+                {"action": op["action"], "path": op.get("path", ""), "ok": True}
+            )
         _job_log(job, f"All {len(operations)} operations succeeded")
     else:
         stderr = result.stderr.strip()
         _job_log(job, f"guestfish failed (rc={result.returncode}): {stderr}")
         for op in operations:
-            results.append({
-                "action": op["action"],
-                "path": op.get("path", ""),
-                "ok": False,
-                "error": stderr,
-            })
+            results.append(
+                {
+                    "action": op["action"],
+                    "path": op.get("path", ""),
+                    "ok": False,
+                    "error": stderr,
+                }
+            )
 
     return {"results": results}
 
@@ -3846,6 +3859,139 @@ def _handle_network_full_teardown(job, params):
 
 
 COMMAND_HANDLERS["networks/full-teardown"] = _handle_network_full_teardown
+
+
+def _handle_network_add_dnat(job, params):
+    """Add two-hop nftables DNAT for external access to a VM inside a project namespace.
+
+    Hop 1 (host level): transit_port → transit_ip:transit_port
+    Hop 2 (namespace level): transit_ip:transit_port → dst_ip:dst_port
+
+    This matches how EIP port forwards work — traffic enters via the host,
+    gets DNATed to a secondary IP on the namespace veth, then the namespace
+    DNATs to the actual VM.
+    """
+    ns = params["namespace"]
+    pid = ns.replace("troshka-", "")
+    transit_port = int(params["transit_port"])
+    dst_ip = params["dst_ip"]
+    dst_port = int(params["dst_port"])
+    pre_chain = f"troshka-pre-{pid}"
+
+    # Find the transit veth namespace IP (172.30.x.2)
+    result = subprocess.run(
+        ["ip", "netns", "exec", ns, "ip", "-4", "addr", "show"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    transit_ns_ip = ""
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if "inet 172.30." in line and "/24" in line:
+            ip = line.split()[1].split("/")[0]
+            if ip.endswith(".2"):
+                transit_ns_ip = ip
+                break
+    if not transit_ns_ip:
+        raise RuntimeError(f"Cannot find transit namespace IP in {ns}")
+
+    # Add secondary IP for this port forward
+    octet3 = transit_ns_ip.split(".")[2]
+    # Find next free secondary IP
+    existing_ips = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if f"inet 172.30.{octet3}." in line:
+            ip = line.split()[1].split("/")[0]
+            existing_ips.add(ip)
+    pf_ip_idx = 10
+    while f"172.30.{octet3}.{pf_ip_idx}" in existing_ips:
+        pf_ip_idx += 1
+    pf_transit_ip = f"172.30.{octet3}.{pf_ip_idx}"
+
+    # Add secondary IP to namespace veth
+    ns_veth = f"ve{pid}n"
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "ip",
+            "addr",
+            "add",
+            f"{pf_transit_ip}/24",
+            "dev",
+            ns_veth,
+        ],
+        timeout=5,
+        check=False,
+    )
+
+    # Hop 1: host-level DNAT — transit_port → pf_transit_ip:transit_port
+    _run_cmd(
+        job,
+        [
+            "nft",
+            "add",
+            "rule",
+            "inet",
+            "nat",
+            pre_chain,
+            "tcp",
+            "dport",
+            str(transit_port),
+            "dnat",
+            "ip",
+            "to",
+            f"{pf_transit_ip}:{transit_port}",
+        ],
+        timeout=10,
+    )
+
+    # Hop 2: namespace-level DNAT — pf_transit_ip:transit_port → dst_ip:dst_port
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "nft",
+            "add",
+            "rule",
+            "inet",
+            "nat",
+            "prerouting",
+            "ip",
+            "daddr",
+            pf_transit_ip,
+            "tcp",
+            "dport",
+            str(transit_port),
+            "dnat",
+            "ip",
+            "to",
+            f"{dst_ip}:{dst_port}",
+        ],
+        timeout=10,
+    )
+
+    _job_log(
+        job,
+        f"DNAT: :{transit_port} → {pf_transit_ip}:{transit_port} → {dst_ip}:{dst_port}",
+    )
+    return {
+        "namespace": ns,
+        "transit_port": transit_port,
+        "transit_ip": pf_transit_ip,
+        "dst": f"{dst_ip}:{dst_port}",
+    }
+
+
+COMMAND_HANDLERS["networks/add-dnat"] = _handle_network_add_dnat
 
 
 def _handle_seed_create_batch(job, params):
@@ -7215,18 +7361,34 @@ for _c in "abcdefghijklmnopqrstuvwxyz":
 for _i, _c in enumerate("1234567890"):
     _CHAR_TO_KEYS[_c] = [f"KEY_{_c}"]
 _SHIFT_DIGITS = {
-    "!": "KEY_1", "@": "KEY_2", "#": "KEY_3", "$": "KEY_4", "%": "KEY_5",
-    "^": "KEY_6", "&": "KEY_7", "*": "KEY_8", "(": "KEY_9", ")": "KEY_0",
+    "!": "KEY_1",
+    "@": "KEY_2",
+    "#": "KEY_3",
+    "$": "KEY_4",
+    "%": "KEY_5",
+    "^": "KEY_6",
+    "&": "KEY_7",
+    "*": "KEY_8",
+    "(": "KEY_9",
+    ")": "KEY_0",
 }
 for _c, _k in _SHIFT_DIGITS.items():
     _CHAR_TO_KEYS[_c] = ["KEY_LEFTSHIFT", _k]
 _SYMBOL_KEYS = {
-    " ": ["KEY_SPACE"], "\n": ["KEY_ENTER"], "\t": ["KEY_TAB"],
-    "-": ["KEY_MINUS"], "=": ["KEY_EQUAL"],
-    "[": ["KEY_LEFTBRACE"], "]": ["KEY_RIGHTBRACE"],
-    "\\": ["KEY_BACKSLASH"], ";": ["KEY_SEMICOLON"],
-    "'": ["KEY_APOSTROPHE"], "`": ["KEY_GRAVE"],
-    ",": ["KEY_COMMA"], ".": ["KEY_DOT"], "/": ["KEY_SLASH"],
+    " ": ["KEY_SPACE"],
+    "\n": ["KEY_ENTER"],
+    "\t": ["KEY_TAB"],
+    "-": ["KEY_MINUS"],
+    "=": ["KEY_EQUAL"],
+    "[": ["KEY_LEFTBRACE"],
+    "]": ["KEY_RIGHTBRACE"],
+    "\\": ["KEY_BACKSLASH"],
+    ";": ["KEY_SEMICOLON"],
+    "'": ["KEY_APOSTROPHE"],
+    "`": ["KEY_GRAVE"],
+    ",": ["KEY_COMMA"],
+    ".": ["KEY_DOT"],
+    "/": ["KEY_SLASH"],
     "_": ["KEY_LEFTSHIFT", "KEY_MINUS"],
     "+": ["KEY_LEFTSHIFT", "KEY_EQUAL"],
     "{": ["KEY_LEFTSHIFT", "KEY_LEFTBRACE"],
@@ -7249,13 +7411,17 @@ def _console_screenshot_ocr(domain):
     try:
         result = subprocess.run(
             ["virsh", "screenshot", domain, tmp_img],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode != 0:
             return ""
         result = subprocess.run(
             ["tesseract", tmp_img, tmp_txt],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode != 0:
             return ""
@@ -7279,7 +7445,8 @@ def _console_send_text(domain, text):
             continue
         subprocess.run(
             ["virsh", "send-key", domain] + keys,
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
 
 
@@ -7287,13 +7454,15 @@ def _console_send_keys(domain, *keys):
     """Send raw key names to a VM."""
     subprocess.run(
         ["virsh", "send-key", domain] + list(keys),
-        capture_output=True, timeout=5,
+        capture_output=True,
+        timeout=5,
     )
 
 
 def _console_detect_state(ocr_text):
     """Detect console state from OCR text."""
     import re
+
     text = ocr_text.strip()
     if not text or len(text) < 3:
         return "unknown"
@@ -7313,7 +7482,10 @@ def _console_login(job, domain, username, password):
         ocr = _console_screenshot_ocr(domain)
         state = _console_detect_state(ocr)
         last_line = ocr.strip().split("\n")[-1] if ocr.strip() else "(empty)"
-        _job_log(job, f"Console state: {state} (attempt {attempt + 1}, last: {last_line[:80]})")
+        _job_log(
+            job,
+            f"Console state: {state} (attempt {attempt + 1}, last: {last_line[:80]})",
+        )
 
         if state == "shell":
             return True
@@ -7341,6 +7513,7 @@ def _console_login(job, domain, username, password):
 def _console_extract_output(ocr_text):
     """Extract command output between markers."""
     import re
+
     m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", ocr_text, re.DOTALL)
     if m:
         output = m.group(1).strip()
@@ -7369,7 +7542,10 @@ def _handle_vm_console_exec(job, params):
 
     # Verify domain is running
     state_result = subprocess.run(
-        ["virsh", "domstate", domain], capture_output=True, text=True, timeout=10,
+        ["virsh", "domstate", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     if "running" not in state_result.stdout.lower():
         raise RuntimeError(f"{domain} is not running")
@@ -7383,15 +7559,18 @@ def _handle_vm_console_exec(job, params):
     # Login if needed
     if not _console_login(job, domain, username, password):
         return {
-            "domain": domain, "output": "", "exit_code": None,
-            "error": "Could not reach shell prompt", "method": "console",
+            "domain": domain,
+            "output": "",
+            "exit_code": None,
+            "error": "Could not reach shell prompt",
+            "method": "console",
         }
     _job_log(job, "Shell prompt reached")
 
     # Clear screen, then send command with output markers
     _console_send_text(domain, "clear\n")
     time.sleep(0.5)
-    wrapped = f'echo TROSHKA_BEGIN; {command} 2>&1; echo TROSHKA_EXIT $?'
+    wrapped = f"echo TROSHKA_BEGIN; {command} 2>&1; echo TROSHKA_EXIT $?"
     _console_send_text(domain, wrapped + "\n")
     _job_log(job, f"Command sent, waiting for output")
 
@@ -7425,8 +7604,22 @@ COMMAND_HANDLERS["vm/console-exec"] = _handle_vm_console_exec
 # ── VM file transfer ──
 
 
-def _scp_common_args(password):
+def _scp_common_args(password="", key_file=""):
     """SSH/SCP args shared by file transfer operations."""
+    if key_file:
+        return [
+            "scp",
+            "-i",
+            key_file,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=10",
+        ]
     return [
         "sshpass",
         "-p",
@@ -7443,8 +7636,22 @@ def _scp_common_args(password):
     ]
 
 
-def _ssh_common_args(password):
+def _ssh_common_args(password="", key_file=""):
     """SSH args shared by file transfer operations."""
+    if key_file:
+        return [
+            "ssh",
+            "-i",
+            key_file,
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=10",
+        ]
     return [
         "sshpass",
         "-p",
@@ -7532,20 +7739,30 @@ def handle_vm_file_push(handler, params):
     vm_ip = qs.get("vm_ip", [""])[0]
     username = qs.get("username", ["cloud-user"])[0]
     password = qs.get("password", [""])[0]
+    private_key = qs.get("private_key", [""])[0]
     remote_path = qs.get("remote_path", [""])[0]
     mode = qs.get("mode", [""])[0]
 
-    if not all([project_id, vm_ip, password, remote_path]):
+    if not all([project_id, vm_ip, remote_path]) or not (password or private_key):
         handler._send_json(
             400,
             {
-                "error": "Missing required params: project_id, vm_ip, password, remote_path"
+                "error": "Missing required params: project_id, vm_ip, remote_path, and password or private_key"
             },
         )
         return
 
+    key_file = ""
+    if private_key:
+        key_file = f"/tmp/troshka-scp-key-{uuid.uuid4()}"
+        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(private_key)
+
     data = handler._read_raw_body()
     if not data:
+        if key_file:
+            os.unlink(key_file)
         handler._send_json(400, {"error": "Empty file body"})
         return
 
@@ -7563,6 +7780,7 @@ def handle_vm_file_push(handler, params):
                 "vm_ip": vm_ip,
                 "username": username,
                 "password": password,
+                "private_key": private_key,
                 "remote_path": remote_path,
                 "mode": mode,
                 "local_path": tmp_path,
@@ -7579,7 +7797,7 @@ def handle_vm_file_push(handler, params):
     try:
         result = subprocess.run(
             ns_prefix
-            + _scp_common_args(password)
+            + _scp_common_args(password=password, key_file=key_file)
             + [
                 tmp_path,
                 f"{username}@{vm_ip}:{remote_path}",
@@ -7596,7 +7814,7 @@ def handle_vm_file_push(handler, params):
         if mode:
             subprocess.run(
                 ns_prefix
-                + _ssh_common_args(password)
+                + _ssh_common_args(password=password, key_file=key_file)
                 + [
                     f"{username}@{vm_ip}",
                     f"chmod {mode} {remote_path}",
@@ -7611,6 +7829,11 @@ def handle_vm_file_push(handler, params):
             os.unlink(tmp_path)
         except OSError:
             pass
+        if key_file:
+            try:
+                os.unlink(key_file)
+            except OSError:
+                pass
 
 
 @route("POST", "/vm/file-pull")

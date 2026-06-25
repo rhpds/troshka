@@ -134,6 +134,7 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
         "start_order",
         "hidden_nodes",
         "pull_through_registry",
+        "clock_target",
     ):
         if tmpl.get(section):
             resolved[section] = tmpl[section]
@@ -303,60 +304,76 @@ def _generate_topology_from_vms(
 
     # ── Gateway ──
     gw_outbound = gw_def.get("outbound_ports", [])
-    ocp_port_forwards = []
-    if external_access:
+    gw_external = external_access or gw_def.get("external_access", False)
+    port_forwards = []
+    if gw_external:
         eip_id = _id()
-        external_ips = [{"id": eip_id, "label": "OCP"}]
-        ocp_cfg = tmpl.get("ocp", {})
-        bastion_ip = ""
-        for vm_name, vm_cfg in vms_def.items():
-            if vm_cfg.get("role") == "bastion":
-                for nic_cfg in vm_cfg.get("nics", []):
-                    if nic_cfg.get("ip"):
-                        bastion_ip = nic_cfg["ip"]
-                        break
-                break
-        api_vip = ocp_cfg.get("api_vip", "")
-        ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
-        if bastion_ip:
-            ocp_port_forwards.append(
+        external_ips = [{"id": eip_id, "label": "EIP"}]
+
+        # Custom port forwards from template gateway section
+        for pf in gw_def.get("port_forwards", []):
+            port_forwards.append(
                 {
                     "extIpId": eip_id,
-                    "extPort": "22",
-                    "intIp": bastion_ip,
-                    "intPort": "22",
-                    "proto": "tcp",
+                    "extPort": str(pf["ext_port"]),
+                    "intIp": pf["int_ip"],
+                    "intPort": str(pf["int_port"]),
+                    "proto": pf.get("proto", "tcp"),
                 }
             )
-        if api_vip:
-            ocp_port_forwards.append(
-                {
-                    "extIpId": eip_id,
-                    "extPort": "6443",
-                    "intIp": api_vip,
-                    "intPort": "6443",
-                    "proto": "tcp",
-                }
-            )
-        if ingress_vip:
-            ocp_port_forwards.append(
-                {
-                    "extIpId": eip_id,
-                    "extPort": "443",
-                    "intIp": ingress_vip,
-                    "intPort": "443",
-                    "proto": "tcp",
-                }
-            )
-            ocp_port_forwards.append(
-                {
-                    "extIpId": eip_id,
-                    "extPort": "80",
-                    "intIp": ingress_vip,
-                    "intPort": "80",
-                    "proto": "tcp",
-                }
-            )
+
+        # Auto-generate OCP port forwards if no custom ones and OCP config exists
+        if not port_forwards:
+            ocp_cfg = tmpl.get("ocp", {})
+            bastion_ip = ""
+            for vm_name, vm_cfg in vms_def.items():
+                if vm_cfg.get("role") == "bastion":
+                    for nic_cfg in vm_cfg.get("nics", []):
+                        if nic_cfg.get("ip"):
+                            bastion_ip = nic_cfg["ip"]
+                            break
+                    break
+            api_vip = ocp_cfg.get("api_vip", "")
+            ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+            if bastion_ip:
+                port_forwards.append(
+                    {
+                        "extIpId": eip_id,
+                        "extPort": "22",
+                        "intIp": bastion_ip,
+                        "intPort": "22",
+                        "proto": "tcp",
+                    }
+                )
+            if api_vip:
+                port_forwards.append(
+                    {
+                        "extIpId": eip_id,
+                        "extPort": "6443",
+                        "intIp": api_vip,
+                        "intPort": "6443",
+                        "proto": "tcp",
+                    }
+                )
+            if ingress_vip:
+                port_forwards.append(
+                    {
+                        "extIpId": eip_id,
+                        "extPort": "443",
+                        "intIp": ingress_vip,
+                        "intPort": "443",
+                        "proto": "tcp",
+                    }
+                )
+                port_forwards.append(
+                    {
+                        "extIpId": eip_id,
+                        "extPort": "80",
+                        "intIp": ingress_vip,
+                        "intPort": "80",
+                        "proto": "tcp",
+                    }
+                )
     gw_node = {
         "id": _id(),
         "type": "networkNode",
@@ -365,8 +382,8 @@ def _generate_topology_from_vms(
             "name": "gateway",
             "label": "gateway",
             "subtype": "gateway",
-            "gatewayMode": "nat-portforward" if external_access else "nat",
-            "portForwards": ocp_port_forwards,
+            "gatewayMode": "nat-portforward" if gw_external else "nat",
+            "portForwards": port_forwards,
             "outboundPolicy": "restrict" if gw_outbound else "allow-all",
             "outboundPorts": ",".join(str(p) for p in gw_outbound),
             "icon": "\U0001f310",

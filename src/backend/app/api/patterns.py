@@ -141,6 +141,11 @@ def _remap_topology(topology: dict) -> dict:
         id_map.get(nid, nid) for nid in topo.get("hiddenNodeIds", [])
     ]
 
+    # Clear externalEndpoints — Routes are project-specific and must be re-created
+    for node in topo.get("nodes", []):
+        if node.get("data", {}).get("externalEndpoints"):
+            node["data"]["externalEndpoints"] = []
+
     return topo
 
 
@@ -265,6 +270,10 @@ def create_pattern(
     if not pattern_description and source_project:
         pattern_description = source_project.description
 
+    clock_target = None
+    if body.capture_clock_target and source_project and source_project.clock_target:
+        clock_target = source_project.clock_target
+
     pattern = Pattern(
         name=body.name,
         description=pattern_description,
@@ -274,6 +283,7 @@ def create_pattern(
         topology=topology,
         state=state,
         tags=body.tags,
+        clock_target=clock_target,
     )
     db.add(pattern)
     db.commit()
@@ -301,6 +311,8 @@ def create_pattern(
 @router.get("/")
 def list_patterns(
     name: str | None = None,
+    search: str | None = None,
+    regex: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -310,8 +322,10 @@ def list_patterns(
     - public patterns
     Admin users see everything.
 
-    Optional query parameter:
+    Optional query parameters:
     - name: exact name match filter
+    - search: prefix name search (case-insensitive)
+    - regex: regex name match (PostgreSQL ~ operator)
     """
     if user.role == "admin":
         q = db.query(Pattern)
@@ -330,6 +344,10 @@ def list_patterns(
 
     if name is not None:
         q = q.filter(Pattern.name == name)
+    elif search is not None:
+        q = q.filter(Pattern.name.ilike(f"{search}%"))
+    elif regex is not None:
+        q = q.filter(Pattern.name.op("~")(regex))
 
     patterns = q.order_by(Pattern.created_at.desc()).all()
 
@@ -648,8 +666,15 @@ def deploy_pattern(
 
     new_topology = _remap_topology(pattern.topology)
 
+    nodes = new_topology.get("nodes", [])
+
+    if body.ssh_keys:
+        for n in nodes:
+            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+                existing = n["data"].get("ciSshKeys", [])
+                n["data"]["ciSshKeys"] = list(set(existing + body.ssh_keys))
+
     if body.inject_vars:
-        nodes = new_topology.get("nodes", [])
         target_vm = None
         for n in nodes:
             if n.get("type") == "vmNode":
@@ -673,6 +698,8 @@ def deploy_pattern(
         topology=new_topology,
         state="draft",
     )
+    if pattern.clock_target:
+        project.clock_target = pattern.clock_target
     if body.guid:
         project.guid = body.guid
     if body.domain:

@@ -25,6 +25,7 @@ class PatternCreate(BaseModel):
     source_project_id: str | None = None
     restart_after: bool = True
     quiesce_cluster: bool = True
+    capture_clock_target: bool = False
     topology: dict | None = None
     disk_mappings: list[dict] | None = None
 
@@ -47,6 +48,7 @@ class PatternResponse(BaseModel):
     state: str
     total_size_bytes: int
     tags: dict | None = None
+    clock_target: datetime.datetime | None = None
     created_at: datetime.datetime
     disks: list[PatternDiskResponse] = []
 
@@ -82,6 +84,7 @@ class PatternDeployRequest(BaseModel):
     auto_deploy: bool = True
     auto_start: bool = True
     inject_vars: dict | None = None
+    ssh_keys: list[str] | None = None
     host_id: str | None = None
 
 

@@ -700,14 +700,74 @@ class OCPVirtDriver(ProviderDriver):
     ):
         """Create a ClusterIP Service + OCP Route for external access to a VM port.
 
-        Returns dict with hostname, route_name, service_name.
+        Allocates a transit port on the host and sets up nftables DNAT
+        (project namespace → VM IP) so OCP Route traffic reaches the VM.
+
+        Returns dict with hostname, route_name, service_name, transit_port.
         """
         import re
+
         from kubernetes import client
+
+        from app.services.troshkad_client import start_job, wait_for_job
 
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
         custom_api, core_api = _get_k8s_clients(creds)
+
+        vm_port = target_port or port
+
+        # Allocate a transit port on the host for DNAT
+        used_ports = set()
+        try:
+            svcs = cast(
+                Any,
+                core_api.list_namespaced_service(
+                    namespace,
+                    label_selector="troshka/access-type=route",
+                ),
+            )
+            for svc in svcs.items:
+                for sp in svc.spec.ports:
+                    used_ports.add(sp.target_port)
+        except client.ApiException:
+            pass
+
+        transit_port = 30100
+        while transit_port in used_ports:
+            transit_port += 1
+
+        # Set up nftables DNAT on the host: transit_port → VM int_ip:vm_port
+        ns_name = f"troshka-{project_id[:8]}"
+        try:
+            from app.services.troshkad_client import start_job, wait_for_job
+
+            job_id = start_job(
+                host,
+                "/networks/add-dnat",
+                {
+                    "namespace": ns_name,
+                    "transit_port": transit_port,
+                    "dst_ip": int_ip,
+                    "dst_port": vm_port,
+                },
+            )
+            wait_for_job(host, job_id, timeout=30)
+            logger.info(
+                "Route DNAT: %d → %s:%d in %s",
+                transit_port,
+                int_ip,
+                vm_port,
+                ns_name,
+            )
+        except Exception:
+            logger.warning(
+                "Route DNAT setup failed for %s:%d (transit %d), continuing",
+                int_ip,
+                vm_port,
+                transit_port,
+                exc_info=True,
+            )
 
         safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
         resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
@@ -725,11 +785,13 @@ class OCPVirtDriver(ProviderDriver):
                 labels=labels,
             ),
             spec=client.V1ServiceSpec(
+                type="NodePort",
                 selector={"kubevirt.io/domain": host.instance_id},
                 ports=[
                     client.V1ServicePort(
                         port=port,
-                        target_port=target_port or port,
+                        target_port=transit_port,
+                        node_port=transit_port,
                         name=f"pf-{port}",
                     )
                 ],
@@ -752,7 +814,7 @@ class OCPVirtDriver(ProviderDriver):
             },
             "spec": {
                 "to": {"kind": "Service", "name": resource_name},
-                "port": {"targetPort": target_port or port},
+                "port": {"targetPort": f"pf-{port}"},
                 "tls": {
                     "termination": tls_termination,
                     "insecureEdgeTerminationPolicy": "Redirect",
@@ -799,7 +861,7 @@ class OCPVirtDriver(ProviderDriver):
             "service_name": resource_name,
         }
 
-    def delete_route_access(self, provider, project_id):
+    def delete_route_access(self, provider, project_id, namespace=None):
         """Delete all Route and Service resources created for a project's external access."""
         from kubernetes import client
 

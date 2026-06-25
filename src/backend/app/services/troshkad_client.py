@@ -224,6 +224,7 @@ def troshkad_upload_to_vm(
     password,
     remote_path,
     mode="0644",
+    private_key="",
     timeout=3600,
 ):
     """Upload a file to a VM via troshkad's /vm/file-push endpoint.
@@ -233,16 +234,18 @@ def troshkad_upload_to_vm(
     """
     import urllib.parse
 
-    qs = urllib.parse.urlencode(
-        {
-            "project_id": project_id,
-            "vm_ip": vm_ip,
-            "username": username,
-            "password": password,
-            "remote_path": remote_path,
-            "mode": mode,
-        }
-    )
+    params = {
+        "project_id": project_id,
+        "vm_ip": vm_ip,
+        "username": username,
+        "remote_path": remote_path,
+        "mode": mode,
+    }
+    if password:
+        params["password"] = password
+    if private_key:
+        params["private_key"] = private_key
+    qs = urllib.parse.urlencode(params)
     resp = troshkad_request_raw(
         host,
         "POST",

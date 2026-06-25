@@ -1887,60 +1887,6 @@ def deploy_project_async(
             project.topology = topology
             s.commit()
 
-            # Create Route-based access for OCP Virt port forwards on 443/80
-            if provider and provider.type == "ocpvirt":
-                driver = get_provider_driver(provider)
-                external_endpoints = []
-                for node in topology.get("nodes", []):
-                    node_data = node.get("data", {})
-                    if node_data.get("subtype") != "gateway":
-                        continue
-                    for pf in node_data.get("portForwards", []):
-                        ext_port = int(pf.get("extPort", 0))
-                        if ext_port not in (80, 443):
-                            continue
-                        int_ip = pf.get("intIp", "")
-                        vm_name = _find_vm_name_by_ip(topology, int_ip)
-                        try:
-                            result = driver.create_route_access(
-                                provider,
-                                host,
-                                project_id,
-                                vm_name,
-                                int_ip,
-                                ext_port,
-                            )
-                            external_endpoints.append(
-                                {
-                                    "vmName": vm_name,
-                                    "vmIp": int_ip,
-                                    "port": ext_port,
-                                    "type": "route",
-                                    "hostname": result["hostname"],
-                                }
-                            )
-                            logger.info(
-                                "Deploy %s: created Route for %s:%d → %s",
-                                project_id[:8],
-                                vm_name,
-                                ext_port,
-                                result["hostname"],
-                            )
-                        except Exception:
-                            logger.warning(
-                                "Deploy %s: Route creation failed for %s:%d, continuing",
-                                project_id[:8],
-                                vm_name,
-                                ext_port,
-                                exc_info=True,
-                            )
-                    if external_endpoints:
-                        node_data["externalEndpoints"] = external_endpoints
-                    break
-
-                project.topology = topology
-                s.commit()
-
         # Auto-assign IPs to container NICs without static IPs (before network setup
         # so dnsmasq gets static host entries for containers)
         _auto_assign_container_ips(topology)
@@ -2091,6 +2037,70 @@ def deploy_project_async(
                 project_id[:8],
                 gateway_ip,
             )
+
+        # Create Route-based access for OCP Virt port forwards on 443/80
+        # Runs after network setup so nftables chains exist for DNAT rules
+        if host and host.provider_id:
+            from app.models.provider import Provider
+            from app.services.providers import get_provider_driver
+
+            provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider and provider.type == "ocpvirt":
+                driver = get_provider_driver(provider)
+                external_endpoints = []
+                for node in topology.get("nodes", []):
+                    node_data = node.get("data", {})
+                    if node_data.get("subtype") != "gateway":
+                        continue
+                    if node_data.get("externalEndpoints"):
+                        break
+                    for pf in node_data.get("portForwards", []):
+                        ext_port = int(pf.get("extPort", 0))
+                        if ext_port not in (80, 443):
+                            continue
+                        int_ip = pf.get("intIp", "")
+                        int_port = int(pf.get("intPort", ext_port))
+                        vm_name = _find_vm_name_by_ip(topology, int_ip)
+                        try:
+                            result = driver.create_route_access(
+                                provider,
+                                host,
+                                project_id,
+                                vm_name,
+                                int_ip,
+                                ext_port,
+                                int_port,
+                            )
+                            external_endpoints.append(
+                                {
+                                    "vmName": vm_name,
+                                    "vmIp": int_ip,
+                                    "port": ext_port,
+                                    "type": "route",
+                                    "hostname": result["hostname"],
+                                }
+                            )
+                            logger.info(
+                                "Deploy %s: created Route for %s:%d → %s",
+                                project_id[:8],
+                                vm_name,
+                                ext_port,
+                                result["hostname"],
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Deploy %s: Route creation failed for %s:%d, continuing",
+                                project_id[:8],
+                                vm_name,
+                                ext_port,
+                                exc_info=True,
+                            )
+                    if external_endpoints:
+                        node_data["externalEndpoints"] = external_endpoints
+                    break
+
+                project.topology = topology
+                s.commit()
 
         # Step 2: Create cloud-init seed ISOs
         _checkpoint(s, project_id, "seeds")
@@ -2368,9 +2378,19 @@ def deploy_project_async(
                         raise TroshkadError(
                             f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
                         )
+                    dom_uuid = job.get("result", {}).get("domain_uuid", "")
+                    if dom_uuid:
+                        for n in topology.get("nodes", []):
+                            if n["id"] == vm["node_id"]:
+                                n.setdefault("data", {})["domainUuid"] = dom_uuid
+                                break
                 except TroshkadError as e:
                     logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
                     raise
+
+        # Persist domain UUIDs to topology
+        project.topology = topology
+        s.commit()
 
         # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
         has_bmc_vms = any(

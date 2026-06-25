@@ -97,6 +97,9 @@ def _project_response_dict(project):
             else None
         ),
         "poweroff_mode": project.poweroff_mode,
+        "clock_target": (
+            project.clock_target.isoformat() if project.clock_target else None
+        ),
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -392,6 +395,17 @@ def create_project_from_template(
         owner_id=user.id,
         topology=topology,
     )
+
+    clock_target_str = body.get("clock_target") or resolved.get("clock_target")
+    if clock_target_str:
+        from datetime import datetime
+
+        if isinstance(clock_target_str, str):
+            ct = datetime.fromisoformat(clock_target_str.replace("Z", "+00:00"))
+        else:
+            ct = clock_target_str
+        project.clock_target = ct
+
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -500,6 +514,18 @@ def import_template(
         )
 
     project.topology = topology
+
+    clock_target_str = resolved.get("clock_target")
+    if clock_target_str:
+        from datetime import datetime
+
+        if isinstance(clock_target_str, str):
+            ct = datetime.fromisoformat(clock_target_str.replace("Z", "+00:00"))
+        else:
+            ct = clock_target_str
+        project.clock_target = ct
+
+    db.add(project)
     db.commit()
     db.refresh(project)
 
@@ -549,6 +575,8 @@ def export_template(
     result["name"] = project.name
     if project.description:
         result["description"] = project.description
+    if project.clock_target:
+        result["clock_target"] = project.clock_target.isoformat()
 
     ocp_meta = topo.get("ocpMeta", {})
     if ocp_meta.get("clusterName"):
@@ -660,6 +688,12 @@ def update_project(
                     + datetime.timedelta(minutes=project.auto_delete_minutes)
                 )
             project.auto_delete_warned = False
+
+    # Live clock adjustment
+    if "clock_target" in fields and project.state == "active":
+        from app.services.clock_service import adjust_clocks_async
+
+        adjust_clocks_async(project_id)
 
     db.commit()
     db.refresh(project)
@@ -1418,14 +1452,14 @@ def vm_exec(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Execute a command on a VM via SSH (preferred) or serial console (fallback).
+    """Execute a command on a VM.
 
     Body params:
         command: Shell command to execute (required)
-        username: SSH user (default: cloud-user)
+        username: SSH/console user (default: cloud-user)
         password: VM password (auto-resolved from topology if omitted)
-        timeout: Command timeout in seconds (default: 10, max: 3600)
-        use_ssh: If true, SSH only — no serial fallback (default: false)
+        timeout: Command timeout in seconds (default: 600, max: 3600)
+        method: "auto" (tries ssh → serial → console), "ssh", "serial", or "console"
     """
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
@@ -1445,10 +1479,12 @@ def vm_exec(
         password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
     timeout = min(body.get("timeout", 600), 3600)
-    method = body.get("method", "auto")  # auto, ssh, serial
-    # backward compat
+    method = body.get("method", "auto")
     if body.get("use_ssh"):
         method = "ssh"
+    force_tty = method == "console-text"
+    if force_tty:
+        method = "console"
 
     vm_ip = ""
     if vm_node:
@@ -1458,64 +1494,111 @@ def vm_exec(
                 break
 
     private_key = body.get("private_key", "")
-
-    # SSH exec
-    if method in ("auto", "ssh") and vm_ip and (password or private_key):
-        try:
-            job_id = start_job(
-                host,
-                "/vm/ssh-exec",
-                {
-                    "project_id": project_id,
-                    "vm_ip": vm_ip,
-                    "username": username,
-                    "password": password,
-                    "private_key": private_key,
-                    "command": command,
-                    "timeout": timeout,
-                },
-            )
-            job = wait_for_job(host, job_id, timeout=timeout + 30)
-            if job["status"] == "completed":
-                result = job.get("result", {})
-                return {
-                    "output": result.get("output", ""),
-                    "error": result.get("error", ""),
-                    "exit_code": result.get("exit_code", 0),
-                }
-        except TroshkadError as e:
-            if method == "ssh":
-                raise HTTPException(status_code=503, detail=f"SSH exec failed: {e}")
-    elif method == "ssh":
-        raise HTTPException(
-            status_code=503,
-            detail="SSH exec unavailable — need VM IP and password or private_key",
-        )
-
-    if method == "ssh":
-        raise HTTPException(status_code=503, detail="SSH exec failed")
-
-    # Serial console fallback (method=auto or method=serial)
     dom = _domain_name(project_id, vm_id)
-    try:
-        job_id = start_job(
-            host,
-            "/vm/serial-exec",
-            {
-                "domain_name": dom,
-                "username": username,
-                "password": password,
-                "command": command,
-                "timeout": timeout,
-            },
-        )
-        job = wait_for_job(host, job_id, timeout=90)
-        if job["status"] == "failed":
-            return {"error": job.get("result", {}).get("error", "Exec failed")}
-        result = job.get("result", {})
-        return {"output": result.get("output", ""), "error": result.get("error", "")}
-    except TroshkadError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    root_password = ""
+    if vm_node:
+        root_password = vm_node.get("data", {}).get("ciRootPassword", "")
+
+    if method == "auto":
+        methods = ["ssh", "console-text", "console", "serial"]
+        force_tty = False
+    else:
+        methods = [method]
+    errors = []
+
+    for m in methods:
+        try:
+            if m == "ssh":
+                if not vm_ip or not (password or private_key):
+                    errors.append("ssh: no VM IP or credentials")
+                    continue
+                job_id = start_job(
+                    host,
+                    "/vm/ssh-exec",
+                    {
+                        "project_id": project_id,
+                        "vm_ip": vm_ip,
+                        "username": username,
+                        "password": password,
+                        "private_key": private_key,
+                        "command": command,
+                        "timeout": timeout,
+                    },
+                )
+                job = wait_for_job(host, job_id, timeout=timeout + 30)
+                if job["status"] == "completed":
+                    result = job.get("result", {})
+                    return {
+                        "output": result.get("output", ""),
+                        "error": result.get("error", ""),
+                        "exit_code": result.get("exit_code", 0),
+                        "method": "ssh",
+                    }
+                errors.append(f"ssh: {job.get('result', {}).get('error', 'failed')}")
+
+            elif m == "serial":
+                job_id = start_job(
+                    host,
+                    "/vm/serial-exec",
+                    {
+                        "domain_name": dom,
+                        "username": username,
+                        "password": password,
+                        "command": command,
+                        "timeout": timeout,
+                    },
+                )
+                job = wait_for_job(host, job_id, timeout=90)
+                if job["status"] == "completed":
+                    result = job.get("result", {})
+                    if result.get("output") or not result.get("error"):
+                        return {
+                            "output": result.get("output", ""),
+                            "error": result.get("error", ""),
+                            "method": "serial",
+                        }
+                errors.append(f"serial: {job.get('result', {}).get('error', 'failed')}")
+
+            elif m in ("console", "console-text"):
+                console_pass = root_password or password
+                if not console_pass:
+                    errors.append("console: no password available")
+                    continue
+                job_id = start_job(
+                    host,
+                    "/vm/console-exec",
+                    {
+                        "domain_name": dom,
+                        "username": "root" if root_password else username,
+                        "password": console_pass,
+                        "command": command,
+                        "timeout": timeout,
+                        "force_tty": m == "console-text" or force_tty,
+                    },
+                )
+                job = wait_for_job(host, job_id, timeout=timeout + 30)
+                if job["status"] == "completed":
+                    result = job.get("result", {})
+                    if not result.get("error"):
+                        return {
+                            "output": result.get("output", ""),
+                            "error": "",
+                            "exit_code": result.get("exit_code"),
+                            "method": "console",
+                        }
+                errors.append(
+                    f"console: {job.get('result', {}).get('error', 'failed')}"
+                )
+
+        except TroshkadError as e:
+            errors.append(f"{m}: {e}")
+            if method != "auto":
+                raise HTTPException(status_code=503, detail=f"{m} exec failed: {e}")
+
+    raise HTTPException(
+        status_code=503,
+        detail="All exec methods failed: " + "; ".join(errors),
+    )
 
 
 def _resolve_vm_ssh_params(project, vm_id):
@@ -1546,6 +1629,7 @@ async def vm_upload_file(
     mode: str = Query("0644", description="File permissions (octal)"),
     username: str = Query("cloud-user"),
     password: str = Query(""),
+    private_key: str = Query(""),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1558,8 +1642,10 @@ async def vm_upload_file(
     if not vm_ip:
         raise HTTPException(status_code=400, detail="VM has no IP address")
     pw = password or topo_password
-    if not pw:
-        raise HTTPException(status_code=400, detail="No password available for VM")
+    if not pw and not private_key:
+        raise HTTPException(
+            status_code=400, detail="No password or private key available for VM"
+        )
 
     file_bytes = await file.read()
     try:
@@ -1572,6 +1658,7 @@ async def vm_upload_file(
             pw,
             remote_path,
             mode,
+            private_key=private_key,
         )
         return result
     except TroshkadError as e:

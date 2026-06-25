@@ -26,10 +26,10 @@ rules:
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["create", "delete", "get", "list"]
-  # Services — NodePort for SSH/agent, ClusterIP for vncd
+  # Services — NodePort for SSH/agent, ClusterIP for vncd, EIP port forwards
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["create", "delete", "get", "list"]
+    verbs: ["create", "delete", "get", "list", "patch"]
   # PVCs — Ceph-NFS storage pools, extend
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

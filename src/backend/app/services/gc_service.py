@@ -47,6 +47,63 @@ def sync_host_capacity(db: Session, host) -> dict:
     return {"old": old, "new": new, "changed": changed}
 
 
+def _clean_orphaned_routes(db, driver, provider, report):
+    """Find and delete OCP Routes/Services for projects that no longer exist."""
+    from typing import Any, cast
+
+    from app.models.project import Project
+
+    creds = provider.get_credentials()
+    namespace = creds.get("namespace", "troshka")
+
+    try:
+        from app.services.providers.ocpvirt import _get_k8s_clients
+
+        custom_api, core_api = _get_k8s_clients(creds)
+    except Exception:
+        return
+
+    label_selector = "troshka/access-type=route"
+    try:
+        svcs = cast(
+            Any,
+            core_api.list_namespaced_service(namespace, label_selector=label_selector),
+        )
+    except Exception:
+        return
+
+    active_project_prefixes = {
+        p.id[:8]
+        for p in db.query(Project).filter(
+            Project.state.in_(("active", "stopped", "deploying", "draft"))
+        )
+    }
+
+    orphaned = 0
+    for svc in svcs.items:
+        pid = svc.metadata.labels.get("troshka/project-id", "")
+        if pid and pid not in active_project_prefixes:
+            try:
+                core_api.delete_namespaced_service(svc.metadata.name, namespace)
+                orphaned += 1
+            except Exception:
+                pass
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="route.openshift.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="routes",
+                    name=svc.metadata.name,
+                )
+            except Exception:
+                pass
+
+    if orphaned:
+        report["routes_cleaned"] = orphaned
+        log.info("GC: cleaned %d orphaned Route access resources", orphaned)
+
+
 def discover_orphans(db: Session, host) -> dict:
     """Discover orphaned resources on host via troshkad."""
     from app.models.project import Project
@@ -132,7 +189,7 @@ def _find_orphaned_cache(db: Session, cache_items: list[dict]) -> list[str]:
     return orphaned
 
 
-def clean_orphans(host, orphans: dict, db: Session = None) -> dict:
+def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
     """Clean orphaned resources on host via troshkad."""
     from app.services.troshkad_client import start_job, wait_for_job
 
@@ -417,6 +474,24 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             or s3_cleanup.get("aborted_multipart", 0) > 0
         ):
             report["s3_cleanup"] = s3_cleanup
+
+        # Clean orphaned OCP Routes/Services (OCP Virt only)
+        if not dry_run and host.provider_id:
+            from app.models.provider import Provider
+
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+            if provider and provider.type == "ocpvirt":
+                try:
+                    from app.services.providers import get_provider_driver
+
+                    driver = get_provider_driver(provider)
+                    _clean_orphaned_routes(db, driver, provider, report)
+                except Exception:
+                    log.warning(
+                        "Host %s GC: Route cleanup failed (non-fatal)",
+                        host_id[:8],
+                        exc_info=True,
+                    )
 
         # Re-sync capacity after cleanup freed disk space
         if not dry_run and report.get("cleanup", {}).get("cache_cleaned", 0) > 0:
