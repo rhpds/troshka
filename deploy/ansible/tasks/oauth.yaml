@@ -125,10 +125,10 @@
             volumes:
               - name: tls
                 secret:
-                  secretName: troshka-oauth-tls
+                  secretName: troshka-oauth-tls  # pragma: allowlist secret
               - name: oauth-secrets
                 secret:
-                  secretName: troshka-oauth-proxy
+                  secretName: troshka-oauth-proxy  # pragma: allowlist secret
 
 - name: Create OAuth proxy Service
   kubernetes.core.k8s:

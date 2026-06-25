@@ -30,7 +30,10 @@
                   - name: POSTGRESQL_USER
                     value: troshka
                   - name: POSTGRESQL_PASSWORD
-                    value: "{{ troshka_postgres_password }}"
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: postgres-password
                   - name: POSTGRESQL_DATABASE
                     value: troshka
                 volumeMounts:

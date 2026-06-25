@@ -48,7 +48,10 @@
                   - name: MINIO_ROOT_USER
                     value: "{{ troshka_minio_root_user }}"
                   - name: MINIO_ROOT_PASSWORD
-                    value: "{{ troshka_minio_root_password }}"
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: minio-password
                 volumeMounts:
                   - name: data
                     mountPath: /data
@@ -122,5 +125,13 @@
                   - /bin/sh
                   - -c
                   - |
-                    mc alias set minio http://troshka-minio:9000 {{ troshka_minio_root_user }} {{ troshka_minio_root_password }}
+                    mc alias set minio http://troshka-minio:9000 "$MINIO_USER" "$MINIO_PASSWORD"
                     mc mb --ignore-existing minio/{{ troshka_s3_bucket }}
+                env:
+                  - name: MINIO_USER
+                    value: "{{ troshka_minio_root_user }}"
+                  - name: MINIO_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: troshka-secrets
+                        key: minio-password

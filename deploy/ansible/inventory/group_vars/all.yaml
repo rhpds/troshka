@@ -11,7 +11,7 @@ troshka_db_url: ""
 troshka_deploy_postgres: false
 troshka_postgres_storage_size: 10Gi
 troshka_postgres_image: "registry.redhat.io/rhel9/postgresql-16:latest"
-troshka_postgres_password: troshka
+troshka_postgres_password: ""
 
 # S3
 troshka_s3_bucket: troshka-images
@@ -20,8 +20,8 @@ troshka_s3_secret_key: ""
 troshka_s3_endpoint: ""
 troshka_deploy_minio: false
 troshka_minio_storage_size: 50Gi
-troshka_minio_root_user: minioadmin
-troshka_minio_root_password: minioadmin
+troshka_minio_root_user: troshka
+troshka_minio_root_password: ""
 
 # Auth
 troshka_oauth_enabled: false
