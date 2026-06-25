@@ -58,6 +58,9 @@ mockup.html
 ansible/vars/dev.yml
 ansible/vars/*-host.yml
 
+# Superpowers brainstorming artifacts
+.superpowers/
+
 # Troshkad test artifacts
 *.py.new
 src/backend/.vni_hwm
