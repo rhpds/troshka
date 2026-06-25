@@ -91,24 +91,24 @@ else
 fi
 
 # --- Pull secret ---
-PULL_SECRET_FILE="$HOME/secrets/ocp4-pull-secret.json"
-if [[ -f "$PULL_SECRET_FILE" ]]; then
-    echo "  Pull secret: $PULL_SECRET_FILE"
-else
-    echo "  WARNING: $PULL_SECRET_FILE not found — disconnected mirror will fail"
-    echo "  Get yours from https://console.redhat.com/openshift/install/pull-secret"
-    PULL_SECRET_FILE=""
-fi
+#PULL_SECRET_FILE="$HOME/secrets/ocp4-pull-secret.json"
+#if [[ -f "$PULL_SECRET_FILE" ]]; then
+#    echo "  Pull secret: $PULL_SECRET_FILE"
+#else
+#    echo "  WARNING: $PULL_SECRET_FILE not found — disconnected mirror will fail"
+#    echo "  Get yours from https://console.redhat.com/openshift/install/pull-secret"
+#    PULL_SECRET_FILE=""
+#fi
 
-if [[ -n "$PULL_SECRET_FILE" ]]; then
-    python3 -c "
-import json, yaml, os
-ps = open('$PULL_SECRET_FILE').read().strip()
-fd = os.open('/tmp/troshka-pull-secret-vars.yaml', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, 'w') as f:
-    yaml.dump({'ocp4_pull_secret': ps, 'pull_secret': ps}, f)
-"
-fi
+#if [[ -n "$PULL_SECRET_FILE" ]]; then
+#    python3 -c "
+#import json, yaml, os
+#ps = open('$PULL_SECRET_FILE').read().strip()
+#fd = os.open('/tmp/troshka-pull-secret-vars.yaml', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+#with os.fdopen(fd, 'w') as f:
+#    yaml.dump({'ocp4_pull_secret': ps, 'pull_secret': ps}, f)
+#"
+#fi
 
 # --- Merge agnosticv CI ---
 echo ""

@@ -82,23 +82,35 @@ try:
             continue
 
         print(f'{h.id[:8]} ({h.ip_address}): updating {old_ver} -> {version}...', end=' ', flush=True)
+        pushed = False
         try:
             push_update(h, script_bytes, version, force=force)
+            pushed = True
             if vncd_bytes and h.host_type != 'pattern_buffer':
-                push_vncd_update(h, vncd_bytes)
-            # Wait for restart (agent drains running jobs before shutdown, up to 120s)
-            for _ in range(60):
-                time.sleep(3)
+                try:
+                    push_vncd_update(h, vncd_bytes)
+                except Exception:
+                    pass
+        except TroshkadError:
+            pass  # agent may be mid-restart from a previous push — just poll
+
+        # Wait for the new version to appear (agent restarts after push)
+        for i in range(60):
+            time.sleep(3)
+            try:
                 health = check_health(h)
                 if health and health.get('version') == version:
                     h.agent_version = version
                     db.commit()
                     print('done')
                     break
+            except Exception:
+                pass  # agent restarting, retry
+        else:
+            if pushed:
+                print('pushed but timed out waiting for restart')
             else:
-                print('timed out waiting for agent')
-        except TroshkadError as e:
-            print(f'failed: {e}')
+                print('unreachable')
 finally:
     db.close()
 "

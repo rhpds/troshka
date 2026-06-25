@@ -23,6 +23,9 @@ class Pattern(Base):
     state: Mapped[str] = mapped_column(String(20), default="creating")
     total_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    clock_target: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

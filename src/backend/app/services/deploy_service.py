@@ -3093,6 +3093,34 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     # Detect mode: pattern deploy (cluster pre-installed) vs fresh install (install-ocp.sh running)
     is_pattern = _is_pattern_deploy(topology)
     if not is_pattern:
+        # Pre-install phase: detect oc-mirror / registry setup before install log exists
+        _push("installing", "preparing environment")
+        pre_install_deadline = _t.time() + 5400
+        while _t.time() < pre_install_deadline:
+            check = _exec_on_bastion(
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                "pgrep -af oc-mirror 2>/dev/null; echo '---';"
+                " systemctl is-active podman-registry 2>/dev/null; echo '---';"
+                " ls /home/*/install.log 2>/dev/null",
+                timeout=10,
+            )
+            if check and "/home/" in check.split("---")[-1]:
+                break
+            if check:
+                parts = check.split("---")
+                mirror_running = parts[0].strip() if len(parts) > 0 else ""
+                registry_active = parts[1].strip() if len(parts) > 1 else ""
+                if "oc-mirror" in mirror_running:
+                    _push("installing", "mirroring OCP images (oc-mirror)")
+                elif registry_active == "active":
+                    _push("installing", "setting up disconnected registry")
+                else:
+                    _push("installing", "preparing environment")
+            _t.sleep(15)
+
         # Fresh install — monitor install.log progress with structured phases
         _push("installing", "waiting for OpenShift install")
         install_deadline = _t.time() + 7200

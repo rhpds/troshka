@@ -25,11 +25,21 @@ export default function LibraryPicker({ type, onSelect, onClose }: LibraryPicker
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const params = new URLSearchParams({ type });
+    const params = new URLSearchParams();
+    if (type === "iso") {
+      params.set("type", "iso");
+    }
     if (search) params.set("q", search);
     fetch(`/api/v1/library/?${params.toString()}`)
       .then((r) => r.ok ? r.json() : [])
-      .then((data) => { setItems(data.filter((i: LibraryItem) => i.state === "ready")); setLoading(false); })
+      .then((data) => {
+        let filtered = data.filter((i: LibraryItem) => i.state === "ready");
+        if (type === "image") {
+          filtered = filtered.filter((i: LibraryItem) => i.format !== "iso");
+        }
+        setItems(filtered);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   }, [type, search]);
 

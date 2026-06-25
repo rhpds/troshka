@@ -57,6 +57,9 @@ class Project(Base):
     dns_provider_id: Mapped[str | None] = mapped_column(
         ForeignKey("dns_providers.id"), nullable=True
     )
+    clock_target: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

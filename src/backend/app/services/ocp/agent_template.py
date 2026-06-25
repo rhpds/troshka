@@ -858,7 +858,7 @@ def _build_install_config(
 
     if pull_through_registry and pull_through_registry.get("enabled"):
         ptr_url = pull_through_registry["url"]
-        ic_lines.append("imageDigestMirrorSet:")
+        ic_lines.append("imageDigestSources:")
         for source, org in pull_through_registry.get("orgs", {}).items():
             ic_lines.extend(
                 [
@@ -1029,7 +1029,8 @@ def _build_install_script(
             + '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
             "    \n"
             "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-            "    # Serve the ISO on port 8080\n"
+            "    # Open firewall for ISO serving (script runs as cloud-user)\n"
+            "    sudo firewall-cmd --add-port=8080/tcp --permanent 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || true\n"
             "    cd /home/cloud-user/ocp-install\n"
             "    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &\n"
             "    HTTP_PID=$!\n"

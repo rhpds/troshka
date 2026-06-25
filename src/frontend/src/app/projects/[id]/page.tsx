@@ -44,6 +44,7 @@ export default function ProjectCanvasPage() {
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
   const [autoStopped, setAutoStopped] = useState(false);
+  const [clockTarget, setClockTarget] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -92,6 +93,7 @@ export default function ProjectCanvasPage() {
         setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
         setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
         setAutoStopped(!!data.auto_stopped);
+        setClockTarget(data.clock_target ?? null);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
@@ -158,6 +160,7 @@ export default function ProjectCanvasPage() {
     setDeployError(ws.deployError || null);
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
+      useCanvasStore.getState().loadProject(projectId);
       fetch(`/api/v1/projects/${projectId}`).then((r) => r.ok ? r.json() : null).then((proj) => {
         if (!proj) return;
         const depData: Record<string, string> = {};
@@ -872,6 +875,18 @@ export default function ProjectCanvasPage() {
             body: JSON.stringify({ auto_delete_minutes: v }),
           }).then(r => r.json()).then(data => {
             setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
+          });
+        }} clockTarget={clockTarget} onClockTargetChange={(v: string | null) => {
+          setClockTarget(v);
+          fetch(`/api/v1/projects/${projectId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ clock_target: v }),
+          }).then(r => {
+            if (r.ok && v !== null && projectState === "active") {
+              setToast("Clock updated — VMs syncing");
+              setTimeout(() => setToast(null), 3000);
+            }
           });
         }} />}
         <button

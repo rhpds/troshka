@@ -25,6 +25,7 @@ class ProjectUpdate(BaseModel):
     topology: dict | None = None
     tags: dict | None = None
     guid: str | None = None
+    clock_target: datetime.datetime | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -53,6 +54,7 @@ class ProjectResponse(BaseModel):
     deploy_error: str | None = None
     tags: dict | None = None
     guid: str | None = None
+    clock_target: datetime.datetime | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

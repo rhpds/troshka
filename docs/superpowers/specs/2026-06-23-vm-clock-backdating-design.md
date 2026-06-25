@@ -12,7 +12,7 @@ Allow Troshka projects to run VMs with clocks set to a specific past (or future)
 - **Project-level setting**: a single `clock_target` datetime applies to all VMs in the project
 - **Set at deploy or live**: can be configured before deploy (applied at VM creation) or changed on a running project (pushed immediately)
 - **Real-time advancement**: clock starts at the target date and ticks forward at normal speed
-- **NTP service on gateway**: every project's gateway runs chrony as a local NTP server — always, not just when backdating. When `clock_target` is set, the gateway serves the backdated time. When unset, it serves real time.
+- **NTP service on gateway**: every project's gateway namespace runs a chrony instance (via `ip netns exec`, same as dnsmasq) as a local NTP server — always, not just when backdating. When `clock_target` is set, the gateway's own clock is offset by libvirt, so chrony serves the backdated time. When unset, it serves real time.
 - **All VMs point at gateway NTP**: VMs never use public NTP pools. Chrony on each VM is configured to sync from the gateway only.
 - **Template support**: `clock_target` is a top-level field in `infra_template.yaml`
 - **Hypervisor-level offset**: the clock offset is applied at the libvirt/QEMU level so the guest sees the target time from the moment the BIOS/UEFI clock is read, before the OS boots
@@ -96,26 +96,30 @@ Applied to every VM in the project uniformly — same offset for the gateway and
 
 ### Gateway NTP Server
 
-The gateway always runs chrony as a local NTP server, regardless of whether `clock_target` is set. This isolates VMs from external NTP and provides a consistent time source within the project.
+The gateway namespace always runs a chrony instance as a local NTP server, regardless of whether `clock_target` is set. This isolates VMs from external NTP and provides a consistent time source within the project. Chrony runs on the host inside the namespace via `ip netns exec` — the same pattern used for dnsmasq.
 
-**Gateway cloud-init** (always, on every project):
+**Gateway chrony** (always, on every project — started by troshkad during `/networks/full-setup`):
 
-- Package: `chrony`
-- Write `/etc/chrony.conf`:
+- Config file: `/var/lib/troshka/chrony/{project_id[:8]}.conf`
+- Config contents:
   ```
   local stratum 3
-  allow 192.168.0.0/16
-  driftfile /var/lib/chrony/drift
+  allow 0.0.0.0/0
+  driftfile /var/lib/troshka/chrony/{project_id[:8]}.drift
+  pidfile /var/lib/troshka/chrony/{project_id[:8]}.pid
+  bindaddress {gateway_ip}
+  port 123
   ```
-  No `server` or `pool` lines — the gateway trusts its own hardware clock.
-- runcmd: `systemctl restart chronyd`
+  No `server` or `pool` lines — chrony trusts the host's clock (which reflects the libvirt offset when `clock_target` is set).
+- Started via: `ip netns exec {ns} chronyd -f {conf_path}`
+- Cleanup: killed during `/networks/full-teardown` (same as dnsmasq)
 
-**All other VMs** cloud-init (always, on every project):
+**All VMs** cloud-init (always, on every project):
 
 - Package: `chrony`
-- Write `/etc/chrony.conf`:
+- runcmd: write `/etc/chrony.conf` with:
   ```
-  server <gateway_ip> iburst prefer
+  server {gateway_ip} iburst prefer
   makestep 1 -1
   driftfile /var/lib/chrony/drift
   ```
@@ -123,7 +127,7 @@ The gateway always runs chrony as a local NTP server, regardless of whether `clo
   No public NTP pools.
 - runcmd: `systemctl restart chronyd`
 
-When `clock_target` is unset, the gateway's clock is real time, so it serves real time. When set, the hypervisor offset makes the gateway's clock read the target date, and chrony serves that to all VMs.
+When `clock_target` is unset, the host clock is real time, so the gateway's chrony serves real time. When set, the VMs' libvirt offset makes their clocks read the target date, and the gateway's chrony confirms that time over NTP.
 
 ### Live Adjustment
 
@@ -141,18 +145,10 @@ When a user changes `clock_target` on a running (`active`) project:
 
 - For each running VM, try `virsh domtime --set <target_epoch>` (uses qemu-guest-agent)
 - If that fails (agent not installed/running), fall back to exec: `date -s @<target_epoch>` via serial exec
-- Gateway is updated first, then other VMs — by the time VMs re-sync via NTP, the gateway is already serving the new time
-
-**Step 4 — NTP re-sync:**
-
-- No chrony config changes needed — the gateway always serves `local stratum 3` from its own clock
-- Other VMs re-sync automatically within seconds
-
 **Clearing `clock_target`** (setting to `null`):
 
 - Update libvirt XML back to `offset=utc` on all VMs
 - Push real time to VMs via the same guest-agent/exec fallback
-- NTP re-syncs to real time automatically (gateway's clock is now real)
 
 ### Frontend — Project Settings
 

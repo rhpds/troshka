@@ -257,7 +257,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Priority**: agnosticv template `pull_through_registry` > user toggle > no config (direct pulls)
 - **Config dict shape**: `{"enabled": True, "url": str, "orgs": {"registry.redhat.io": "registry_redhat_io", "quay.io": "quay_io"}}`
 - **Org convention**: Quay proxy-cache standard — source registry dots replaced with underscores
-- **What it enables**: `imageDigestMirrorSet` in install-config, `registries.conf` on bastions, podman mirror config — all handled by existing `agent_template.py` code
+- **What it enables**: `imageDigestSources` in install-config, `registries.conf` on bastions, podman mirror config — all handled by existing `agent_template.py` code
 - **API**: `GET/PUT/DELETE /auth/ocp-pull-secret` (extended), `PATCH /auth/ocp-pull-secret` (new, toggle only)
 
 ### AgnosticD-v2 Integration

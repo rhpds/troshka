@@ -226,8 +226,9 @@ async def main():
 
     conf = _load_config()
     bind_ip = conf.get("bind_ip", "0.0.0.0")
+    no_tls = args.no_tls or conf.get("no_tls", False)
 
-    if args.no_tls:
+    if no_tls:
         port = args.plain_port
         ssl_ctx = None
         ssl_holder = [None]
@@ -261,7 +262,7 @@ async def main():
         ping_timeout=10,
     ):
         asyncio.create_task(_prune_loop())
-        if not args.no_tls:
+        if not no_tls:
             asyncio.create_task(_cert_reload_loop(ssl_holder, conf))
         logger.info("troshka-vncd ready")
         await stop.wait()

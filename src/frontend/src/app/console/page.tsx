@@ -35,6 +35,7 @@ function ConsolePage() {
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
   const rfbRef = useRef<unknown>(null);
+  const lastPasteRef = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
   const mountedRef = useRef(true);
@@ -357,7 +358,6 @@ function ConsolePage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ color: statusColor }}>{displayStatus}</span>
-          {toast && <span style={{ color: "#4ade80", fontSize: 12, animation: "fadeIn 0.2s" }}>{toast}</span>}
           {displayStatus === "Connected" && (
             <span
               title={focused ? "Keyboard active — typing goes to VM" : "Click console to activate keyboard"}
@@ -422,6 +422,8 @@ function ConsolePage() {
           <button
             onClick={async (e) => {
               (e.target as HTMLElement).blur();
+              if (Date.now() - lastPasteRef.current < 2000) return;
+              lastPasteRef.current = Date.now();
               let text = "";
               try {
                 text = await navigator.clipboard.readText();
@@ -447,12 +449,10 @@ function ConsolePage() {
                 "\n": 0xff0d, "\r": 0xff0d, "\t": 0xff09,
               };
 
-              const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
               for (const ch of text) {
                 if (ch in controlKeys) {
                   sendKey.call(r, controlKeys[ch], "", true);
                   sendKey.call(r, controlKeys[ch], "", false);
-                  await delay(100);
                   continue;
                 }
                 let keysym = ch.charCodeAt(0);
@@ -462,7 +462,6 @@ function ConsolePage() {
                 sendKey.call(r, keysym, "", true);
                 sendKey.call(r, keysym, "", false);
                 if (needsShift) sendKey.call(r, shiftKeysym, "", false);
-                await delay(100);
               }
               r.focus?.();
             }}
@@ -475,6 +474,8 @@ function ConsolePage() {
               key={pw.label}
               onClick={async (e) => {
                 (e.target as HTMLElement).blur();
+                if (Date.now() - lastPasteRef.current < 2000) return;
+                lastPasteRef.current = Date.now();
                 const r = rfbRef.current as Record<string, any> | null;
                 if (!r) return;
                 const sendKey = r.sendKey as ((k: number, c: string | null, d?: boolean) => void) | undefined;
@@ -488,7 +489,6 @@ function ConsolePage() {
                   "?": 0x003f,
                 };
                 const shiftKeysym = 0xffe1;
-                const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
                 for (const ch of pw.value) {
                   let keysym = ch.charCodeAt(0);
                   if (keysym > 0x00ff) keysym = 0x01000000 | keysym;
@@ -497,7 +497,6 @@ function ConsolePage() {
                   sendKey.call(r, keysym, "", true);
                   sendKey.call(r, keysym, "", false);
                   if (needsShift) sendKey.call(r, shiftKeysym, "", false);
-                  await delay(100);
                 }
                 sendKey.call(r, 0xff0d, "", true);
                 sendKey.call(r, 0xff0d, "", false);
@@ -648,6 +647,18 @@ function ConsolePage() {
         )}
         <style>{`@keyframes vkb-spin { to { transform: rotate(360deg); } }`}</style>
       </div>
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
+          padding: "6px 16px", borderRadius: 8,
+          background: "rgba(30,30,50,0.9)", color: "#4ade80",
+          fontSize: 13, whiteSpace: "nowrap", pointerEvents: "none",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          border: "1px solid rgba(74,222,128,0.3)",
+          animation: "fadeIn 0.2s",
+          zIndex: 9999,
+        }}>{toast}</div>
+      )}
     </div>
   );
 }

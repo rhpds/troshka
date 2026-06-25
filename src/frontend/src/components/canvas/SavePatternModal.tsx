@@ -16,6 +16,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
   const [stopVMs, setStopVMs] = useState(false);
   const [restartAfter, setRestartAfter] = useState(true);
   const [quiesceCluster, setQuiesceCluster] = useState(true);
+  const [captureClockTarget, setCaptureClockTarget] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
@@ -86,6 +87,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           source_project_id: projectId,
           restart_after: restartAfter,
           quiesce_cluster: quiesceCluster,
+          capture_clock_target: captureClockTarget,
         }),
       });
       if (resp.ok) {
@@ -214,6 +216,10 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
               disabled={saving}
             />
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1, fontSize: 13 }}>
+            <input type="checkbox" checked={captureClockTarget} onChange={(e) => setCaptureClockTarget(e.target.checked)} disabled={saving} />
+            Capture clock target for backdating
+          </label>
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>

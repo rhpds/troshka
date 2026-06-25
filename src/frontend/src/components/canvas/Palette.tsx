@@ -484,9 +484,12 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
             border: "1px solid var(--pf-t--global--border--color--default)",
             display: "flex", flexDirection: "column",
           }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <h3 style={{ margin: 0 }}>OpenShift Install Log</h3>
-              <button onClick={() => setOcpLogModal(false)} style={{ background: "transparent", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 18 }}>✕</button>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {ocpLog && <button onClick={(e) => { navigator.clipboard.writeText(ocpLog); const btn = e.currentTarget; btn.textContent = "Copied!"; btn.style.background = "rgba(34,197,94,0.2)"; btn.style.borderColor = "rgba(34,197,94,0.5)"; setTimeout(() => { btn.textContent = "Copy All"; btn.style.background = "rgba(255,255,255,0.08)"; btn.style.borderColor = "rgba(255,255,255,0.15)"; }, 1500); }} style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 11, padding: "4px 10px", borderRadius: 4, transition: "all 0.2s" }}>Copy All</button>}
+                <button onClick={() => setOcpLogModal(false)} style={{ background: "transparent", border: "none", color: "var(--pf-t--global--text--color--regular)", cursor: "pointer", fontSize: 18 }}>✕</button>
+              </div>
             </div>
             <pre ref={ocpLogRef} style={{ fontSize: 11, fontFamily: "monospace", whiteSpace: "pre-wrap", overflowY: "auto", flex: 1, margin: 0, padding: 8, background: "rgba(0,0,0,0.2)", borderRadius: 6, lineHeight: 1.5 }}>
               {ocpLog || <span style={{ opacity: 0.5 }}><span className="project-btn-spinner" style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }} />Loading install log...</span>}

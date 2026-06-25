@@ -88,6 +88,18 @@ def generate_userdata(vm_data: dict) -> str:
     all_packages = ["qemu-guest-agent"] + [
         p for p in ci_packages if p != "qemu-guest-agent"
     ]
+
+    # Chrony NTP client config (points at gateway)
+    gateway_ip = vm_data.get("gateway_ip")
+    chrony_runcmd_lines = []
+    if gateway_ip:
+        if "chrony" not in all_packages:
+            all_packages.append("chrony")
+        chrony_runcmd_lines.append(
+            f'  - printf "server {gateway_ip} iburst prefer\\nmakestep 1 -1\\ndriftfile /var/lib/chrony/drift\\n" > /etc/chrony.conf'
+        )
+        chrony_runcmd_lines.append("  - systemctl restart chronyd 2>/dev/null || true")
+
     if all_packages:
         lines.append("packages:")
         for pkg in all_packages:
@@ -121,6 +133,7 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append(
         "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"
     )
+    lines.extend(chrony_runcmd_lines)
     lines.extend(custom_runcmd_lines)
 
     result = "\n".join(lines)

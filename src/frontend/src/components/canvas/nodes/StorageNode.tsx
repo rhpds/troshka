@@ -50,7 +50,7 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
         })()}
         <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 1 }}>
           {d.format === "iso" ? "ISO" : formatLabel.toUpperCase()}
-          {(d as unknown as Record<string, any>).source === "library" ? " · library" : (d as unknown as Record<string, any>).source === "pattern" ? " · pattern" : d.format !== "iso" ? " · blank" : ""}
+          {(d as unknown as Record<string, any>).source === "library" ? " · library" : (d as unknown as Record<string, any>).source === "pattern" ? " · pattern" : (d as unknown as Record<string, any>).source === "snapshot" ? " · snapshot" : d.format !== "iso" ? " · blank" : ""}
         </div>
         {d.format === "iso" && !(d as unknown as Record<string, any>).libraryItemName && (
           <div style={{ fontSize: 10, color: "var(--troshka-yellow)", marginTop: 2 }}>
