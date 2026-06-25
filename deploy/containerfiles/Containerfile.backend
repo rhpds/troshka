@@ -1,0 +1,15 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+WORKDIR /opt/app-root/src
+
+COPY src/backend/requirements.txt .
+# libvirt-python needs system headers not available in container — exclude it
+RUN grep -v -e '^libvirt-python' -e '^-e git+' requirements.txt > requirements-container.txt && \
+    pip install --no-cache-dir -r requirements-container.txt
+
+COPY src/backend/ .
+COPY src/troshkad/troshkad.py /opt/app-root/troshkad/troshkad.py
+
+EXPOSE 8200
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8200"]

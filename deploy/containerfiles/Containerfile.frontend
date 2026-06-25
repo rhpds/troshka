@@ -1,0 +1,27 @@
+FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS builder
+
+WORKDIR /opt/app-root/src
+
+COPY --chown=1001:1001 src/frontend/package.json src/frontend/package-lock.json ./
+RUN npm ci
+
+COPY --chown=1001:1001 src/frontend/ .
+
+ENV STANDALONE=true
+RUN npm run build
+
+FROM registry.access.redhat.com/ubi9/nodejs-20-minimal:latest
+
+WORKDIR /opt/app-root/src
+
+COPY --chown=1001:1001 --from=builder /opt/app-root/src/.next/standalone ./
+COPY --chown=1001:1001 --from=builder /opt/app-root/src/.next/static ./.next/static
+COPY --chown=1001:1001 --from=builder /opt/app-root/src/public ./public
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
