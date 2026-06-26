@@ -257,70 +257,44 @@ def add_host(
         if pool.nfs_port:
             nfs_kwargs["nfs_port"] = pool.nfs_port
 
-    try:
-        import uuid as _uuid
+    import threading
+    import uuid as _uuid
 
-        from app.services.providers import get_provider_driver
-
-        driver = get_provider_driver(provider)
-        result = driver.provision_host(
-            provider=provider,
-            host_id=str(_uuid.uuid4()),
-            instance_type=body.instance_type,
-            storage_size_gb=500,
-            image_id=body.image_id or provider.default_image,
-            region=region,
-            vpc_id=provider.vpc_id,
-            subnet_id=subnet_override or provider.subnet_id,
-            security_group_id=provider.security_group_id,
-            subnet_override=subnet_override,
-            host_type="shared",
-            **nfs_kwargs,
-        )
-    except Exception as e:
-        logger.exception("Failed to provision host: %s", e)
-        raise HTTPException(
-            status_code=500, detail="Failed to provision host. Check server logs."
-        )
-
+    host_id = str(_uuid.uuid4())
     host = Host(
-        id=result["host_id"],
+        id=host_id,
         provider_id=provider.id,
-        instance_id=result["instance_id"],
-        instance_type=result["instance_type"],
+        instance_id="",
+        instance_type=body.instance_type or "",
         region=region,
-        state="active",
+        state="provisioning",
         host_type="shared",
-        total_vcpus=result["total_vcpus"],
-        total_ram_mb=result["total_ram_mb"],
-        ip_address=result["public_ip"],
-        private_ip=result.get("private_ip"),
-        agent_status="disconnected",
-        key_pair_name=result.get("key_pair_name"),
-        private_key=result.get("private_key"),
-        storage_size_gb=result.get("storage_size_gb", 500),
-        max_eips=result.get("max_eips", 0),
+        total_vcpus=0,
+        total_ram_mb=0,
+        ip_address="",
+        agent_status="provisioning",
+        storage_size_gb=500,
+        max_eips=0,
     )
+    if body.storage_pool_id:
+        host.storage_pool_id = body.storage_pool_id
     db.add(host)
     db.commit()
     db.refresh(host)
 
-    if body.storage_pool_id:
-        host.storage_pool_id = body.storage_pool_id
-        db.commit()
-
-    # Auto-install agent in background
-    import threading
-
-    provider_creds = creds  # Capture for use in thread
+    provider_creds = creds
     provider_console_domain = provider.console_base_domain if provider else None
     provider_console_zone = provider.console_zone_id if provider else None
     provider_type = provider.type
-    ssh_host = result.get("_ssh_host") or result.get("public_ip")
-    ssh_port = result.get("_ssh_port", 22)
-    agent_port = result.get("_agent_port", 31337)
+    _provider_id = provider.id
+    _image_id = body.image_id or provider.default_image
+    _instance_type = body.instance_type
+    _vpc_id = provider.vpc_id
+    _subnet_id = subnet_override or provider.subnet_id
+    _sg_id = provider.security_group_id
+    _pool_id = body.storage_pool_id
 
-    def _auto_install():
+    def _provision_and_install():
         from app.core.database import SessionLocal
         from app.services.agent_deployer import (
             deploy_agent,
@@ -328,11 +302,57 @@ def add_host(
             get_provider_ssh_user,
             wait_for_ssh,
         )
+        from app.services.providers import get_provider_driver
 
         s = SessionLocal()
         try:
-            h = s.query(Host).filter_by(id=host.id).first()
-            if not h or not h.private_key or not (h.ip_address or ssh_host):
+            h = s.query(Host).filter_by(id=host_id).first()
+            if not h:
+                return
+            prov = s.query(Provider).filter_by(id=_provider_id).first()
+            if not prov:
+                return
+
+            try:
+                drv = get_provider_driver(prov)
+                result = drv.provision_host(
+                    provider=prov,
+                    host_id=host_id,
+                    instance_type=_instance_type,
+                    storage_size_gb=500,
+                    image_id=_image_id,
+                    region=region,
+                    vpc_id=_vpc_id,
+                    subnet_id=_subnet_id,
+                    security_group_id=_sg_id,
+                    subnet_override=_subnet_id,
+                    host_type="shared",
+                    **nfs_kwargs,
+                )
+            except Exception:
+                logger.exception("Failed to provision host %s", host_id[:8])
+                h.state = "error"
+                h.agent_status = "provision_failed"
+                s.commit()
+                return
+
+            h.instance_id = result["instance_id"]
+            h.instance_type = result["instance_type"]
+            h.state = "active"
+            h.total_vcpus = result["total_vcpus"]
+            h.total_ram_mb = result["total_ram_mb"]
+            h.ip_address = result["public_ip"]
+            h.private_ip = result.get("private_ip")
+            h.key_pair_name = result.get("key_pair_name")
+            h.private_key = result.get("private_key")
+            h.storage_size_gb = result.get("storage_size_gb", 500)
+            h.max_eips = result.get("max_eips", 0)
+            s.commit()
+
+            ssh_host = result.get("_ssh_host") or result.get("public_ip")
+            ssh_port = result.get("_ssh_port", 22)
+
+            if not h.private_key or not (h.ip_address or ssh_host):
                 return
             h.agent_status = "waiting_ssh"
             s.commit()
@@ -414,7 +434,9 @@ def add_host(
         finally:
             s.close()
 
-    threading.Thread(target=_auto_install, daemon=True, name="auto-install").start()
+    threading.Thread(
+        target=_provision_and_install, daemon=True, name=f"provision-{host_id[:8]}"
+    ).start()
 
     return host
 
