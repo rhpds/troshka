@@ -8,6 +8,7 @@ RUN npm ci
 COPY --chown=1001:1001 src/frontend/ .
 
 ENV STANDALONE=true
+ENV BACKEND_URL=http://troshka-backend:8200
 RUN npm run build
 
 FROM registry.access.redhat.com/ubi9/nodejs-20-minimal:latest

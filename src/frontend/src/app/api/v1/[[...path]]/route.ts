@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function getBackendUrl() {
-  const key = "BACKEND_URL";
-  return process.env[key] || "http://localhost:8200";
-}
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8200";
 
 async function proxyRequest(request: NextRequest) {
   const url = new URL(request.url);
-  const backendUrl = `${getBackendUrl()}${url.pathname}${url.search}`;
+  const backendUrl = `${BACKEND_URL}${url.pathname}${url.search}`;
 
   const headers = new Headers();
   for (const [key, value] of request.headers.entries()) {
@@ -40,7 +37,7 @@ async function proxyRequest(request: NextRequest) {
       if (location) {
         const redirectUrl = location.startsWith("http")
           ? location
-          : `${getBackendUrl()}${location}`;
+          : `${BACKEND_URL}${location}`;
         resp = await fetch(redirectUrl, {
           method: request.method,
           headers,
