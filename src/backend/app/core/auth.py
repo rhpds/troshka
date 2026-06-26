@@ -22,6 +22,7 @@ def _parse_csv(value: str) -> set[str]:
 
 
 _admin_users = _parse_csv(getattr(config.auth, "admin_users", ""))
+_allowed_users = _parse_csv(getattr(config.auth, "allowed_users", ""))
 _operator_users = _parse_csv(getattr(config.auth, "operator_users", ""))
 
 
@@ -148,15 +149,30 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     if config.auth.oauth_enabled:
         user_info = _get_user_from_oauth_headers(request)
         if user_info:
-            return _upsert_sso_user(
+            user = _upsert_sso_user(
                 user_info["email"],
                 user_info.get("user"),
                 db,
             )
+            if _allowed_users:
+                identity = user_info["email"].lower()
+                if identity not in _allowed_users:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Access denied: user not in allowed_users list",
+                    )
+            return user
 
     # Try API key (trk_ prefix)
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
+        if _allowed_users:
+            identity = api_key_user.email.lower()
+            if identity not in _allowed_users:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied: user not in allowed_users list",
+                )
         return api_key_user
 
     # Try JWT token (works in both dev and SSO mode)
@@ -166,6 +182,13 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         if email:
             user = db.query(User).filter_by(email=email).first()
             if user:
+                if _allowed_users:
+                    identity = email.lower()
+                    if identity not in _allowed_users:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Access denied: user not in allowed_users list",
+                        )
                 return user
 
     # Dev mode: auto-authenticate as the default admin user

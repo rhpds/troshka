@@ -19,6 +19,7 @@ auth:
   oauth_enabled: false
   allow_registration: true
   admin_users: "prutledg@redhat.com"
+  allowed_users: ""
   operator_users: ""
   allowed_groups: ""
   admin_groups: ""
