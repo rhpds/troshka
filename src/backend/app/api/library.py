@@ -474,6 +474,7 @@ def import_from_url(
                         "aws_access_key_id": s3_creds.get("access_key_id", ""),
                         "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
                         "aws_region": s3_creds.get("region", "us-east-1"),
+                        "aws_endpoint_url": s3_creds.get("endpoint_url", ""),
                     },
                 )
                 job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)

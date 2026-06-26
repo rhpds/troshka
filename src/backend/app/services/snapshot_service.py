@@ -87,6 +87,7 @@ def capture_vm_disks(library_item_id: str, project_id: str, vm_node_id: str) -> 
                         "aws_access_key_id": creds.get("access_key_id", ""),
                         "aws_secret_access_key": creds.get("secret_access_key", ""),
                         "aws_region": creds.get("region", "us-east-1"),
+                        "aws_endpoint_url": creds.get("endpoint_url", ""),
                     },
                 )
                 job = wait_for_job(host, job_id, timeout=3600)

@@ -1902,6 +1902,7 @@ def _handle_image_cache(job, params):
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
+    aws_endpoint_url = params.get("aws_endpoint_url", "")
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
     lock_path = dest_path + ".lock"
@@ -1929,7 +1930,13 @@ def _handle_image_cache(job, params):
 
         if s3_url:
             _s3_download(
-                job, s3_url, dest_path, aws_access_key, aws_secret_key, aws_region
+                job,
+                s3_url,
+                dest_path,
+                aws_access_key,
+                aws_secret_key,
+                aws_region,
+                aws_endpoint_url,
             )
         else:
             _run_cmd(
@@ -2226,6 +2233,7 @@ def _handle_library_import(job, params):
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
+    aws_endpoint_url = params.get("aws_endpoint_url", "")
 
     temp_files = []
     try:
@@ -2239,6 +2247,7 @@ def _handle_library_import(job, params):
                 aws_access_key,
                 aws_secret_key,
                 aws_region,
+                aws_endpoint_url,
             )
         elif download_url:
             _job_log(job, f"Downloading from {download_url}...")
@@ -2270,6 +2279,7 @@ def _handle_library_import(job, params):
                 aws_access_key,
                 aws_secret_key,
                 aws_region,
+                aws_endpoint_url,
             )
 
         size_bytes = os.path.getsize(cache_path)
@@ -4805,6 +4815,7 @@ def _s3_upload(
     aws_access_key="",
     aws_secret_key="",
     aws_region="us-east-1",
+    aws_endpoint_url="",
 ):
     """Upload a file to S3 using aws cli with file-size progress monitoring."""
     total_bytes = os.path.getsize(local_path)
@@ -4819,6 +4830,8 @@ def _s3_upload(
         env["AWS_ACCESS_KEY_ID"] = aws_access_key
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
         env["AWS_DEFAULT_REGION"] = aws_region
+    if aws_endpoint_url:
+        env["AWS_ENDPOINT_URL"] = aws_endpoint_url
     aws_bin = "/opt/troshka/venv/bin/aws"
     if not os.path.exists(aws_bin):
         aws_bin = "aws"
@@ -4868,6 +4881,7 @@ def _s3_upload_with_cache(
     aws_access_key="",
     aws_secret_key="",
     aws_region="us-east-1",
+    aws_endpoint_url="",
 ):
     """Upload to S3 while reporting combined upload + cache progress."""
     total_gb = round(total_bytes / (1024**3), 1)
@@ -4881,6 +4895,8 @@ def _s3_upload_with_cache(
         env["AWS_ACCESS_KEY_ID"] = aws_access_key
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
         env["AWS_DEFAULT_REGION"] = aws_region
+    if aws_endpoint_url:
+        env["AWS_ENDPOINT_URL"] = aws_endpoint_url
     aws_bin = "/opt/troshka/venv/bin/aws"
     if not os.path.exists(aws_bin):
         aws_bin = "aws"
@@ -4946,6 +4962,7 @@ def _s3_download(
     aws_access_key="",
     aws_secret_key="",
     aws_region="us-east-1",
+    aws_endpoint_url="",
 ):
     """Download a file from S3 using aws cli with file-size progress monitoring."""
     env = os.environ.copy()
@@ -4958,6 +4975,8 @@ def _s3_download(
         env["AWS_ACCESS_KEY_ID"] = aws_access_key
         env["AWS_SECRET_ACCESS_KEY"] = aws_secret_key
         env["AWS_DEFAULT_REGION"] = aws_region
+    if aws_endpoint_url:
+        env["AWS_ENDPOINT_URL"] = aws_endpoint_url
     aws_bin = "/opt/troshka/venv/bin/aws"
     if not os.path.exists(aws_bin):
         aws_bin = "aws"
@@ -4989,6 +5008,7 @@ def _handle_snapshot_capture(job, params):
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
+    aws_endpoint_url = params.get("aws_endpoint_url", "")
 
     import tempfile as _tf
 
@@ -5038,7 +5058,13 @@ def _handle_snapshot_capture(job, params):
 
             _job_log(job, "Uploading to S3...")
             _s3_upload(
-                job, tmp_flat, s3_url, aws_access_key, aws_secret_key, aws_region
+                job,
+                tmp_flat,
+                s3_url,
+                aws_access_key,
+                aws_secret_key,
+                aws_region,
+                aws_endpoint_url,
             )
 
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -5286,6 +5312,7 @@ def _handle_pattern_capture_direct(job, params):
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
+    aws_endpoint_url = params.get("aws_endpoint_url", "")
 
     running = False
     snapshotted = False
@@ -5414,6 +5441,7 @@ def _handle_pattern_capture_direct(job, params):
                     aws_access_key,
                     aws_secret_key,
                     aws_region,
+                    aws_endpoint_url,
                 )
 
                 _job_log(job, "Upload complete, waiting for cache...")
@@ -8148,6 +8176,7 @@ def _handle_upload_and_cache(job, params):
     aws_access_key = params.get("aws_access_key_id", "")
     aws_secret_key = params.get("aws_secret_access_key", "")
     aws_region = params.get("aws_region", "us-east-1")
+    aws_endpoint_url = params.get("aws_endpoint_url", "")
 
     if not os.path.exists(local_path):
         raise RuntimeError(f"File not found: {local_path}")
@@ -8176,6 +8205,7 @@ def _handle_upload_and_cache(job, params):
         aws_access_key,
         aws_secret_key,
         aws_region,
+        aws_endpoint_url,
     )
 
     _job_log(job, "Upload complete, waiting for cache...")
