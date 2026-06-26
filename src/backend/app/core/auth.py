@@ -142,6 +142,14 @@ def _get_user_from_api_key(request: Request, db: Session):
     return api_key.user
 
 
+def _enforce_allowed_users(identity: str):
+    if _allowed_users and identity.lower() not in _allowed_users:
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied: user not in allowed_users list",
+        )
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)):
     from app.models.user import User
 
@@ -154,25 +162,13 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
                 user_info.get("user"),
                 db,
             )
-            if _allowed_users:
-                identity = user_info["email"].lower()
-                if identity not in _allowed_users:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Access denied: user not in allowed_users list",
-                    )
+            _enforce_allowed_users(user_info["email"])
             return user
 
     # Try API key (trk_ prefix)
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
-        if _allowed_users:
-            identity = api_key_user.email.lower()
-            if identity not in _allowed_users:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Access denied: user not in allowed_users list",
-                )
+        _enforce_allowed_users(api_key_user.email)
         return api_key_user
 
     # Try JWT token (works in both dev and SSO mode)
@@ -182,13 +178,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         if email:
             user = db.query(User).filter_by(email=email).first()
             if user:
-                if _allowed_users:
-                    identity = email.lower()
-                    if identity not in _allowed_users:
-                        raise HTTPException(
-                            status_code=403,
-                            detail="Access denied: user not in allowed_users list",
-                        )
+                _enforce_allowed_users(email)
                 return user
 
     # Dev mode: auto-authenticate as the default admin user

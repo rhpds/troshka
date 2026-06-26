@@ -427,8 +427,7 @@ def finalize_seed(
     client = _get_s3_client()
     bucket = _bucket()
 
-    ext = item.format if item.format != "qcow2" else "qcow2"
-    dest_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
+    dest_key = f"library/{user.id}/{item.id}/{item.name}.{item.format}"
 
     client.copy_object(
         Bucket=bucket,
@@ -441,7 +440,8 @@ def finalize_seed(
     item.s3_key = dest_key
     item.size_bytes = head["ContentLength"]
     item.state = "ready"
-    item.tags = body.tags if body.tags else item.tags
+    if body.tags:
+        item.tags = body.tags
     db.commit()
 
     logger.info(
