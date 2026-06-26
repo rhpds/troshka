@@ -4,7 +4,7 @@ Library API — manage ISOs and disk images in S3.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -356,6 +356,49 @@ def complete_upload(
         item.state = "error"
         db.commit()
         raise HTTPException(status_code=500, detail="Upload completion failed")
+
+
+@router.post("/{item_id}/upload-proxy")
+async def upload_proxy(
+    item_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stream a file upload to S3/MinIO through the backend.
+
+    Used when MinIO is behind a cluster-internal service and presigned
+    URLs are not browser-reachable.
+    """
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ext = item.format if item.format != "qcow2" else "qcow2"
+    s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
+
+    from app.services.s3_storage import _bucket, _get_s3_client
+
+    client = _get_s3_client()
+    client.upload_fileobj(
+        file.file,
+        _bucket(),
+        s3_key,
+        ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+    )
+
+    head = client.head_object(Bucket=_bucket(), Key=s3_key)
+    item.s3_key = s3_key
+    item.size_bytes = head["ContentLength"]
+    item.state = "ready"
+    db.commit()
+
+    logger.info("Proxy upload: %s → %s (%d bytes)", item.name, s3_key, item.size_bytes)
+    return {"s3_key": s3_key, "size_bytes": item.size_bytes}
 
 
 @router.delete("/{item_id}", status_code=204)
