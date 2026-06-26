@@ -4,7 +4,7 @@
   connection: local
   gather_facts: false
   vars:
-    namespace: troshka-images
+    minio_namespace: troshka-images
     minio_root_user: troshka
     minio_pvc_size: 200Gi
     minio_bucket: troshka-gold-images
@@ -19,7 +19,7 @@
           apiVersion: v1
           kind: Namespace
           metadata:
-            name: "{{ namespace }}"
+            name: "{{ minio_namespace }}"
 
     - name: Check if MinIO secret exists
       kubernetes.core.k8s_info:
@@ -27,7 +27,7 @@
         api_version: v1
         kind: Secret
         name: minio-credentials
-        namespace: "{{ namespace }}"
+        namespace: "{{ minio_namespace }}"
       register: _existing_secret
 
     - name: Generate MinIO root password
@@ -46,11 +46,27 @@
               kind: Secret
               metadata:
                 name: minio-credentials
-                namespace: "{{ namespace }}"
+                namespace: "{{ minio_namespace }}"
               type: Opaque
               stringData:
                 root-user: "{{ minio_root_user }}"
                 root-password: "{{ _minio_root_password }}"
+
+    - name: Create MinIO PVC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: minio-data
+            namespace: "{{ minio_namespace }}"
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: "{{ minio_pvc_size }}"
 
     - name: Deploy MinIO
       kubernetes.core.k8s:
@@ -61,7 +77,7 @@
           kind: Deployment
           metadata:
             name: minio
-            namespace: "{{ namespace }}"
+            namespace: "{{ minio_namespace }}"
             labels:
               app.kubernetes.io/name: minio
           spec:
@@ -78,9 +94,6 @@
                   - name: minio
                     image: quay.io/minio/minio:latest
                     args: ["server", "/data", "--console-address", ":9001"]
-                    envFrom:
-                      - secretRef:
-                          name: minio-credentials
                     env:
                       - name: MINIO_ROOT_USER
                         valueFrom:
@@ -111,22 +124,6 @@
                     persistentVolumeClaim:
                       claimName: minio-data
 
-    - name: Create MinIO PVC
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig }}"
-        state: present
-        definition:
-          apiVersion: v1
-          kind: PersistentVolumeClaim
-          metadata:
-            name: minio-data
-            namespace: "{{ namespace }}"
-          spec:
-            accessModes: [ReadWriteOnce]
-            resources:
-              requests:
-                storage: "{{ minio_pvc_size }}"
-
     - name: Create MinIO Service
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig }}"
@@ -136,7 +133,7 @@
           kind: Service
           metadata:
             name: minio
-            namespace: "{{ namespace }}"
+            namespace: "{{ minio_namespace }}"
           spec:
             selector:
               app.kubernetes.io/name: minio
@@ -157,9 +154,9 @@
           kind: Route
           metadata:
             name: minio
-            namespace: "{{ namespace }}"
+            namespace: "{{ minio_namespace }}"
           spec:
-            host: "minio-{{ namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+            host: "minio-{{ minio_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
             to:
               kind: Service
               name: minio
@@ -174,7 +171,7 @@
         api_version: apps/v1
         kind: Deployment
         name: minio
-        namespace: "{{ namespace }}"
+        namespace: "{{ minio_namespace }}"
       register: _minio_deploy
       until: (_minio_deploy.resources[0].status.readyReplicas | default(0)) >= 1
       retries: 30
@@ -189,7 +186,7 @@
           kind: Job
           metadata:
             name: "minio-init-bucket"
-            namespace: "{{ namespace }}"
+            namespace: "{{ minio_namespace }}"
           spec:
             ttlSecondsAfterFinished: 300
             template:
@@ -202,11 +199,9 @@
                       - /bin/sh
                       - -c
                       - |
+                        export HOME=/tmp
                         mc alias set local http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
                         mc mb --ignore-existing local/{{ minio_bucket }}
-                    envFrom:
-                      - secretRef:
-                          name: minio-credentials
                     env:
                       - name: MINIO_ROOT_USER
                         valueFrom:
@@ -223,12 +218,13 @@
       ansible.builtin.debug:
         msg: |
           Central MinIO deployed!
-          Endpoint: https://minio-{{ namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com
+          Endpoint: https://minio-{{ minio_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com
           Bucket: {{ minio_bucket }}
-          Credentials: stored in secret minio-credentials in namespace {{ namespace }}
+          Credentials: stored in secret minio-credentials in namespace {{ minio_namespace }}
 
           To upload gold images, port-forward and use mc:
-            oc port-forward -n {{ namespace }} svc/minio 9000:9000
+            oc port-forward -n {{ minio_namespace }} svc/minio 9000:9000
             mc alias set central http://localhost:9000 <user> <password>
-            mc cp rhel-9.6-x86_64-kvm.qcow2 central/{{ minio_bucket }}/
-            mc cp rhel-9.6-x86_64-boot.iso central/{{ minio_bucket }}/
+            mc cp prebuilt-rhel-10.2-bastion.qcow2 central/{{ minio_bucket }}/
+            mc cp rhel-10.2-x86_64-kvm.qcow2 central/{{ minio_bucket }}/
+            mc cp rhel-10.2-x86_64-dvd.iso central/{{ minio_bucket }}/
