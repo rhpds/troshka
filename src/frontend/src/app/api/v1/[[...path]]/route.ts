@@ -30,6 +30,7 @@ async function proxyRequest(request: NextRequest) {
       headers,
       body,
       redirect: "manual",
+      signal: AbortSignal.timeout(600_000),
     });
 
     if (resp.status === 307 || resp.status === 308) {
@@ -43,6 +44,7 @@ async function proxyRequest(request: NextRequest) {
           headers,
           body,
           redirect: "manual",
+          signal: AbortSignal.timeout(600_000),
         });
       }
     }
@@ -62,6 +64,8 @@ async function proxyRequest(request: NextRequest) {
     return NextResponse.json({ error: "Backend unavailable" }, { status: 502 });
   }
 }
+
+export const maxDuration = 600;
 
 export async function GET(request: NextRequest) {
   return proxyRequest(request);
