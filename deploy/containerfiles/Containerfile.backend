@@ -9,6 +9,7 @@ RUN grep -v -e '^libvirt-python' -e '^-e git+' requirements.txt > requirements-c
 
 COPY src/backend/ .
 COPY src/troshkad/troshkad.py /opt/app-root/troshkad/troshkad.py
+COPY src/troshka-vncd/troshka-vncd.py /opt/app-root/troshka-vncd/troshka-vncd.py
 
 EXPOSE 8200
 
