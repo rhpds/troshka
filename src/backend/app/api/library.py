@@ -401,6 +401,60 @@ async def upload_proxy(
     return {"s3_key": s3_key, "size_bytes": item.size_bytes}
 
 
+class FinalizeSeedRequest(BaseModel):
+    seed_key: str
+    tags: list[str] = []
+
+
+@router.post("/{item_id}/finalize-seed")
+def finalize_seed(
+    item_id: str,
+    body: FinalizeSeedRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Move a seeded S3 object to the canonical library path and mark ready."""
+    item = db.query(LibraryItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    lib = db.query(Library).filter_by(id=item.library_id).first()
+    if not lib or lib.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    from app.services.s3_storage import _bucket, _get_s3_client
+
+    client = _get_s3_client()
+    bucket = _bucket()
+
+    ext = item.format if item.format != "qcow2" else "qcow2"
+    dest_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
+
+    client.copy_object(
+        Bucket=bucket,
+        CopySource={"Bucket": bucket, "Key": body.seed_key},
+        Key=dest_key,
+    )
+    client.delete_object(Bucket=bucket, Key=body.seed_key)
+
+    head = client.head_object(Bucket=bucket, Key=dest_key)
+    item.s3_key = dest_key
+    item.size_bytes = head["ContentLength"]
+    item.state = "ready"
+    item.tags = body.tags if body.tags else item.tags
+    db.commit()
+
+    logger.info(
+        "Finalized seed: %s → %s (%d bytes)", body.seed_key, dest_key, item.size_bytes
+    )
+    return {
+        "id": item.id,
+        "s3_key": dest_key,
+        "size_bytes": item.size_bytes,
+        "state": "ready",
+    }
+
+
 @router.delete("/{item_id}", status_code=204)
 def delete_item(
     item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
