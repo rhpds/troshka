@@ -124,9 +124,25 @@ Troshka eliminates this entire class of problems:
 - **[Architecture Guide](docs/architecture.md)** — system design, provider abstraction, networking, storage, agent internals
 - **[API Guide](docs/api-guide.md)** — workflow walkthroughs with examples + full endpoint reference
 
-### Installation Guides
+### Installation
 
-Start with [Common Setup](docs/install-common.md) (backend, frontend, database), then follow the guide for your cloud:
+**Container deployment (recommended):** Deploy on any OpenShift cluster with one command:
+
+```bash
+ansible-playbook deploy/ansible/deploy.yaml \
+  -e troshka_deploy_postgres=true \
+  -e troshka_deploy_minio=true \
+  -e troshka_oauth_enabled=true \
+  -e troshka_admin_users=you@example.com
+```
+
+See **[OCP Deployment Guide](docs/install-ocp.md)** for full details — SSO, external DB, kustomize, and configuration options.
+
+**Local development:** See [Common Setup](docs/install-common.md) for running backend/frontend directly.
+
+### Host Provider Guides
+
+After installing Troshka, configure a host provider for the cloud(s) you want to run environments on:
 
 | Cloud | Guide | Shared Storage | Console TLS | EIPs |
 |-------|-------|---------------|-------------|------|
