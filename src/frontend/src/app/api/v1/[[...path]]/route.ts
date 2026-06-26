@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 function getBackendUrl() {
-  return process.env.BACKEND_URL || "http://localhost:8200";
+  const key = "BACKEND_URL";
+  return process.env[key] || "http://localhost:8200";
 }
 
 async function proxyRequest(request: NextRequest) {
