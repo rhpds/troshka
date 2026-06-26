@@ -710,17 +710,18 @@ Expected: MinIO deployed, bucket created, Route active.
 
 - [ ] **Step 4: Upload gold images**
 
-Port-forward to MinIO and upload the RHEL bastion image and boot ISO:
+Port-forward to MinIO and upload the three gold images:
 
 ```bash
 oc port-forward -n troshka-images svc/minio 9000:9000 --kubeconfig=$HOME/secrets/ocpv-infra01.kubeconfig &
 mc alias set central http://localhost:9000 <user> <password>
-mc cp /path/to/rhel-9.6-x86_64-kvm.qcow2 central/troshka-gold-images/
-mc cp /path/to/rhel-9.6-x86_64-boot.iso central/troshka-gold-images/
+mc cp /path/to/prebuilt-rhel-10.2-bastion.qcow2 central/troshka-gold-images/
+mc cp /path/to/rhel-10.2-x86_64-kvm.qcow2 central/troshka-gold-images/
+mc cp /path/to/rhel-10.2-x86_64-dvd.iso central/troshka-gold-images/
 mc ls central/troshka-gold-images/
 ```
 
-Expected: Both files listed in the bucket.
+Expected: All three files listed in the bucket.
 
 - [ ] **Step 5: Verify Route access**
 
@@ -1840,15 +1841,20 @@ troshka_frontend_image: "quay.io/redhat-gpte/troshka-frontend:latest"
 troshka_seed_minio_endpoint: "https://minio-troshka-images.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
 troshka_seed_minio_bucket: "troshka-gold-images"
 troshka_seed_images:
-  - name: "RHEL 9.6 KVM Guest Image"
+  - name: "Prebuilt RHEL 10.2 Bastion"
     type: image
     format: qcow2
-    s3_object: "rhel-9.6-x86_64-kvm.qcow2"
+    s3_object: "prebuilt-rhel-10.2-bastion.qcow2"
     tags: ["ocp_default_image"]
-  - name: "RHEL 9.6 Boot ISO"
+  - name: "RHEL 10.2 KVM Guest Image"
+    type: image
+    format: qcow2
+    s3_object: "rhel-10.2-x86_64-kvm.qcow2"
+    tags: []
+  - name: "RHEL 10.2 Binary DVD"
     type: iso
     format: iso
-    s3_object: "rhel-9.6-x86_64-boot.iso"
+    s3_object: "rhel-10.2-x86_64-dvd.iso"
     tags: ["ocp_default_iso"]
 
 # Workloads

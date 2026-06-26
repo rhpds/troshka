@@ -98,10 +98,11 @@ Initial seed set:
 
 | Name | Type | Format | Central Key |
 |------|------|--------|-------------|
-| RHEL 9.6 KVM Guest Image | image | qcow2 | `rhel-9.6-x86_64-kvm.qcow2` |
-| RHEL 9.6 Boot ISO | iso | iso | `rhel-9.6-x86_64-boot.iso` |
+| Prebuilt RHEL 10.2 Bastion | image | qcow2 | `prebuilt-rhel-10.2-bastion.qcow2` |
+| RHEL 10.2 KVM Guest Image | image | qcow2 | `rhel-10.2-x86_64-kvm.qcow2` |
+| RHEL 10.2 Binary DVD | iso | iso | `rhel-10.2-x86_64-dvd.iso` |
 
-Images are tagged with `ocp_default_image` and `ocp_default_iso` respectively so OCP templates work out of the box.
+The Prebuilt Bastion is tagged `ocp_default_image` and the Binary DVD is tagged `ocp_default_iso` so OCP templates work out of the box. The raw KVM Guest Image is included as a general-purpose RHEL disk without a default tag.
 
 #### Maintenance
 
@@ -166,15 +167,20 @@ troshka_seed_minio_bucket: "troshka-gold-images"
 troshka_seed_minio_access_key: "{{ seed_minio_access_key }}"
 troshka_seed_minio_secret_key: "{{ seed_minio_secret_key }}"
 troshka_seed_images:
-  - name: "RHEL 9.6 KVM Guest Image"
+  - name: "Prebuilt RHEL 10.2 Bastion"
     type: image
     format: qcow2
-    s3_object: "rhel-9.6-x86_64-kvm.qcow2"
+    s3_object: "prebuilt-rhel-10.2-bastion.qcow2"
     tags: ["ocp_default_image"]
-  - name: "RHEL 9.6 Boot ISO"
+  - name: "RHEL 10.2 KVM Guest Image"
+    type: image
+    format: qcow2
+    s3_object: "rhel-10.2-x86_64-kvm.qcow2"
+    tags: []
+  - name: "RHEL 10.2 Binary DVD"
     type: iso
     format: iso
-    s3_object: "rhel-9.6-x86_64-boot.iso"
+    s3_object: "rhel-10.2-x86_64-dvd.iso"
     tags: ["ocp_default_iso"]
 
 # Workloads
