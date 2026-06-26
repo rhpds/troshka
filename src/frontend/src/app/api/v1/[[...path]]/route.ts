@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8200";
+function getBackendUrl() {
+  return process.env.BACKEND_URL || "http://localhost:8200";
+}
 
 async function proxyRequest(request: NextRequest) {
   const url = new URL(request.url);
-  const backendUrl = `${BACKEND_URL}${url.pathname}${url.search}`;
+  const backendUrl = `${getBackendUrl()}${url.pathname}${url.search}`;
 
   const headers = new Headers();
   for (const [key, value] of request.headers.entries()) {
