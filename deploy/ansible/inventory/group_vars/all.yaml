@@ -1,8 +1,8 @@
 ---
 troshka_namespace: troshka
 
-troshka_backend_image: quay.io/rhpds/troshka-backend:latest
-troshka_frontend_image: quay.io/rhpds/troshka-frontend:latest
+troshka_backend_image: quay.io/redhat-gpte/troshka-backend:latest
+troshka_frontend_image: quay.io/redhat-gpte/troshka-frontend:latest
 
 troshka_route_host: ""
 

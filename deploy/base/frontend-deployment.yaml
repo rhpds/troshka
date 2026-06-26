@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: quay.io/rhpds/troshka-frontend:latest
+          image: quay.io/redhat-gpte/troshka-frontend:latest
           ports:
             - containerPort: 3000
               name: http

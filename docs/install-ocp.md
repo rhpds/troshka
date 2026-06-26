@@ -83,8 +83,8 @@ All variables have defaults in `deploy/ansible/inventory/group_vars/all.yaml`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `troshka_namespace` | `troshka` | OCP namespace to deploy into |
-| `troshka_backend_image` | `quay.io/rhpds/troshka-backend:latest` | Backend container image |
-| `troshka_frontend_image` | `quay.io/rhpds/troshka-frontend:latest` | Frontend container image |
+| `troshka_backend_image` | `quay.io/redhat-gpte/troshka-backend:latest` | Backend container image |
+| `troshka_frontend_image` | `quay.io/redhat-gpte/troshka-frontend:latest` | Frontend container image |
 | `troshka_route_host` | auto-generated | Route hostname (auto: `troshka-{ns}.apps.{cluster}`) |
 
 ### Database
@@ -256,8 +256,8 @@ To upgrade to a newer version:
 1. Update the image tags:
    ```bash
    ansible-playbook deploy/ansible/deploy.yaml \
-     -e troshka_backend_image=quay.io/rhpds/troshka-backend:v1.2.0 \
-     -e troshka_frontend_image=quay.io/rhpds/troshka-frontend:v1.2.0 \
+     -e troshka_backend_image=quay.io/redhat-gpte/troshka-backend:v1.2.0 \
+     -e troshka_frontend_image=quay.io/redhat-gpte/troshka-frontend:v1.2.0 \
      ... (same vars as original deploy)
    ```
 

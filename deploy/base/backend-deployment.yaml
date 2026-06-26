@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: quay.io/rhpds/troshka-backend:latest
+          image: quay.io/redhat-gpte/troshka-backend:latest
           ports:
             - containerPort: 8200
               name: http

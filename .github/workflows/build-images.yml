@@ -30,24 +30,24 @@ jobs:
         run: |
           podman build \
             -f deploy/containerfiles/Containerfile.backend \
-            -t quay.io/rhpds/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
-            -t quay.io/rhpds/troshka-backend:latest \
+            -t quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
+            -t quay.io/redhat-gpte/troshka-backend:latest \
             .
 
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           podman tag \
-            quay.io/rhpds/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
-            quay.io/rhpds/troshka-backend:${{ steps.tags.outputs.version_tag }}
+            quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
+            quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.version_tag }}
 
       - name: Push to Quay.io
         run: |
           podman login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
-          podman push quay.io/rhpds/troshka-backend:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/rhpds/troshka-backend:latest
+          podman push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }}
+          podman push quay.io/redhat-gpte/troshka-backend:latest
           if [[ -n "${{ steps.tags.outputs.version_tag }}" ]]; then
-            podman push quay.io/rhpds/troshka-backend:${{ steps.tags.outputs.version_tag }}
+            podman push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.version_tag }}
           fi
 
   build-frontend:
@@ -69,22 +69,22 @@ jobs:
         run: |
           podman build \
             -f deploy/containerfiles/Containerfile.frontend \
-            -t quay.io/rhpds/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
-            -t quay.io/rhpds/troshka-frontend:latest \
+            -t quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
+            -t quay.io/redhat-gpte/troshka-frontend:latest \
             .
 
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           podman tag \
-            quay.io/rhpds/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
-            quay.io/rhpds/troshka-frontend:${{ steps.tags.outputs.version_tag }}
+            quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
+            quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.version_tag }}
 
       - name: Push to Quay.io
         run: |
           podman login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
-          podman push quay.io/rhpds/troshka-frontend:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/rhpds/troshka-frontend:latest
+          podman push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }}
+          podman push quay.io/redhat-gpte/troshka-frontend:latest
           if [[ -n "${{ steps.tags.outputs.version_tag }}" ]]; then
-            podman push quay.io/rhpds/troshka-frontend:${{ steps.tags.outputs.version_tag }}
+            podman push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.version_tag }}
           fi
