@@ -47,3 +47,10 @@ gc:
 health:
   interval_seconds: 30
   disconnect_after_seconds: 90
+
+integration:
+  enabled: false
+  deepfield_url: ""
+  stargate_url: ""
+  api_key: ""
+  ssl_verify: true

@@ -18,6 +18,8 @@ from app.services.troshkad_client import (
     start_job,
     wait_for_job,
 )
+from app.services.event_publisher import publish_event
+from app.services.stargate_client import complete_run, create_run, submit_evidence
 from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
@@ -117,6 +119,8 @@ def _checkpoint(session, project_id: str, step: str):
         if progress:
             project.deploy_progress = progress
         session.commit()
+    publish_event(project_id, "deploy.step_completed", {"step": step})
+    submit_evidence(project_id, step, {"step": step, "status": "completed"}, result="pass")
 
 
 def _should_skip(resume_from: str | None, step: str) -> bool:
@@ -1856,7 +1860,14 @@ def deploy_project_async(
                     "deploy_error": error_msg,
                 },
             )
+            publish_event(project_id, "deploy.failed", {"error": error_msg, "step": "placement"})
             return
+
+        vm_count = len([n for n in (project.topology or {}).get("nodes", []) if n.get("type") == "vmNode"])
+        publish_event(project_id, "deploy.started", {
+            "host_id": host.id, "vm_count": vm_count, "project_name": project.name,
+        })
+        create_run(project_id, project.name or "unnamed", host_name=host.ip_address)
 
         topology = project.topology or {}
         clock_offset = None
@@ -2763,6 +2774,9 @@ def deploy_project_async(
         )
         _deploy_progress.pop(project_id, None)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
+        publish_event(project_id, "deploy.completed", {"vm_count": len(vms), "project_name": project.name})
+        submit_evidence(project_id, "deploy-complete", {"vms_running": len(vms), "state": "active"}, result="pass")
+        complete_run(project_id)
 
         if auto_start and _is_ocp_topology(topology):
             project.ocp_status = "monitoring"
@@ -2771,6 +2785,10 @@ def deploy_project_async(
     except Exception as e:
         logger.exception("Deploy %s failed unexpectedly", project_id[:8])
         _deploy_progress.pop(project_id, None)
+        current_step = _deploy_progress.get(project_id, {}).get("step", "unknown")
+        publish_event(project_id, "deploy.failed", {"error": str(e), "step": current_step})
+        submit_evidence(project_id, "deploy-complete", {"error": str(e), "step": current_step}, result="fail")
+        complete_run(project_id)
         try:
             project = s.query(Project).filter_by(id=project_id).first()
             if project:

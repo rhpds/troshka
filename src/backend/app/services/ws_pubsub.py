@@ -234,6 +234,12 @@ def _poll_active_projects():
                         old_state,
                         new_state,
                     )
+                    if new_state in ("stopped", "crashed"):
+                        from app.services.event_publisher import publish_event
+                        publish_event(project_id, "vm.state_changed", {
+                            "vm_id": vm_id, "vm_name": vm_label,
+                            "old_state": old_state, "new_state": new_state,
+                        })
 
             if vm_states and (
                 vm_states != prev_vm_states

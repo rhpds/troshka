@@ -161,6 +161,12 @@ def _poll_hosts():
 
                     host.storage_warnings = _evaluate_partitions(health)
                     if host.storage_warnings:
+                        from app.services.event_publisher import publish_event
+                        for w in host.storage_warnings:
+                            publish_event(host.id, "host.health_warning", {
+                                "host_id": host.id, "mount": w["mount"],
+                                "used_pct": w["used_pct"], "severity": w["level"],
+                            })
                         try:
                             from app.services.storage_extend import should_extend_host
 
