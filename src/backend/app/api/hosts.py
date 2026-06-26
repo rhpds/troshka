@@ -23,6 +23,7 @@ class ProvisionRequest(BaseModel):
     region: str | None = None
     image_id: str | None = None
     storage_pool_id: str | None = None
+    disk_gb: int | None = None
 
 
 @router.get("/expected-agent-version")
@@ -260,6 +261,7 @@ def add_host(
     import threading
     import uuid as _uuid
 
+    _disk_gb = body.disk_gb or 500
     host_id = str(_uuid.uuid4())
     host = Host(
         id=host_id,
@@ -273,7 +275,7 @@ def add_host(
         total_ram_mb=0,
         ip_address="",
         agent_status="provisioning",
-        storage_size_gb=500,
+        storage_size_gb=_disk_gb,
         max_eips=0,
     )
     if body.storage_pool_id:
@@ -319,7 +321,7 @@ def add_host(
                     provider=prov,
                     host_id=host_id,
                     instance_type=_instance_type,
-                    storage_size_gb=500,
+                    storage_size_gb=_disk_gb,
                     image_id=_image_id,
                     region=region,
                     vpc_id=_vpc_id,
