@@ -39,7 +39,7 @@ async function proxyRequest(request: NextRequest) {
       if (location) {
         const redirectUrl = location.startsWith("http")
           ? location
-          : `${BACKEND_URL}${location}`;
+          : `${getBackendUrl()}${location}`;
         resp = await fetch(redirectUrl, {
           method: request.method,
           headers,
