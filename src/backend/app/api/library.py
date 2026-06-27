@@ -427,26 +427,15 @@ def finalize_seed(
     client = _get_s3_client()
     bucket = _bucket()
 
-    dest_key = f"library/{user.id}/{item.id}/{item.name}.{item.format}"
-
-    client.copy_object(
-        Bucket=bucket,
-        CopySource={"Bucket": bucket, "Key": body.seed_key},
-        Key=dest_key,
-    )
-    client.delete_object(Bucket=bucket, Key=body.seed_key)
-
-    head = client.head_object(Bucket=bucket, Key=dest_key)
-    item.s3_key = dest_key
+    head = client.head_object(Bucket=bucket, Key=body.seed_key)
+    item.s3_key = body.seed_key
     item.size_bytes = head["ContentLength"]
     item.state = "ready"
     if body.tags:
         item.tags = body.tags
     db.commit()
 
-    logger.info(
-        "Finalized seed: %s → %s (%d bytes)", body.seed_key, dest_key, item.size_bytes
-    )
+    logger.info("Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes)
     return {
         "id": item.id,
         "s3_key": dest_key,
