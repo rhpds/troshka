@@ -5537,8 +5537,9 @@ def handle_vm_states(handler, params):
             domains = {
                 name: {"state": info["state"]} for name, info in _vm_state_cache.items()
             }
-        handler._send_json(200, {"domains": domains, "source": "events"})
-        return
+        if domains:
+            handler._send_json(200, {"domains": domains, "source": "events"})
+            return
     domains = {}
     try:
         result = subprocess.run(
