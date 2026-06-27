@@ -146,7 +146,7 @@ def _enforce_allowed_users(identity: str):
     if _allowed_users and identity.lower() not in _allowed_users:
         raise HTTPException(
             status_code=403,
-            detail="Access denied: user not in allowed_users list",
+            detail=f"Access denied for user {identity}",
         )
 
 
