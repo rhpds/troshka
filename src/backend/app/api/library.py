@@ -445,7 +445,7 @@ def finalize_seed(
         item.size_bytes = head["ContentLength"]
     item.state = "ready"
     if body.tags:
-        item.tags = body.tags
+        item.tags = {t: True for t in body.tags}
     db.commit()
 
     logger.info("Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes)
