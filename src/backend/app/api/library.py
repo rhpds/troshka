@@ -175,9 +175,10 @@ def update_item(
                 )
                 .all()
             ):
-                if other.tags and other.tags.get("ocp_default_image"):
+                other_tags = other.tags if isinstance(other.tags, dict) else {}
+                if other_tags.get("ocp_default_image"):
                     other.tags = {
-                        k: v for k, v in other.tags.items() if k != "ocp_default_image"
+                        k: v for k, v in other_tags.items() if k != "ocp_default_image"
                     }
                     flag_modified(other, "tags")
         if new_tags.get("ocp_default_iso"):
@@ -188,9 +189,10 @@ def update_item(
                 )
                 .all()
             ):
-                if other.tags and other.tags.get("ocp_default_iso"):
+                other_tags = other.tags if isinstance(other.tags, dict) else {}
+                if other_tags.get("ocp_default_iso"):
                     other.tags = {
-                        k: v for k, v in other.tags.items() if k != "ocp_default_iso"
+                        k: v for k, v in other_tags.items() if k != "ocp_default_iso"
                     }
                     flag_modified(other, "tags")
         item.tags = new_tags
