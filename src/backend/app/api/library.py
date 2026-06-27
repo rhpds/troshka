@@ -438,7 +438,7 @@ def finalize_seed(
     logger.info("Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes)
     return {
         "id": item.id,
-        "s3_key": dest_key,
+        "s3_key": item.s3_key,
         "size_bytes": item.size_bytes,
         "state": "ready",
     }
