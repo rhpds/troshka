@@ -1682,6 +1682,41 @@ def update_agent(
                                 host_id[:8],
                                 new_ver,
                             )
+                        # Also push vncd if available
+                        try:
+                            vncd_path = os.path.join(
+                                os.path.dirname(
+                                    os.path.dirname(
+                                        os.path.dirname(
+                                            os.path.dirname(os.path.abspath(__file__))
+                                        )
+                                    )
+                                ),
+                                "troshka-vncd",
+                                "troshka-vncd.py",
+                            )
+                            if os.path.exists(vncd_path):
+                                import base64
+
+                                with open(vncd_path, "rb") as vf:
+                                    vncd_b64 = base64.b64encode(vf.read()).decode()
+                                prov = (
+                                    s.query(Provider)
+                                    .filter_by(id=h.provider_id)
+                                    .first()
+                                )
+                                no_tls = prov.type == "ocpvirt" if prov else False
+                                troshkad_request(
+                                    h,
+                                    "POST",
+                                    "/admin/update-vncd",
+                                    body={"script": vncd_b64, "no_tls": no_tls},
+                                )
+                                logger.info("Host %s vncd updated", host_id[:8])
+                        except Exception as ve:
+                            logger.warning(
+                                "Host %s vncd update failed: %s", host_id[:8], ve
+                            )
                         return
                 logger.warning(
                     "Host %s update: agent did not come back after 150s", host_id[:8]
