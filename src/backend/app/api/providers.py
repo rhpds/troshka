@@ -29,6 +29,7 @@ class ProviderCreate(BaseModel):
     token: str = ""
     namespace: str = "troshka"
     verify_ssl: bool = False
+    iso_pvc: str | None = None
 
     # GCP fields
     gcp_project_id: str = ""
@@ -161,6 +162,8 @@ def create_provider(
             "namespace": body.namespace,
             "verify_ssl": body.verify_ssl,
         }
+        if body.iso_pvc is not None:
+            creds["iso_pvc"] = body.iso_pvc
         api_host = (
             body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
         )

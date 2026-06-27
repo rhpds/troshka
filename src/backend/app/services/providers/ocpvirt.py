@@ -235,22 +235,17 @@ class OCPVirtDriver(ProviderDriver):
             },
         ]
 
-        # ISO PVC name — must exist in the same namespace
-        iso_pvc = kwargs.get("iso_pvc") or creds.get("iso_pvc", "rhel-10.2-dvd-iso")
+        # ISO PVC name — must exist in the same namespace; set to "" to skip
+        iso_pvc = kwargs.get("iso_pvc", creds.get("iso_pvc", "rhel-10.2-dvd-iso"))
 
         disks = [
             {"disk": {"bus": "virtio"}, "name": "rootdisk"},
             {"disk": {"bus": "virtio"}, "name": "datadisk"},
-            {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"},
             {"disk": {"bus": "virtio"}, "name": "cloudinitdisk"},
         ]
         volumes = [
             {"dataVolume": {"name": f"{hostname}-root"}, "name": "rootdisk"},
             {"dataVolume": {"name": f"{hostname}-data"}, "name": "datadisk"},
-            {
-                "persistentVolumeClaim": {"claimName": iso_pvc},
-                "name": "installiso",
-            },
             {
                 "cloudInitNoCloud": {
                     "secretRef": {"name": f"{hostname}-userdata"},
@@ -258,6 +253,17 @@ class OCPVirtDriver(ProviderDriver):
                 "name": "cloudinitdisk",
             },
         ]
+        if iso_pvc:
+            disks.insert(
+                2, {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"}
+            )
+            volumes.insert(
+                2,
+                {
+                    "persistentVolumeClaim": {"claimName": iso_pvc},
+                    "name": "installiso",
+                },
+            )
 
         # Create Secret with cloud-init userdata (KubeVirt enforces 2KB inline limit)
         import base64
