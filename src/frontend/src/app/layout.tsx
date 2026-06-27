@@ -52,7 +52,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     }
 
     fetch("/api/v1/auth/me")
-      .then((r) => {
+      .then(async (r) => {
+        if (r.status === 403) {
+          const body = await r.json().catch(() => ({}));
+          setUser({ denied: true, detail: body.detail || "Access denied" } as any);
+          return null;
+        }
         if (!r.ok) { setUser(null); return null; }
         return r.json();
       })
@@ -303,7 +308,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               Backend is unreachable — the server may be restarting
             </div>
           )}
-          {children}
+          {(user as any)?.denied ? (
+            <div style={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              height: "60vh",
+              flexDirection: "column",
+              gap: "1rem",
+            }}>
+              <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>{(user as any).detail}</h1>
+            </div>
+          ) : children}
         </Page>
       </body>
     </html>
