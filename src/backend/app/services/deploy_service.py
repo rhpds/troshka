@@ -981,6 +981,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     "aws_access_key_id": s3_creds.get("access_key_id", ""),
                     "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
                     "aws_region": s3_creds.get("region", "us-east-1"),
+                    "aws_endpoint_url": s3_creds.get("endpoint_url", ""),
                 },
             )
             active_jobs.append(
@@ -2314,6 +2315,7 @@ def deploy_project_async(
                             "aws_access_key_id": creds.get("access_key_id", ""),
                             "aws_secret_access_key": creds.get("secret_access_key", ""),
                             "aws_region": creds.get("region", "us-east-1"),
+                            "aws_endpoint_url": creds.get("endpoint_url", ""),
                         },
                     )
                     wait_for_job(host, job_id, timeout=600)
@@ -2845,7 +2847,12 @@ def _clean_kubelet_certs(host, project_id, topology, pool):
                 logger.info(
                     "Deploy %s: cert cleanup complete for %s", project_id[:8], vm_name
                 )
-        except Exception:
+        except Exception as e:
+            err_msg = str(e)
+            if "No such file or directory" in err_msg and "guestfish" in err_msg:
+                raise RuntimeError(
+                    "guestfish not installed on host — install libguestfs-tools-c"
+                ) from e
             logger.warning(
                 "Deploy %s: cert cleanup error for %s, continuing",
                 project_id[:8],
