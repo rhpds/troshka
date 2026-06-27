@@ -404,6 +404,7 @@ async def upload_proxy(
 class FinalizeSeedRequest(BaseModel):
     seed_key: str
     tags: list[str] = []
+    skip_copy: bool = False
 
 
 @router.post("/{item_id}/finalize-seed")
@@ -427,9 +428,21 @@ def finalize_seed(
     client = _get_s3_client()
     bucket = _bucket()
 
-    head = client.head_object(Bucket=bucket, Key=body.seed_key)
-    item.s3_key = body.seed_key
-    item.size_bytes = head["ContentLength"]
+    if body.skip_copy:
+        head = client.head_object(Bucket=bucket, Key=body.seed_key)
+        item.s3_key = body.seed_key
+        item.size_bytes = head["ContentLength"]
+    else:
+        dest_key = f"library/{user.id}/{item.id}/{item.name}.{item.format}"
+        client.copy_object(
+            Bucket=bucket,
+            CopySource={"Bucket": bucket, "Key": body.seed_key},
+            Key=dest_key,
+        )
+        client.delete_object(Bucket=bucket, Key=body.seed_key)
+        head = client.head_object(Bucket=bucket, Key=dest_key)
+        item.s3_key = dest_key
+        item.size_bytes = head["ContentLength"]
     item.state = "ready"
     if body.tags:
         item.tags = body.tags
