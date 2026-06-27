@@ -19,11 +19,19 @@ router = APIRouter()
 HEARTBEAT_INTERVAL = 30
 
 
-def _authenticate_ws(token: str | None, db) -> User | None:
+def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
     if not config.auth.oauth_enabled and not token:
         from app.core.auth import _get_or_create_dev_user
 
         return _get_or_create_dev_user(db)
+
+    # SSO mode: check X-Forwarded-Email header (from oauth-proxy)
+    if headers:
+        email = headers.get("x-forwarded-email")
+        if email:
+            from app.core.auth import _upsert_sso_user
+
+            return _upsert_sso_user(email, headers.get("x-forwarded-user"), db)
 
     if not token:
         return None
@@ -104,7 +112,7 @@ async def project_websocket(websocket: WebSocket, project_id: str):
 
     db = SessionLocal()
     try:
-        user = _authenticate_ws(token, db)
+        user = _authenticate_ws(token, db, headers=dict(websocket.headers))
         if not user:
             await websocket.close(code=4001, reason="Unauthorized")
             return
@@ -149,7 +157,7 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
     token = websocket.query_params.get("token")
     db = SessionLocal()
     try:
-        user = _authenticate_ws(token, db)
+        user = _authenticate_ws(token, db, headers=dict(websocket.headers))
         if not user:
             await websocket.close(code=4001, reason="Unauthorized")
             return
