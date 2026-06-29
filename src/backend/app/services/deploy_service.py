@@ -2002,8 +2002,10 @@ def deploy_project_async(
                 if eip.port_map:
                     ext_ip["_transit_port_map"] = eip.port_map
 
-            # Remove skipped EIP entries (OCP Virt Routes replace them)
-            topology["externalIps"] = [e for e in external_ips if not e.get("_skip")]
+            # Clean up internal markers (keep EIP entries so port forward
+            # references remain valid — OCP Virt EIPs just have no allocated IP)
+            for ext_ip in external_ips:
+                ext_ip.pop("_skip", None)
 
             project.topology = topology
             s.commit()
@@ -2173,8 +2175,6 @@ def deploy_project_async(
                     node_data = node.get("data", {})
                     if node_data.get("subtype") != "gateway":
                         continue
-                    if node_data.get("externalEndpoints"):
-                        break
                     for pf in node_data.get("portForwards", []):
                         ext_port = int(pf.get("extPort", 0))
                         if ext_port not in (80, 443):
