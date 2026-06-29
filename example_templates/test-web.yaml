@@ -1,0 +1,47 @@
+# Troshka infra_template export
+# Passwords omitted — set them before deploying.
+
+networks:
+  network-00:
+    cidr: 10.0.0.0/24
+    dhcp: true
+gateway:
+  external_access: true
+  port_forwards:
+  - ext_port: 80
+    int_ip: 10.0.0.10
+    int_port: 80
+    proto: tcp
+  network: network-00
+vms:
+  vm-00:
+    vcpus: 2
+    ram_gb: 4
+    os: rhel10
+    firmware: uefi
+    cloud_init: true
+    # cloud_user_password: set-before-deploy
+    packages:
+      - httpd
+    user_data: |
+      runcmd:
+        - systemctl enable httpd
+        - systemctl start httpd
+        - firewall-cmd --permanent --add-service=http
+        - firewall-cmd --permanent --add-service=https
+        - firewall-cmd --reload
+        - echo '<h1>Troshka says hello from the nested universe!</h1>' > /var/www/html/index.html
+    disks:
+    - name: disk-00
+      size_gb: 20
+      #library_item_id: e5527348-4863-41c3-b1ed-ded9b1ef0603
+      library_item_name: Prebuilt RHEL 10.2 Bastion
+    isos:
+    - name: boot-00
+      #library_item_id: 90d2efb8-44a2-4755-8bb8-3ac2c7aee95d
+      library_item_name: RHEL 10.2 Binary DVD
+    nics:
+    - network: network-00
+      model: virtio
+      ip: 10.0.0.10
+name: test
