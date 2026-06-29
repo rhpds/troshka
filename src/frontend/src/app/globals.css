@@ -1200,3 +1200,14 @@ body {
 .start-order-btn.save:hover {
   background: #5b52e0;
 }
+
+/* Getting Started nav shine animation */
+@keyframes nav-shine-pulse {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(108, 99, 255, 0.15); }
+}
+.nav-shine > * {
+  animation: nav-shine-pulse 2s ease-in-out infinite;
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(108, 99, 255, 0.3);
+}

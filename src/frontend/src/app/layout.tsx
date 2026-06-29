@@ -76,6 +76,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       "/admin/hosts": "Hosts",
       "/admin/storage-pools": "Storage Pools",
       "/admin/dns-providers": "DNS Providers",
+      "/getting-started": "Getting Started",
     };
     const pageTitle = titleMap[pathname || ""] || "";
     if (pageTitle) document.title = `Troshka: ${pageTitle}`;
@@ -121,6 +122,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => clearInterval(iv);
   }, []);
 
+  const [showGettingStartedShine, setShowGettingStartedShine] = useState(false);
+  useEffect(() => {
+    if (!user || (user as any).denied) return;
+    const seen = localStorage.getItem("troshka-seen-getting-started");
+    if (!seen && pathname !== "/getting-started") setShowGettingStartedShine(true);
+  }, [user]);
+
+  const dismissGettingStartedShine = () => {
+    localStorage.setItem("troshka-seen-getting-started", "1");
+    setShowGettingStartedShine(false);
+  };
+
+  useEffect(() => {
+    if (pathname === "/getting-started" && showGettingStartedShine) dismissGettingStartedShine();
+  }, [pathname, showGettingStartedShine]);
+
   const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean }>({ hosts: false, pools: false });
   useEffect(() => {
     if (!isAdmin) return;
@@ -153,6 +170,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }
 
   const navItems = [
+    { label: "Getting Started", path: "/getting-started" },
     { label: "Projects", path: "/projects" },
     { label: "Images", path: "/library/images" },
     { label: "Patterns", path: "/library/patterns" },
@@ -252,15 +270,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <PageSidebarBody>
         <Nav>
           <NavList>
-            {navItems.map((item) => (
-              <NavItem
-                key={item.path}
-                isActive={pathname === item.path || pathname?.startsWith(item.path + "/")}
-                onClick={() => router.push(item.path)}
-              >
-                {item.label}
-              </NavItem>
-            ))}
+            {navItems.map((item) => {
+              const shine = item.path === "/getting-started" && showGettingStartedShine;
+              return (
+                <NavItem
+                  key={item.path}
+                  isActive={pathname === item.path || pathname?.startsWith(item.path + "/")}
+                  onClick={() => {
+                    if (shine) dismissGettingStartedShine();
+                    router.push(item.path);
+                  }}
+                  className={shine ? "nav-shine" : undefined}
+                >
+                  {item.label}
+                </NavItem>
+              );
+            })}
           </NavList>
         </Nav>
         {isAdmin && (
