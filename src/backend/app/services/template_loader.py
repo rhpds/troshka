@@ -447,8 +447,8 @@ def _generate_topology_from_vms(
             if di == 0:
                 boot_device_ids.append(disk_id)
             disk_data = {
-                "label": f"{vm_name}-disk{di}",
-                "name": f"{vm_name}-disk{di}",
+                "label": disk_cfg.get("name", f"disk-{di:02d}"),
+                "name": disk_cfg.get("name", f"disk-{di:02d}"),
                 "size": disk_cfg.get("size_gb", 50),
                 "format": "qcow2",
                 "icon": "\U0001f6e2",
@@ -897,10 +897,29 @@ def _generate_topology_from_vms(
     }
 
 
-def export_topology_to_template(topology: dict) -> dict:
+def export_topology_to_template(topology: dict, db=None) -> dict:
     """Reverse-map a canvas topology JSONB to a simple infra_template YAML dict."""
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
+
+    # Build set of library item IDs that are actually ISOs (check DB)
+    _iso_item_ids: set[str] = set()
+    if db:
+        from app.models.library import LibraryItem
+
+        lib_ids = []
+        for n in nodes:
+            if n.get("type") == "storageNode":
+                lid = n.get("data", {}).get("libraryItemId")
+                if lid:
+                    lib_ids.append(lid)
+        if lib_ids:
+            items = (
+                db.query(LibraryItem.id, LibraryItem.format)
+                .filter(LibraryItem.id.in_(lib_ids))
+                .all()
+            )
+            _iso_item_ids = {i.id for i in items if i.format == "iso"}
 
     # Index network nodes by id
     net_nodes = {n["id"]: n for n in nodes if n.get("type") == "networkNode"}
@@ -976,6 +995,20 @@ def export_topology_to_template(topology: dict) -> dict:
                         ports.append(p)
                 if ports:
                     gateway["outbound_ports"] = ports
+            if d.get("gatewayMode") == "nat-portforward":
+                gateway["external_access"] = True
+                pfs = d.get("portForwards", [])
+                if pfs:
+                    gateway["port_forwards"] = [
+                        {
+                            "ext_port": int(pf.get("extPort", 0)),
+                            "int_ip": pf.get("intIp", ""),
+                            "int_port": int(pf.get("intPort", 0)),
+                            "proto": pf.get("proto", "tcp"),
+                        }
+                        for pf in pfs
+                        if pf.get("extPort") and pf.get("intIp")
+                    ]
             # Find which network the gateway connects to
             gw_id = nn["id"]
             for e in edges:
@@ -1046,6 +1079,14 @@ def export_topology_to_template(topology: dict) -> dict:
             e["source"] for e in vm_edges if e.get("targetHandle", "").startswith("dp-")
         ]
         storage_nodes = {n["id"]: n for n in nodes if n.get("type") == "storageNode"}
+
+        def _is_iso_storage(snode):
+            sd = snode.get("data", {})
+            if sd.get("format") == "iso":
+                return True
+            lid = sd.get("libraryItemId", "")
+            return lid in _iso_item_ids
+
         # Maintain controller order
         for dc in disk_controllers:
             if dc.get("name", "").startswith("cdrom"):
@@ -1057,8 +1098,14 @@ def export_topology_to_template(topology: dict) -> dict:
                 # Match by edge targetHandle containing controller id
                 for e in vm_edges:
                     if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+                        if _is_iso_storage(sn):
+                            break
                         sd = sn.get("data", {})
-                        disk_out = {"size_gb": sd.get("size", 50)}
+                        disk_out = {}
+                        disk_name = sd.get("name", "")
+                        if disk_name:
+                            disk_out["name"] = disk_name
+                        disk_out["size_gb"] = sd.get("size", 50)
                         if sd.get("libraryItemId"):
                             disk_out["library_item_id"] = sd["libraryItemId"]
                         if sd.get("libraryItemName"):
@@ -1071,26 +1118,28 @@ def export_topology_to_template(topology: dict) -> dict:
                     disks.append({"size_gb": 50})
         vm_out["disks"] = disks
 
-        # ISOs — find cdrom-attached storage nodes
+        # ISOs — find cdrom-attached or ISO-format storage nodes
         isos = []
         for dc in disk_controllers:
-            if not dc.get("name", "").startswith("cdrom"):
-                continue
+            is_cdrom = dc.get("name", "").startswith("cdrom")
             for sid in storage_ids:
                 sn = storage_nodes.get(sid)
                 if not sn:
                     continue
                 for e in vm_edges:
                     if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
-                        sd = sn.get("data", {})
-                        if sd.get("format") == "iso" and sd.get("libraryItemId"):
-                            isos.append(
-                                {
-                                    "name": sd.get("name", "iso"),
-                                    "library_item_id": sd["libraryItemId"],
-                                    "library_item_name": sd.get("libraryItemName", ""),
-                                }
-                            )
+                        if is_cdrom or _is_iso_storage(sn):
+                            sd = sn.get("data", {})
+                            if sd.get("libraryItemId"):
+                                isos.append(
+                                    {
+                                        "name": sd.get("name", "iso"),
+                                        "library_item_id": sd["libraryItemId"],
+                                        "library_item_name": sd.get(
+                                            "libraryItemName", ""
+                                        ),
+                                    }
+                                )
                         break
         if isos:
             vm_out["isos"] = isos

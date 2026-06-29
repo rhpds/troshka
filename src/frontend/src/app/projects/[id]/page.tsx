@@ -1125,7 +1125,7 @@ export default function ProjectCanvasPage() {
               background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
               color: "var(--pf-t--global--text--color--regular)", lineHeight: 1.5,
             }}>
-              This exports the infrastructure topology (VMs, networks, disk sizes) with references to library items (disk images and ISOs). On import, referenced library items are validated to ensure they exist. To capture a fully built environment including disk images and installed software, use <strong>Save as Pattern</strong> instead.
+              This exports the infrastructure topology (VMs, networks, gateway config, disk sizes) as a YAML template. Disks reference their <strong>source library items</strong> (not snapshots) — on import, those library items must exist. To capture a fully built environment including disk contents, use <strong>Save as Pattern</strong> instead.
             </div>
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Passwords</div>

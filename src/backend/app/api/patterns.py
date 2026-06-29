@@ -407,7 +407,7 @@ def export_pattern_template(
             raise HTTPException(status_code=404, detail="Pattern not found")
 
     topo = pattern.topology or {}
-    result = export_topology_to_template(topo)
+    result = export_topology_to_template(topo, db=db)
     result["name"] = pattern.name
     if pattern.description:
         result["description"] = pattern.description

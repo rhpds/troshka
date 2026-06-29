@@ -2354,7 +2354,9 @@ export default function PropertiesPanel() {
                   </div>
                   {(data as Record<string, any>).gatewayMode === "nat-portforward" && (() => {
                     const projectIps = useCanvasStore.getState().externalIps;
-                    return projectIps.length === 0 ? (
+                    const endpoints = ((data as Record<string, any>).externalEndpoints as Array<{type?: string}>) || [];
+                    const hasRoutes = endpoints.some(e => e.type === "route");
+                    return projectIps.length === 0 && !hasRoutes ? (
                       <div className="props-field">
                         <span style={{ fontSize: 11, color: "var(--troshka-yellow)" }}>
                           ⚠ No external IPs allocated. Use the External IPs panel in the sidebar to add some.
@@ -2475,12 +2477,30 @@ export default function PropertiesPanel() {
                                       (updated[i] as Record<string, string>).extIpId = e.target.value;
                                       update("portForwards", updated);
                                     }}>
-                                    <option value="">Select IP...</option>
-                                    {externalIps.map((eip) => (
-                                      <option key={eip.id} value={eip.id}>{eip.name}{eip.ip ? ` (${eip.ip})` : " (auto)"}</option>
-                                    ))}
+                                    {externalIps.length === 0 ? (
+                                      <option value="">No IPs — click +</option>
+                                    ) : (
+                                      <>
+                                        <option value="">Select IP...</option>
+                                        {externalIps.map((eip) => (
+                                          <option key={eip.id} value={eip.id}>{eip.name}{eip.ip ? ` (${eip.ip})` : " (auto)"}</option>
+                                        ))}
+                                      </>
+                                    )}
                                   </select>
-                                  {(() => {
+                                  {externalIps.length === 0 ? (
+                                    <button
+                                      style={{ background: "none", border: "1px solid var(--troshka-cyan)", color: "var(--troshka-cyan)", cursor: "pointer", padding: "2px 8px", flexShrink: 0, borderRadius: 4, fontSize: 11, fontWeight: 600 }}
+                                      title="Create an external IP"
+                                      onClick={() => {
+                                        const newId = `eip-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+                                        useCanvasStore.getState().setExternalIps([...externalIps, { id: newId, name: "IP-1", ip: "" }]);
+                                        const updated = [...portForwards];
+                                        (updated[i] as Record<string, string>).extIpId = newId;
+                                        update("portForwards", updated);
+                                      }}
+                                    >+</button>
+                                  ) : (() => {
                                     const selEip = externalIps.find((e) => e.id === (pf as Record<string, string>).extIpId);
                                     return selEip?.ip ? (
                                       <button
@@ -2509,13 +2529,51 @@ export default function PropertiesPanel() {
                             <div className="props-row" style={{ alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
                                 {<label className="props-label">Internal IP</label>}
-                                <input className="props-input" value={pf.intIp} placeholder="192.168.1.10" style={{ fontFamily: "monospace" }}
-                                  onChange={(e) => {
-                                    const updated = [...portForwards];
-                                    updated[i] = { ...pf, intIp: e.target.value };
-                                    update("portForwards", updated);
-                                  }}
-                                />
+                                {(() => {
+                                  const vmIps: { ip: string; vmName: string }[] = [];
+                                  for (const n of nodes) {
+                                    if (n.type !== "vmNode") continue;
+                                    const vmData = n.data as Record<string, any>;
+                                    for (const nic of (vmData.nics || []) as Array<Record<string, any>>) {
+                                      if (nic.ip) vmIps.push({ ip: nic.ip, vmName: vmData.name || vmData.label || "" });
+                                    }
+                                  }
+                                  const isCustom = (pf.intIp && !vmIps.some((v) => v.ip === pf.intIp));
+                                  return isCustom ? (
+                                    <div style={{ display: "flex", gap: 4 }}>
+                                      <input className="props-input" value={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
+                                        autoFocus
+                                        onChange={(e) => {
+                                          const updated = [...portForwards];
+                                          updated[i] = { ...pf, intIp: e.target.value };
+                                          update("portForwards", updated);
+                                        }}
+                                      />
+                                      {vmIps.length > 0 && (
+                                        <button style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 10, flexShrink: 0 }}
+                                          title="Switch to VM picker"
+                                          onClick={() => { const updated = [...portForwards]; updated[i] = { ...pf, intIp: "" }; update("portForwards", updated); }}
+                                        >▾</button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <select className="props-select" style={{ fontFamily: "monospace", fontSize: 11 }}
+                                      value={pf.intIp}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const updated = [...portForwards];
+                                        updated[i] = { ...pf, intIp: val === "__other__" ? " " : val };
+                                        update("portForwards", updated);
+                                      }}>
+                                      <option value="">Select VM...</option>
+                                      {vmIps.map((v) => (
+                                        <option key={v.ip} value={v.ip}>{v.ip} ({v.vmName})</option>
+                                      ))}
+                                      <option disabled style={{ fontSize: 9 }}>──────────</option>
+                                      <option value="__other__">Other...</option>
+                                    </select>
+                                  );
+                                })()}
                               </div>
                               <div className="props-field" style={{ flex: "0 0 50px" }}>
                                 {<label className="props-label">Int Port</label>}

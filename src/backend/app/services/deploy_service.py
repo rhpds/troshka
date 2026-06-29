@@ -201,6 +201,24 @@ def _mark_shared_cache_ready(db_session, pool_id, item_id, item_type, size_bytes
         db_session.commit()
 
 
+def _mark_shared_cache_error(db_session, pool_id, item_id, item_type):
+    """Mark a shared cache entry as error so other deploys don't wait on it."""
+    from app.models.storage_pool import SharedCacheEntry
+
+    entry = (
+        db_session.query(SharedCacheEntry)
+        .filter(
+            SharedCacheEntry.storage_pool_id == pool_id,
+            SharedCacheEntry.item_id == item_id,
+            SharedCacheEntry.item_type == item_type,
+        )
+        .first()
+    )
+    if entry and entry.status == "downloading":
+        db_session.delete(entry)
+        db_session.commit()
+
+
 def _wait_for_shared_cache(db_session, pool_id, item_id, item_type, timeout=600):
     """Wait for another download to complete. Returns True if ready."""
     import time as _t
@@ -1032,6 +1050,10 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         aj["name"],
                         job.get("result", {}).get("error", ""),
                     )
+                    if pool and pool.mode.startswith("shared"):
+                        _mark_shared_cache_error(
+                            db_session, pool.id, aj["item_id"], "image"
+                        )
             except TroshkadError:
                 pass  # Transient connection error, retry next poll
 
@@ -2778,6 +2800,22 @@ def deploy_project_async(
             if project:
                 project.state = "error"
                 project.deploy_error = str(e)
+                # Clean up any "downloading" cache entries this deploy created
+                if project.host_id:
+                    pool = _get_host_pool(s, project.host_id)
+                    if pool and pool.mode.startswith("shared"):
+                        from app.models.storage_pool import SharedCacheEntry
+
+                        stale = (
+                            s.query(SharedCacheEntry)
+                            .filter(
+                                SharedCacheEntry.storage_pool_id == pool.id,
+                                SharedCacheEntry.status == "downloading",
+                            )
+                            .all()
+                        )
+                        for entry in stale:
+                            s.delete(entry)
                 s.commit()
                 notify_project(
                     project_id,

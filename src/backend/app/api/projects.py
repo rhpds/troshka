@@ -588,7 +588,7 @@ def export_template(
         raise HTTPException(status_code=403, detail="Access denied")
 
     topo = project.topology or {}
-    result = export_topology_to_template(topo)
+    result = export_topology_to_template(topo, db=db)
     result["name"] = project.name
     if project.description:
         result["description"] = project.description
