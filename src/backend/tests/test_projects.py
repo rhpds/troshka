@@ -164,7 +164,7 @@ def test_patch_auto_stop_clears_expiry_when_disabled():
     from app.models.project import Project
 
     p = db.query(Project).filter_by(id=project_id).first()
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     p.auto_stop_started_at = now
     p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)
     p.auto_stop_warned = True
@@ -193,7 +193,7 @@ def test_patch_auto_stop_recomputes_expiry_when_running():
     from app.models.project import Project
 
     p = db.query(Project).filter_by(id=project_id).first()
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     p.auto_stop_minutes = 60
     p.auto_stop_started_at = now
     p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)
@@ -222,7 +222,7 @@ def test_extend_auto_stop_timer():
     from app.models.project import Project
 
     p = db.query(Project).filter_by(id=project_id).first()
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     p.auto_stop_minutes = 60
     p.auto_stop_started_at = now
     p.auto_stop_expires_at = now + datetime.timedelta(minutes=60)

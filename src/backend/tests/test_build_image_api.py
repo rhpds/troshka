@@ -1,12 +1,13 @@
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.core.database import get_db
+from app.main import app
 from app.models.provider import Provider
 from app.models.user import User
-from tests.conftest import get_test_db, TestSession
+from tests.conftest import TestSession, get_test_db
 
 app.dependency_overrides[get_db] = get_test_db
 

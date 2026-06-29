@@ -266,11 +266,11 @@ def test_generate_topology_network_cidrs():
 
 
 def test_dns_records_from_template():
+    from app.services.ocp.agent_template import _setup_dns_records
     from app.services.template_loader import (
         generate_topology_from_template,
         resolve_template,
     )
-    from app.services.ocp.agent_template import _setup_dns_records
 
     resolved = resolve_template("example", templates_dir=TEMPLATES_DIR)
     topo = generate_topology_from_template(resolved)

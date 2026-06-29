@@ -85,12 +85,11 @@ def test_find_vm_name_by_ip_multiple_nics():
 
 def test_route_name_sanitization():
     """Route names must be DNS-safe."""
-    from app.services.providers.ocpvirt import OCPVirtDriver
     import re
 
-    driver = OCPVirtDriver()
-    # The naming logic is inside create_route_access — test it indirectly
-    # by verifying the pattern used
+    from app.services.providers.ocpvirt import OCPVirtDriver
+
+    OCPVirtDriver()
     vm_name = "My_Bastion.Host"
     safe = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
     resource_name = f"troshka-pf-{'a53cbd0d'}-{safe}-443"
@@ -161,9 +160,7 @@ def test_create_route_access_edge_for_port_80(mock_clients):
     host.instance_id = "troshka-host-abc"
 
     driver = OCPVirtDriver()
-    result = driver.create_route_access(
-        provider, host, "proj-001", "bastion", "10.0.0.50", 80
-    )
+    driver.create_route_access(provider, host, "proj-001", "bastion", "10.0.0.50", 80)
 
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
@@ -174,7 +171,6 @@ def test_create_route_access_edge_for_port_80(mock_clients):
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
 def test_delete_route_access_cleans_up_by_label(mock_clients):
-    from kubernetes import client
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()

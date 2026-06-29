@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from app.services.deploy_service import (
     _clean_kubelet_certs,
-    _disk_path,
     _extract_vms,
     _find_vm_disks,
     _is_ocp_topology,

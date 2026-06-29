@@ -1,4 +1,5 @@
 import yaml
+
 from app.services.ocp.agent_template import _build_install_config
 
 
@@ -85,8 +86,8 @@ def test_bastion_cloud_init_pull_through_registry():
     """When pull_through_registry is enabled, bastion cloud-init should contain registries.conf.d config."""
     from app.services.ocp.agent_template import customize_topology
     from app.services.template_loader import (
-        resolve_inline_template,
         generate_topology_from_template,
+        resolve_inline_template,
     )
 
     tmpl = {

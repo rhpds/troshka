@@ -33,6 +33,9 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["E402", "F405"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

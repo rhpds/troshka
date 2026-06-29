@@ -1,10 +1,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.core.database import get_db
-from tests.conftest import get_test_db, TestSession
+from app.main import app
 from app.models.user import User
+from tests.conftest import TestSession, get_test_db
 
 app.dependency_overrides[get_db] = get_test_db
 
