@@ -17,6 +17,20 @@ dependencies = [
     "httpx>=0.27",
     "boto3>=1.34",
     "cryptography>=43.0",
+    "kubernetes>=29.0",
+    "jwcrypto>=1.5",
+    "redis>=5.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+    "azure-identity>=1.15",
+    "azure-mgmt-compute>=30.0",
+    "azure-mgmt-network>=25.0",
+    "azure-mgmt-storage>=21.0",
+    "azure-mgmt-dns>=8.1",
+    "azure-mgmt-privatedns>=1.1",
+    "azure-mgmt-marketplaceordering>=1.1",
+    "google-cloud-compute>=1.17",
+    "google-cloud-dns>=0.35",
 ]
 
 [project.optional-dependencies]

@@ -58,8 +58,8 @@ def test_build_install_config_with_pull_through():
         pull_through_registry=ptr,
     )
     parsed = yaml.safe_load(ic)
-    assert "imageDigestMirrorSet" in parsed
-    mirrors = parsed["imageDigestMirrorSet"]
+    assert "imageDigestSources" in parsed
+    mirrors = parsed["imageDigestSources"]
     sources = [m["source"] for m in mirrors]
     assert "registry.redhat.io" in sources
     assert "quay.io" in sources
@@ -79,7 +79,7 @@ def test_build_install_config_without_pull_through():
         '{"auths":{}}',
         "ssh-rsa AAAA",
     )
-    assert "imageDigestMirrorSet" not in ic
+    assert "imageDigestSources" not in ic
 
 
 def test_bastion_cloud_init_pull_through_registry():

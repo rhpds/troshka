@@ -81,10 +81,21 @@ def test_sno_topology_has_second_disk():
     resolved = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
     topo = generate_topology_from_template(resolved)
 
+    # Find cp-0 VM node, then find storage nodes connected to it via edges
+    cp0 = next(
+        n
+        for n in topo["nodes"]
+        if n["type"] == "vmNode" and n["data"]["name"] == "cp-0"
+    )
+    cp0_storage_ids = {
+        e["source"]
+        for e in topo["edges"]
+        if e["target"] == cp0["id"] and "dp-" in e.get("targetHandle", "")
+    }
     storage_nodes = [
         n
         for n in topo["nodes"]
-        if n["type"] == "storageNode" and "cp-0" in n["data"]["name"]
+        if n["type"] == "storageNode" and n["id"] in cp0_storage_ids
     ]
     assert len(storage_nodes) == 2
     sizes = sorted(n["data"]["size"] for n in storage_nodes)
