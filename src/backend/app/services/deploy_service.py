@@ -1023,7 +1023,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         return
 
     # Poll until all jobs complete
-    total_expected = sum(ic["expected_size"] for ic in items_to_cache)
+    sum(ic["expected_size"] for ic in items_to_cache)
     completed = set()
     failed = set()
     stale_polls = 0
@@ -2291,10 +2291,10 @@ def deploy_project_async(
                         pull_params = {"image": img}
                         cred_id = ctr.get("registry_credential_id")
                         if cred_id:
+                            from app.core.encryption import decrypt
                             from app.models.registry_credential import (
                                 RegistryCredential,
                             )
-                            from app.core.encryption import decrypt
 
                             cred = (
                                 s.query(RegistryCredential)
@@ -2359,8 +2359,8 @@ def deploy_project_async(
                     # Resolve registry credentials
                     cred_id = ctr.get("registry_credential_id")
                     if cred_id:
-                        from app.models.registry_credential import RegistryCredential
                         from app.core.encryption import decrypt
+                        from app.models.registry_credential import RegistryCredential
 
                         cred = s.query(RegistryCredential).filter_by(id=cred_id).first()
                         if cred:
@@ -2679,7 +2679,7 @@ def deploy_project_async(
 
         # Start auto-stop timer if configured
         if project.state == "active" and project.auto_stop_minutes:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             project.auto_stop_started_at = now
             project.auto_stop_expires_at = now + datetime.timedelta(
                 minutes=project.auto_stop_minutes
@@ -2688,7 +2688,7 @@ def deploy_project_async(
 
         # Start auto-delete timer on first deploy
         if project.auto_delete_minutes and not project.auto_delete_started_at:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             project.auto_delete_started_at = now
             project.lifetime_expires_at = now + datetime.timedelta(
                 minutes=project.auto_delete_minutes
@@ -3905,7 +3905,7 @@ def start_project_async(project_id: str):
 
         # Restart auto-stop timer
         if project.auto_stop_minutes:
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.datetime.now(datetime.UTC)
             project.auto_stop_started_at = now
             project.auto_stop_expires_at = now + datetime.timedelta(
                 minutes=project.auto_stop_minutes

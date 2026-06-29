@@ -244,7 +244,7 @@ def add_host(
     region = body.region or provider.default_region
     if not region and provider.type == "ocpvirt":
         region = provider.name
-    creds = provider.get_credentials()
+    provider.get_credentials()
 
     nfs_kwargs = {}
     if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
@@ -284,9 +284,7 @@ def add_host(
     db.commit()
     db.refresh(host)
 
-    provider_creds = creds
     provider_console_domain = provider.console_base_domain if provider else None
-    provider_console_zone = provider.console_zone_id if provider else None
     provider_type = provider.type
     _provider_id = provider.id
     _image_id = body.image_id or provider.default_image
@@ -747,11 +745,10 @@ def poweroff_host(
             status_code=409, detail="Host has running projects — stop them first"
         )
 
-    creds = None
     if host.provider_id:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if provider:
-            creds = provider.get_credentials()
+            provider.get_credentials()
 
     if not host.provider:
         raise HTTPException(
@@ -811,11 +808,10 @@ def poweron_host(
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance ID")
 
-    creds = None
     if host.provider_id:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if provider:
-            creds = provider.get_credentials()
+            provider.get_credentials()
 
     # Resize if a different instance type was requested
     new_type = body.instance_type if body else None
@@ -868,7 +864,6 @@ def poweron_host(
     import threading
 
     provider_id = host.provider_id
-    provider_type = provider.type
 
     def _wait_and_reinstall():
         import time
@@ -1386,7 +1381,6 @@ def remove_host(
     import threading
 
     provider_id = host.provider_id
-    provider_type = provider.type if provider else "ec2"
 
     def _wait_terminated():
         import time

@@ -218,8 +218,8 @@ def create_project_from_template(
 ):
     from app.services.template_loader import (
         generate_topology_from_template,
-        resolve_template,
         resolve_inline_template,
+        resolve_template,
     )
 
     template_yaml = body.get("template_yaml")
@@ -261,9 +261,7 @@ def create_project_from_template(
     )
 
     # OCP template customization — resolve DB objects, then delegate to plugin
-    from app.models.library import LibraryItem
-
-    from app.models.library import Library
+    from app.models.library import Library, LibraryItem
 
     bastion_image_id = body.get("bastion_image_id")
     bastion_image = None
@@ -612,8 +610,8 @@ def export_template(
     pw_custom = body.get("custom_password", "")  # pragma: allowlist secret
     _apply_password_mode(result, pw_mode, pw_custom)
 
-    from fastapi.responses import Response
     import yaml
+    from fastapi.responses import Response
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
     if pw_mode == "none":
@@ -1098,8 +1096,8 @@ def get_all_vm_states(
             "progress": progress,
         }
 
-    from app.services.troshkad_client import get_all_vm_states as troshkad_batch_states
     from app.services.troshkad_client import get_all_container_states
+    from app.services.troshkad_client import get_all_vm_states as troshkad_batch_states
 
     batch = troshkad_batch_states(host) or {}
     container_batch = get_all_container_states(host) or {}
@@ -2526,7 +2524,7 @@ def redeploy_vm(
                 return
 
             dom = _vm_domain_name(p_id, target_vm_id)
-            vm_dir_path = _vm_dir(p_id)
+            _vm_dir(p_id)
             topology = proj.topology
             vni_map = proj.vni_map or {}
 

@@ -36,10 +36,10 @@ async def lifespan(app):
     start_state_poller()
 
     # Reset projects stuck in transient states from a previous crash/restart
+    import threading
+
     from app.core.database import SessionLocal
     from app.models.project import Project
-
-    import threading
 
     s = SessionLocal()
     try:

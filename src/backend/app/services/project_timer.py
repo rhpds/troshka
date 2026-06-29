@@ -25,7 +25,7 @@ def _check_project_timers(_dry_run=False):
 
     s = SessionLocal()
     try:
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         warning_threshold = now + datetime.timedelta(minutes=_WARNING_MINUTES)
 
         # 1. Expired auto-stop

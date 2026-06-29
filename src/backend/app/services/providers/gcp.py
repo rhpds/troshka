@@ -222,7 +222,7 @@ class GCPDriver(ProviderDriver):
         creds = _get_credentials(creds_dict)
         project = provider.gcp_project_id
         zone = provider.gcp_zone
-        region = _zone_to_region(zone)
+        _zone_to_region(zone)
 
         instance_type = instance_type or GCP_DEFAULT_INSTANCE_TYPE
         vcpus, ram_mb = _parse_instance_type(instance_type)

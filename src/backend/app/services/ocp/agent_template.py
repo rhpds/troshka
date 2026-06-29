@@ -101,6 +101,7 @@ def _generate_ocp_mount_script(topology):
     - restorecon service for SELinux contexts
     """
     import base64 as _b64
+
     import yaml as _yaml
 
     mounts = _collect_ocp_mounts(topology)
@@ -920,7 +921,7 @@ def _build_agent_config(
         if group not in ("controllers", "workers"):
             continue
         vm_name = td.get("name", "")
-        bmc_ip = td["bmcIp"]
+        td["bmcIp"]
         cluster_ip = td.get("nics", [{}])[0].get("ip", "")
         boot_mac = td.get("nics", [{}])[0].get("mac", "")
         if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):

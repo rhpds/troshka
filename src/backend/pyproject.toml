@@ -32,9 +32,19 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "E501",   # line-too-long (black handles formatting)
+    "E402",   # module-import-not-at-top (needed for sys.path and SQLite patches)
+    "E741",   # ambiguous-variable-name (l, O, I — used intentionally)
+    "N806",   # non-lowercase-variable-in-function (uppercase constants like GW_Y)
+    "N814",   # camelcase-imported-as-constant (e.g. Column as C)
+    "N817",   # camelcase-imported-as-acronym
+    "UP031",  # printf-string-formatting (% formatting in MAC generators)
+    "F821",   # undefined-name (false positives from conditional imports)
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*.py" = ["E402", "F405"]
+"tests/*.py" = ["F405"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

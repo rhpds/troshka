@@ -423,8 +423,8 @@ def export_pattern_template(
         if topo.get(key):
             result[key] = topo[key]
 
-    from fastapi.responses import Response
     import yaml
+    from fastapi.responses import Response
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
     header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"

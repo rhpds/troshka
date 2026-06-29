@@ -383,8 +383,7 @@ def capture_pattern_disks(
             )
             disk_nodes = [d for d in disk_nodes if d["id"] not in existing_disks]
 
-        total = len(disk_nodes)
-        processed = 0
+        len(disk_nodes)
 
         # Get storage pool for correct disk paths
         pool = None

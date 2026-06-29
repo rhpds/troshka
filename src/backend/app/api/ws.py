@@ -138,7 +138,7 @@ async def project_websocket(websocket: WebSocket, project_id: str):
                 await asyncio.wait_for(
                     websocket.receive_text(), timeout=HEARTBEAT_INTERVAL
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if websocket.client_state == WebSocketState.CONNECTED:
                     await websocket.send_json({"type": "ping"})
             except WebSocketDisconnect:
@@ -180,7 +180,7 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
                     await asyncio.wait_for(
                         websocket.receive_text(), timeout=HEARTBEAT_INTERVAL
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if websocket.client_state == WebSocketState.CONNECTED:
                         await websocket.send_json({"type": "ping"})
                 except WebSocketDisconnect:

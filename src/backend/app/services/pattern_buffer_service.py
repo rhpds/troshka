@@ -161,8 +161,8 @@ def _provision_pattern_buffer(pool_id: str):
         ssh_host = result.get("_ssh_host") or result["public_ip"]
 
         from app.services.agent_deployer import (
-            get_provider_ssh_user,
             get_provider_data_disk,
+            get_provider_ssh_user,
         )
 
         ssh_user = get_provider_ssh_user(provider.type)
@@ -472,6 +472,7 @@ def touch_activity(db, pool_id: str):
 def check_auto_sleep(db):
     """Check all pools for idle pattern buffers and auto-sleep them."""
     from datetime import UTC, datetime
+
     from app.models.host import Host
 
     pools = (
