@@ -3,7 +3,7 @@ import random
 import uuid
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 _DEFAULT_TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "templates"
@@ -926,7 +926,7 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
 
     # Build edge lookup: target node id -> list of source node ids
-    edge_by_target = {}
+    edge_by_target: dict[str, list] = {}
     for e in edges:
         edge_by_target.setdefault(e["target"], []).append(e)
 
@@ -980,13 +980,13 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         networks[name] = net_out
 
     # ── Gateway ──
-    gateway = {}
+    gateway: dict[str, object] = {}
     for nn in net_nodes.values():
         d = nn.get("data", {})
         if d.get("subtype") == "gateway":
             ports_str = d.get("outboundPorts", "")
             if ports_str and d.get("outboundPolicy") == "restrict":
-                ports = []
+                ports: list[int | str] = []
                 for p in ports_str.split(","):
                     p = p.strip()
                     if p.isdigit():
@@ -1026,7 +1026,7 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         d = vm.get("data", {})
         name = d.get("name", d.get("label", vm["id"][:8]))
 
-        vm_out = {}
+        vm_out: dict[str, object] = {}
 
         # Role from tags
         tags = d.get("tags", {})

@@ -362,7 +362,7 @@ def capture_pattern_disks(
                 disk_to_vm[src] = tgt
 
         # Group disks by VM so we can make one troshkad call per VM
-        vm_to_disks = {}
+        vm_to_disks: dict[str, list] = {}
         for disk_node in disk_nodes:
             vm_id = disk_to_vm.get(disk_node["id"])
             if not vm_id:
@@ -645,7 +645,7 @@ def capture_pattern_disks(
             # Poll all jobs concurrently, update progress with per-VM status
             import time as _time
 
-            completed_jobs = set()
+            completed_jobs: set[str] = set()
             deadline = _time.time() + 3600
             _capture_progress[pattern_id] = {
                 "step": "capturing",
@@ -845,7 +845,7 @@ def capture_pattern_disks(
                 continue
             if node.get("data", {}).get("format") == "iso":
                 continue
-            pd = disk_map.get(node["id"])
+            pd = disk_map.get(node["id"])  # type: ignore[assignment]
             if pd:
                 node["data"]["source"] = "pattern"
                 node["data"]["patternId"] = pattern_id

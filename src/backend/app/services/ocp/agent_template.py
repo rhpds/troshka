@@ -102,7 +102,7 @@ def _generate_ocp_mount_script(topology):
     """
     import base64 as _b64
 
-    import yaml as _yaml
+    import yaml as _yaml  # type: ignore[import-untyped]
 
     mounts = _collect_ocp_mounts(topology)
     if not mounts:

@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -1248,7 +1249,7 @@ def update_host(
     for key, val in body.items():
         if key not in allowed:
             raise HTTPException(status_code=400, detail=f"Cannot update field: {key}")
-        if not isinstance(val, allowed[key]):
+        if not isinstance(val, allowed[key]):  # type: ignore[arg-type]
             raise HTTPException(status_code=400, detail=f"Invalid type for {key}")
         setattr(host, key, val)
     db.commit()
@@ -1483,7 +1484,11 @@ def wipe_host(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    results = {"projects_reset": 0, "projects_destroyed": 0, "cleanup": {}}
+    results: dict[str, Any] = {
+        "projects_reset": 0,
+        "projects_destroyed": 0,
+        "cleanup": {},
+    }
 
     projects = db.query(Project).filter_by(host_id=host_id).all()
     for p in projects:

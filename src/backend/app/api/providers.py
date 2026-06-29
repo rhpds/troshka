@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -1444,7 +1445,7 @@ def create_network_azure(
             },
         ],
     }
-    nsg_poller = network_client.network_security_groups.begin_create_or_update(
+    nsg_poller = network_client.network_security_groups.begin_create_or_update(  # type: ignore[call-overload]
         rg_name, "troshka-nsg", nsg_params
     )
     nsg = nsg_poller.result()
@@ -1461,7 +1462,7 @@ def create_network_azure(
             }
         ],
     }
-    vnet_poller = network_client.virtual_networks.begin_create_or_update(
+    vnet_poller = network_client.virtual_networks.begin_create_or_update(  # type: ignore[call-overload]
         rg_name, "troshka-vnet", vnet_params
     )
     vnet = vnet_poller.result()
@@ -1572,7 +1573,7 @@ def discover_images_azure(
 @router.post("/{provider_id}/build-image")
 def build_image(
     provider_id: str,
-    body: dict = None,
+    body: dict[str, Any] | None = None,
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):

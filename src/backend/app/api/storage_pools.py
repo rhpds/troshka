@@ -160,7 +160,7 @@ def create_pool(
         region = provider.default_region
 
         subnet_id = storage_pool_service.ensure_subnet_in_az(
-            credentials, region, provider.vpc_id, body.az
+            credentials, region, provider.vpc_id, body.az  # type: ignore[arg-type]
         )
         pool.subnet_id = subnet_id
         db.commit()

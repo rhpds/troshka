@@ -386,7 +386,7 @@ def _find_container_networks(
     container_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:
     """Find networks connected to a container via NIC handles."""
-    results = []
+    results: list[dict] = []
     container_node = next(
         (n for n in topology.get("nodes", []) if n["id"] == container_node_id), None
     )
@@ -1024,8 +1024,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
     # Poll until all jobs complete
     sum(ic["expected_size"] for ic in items_to_cache)
-    completed = set()
-    failed = set()
+    completed: set[str] = set()
+    failed: set[str] = set()
     stale_polls = 0
     last_completed_count = 0
 
@@ -2598,7 +2598,7 @@ def deploy_project_async(
             for entry in start_order:
                 if entry.get("entryType") == "container":
                     ctr_id = entry.get("containerId", entry.get("vmId", ""))
-                    ctr = next((c for c in containers if c["node_id"] == ctr_id), None)
+                    ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
                     if ctr:
                         ordered_ids.add(ctr_id)
                         delay = entry.get("delaySeconds", 0)

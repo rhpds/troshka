@@ -1,6 +1,7 @@
 import datetime
 import logging
 import uuid as uuid_mod
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -610,7 +611,7 @@ def export_template(
     pw_custom = body.get("custom_password", "")  # pragma: allowlist secret
     _apply_password_mode(result, pw_mode, pw_custom)
 
-    import yaml
+    import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
@@ -1080,9 +1081,9 @@ def get_all_vm_states(
     if not host or not host.private_key or not host.ip_address:
         return {"states": {}}
 
-    states = {}
-    container_states = {}
-    progress = {}
+    states: dict[str, Any] = {}
+    container_states: dict[str, Any] = {}
+    progress: dict[str, Any] = {}
 
     if host.agent_status != "connected":
         for node in (project.topology or {}).get("nodes", []):
@@ -2933,8 +2934,9 @@ def import_vm_from_snapshot(
 
     topology["nodes"].append(vm_node)
 
+    vm_data: dict[str, Any] = vm_node["data"]  # type: ignore[assignment]
     disks = vm_config.get("disks", [])
-    dc_list = vm_node["data"]["diskControllers"]
+    dc_list = vm_data["diskControllers"]
     boot_devices = []
 
     for idx, disk_info in enumerate(disks):
@@ -2981,10 +2983,10 @@ def import_vm_from_snapshot(
         boot_devices.append(disk_id)
 
     if boot_devices:
-        vm_node["data"]["bootDevices"] = boot_devices
+        vm_data["bootDevices"] = boot_devices
 
     networks_info = vm_config.get("networks", [])
-    nic_list = vm_node["data"]["nics"]
+    nic_list = vm_data["nics"]
     canvas_networks = {
         n.get("data", {}).get("name", ""): n
         for n in topology["nodes"]

@@ -30,7 +30,7 @@ def create_dns_records(
     records: list[dict],
     ttl: int = 30,
 ) -> list[str]:
-    errors = []
+    errors: list[str] = []
     if provider_type == "nsupdate":
         _nsupdate_create(provider_config, records, ttl, errors)
     elif provider_type == "route53":
@@ -45,7 +45,7 @@ def delete_dns_records(
     provider_config: dict,
     records: list[dict],
 ) -> list[str]:
-    errors = []
+    errors: list[str] = []
     if provider_type == "nsupdate":
         _nsupdate_delete(provider_config, records, errors)
     elif provider_type == "route53":

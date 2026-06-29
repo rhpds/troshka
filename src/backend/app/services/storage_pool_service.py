@@ -84,7 +84,7 @@ def sign_host_cert(
             x509.SubjectAlternativeName(san_ips),
             critical=False,
         )
-        .sign(ca_key, hashes.SHA256())
+        .sign(ca_key, hashes.SHA256())  # type: ignore[arg-type]
     )
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     key_pem = host_key.private_bytes(
@@ -96,7 +96,7 @@ def sign_host_cert(
 
 
 def _boto_client(service: str, region: str, credentials: dict):
-    return boto3.client(
+    return boto3.client(  # type: ignore[call-overload]
         service,
         region_name=region,
         aws_access_key_id=credentials.get("access_key_id"),
@@ -108,7 +108,7 @@ def probe_az_capacity(
     credentials: dict, region: str, instance_types: list[str]
 ) -> dict:
     ec2 = _boto_client("ec2", region, credentials)
-    results = {}
+    results: dict[str, dict[str, list]] = {}
 
     for itype in instance_types:
         resp = ec2.describe_instance_type_offerings(
@@ -887,7 +887,7 @@ def create_azure_files_nfs(
             ],
         },
     }
-    pe_poller = network_client.private_endpoints.begin_create_or_update(
+    pe_poller = network_client.private_endpoints.begin_create_or_update(  # type: ignore[call-overload]
         resource_group, f"{account_name}-pe", pe_params
     )
     pe_result = pe_poller.result()
@@ -904,7 +904,7 @@ def create_azure_files_nfs(
     try:
         dns_client.private_zones.get(resource_group, dns_zone)
     except Exception:
-        dns_client.private_zones.begin_create_or_update(
+        dns_client.private_zones.begin_create_or_update(  # type: ignore[call-overload]
             resource_group, dns_zone, {"location": "global"}
         ).result()
 
@@ -913,7 +913,7 @@ def create_azure_files_nfs(
             resource_group, dns_zone, "troshka-vnet-link"
         )
     except Exception:
-        dns_client.virtual_network_links.begin_create_or_update(
+        dns_client.virtual_network_links.begin_create_or_update(  # type: ignore[call-overload]
             resource_group,
             dns_zone,
             "troshka-vnet-link",
@@ -926,7 +926,7 @@ def create_azure_files_nfs(
 
     pe_ip = pe_result.custom_dns_configs[0].ip_addresses[0]
     try:
-        dns_client.record_sets.create_or_update(
+        dns_client.record_sets.create_or_update(  # type: ignore[call-overload]
             resource_group,
             dns_zone,
             account_name,

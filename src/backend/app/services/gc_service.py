@@ -384,7 +384,7 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
 
     result = {"deleted": deleted, "aborted_multipart": aborted}
     if deleted_bytes:
-        result["deleted_gb"] = round(deleted_bytes / (1024**3), 1)
+        result["deleted_gb"] = round(deleted_bytes / (1024**3), 1)  # type: ignore[assignment]
     return result
 
 

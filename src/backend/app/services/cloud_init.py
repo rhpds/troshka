@@ -141,7 +141,7 @@ def generate_userdata(vm_data: dict) -> str:
     # Validate the generated cloud-config is valid YAML with no duplicate keys
     import re
 
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     try:
         parsed = yaml.safe_load(result)

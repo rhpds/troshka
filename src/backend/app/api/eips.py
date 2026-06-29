@@ -132,7 +132,7 @@ def sync_project_eips(
         if existing:
             eip = existing
         else:
-            eip = allocate_eip(db, provider, project_id, canvas_id)
+            eip = allocate_eip(db, provider, project_id, canvas_id, host)
 
         if eip.state != "associated":
             associate_eip(db, eip, host)

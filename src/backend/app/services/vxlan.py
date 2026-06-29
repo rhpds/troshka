@@ -138,7 +138,7 @@ def build_host_network_config(
         connected_vms = []
         dhcp_hosts = []
         pxe_boot_iso_ids = set()
-        pxe_vm_boot_config = {}
+        pxe_vm_boot_config: dict[str, dict] = {}
         for vm_node in nodes:
             if vm_node["id"] in connected_vm_ids and vm_node.get("type") in (
                 "vmNode",

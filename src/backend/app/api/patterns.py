@@ -423,7 +423,7 @@ def export_pattern_template(
         if topo.get(key):
             result[key] = topo[key]
 
-    import yaml
+    import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
