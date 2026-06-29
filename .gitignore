@@ -52,6 +52,7 @@ secrets/
 *.png
 !docs/images/*.png
 !src/frontend/public/images/*.png
+!src/frontend/public/images/guide/*.png
 .playwright-mcp/
 troshka.db*
 mockup.html
