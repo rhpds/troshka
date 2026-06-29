@@ -30,7 +30,6 @@ jobs:
 
       - name: Type check with mypy
         run: mypy app/ --ignore-missing-imports
-        continue-on-error: true
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
