@@ -68,7 +68,9 @@ interface TemplateSummary {
 }
 
 function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
-  const [mode, setMode] = useState<"choose" | "blank" | "pattern" | "template" | "template-picker">("choose");
+  const [mode, setMode] = useState<"choose" | "blank" | "yaml" | "pattern" | "template" | "template-picker">("choose");
+  const [yamlContent, setYamlContent] = useState("");
+  const [yamlFileName, setYamlFileName] = useState("");
   const [name, setName] = useState("");
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -186,6 +188,9 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
         if (resp.ok) {
           const data = await resp.json();
           onCreated(data.id);
+        } else {
+          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
+          alert(err.detail || "Failed to create project");
         }
       } else if (mode === "template" && selectedTemplate) {
         const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
@@ -205,7 +210,10 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(templateBody),
         });
-        if (resp.ok) {
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
+          alert(err.detail || "Failed to create project");
+        } else {
           const data = await resp.json();
           // Load topology into canvas store, auto-arrange, save back before deploying
           const projResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}`);
@@ -251,7 +259,27 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
         });
         if (resp.ok) {
           const data = await resp.json();
+          if (mode === "yaml" && yamlContent) {
+            try {
+              const jsYaml = await import("js-yaml");
+              const parsed = jsYaml.load(yamlContent) as Record<string, unknown>;
+              const importResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/import-template`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ template_yaml: parsed }),
+              });
+              if (!importResp.ok) {
+                const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
+                alert(err.detail || "Template import failed");
+              }
+            } catch {
+              alert("Invalid YAML syntax in template file");
+            }
+          }
           onCreated(data.id);
+        } else {
+          const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
+          alert(err.detail || "Failed to create project");
         }
       }
     } catch {
@@ -293,6 +321,13 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                 <div style={{ fontWeight: 600, fontSize: 14 }}>Blank Project</div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Start from scratch</div>
               </div>
+              <div style={optionStyle(false)} onClick={() => setMode("yaml")}>
+                <div style={{ fontSize: 28, marginBottom: 4 }}>📋</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>From Template</div>
+                <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Import YAML</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 12 }}>
               <div
                 style={{ ...optionStyle(false), opacity: patterns.length === 0 ? 0.4 : 1, pointerEvents: patterns.length === 0 ? "none" : "auto" }}
                 onClick={() => setMode("pattern")}
@@ -303,19 +338,17 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                   {patterns.length > 0 ? `${patterns.length} pattern${patterns.length > 1 ? "s" : ""} available` : "No patterns yet"}
                 </div>
               </div>
-            </div>
-            {templates.length > 0 && (
-              <div style={{ display: "flex", gap: 12 }}>
+              {templates.length > 0 && (
                 <div
                   style={{ ...optionStyle(false), flex: 1 }}
                   onClick={() => setMode("template-picker" as any)}
                 >
                   <div style={{ fontSize: 28, marginBottom: 4 }}>🚀</div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>From Template</div>
-                  <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Quick deploy</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>Quick Starts</div>
+                  <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>Guided deploy</div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
               <button onClick={onClose} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Cancel
@@ -394,6 +427,28 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                 onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
               />
             </div>
+            {mode === "yaml" && (
+              <div>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Template YAML</label>
+                <textarea
+                  value={yamlContent}
+                  onChange={(e) => { setYamlContent(e.target.value); setYamlFileName(""); }}
+                  placeholder={"networks:\n  network-00:\n    cidr: 10.0.0.0/24\n    dhcp: true\nvms:\n  vm-00:\n    vcpus: 2\n    ram_gb: 4\n    ..."}
+                  style={{
+                    width: "100%", height: 200, fontFamily: "monospace", fontSize: 12,
+                    padding: 12, borderRadius: 8, resize: "vertical",
+                    background: "var(--pf-t--global--background--color--secondary--default)",
+                    color: "var(--pf-t--global--text--color--regular)",
+                    border: "1px solid var(--pf-t--global--border--color--default)",
+                  }}
+                />
+                {yamlFileName && (
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginTop: 4 }}>
+                    Loaded from {yamlFileName}
+                  </div>
+                )}
+              </div>
+            )}
             {mode === "template" && selectedTemplate && (() => {
               const _selTmpl = templates.find((t) => t.id === selectedTemplate);
               const _isOcp = _selTmpl?.category === "openshift";
@@ -725,20 +780,42 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
               </div>
             )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); setYamlContent(""); setYamlFileName(""); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
               </button>
+              {mode === "yaml" && (
+                <label style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px", display: "inline-block", textAlign: "center" }}>
+                  Upload File
+                  <input type="file" accept=".yaml,.yml" style={{ display: "none" }} onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setYamlFileName(file.name);
+                      file.text().then((text) => {
+                        setYamlContent(text);
+                        if (nameAutoSet || !name.trim()) {
+                          try {
+                            const jsYaml = require("js-yaml");
+                            const parsed = jsYaml.load(text);
+                            if (parsed?.name) { setName(parsed.name); setNameAutoSet(true); }
+                          } catch { /* ignore */ }
+                        }
+                      });
+                    }
+                    e.target.value = "";
+                  }} />
+                </label>
+              )}
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))))}
+                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)))) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)))) ? 0.4 : 1,
                 }}
               >
-                {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
+                {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
               </button>
             </div>
           </div>
