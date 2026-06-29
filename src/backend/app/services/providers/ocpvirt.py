@@ -723,25 +723,47 @@ class OCPVirtDriver(ProviderDriver):
 
         vm_port = target_port or port
 
-        # Allocate a transit port on the host for DNAT
-        used_ports = set()
-        try:
-            svcs = cast(
-                Any,
-                core_api.list_namespaced_service(
-                    namespace,
-                    label_selector="troshka/access-type=route",
-                ),
-            )
-            for svc in svcs.items:
-                for sp in svc.spec.ports:
-                    used_ports.add(sp.target_port)
-        except client.ApiException:
-            pass
+        safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
+        resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
 
-        transit_port = 30100
-        while transit_port in used_ports:
-            transit_port += 1
+        labels = {
+            "app": "troshka",
+            "troshka/project-id": project_id[:8],
+            "troshka/access-type": "route",
+        }
+
+        # Create NodePort Service — let Kubernetes auto-assign the nodePort
+        # to avoid cluster-wide collisions across namespaces
+        svc = client.V1Service(
+            metadata=client.V1ObjectMeta(
+                name=resource_name,
+                namespace=namespace,
+                labels=labels,
+            ),
+            spec=client.V1ServiceSpec(
+                type="NodePort",
+                selector={"kubevirt.io/domain": host.instance_id},
+                ports=[
+                    client.V1ServicePort(
+                        port=port,
+                        target_port=port,
+                        name=f"pf-{port}",
+                    )
+                ],
+            ),
+        )
+        created_svc = None
+        try:
+            created_svc = core_api.create_namespaced_service(
+                namespace=namespace, body=svc
+            )
+        except client.ApiException as e:
+            if e.status == 409:
+                created_svc = core_api.read_namespaced_service(resource_name, namespace)
+            else:
+                raise
+
+        transit_port = created_svc.spec.ports[0].node_port
 
         # Set up nftables DNAT on the host: transit_port → VM int_ip:vm_port
         ns_name = f"troshka-{project_id[:8]}"
@@ -775,39 +797,19 @@ class OCPVirtDriver(ProviderDriver):
                 exc_info=True,
             )
 
-        safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
-        resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
-
-        labels = {
-            "app": "troshka",
-            "troshka/project-id": project_id[:8],
-            "troshka/access-type": "route",
+        # Update service target_port to match the assigned nodePort
+        # so OCP Router → NodePort → host transit_port → DNAT → VM
+        svc_patch = {
+            "spec": {
+                "ports": [
+                    {"port": port, "targetPort": transit_port, "name": f"pf-{port}"}
+                ]
+            }
         }
-
-        svc = client.V1Service(
-            metadata=client.V1ObjectMeta(
-                name=resource_name,
-                namespace=namespace,
-                labels=labels,
-            ),
-            spec=client.V1ServiceSpec(
-                type="NodePort",
-                selector={"kubevirt.io/domain": host.instance_id},
-                ports=[
-                    client.V1ServicePort(
-                        port=port,
-                        target_port=transit_port,
-                        node_port=transit_port,
-                        name=f"pf-{port}",
-                    )
-                ],
-            ),
-        )
         try:
-            core_api.create_namespaced_service(namespace=namespace, body=svc)
-        except client.ApiException as e:
-            if e.status != 409:
-                raise
+            core_api.patch_namespaced_service(resource_name, namespace, svc_patch)
+        except client.ApiException:
+            pass
 
         tls_termination = "edge"
         route = {

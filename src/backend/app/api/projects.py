@@ -471,43 +471,60 @@ def import_template(
 
     missing = []
     vms_def = template_yaml.get("vms", {})
-    for vm_name, vm_cfg in vms_def.items():
-        for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
-            item_id = disk_cfg.get("library_item_id")
-            if item_id:
-                item = (
-                    db.query(LibraryItem)
-                    .join(Library)
-                    .filter(LibraryItem.id == item_id, Library.owner_id == user.id)
-                    .first()
-                )
-                if not item:
-                    missing.append(
-                        f"VM '{vm_name}' disk {di}: library item '{item_id}' not found"
-                    )
-        iso_id = vm_cfg.get("pxe_boot_iso_id")
-        if iso_id:
+
+    def _resolve_library_item(item_id, item_name, label):
+        """Look up a library item by ID, falling back to name."""
+        if item_id:
             item = (
                 db.query(LibraryItem)
                 .join(Library)
-                .filter(LibraryItem.id == iso_id, Library.owner_id == user.id)
+                .filter(LibraryItem.id == item_id, Library.owner_id == user.id)
                 .first()
             )
-            if not item:
-                missing.append(f"VM '{vm_name}': PXE boot ISO '{iso_id}' not found")
+            if item:
+                return item
+        if item_name:
+            item = (
+                db.query(LibraryItem)
+                .join(Library)
+                .filter(LibraryItem.name == item_name, Library.owner_id == user.id)
+                .first()
+            )
+            if item:
+                return item
+        if item_id or item_name:
+            missing.append(f"{label}: '{item_name or item_id}' not found")
+        return None
+
+    for vm_name, vm_cfg in vms_def.items():
+        for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
+            item = _resolve_library_item(
+                disk_cfg.get("library_item_id"),
+                disk_cfg.get("library_item_name"),
+                f"VM '{vm_name}' disk {di}",
+            )
+            if item:
+                disk_cfg["library_item_id"] = item.id
+                disk_cfg["library_item_name"] = item.name
+        iso_id = vm_cfg.get("pxe_boot_iso_id")
+        if iso_id:
+            item = _resolve_library_item(
+                iso_id,
+                vm_cfg.get("pxe_boot_iso_name"),
+                f"VM '{vm_name}' PXE boot ISO",
+            )
+            if item:
+                vm_cfg["pxe_boot_iso_id"] = item.id
+                vm_cfg["pxe_boot_iso_name"] = item.name
         for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
-            iso_item_id = iso_cfg.get("library_item_id")
-            if iso_item_id:
-                item = (
-                    db.query(LibraryItem)
-                    .join(Library)
-                    .filter(LibraryItem.id == iso_item_id, Library.owner_id == user.id)
-                    .first()
-                )
-                if not item:
-                    missing.append(
-                        f"VM '{vm_name}' ISO {ii}: library item '{iso_item_id}' not found"
-                    )
+            item = _resolve_library_item(
+                iso_cfg.get("library_item_id"),
+                iso_cfg.get("library_item_name"),
+                f"VM '{vm_name}' ISO {ii}",
+            )
+            if item:
+                iso_cfg["library_item_id"] = item.id
+                iso_cfg["library_item_name"] = item.name
     if missing:
         raise HTTPException(
             status_code=400,
@@ -610,6 +627,14 @@ def export_template(
     pw_mode = body.get("password_mode", "current")
     pw_custom = body.get("custom_password", "")  # pragma: allowlist secret
     _apply_password_mode(result, pw_mode, pw_custom)
+
+    if not body.get("include_ids"):
+        for vm_cfg in result.get("vms", {}).values():
+            for disk in vm_cfg.get("disks", []):
+                disk.pop("library_item_id", None)
+            for iso in vm_cfg.get("isos", []):
+                iso.pop("library_item_id", None)
+            vm_cfg.pop("pxe_boot_iso_id", None)
 
     import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response

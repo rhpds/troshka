@@ -31,6 +31,7 @@ export default function ProjectCanvasPage() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportPasswordMode, setExportPasswordMode] = useState<"current" | "custom" | "none">("current");
   const [exportCustomPassword, setExportCustomPassword] = useState("");
+  const [exportIncludeIds, setExportIncludeIds] = useState(false);
   const [importYaml, setImportYaml] = useState("");
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -1162,6 +1163,21 @@ export default function ProjectCanvasPage() {
                 </div>
               )}
             </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input type="checkbox" checked={exportIncludeIds} onChange={(e) => setExportIncludeIds(e.target.checked)} />
+                Include library item IDs
+              </label>
+              {exportIncludeIds && (
+                <div style={{
+                  fontSize: 11, padding: "8px 12px", borderRadius: 6, marginTop: 8,
+                  background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+                  color: "var(--pf-t--global--text--color--subtle)",
+                }}>
+                  IDs are instance-specific. Templates with IDs may fail to import on other Troshka instances. Leave off for portable templates — items will be resolved by name.
+                </div>
+              )}
+            </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowExportModal(false)}
                 style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)",
@@ -1171,7 +1187,7 @@ export default function ProjectCanvasPage() {
               <button
                 disabled={exportPasswordMode === "custom" && !exportCustomPassword}
                 onClick={async () => {
-                  const exportBody: Record<string, string> = { password_mode: exportPasswordMode };
+                  const exportBody: Record<string, string | boolean> = { password_mode: exportPasswordMode, include_ids: exportIncludeIds };
                   if (exportPasswordMode === "custom" && exportCustomPassword) exportBody.custom_password = exportCustomPassword;
                   const resp = await fetch(`/api/v1/projects/${projectId}/export-template`, {
                     method: "POST",

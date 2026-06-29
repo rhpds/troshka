@@ -308,7 +308,7 @@ def _generate_topology_from_vms(
     port_forwards = []
     if gw_external:
         eip_id = _id()
-        external_ips = [{"id": eip_id, "label": "EIP"}]
+        external_ips = [{"id": eip_id, "name": "IP-1"}]
 
         # Custom port forwards from template gateway section
         for pf in gw_def.get("port_forwards", []):
