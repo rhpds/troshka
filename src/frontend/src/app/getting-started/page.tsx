@@ -81,6 +81,7 @@ function Tip({ children }: { children: React.ReactNode }) {
 }
 
 const tocItems = [
+  { label: "Try It: Import an Example Template", href: "#try-it" },
   { label: "Build Your First Environment", href: "#build" },
   { label: "Open the VM Console", href: "#console" },
   { label: "Port Forwarding", href: "#port-forwarding" },
@@ -131,6 +132,63 @@ export default function GettingStartedPage() {
             ))}
           </ul>
         </nav>
+
+        <SectionHeading id="try-it">Try It: Import an Example Template</SectionHeading>
+
+        <Step number={0} title="">
+          <p>
+            The fastest way to get started is to import an example template that creates a ready-to-go
+            web server VM with networking and port forwarding already configured.
+          </p>
+        </Step>
+
+        <Step number={1} title="Download the example template">
+          <p>
+            Download <a href="https://github.com/rhpds/troshka/blob/main/example_templates/test-web.yaml" target="_blank" rel="noopener" style={{ color: "#a78bfa" }}>test-web.yaml</a> from
+            the Troshka repository. Click the <strong>Raw</strong> button on GitHub, then save the file (Ctrl+S / Cmd+S),
+            or use the command line:
+          </p>
+          <pre style={{
+            background: "rgba(255,255,255,0.05)",
+            border: "1px solid var(--pf-t--global--border--color--default)",
+            borderRadius: 6,
+            padding: "10px 14px",
+            fontSize: 13,
+            marginTop: 10,
+            overflowX: "auto",
+          }}>
+{`curl -LO https://raw.githubusercontent.com/rhpds/troshka/main/example_templates/test-web.yaml`}
+          </pre>
+          <Tip>
+            This template creates a RHEL 10 VM running Apache httpd, connected to a 10.0.0.0/24 network
+            with a gateway that forwards port 80 to the VM. Cloud-init installs and starts httpd automatically.
+          </Tip>
+        </Step>
+
+        <Step number={2} title="Create a blank project">
+          <p>
+            Go to the <strong>Projects</strong> page and click <strong>New Project</strong>.
+            Select <strong>Blank Project</strong>, give it a name, and click <strong>Create</strong>.
+            You{"'"}ll land on an empty canvas with an <strong>Import Template YAML</strong> overlay.
+          </p>
+        </Step>
+
+        <Step number={3} title="Import the template">
+          <p>
+            Click <strong>Import Template YAML</strong>. In the modal, paste the contents of <code>test-web.yaml</code> or
+            click <strong>Upload</strong> and select the file. Click <strong>Import</strong>. The canvas will populate
+            with a VM, network, gateway, disk, and ISO — all wired together and ready to deploy.
+          </p>
+        </Step>
+
+        <Step number={4} title="Set the password and deploy">
+          <p>
+            Click the <strong>VM</strong> node on the canvas. In the properties panel, scroll to <strong>Cloud Init</strong> and
+            set a <strong>password</strong> for the cloud user. Then click <strong>Deploy</strong> in the top toolbar.
+            Once the project is active, the VM will be running httpd — open the console or hit port 80
+            on the external IP to see it.
+          </p>
+        </Step>
 
         <SectionHeading id="build">Build Your First Environment</SectionHeading>
 
