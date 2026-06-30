@@ -1,0 +1,244 @@
+---
+- name: Deploy S4 for Troshka gold images
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    s4_namespace: troshka-images
+    s4_pvc_size: 200Gi
+    s4_bucket: troshka-gold-images
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config') }}"
+
+  tasks:
+    - name: Check if S4 secret already exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        name: s4-credentials
+        namespace: "{{ s4_namespace }}"
+      register: _existing_s4_secret
+
+    - name: Generate S4 secret key
+      when: _existing_s4_secret.resources | length == 0
+      ansible.builtin.set_fact:
+        _s4_secret_key: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}"
+
+    - name: Ensure namespace exists
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ s4_namespace }}"
+
+    - name: Create S4 credentials secret
+      when: _existing_s4_secret.resources | length == 0
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: s4-credentials
+            namespace: "{{ s4_namespace }}"
+          type: Opaque
+          stringData:
+            access-key: s4admin
+            secret-key: "{{ _s4_secret_key }}"
+
+    - name: Create S4 PVC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: s4-data
+            namespace: "{{ s4_namespace }}"
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: "{{ s4_pvc_size }}"
+
+    - name: Deploy S4
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: s4
+            namespace: "{{ s4_namespace }}"
+            labels:
+              app.kubernetes.io/name: s4
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: s4
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: s4
+              spec:
+                containers:
+                  - name: s4
+                    image: quay.io/rh-aiservices-bu/s4:latest
+                    env:
+                      - name: AWS_ACCESS_KEY_ID
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: access-key
+                      - name: AWS_SECRET_ACCESS_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: secret-key
+                    ports:
+                      - containerPort: 7480
+                        name: s3
+                      - containerPort: 5000
+                        name: ui
+                    volumeMounts:
+                      - name: data
+                        mountPath: /var/lib/ceph/radosgw
+                    resources:
+                      requests:
+                        cpu: 250m
+                        memory: 512Mi
+                      limits:
+                        memory: 2Gi
+                volumes:
+                  - name: data
+                    persistentVolumeClaim:
+                      claimName: s4-data
+
+    - name: Create S4 Service
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: s4
+            namespace: "{{ s4_namespace }}"
+          spec:
+            selector:
+              app.kubernetes.io/name: s4
+            ports:
+              - port: 7480
+                targetPort: 7480
+                name: s3
+              - port: 5000
+                targetPort: 5000
+                name: ui
+
+    - name: Create S4 Route (S3 API)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: s4
+            namespace: "{{ s4_namespace }}"
+          spec:
+            host: "s4-{{ s4_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+            to:
+              kind: Service
+              name: s4
+            port:
+              targetPort: s3
+            tls:
+              termination: edge
+
+    - name: Create S4 Route (UI)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: s4-ui
+            namespace: "{{ s4_namespace }}"
+          spec:
+            host: "s4-ui-{{ s4_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+            to:
+              kind: Service
+              name: s4
+            port:
+              targetPort: ui
+            tls:
+              termination: edge
+
+    - name: Wait for S4 to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig }}"
+        api_version: apps/v1
+        kind: Deployment
+        name: s4
+        namespace: "{{ s4_namespace }}"
+      register: _s4_deploy
+      until: (_s4_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+      retries: 30
+      delay: 10
+
+    - name: Create bucket via aws-cli init job
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: s4-init-bucket
+            namespace: "{{ s4_namespace }}"
+          spec:
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: awscli
+                    image: amazon/aws-cli:latest
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        aws --endpoint-url http://s4:7480 s3 mb s3://{{ s4_bucket }} || true
+                    env:
+                      - name: AWS_ACCESS_KEY_ID
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: access-key
+                      - name: AWS_SECRET_ACCESS_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: secret-key
+
+    - name: Print access info
+      ansible.builtin.debug:
+        msg: |
+          S4 deployed!
+
+          S4 S3 Endpoint: https://s4-{{ s4_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com
+          S4 Web UI:      https://s4-ui-{{ s4_namespace }}.apps.ocpv-infra01.dal12.infra.demo.redhat.com
+          Bucket:         {{ s4_bucket }}
+          Credentials:    stored in secret s4-credentials in namespace {{ s4_namespace }}
+
+          To test S4 directly:
+            oc port-forward -n {{ s4_namespace }} svc/s4 7480:7480
+            AWS_ENDPOINT_URL=http://localhost:7480 aws s3 ls s3://{{ s4_bucket }}/

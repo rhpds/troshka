@@ -18,10 +18,9 @@ troshka_s3_bucket: troshka-images
 troshka_s3_access_key: ""
 troshka_s3_secret_key: ""
 troshka_s3_endpoint: ""
-troshka_deploy_minio: false
-troshka_minio_storage_size: 50Gi
-troshka_minio_root_user: troshka
-troshka_minio_root_password: ""
+troshka_deploy_s4: false
+troshka_s4_storage_size: 50Gi
+troshka_s4_root_password: ""
 
 # Auth
 troshka_oauth_enabled: false

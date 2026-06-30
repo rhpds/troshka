@@ -18,9 +18,9 @@
             oauth_enabled: {{ troshka_oauth_enabled | bool | lower }}
             admin_users: "{{ troshka_admin_users }}"
             operator_users: "{{ troshka_operator_users }}"
-          {% if troshka_deploy_minio | bool %}
+          {% if troshka_deploy_s4 | bool %}
           s3:
-            endpoint_url: "http://troshka-minio.{{ troshka_namespace }}.svc:9000"
+            endpoint_url: "http://troshka-s4.{{ troshka_namespace }}.svc:7480"
             bucket: "{{ troshka_s3_bucket }}"
           {% endif %}
           defaults:

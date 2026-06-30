@@ -10,7 +10,7 @@ data:
       host: "0.0.0.0"
       external_url: ""
     s3:
-      endpoint_url: "http://troshka-minio:9000"
+      endpoint_url: "http://troshka-s4:7480"
       bucket: "troshka-images"
     auth:
       oauth_enabled: false

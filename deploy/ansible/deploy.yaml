@@ -18,9 +18,9 @@
       ansible.builtin.include_tasks: tasks/database.yaml
       when: troshka_deploy_postgres | bool
 
-    - name: Deploy MinIO
-      ansible.builtin.include_tasks: tasks/minio.yaml
-      when: troshka_deploy_minio | bool
+    - name: Deploy S4
+      ansible.builtin.include_tasks: tasks/s4.yaml
+      when: troshka_deploy_s4 | bool
 
     - name: Deploy backend
       ansible.builtin.include_tasks: tasks/backend.yaml

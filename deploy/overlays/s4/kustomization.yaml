@@ -3,8 +3,8 @@ kind: Kustomization
 
 resources:
   - ../../base
-  - minio-deployment.yaml
-  - minio-service.yaml
+  - s4-deployment.yaml
+  - s4-service.yaml
 
 patchesStrategicMerge:
   - backend-config-patch.yaml

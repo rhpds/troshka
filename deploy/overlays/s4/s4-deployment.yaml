@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-s4
+  namespace: troshka
+  labels:
+    app.kubernetes.io/name: troshka-s4
+    app.kubernetes.io/component: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-s4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-s4
+        app.kubernetes.io/component: storage
+    spec:
+      containers:
+        - name: s4
+          image: quay.io/rh-aiservices-bu/s4:latest
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: s4admin
+            - name: AWS_SECRET_ACCESS_KEY
+              value: s4admin
+          ports:
+            - containerPort: 7480
+              name: s3
+            - containerPort: 5000
+              name: ui
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ceph/radosgw
+          readinessProbe:
+            tcpSocket:
+              port: 7480
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: troshka-s4-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: troshka-s4-data
+  namespace: troshka
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi
