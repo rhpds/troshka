@@ -447,8 +447,8 @@ def _generate_topology_from_vms(
             if di == 0:
                 boot_device_ids.append(disk_id)
             disk_data = {
-                "label": disk_cfg.get("name", f"disk-{di:02d}"),
-                "name": disk_cfg.get("name", f"disk-{di:02d}"),
+                "label": disk_cfg.get("name", f"{vm_name}-disk{di}"),
+                "name": disk_cfg.get("name", f"{vm_name}-disk{di}"),
                 "size": disk_cfg.get("size_gb", 50),
                 "format": "qcow2",
                 "icon": "\U0001f6e2",
