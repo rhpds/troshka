@@ -66,6 +66,57 @@ def validate_topology_names(topology: dict) -> list[str]:
     return errors
 
 
+def validate_topology_ips(topology: dict) -> list[str]:
+    """Check for duplicate IP addresses on the same network. Returns list of errors."""
+    errors = []
+    nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
+
+    nic_to_network: dict[str, str] = {}
+    for edge in topology.get("edges", []):
+        src = edge.get("source", "")
+        tgt = edge.get("target", "")
+        for handle_key, net_id, vm_id in [
+            ("targetHandle", src, tgt),
+            ("sourceHandle", tgt, src),
+        ]:
+            handle = edge.get(handle_key, "")
+            if (
+                nodes_by_id.get(net_id, {}).get("type") == "networkNode"
+                and nodes_by_id.get(vm_id, {}).get("type")
+                in ("vmNode", "containerNode")
+                and "nic-" in handle
+            ):
+                raw = handle.replace("-top", "").replace("-bottom", "")
+                if raw.startswith("nic-"):
+                    nic_id = raw[4:]  # strip handle "nic-" wrapper
+                    nic_to_network[nic_id] = net_id
+
+    per_network: dict[str, dict[str, str]] = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") not in ("vmNode", "containerNode"):
+            continue
+        vm_name = node.get("data", {}).get("name", "?")
+        for nic in node.get("data", {}).get("nics", []):
+            ip = nic.get("ip", "")
+            if not ip:
+                continue
+            net_id = nic_to_network.get(nic["id"], "unconnected")
+            net_name = (
+                nodes_by_id.get(net_id, {}).get("data", {}).get("name", "unconnected")
+            )
+            if net_id not in per_network:
+                per_network[net_id] = {}
+            if ip in per_network[net_id]:
+                other_vm = per_network[net_id][ip]
+                errors.append(
+                    f"Duplicate IP {ip} on network '{net_name}': "
+                    f"used by both '{other_vm}' and '{vm_name}'"
+                )
+            else:
+                per_network[net_id][ip] = vm_name
+    return errors
+
+
 def validate_topology_passwords(topology: dict) -> list[str]:
     """Check that required passwords are set. Returns list of errors."""
     errors = []

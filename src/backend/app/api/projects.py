@@ -396,13 +396,16 @@ def create_project_from_template(
         desc_parts.append(f"OCP {ocp_version}")
     desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
 
-    from app.services.deploy_service import validate_topology_names
+    from app.services.deploy_service import (
+        validate_topology_ips,
+        validate_topology_names,
+    )
 
-    name_errors = validate_topology_names(topology)
-    if name_errors:
+    topo_errors = validate_topology_names(topology) + validate_topology_ips(topology)
+    if topo_errors:
         raise HTTPException(
             status_code=400,
-            detail="Template produces duplicate names: " + "; ".join(name_errors),
+            detail="Template produces duplicate names: " + "; ".join(topo_errors),
         )
 
     project = Project(
@@ -537,13 +540,16 @@ def import_template(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
 
-    from app.services.deploy_service import validate_topology_names
+    from app.services.deploy_service import (
+        validate_topology_ips,
+        validate_topology_names,
+    )
 
-    name_errors = validate_topology_names(topology)
-    if name_errors:
+    topo_errors = validate_topology_names(topology) + validate_topology_ips(topology)
+    if topo_errors:
         raise HTTPException(
             status_code=400,
-            detail="Template produces duplicate names: " + "; ".join(name_errors),
+            detail="Template produces duplicate names: " + "; ".join(topo_errors),
         )
 
     project.topology = topology
@@ -805,13 +811,18 @@ def deploy_project(
     if not project.topology:
         raise HTTPException(status_code=400, detail="Project has no topology")
 
-    from app.services.deploy_service import validate_topology_names
+    from app.services.deploy_service import (
+        validate_topology_ips,
+        validate_topology_names,
+    )
 
-    name_errors = validate_topology_names(project.topology)
-    if name_errors:
+    topo_errors = validate_topology_names(project.topology) + validate_topology_ips(
+        project.topology
+    )
+    if topo_errors:
         raise HTTPException(
             status_code=400,
-            detail="Topology has duplicate names: " + "; ".join(name_errors),
+            detail="Topology has errors: " + "; ".join(topo_errors),
         )
 
     reqs = calculate_project_requirements(project.topology)
