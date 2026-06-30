@@ -1084,13 +1084,14 @@ export default function PropertiesPanel() {
             </div>
             {!isCollapsed("tags") && (
               <div className="props-section-body">
-                {Object.entries((data as Record<string, any>).tags || {}).map(([key, value]) => (
-                  <div key={key} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                {Object.entries((data as Record<string, any>).tags || {}).map(([key, value], idx) => (
+                  <div key={idx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                     <input
                       className="props-input"
-                      value={key}
-                      onChange={(e) => {
+                      defaultValue={key}
+                      onBlur={(e) => {
                         const newKey = e.target.value;
+                        if (newKey === key) return;
                         const tags = { ...((data as Record<string, any>).tags || {}) };
                         const val = tags[key];
                         delete tags[key];
@@ -1102,8 +1103,9 @@ export default function PropertiesPanel() {
                     />
                     <input
                       className="props-input"
-                      value={value as string}
-                      onChange={(e) => {
+                      defaultValue={value as string}
+                      onBlur={(e) => {
+                        if (e.target.value === value) return;
                         update("tags", { ...((data as Record<string, any>).tags || {}), [key]: e.target.value });
                       }}
                       style={{ flex: 1, fontSize: 11 }}
