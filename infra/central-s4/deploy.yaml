@@ -229,6 +229,76 @@
                             name: s4-credentials
                             key: secret-key
 
+    - name: Create read-only user and bucket policy
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: s4-setup-readonly
+            namespace: "{{ s4_namespace }}"
+          spec:
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: setup
+                    image: quay.io/rh-aiservices-bu/s4:latest
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        radosgw-admin user create --uid=seed-readonly \
+                          --display-name="Seed Read-Only" --max-buckets=0 || true
+                        radosgw-admin user modify --uid=seed-readonly --op-mask=read
+                        radosgw-admin user info --uid=seed-readonly
+
+                        pip install --quiet boto3
+                        python3 -c "
+                        import boto3, json
+                        client = boto3.client('s3',
+                            endpoint_url='http://s4:7480',
+                            aws_access_key_id='${AWS_ACCESS_KEY_ID}',
+                            aws_secret_access_key='${AWS_SECRET_ACCESS_KEY}',
+                            region_name='us-east-1')
+                        policy = {
+                            'Version': '2012-10-17',
+                            'Statement': [{
+                                'Sid': 'SeedReadOnly',
+                                'Effect': 'Allow',
+                                'Principal': {'AWS': ['arn:aws:iam:::user/seed-readonly']},
+                                'Action': ['s3:GetObject', 's3:ListBucket'],
+                                'Resource': [
+                                    'arn:aws:s3:::{{ s4_bucket }}',
+                                    'arn:aws:s3:::{{ s4_bucket }}/*'
+                                ]
+                            }]
+                        }
+                        client.put_bucket_policy(Bucket='{{ s4_bucket }}', Policy=json.dumps(policy))
+                        print('Bucket policy applied')
+                        "
+                    env:
+                      - name: AWS_ACCESS_KEY_ID
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: access-key
+                      - name: AWS_SECRET_ACCESS_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: s4-credentials
+                            key: secret-key
+                    volumeMounts:
+                      - name: data
+                        mountPath: /var/lib/ceph/radosgw
+                volumes:
+                  - name: data
+                    persistentVolumeClaim:
+                      claimName: s4-data
+
     - name: Print access info
       ansible.builtin.debug:
         msg: |
