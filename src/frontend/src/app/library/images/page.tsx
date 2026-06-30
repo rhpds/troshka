@@ -31,6 +31,8 @@ interface LibraryItem {
   } | null;
   created_at: string;
   source_url?: string | null;
+  source?: string;
+  readonly?: boolean;
 }
 
 export default function ImagesPage() {
@@ -246,6 +248,14 @@ export default function ImagesPage() {
               <input style={{ ...inputStyle, width: 200 }} placeholder="Search images..." value={filter} onChange={(e) => setFilter(e.target.value)} />
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
+              <Button variant="secondary" onClick={async () => {
+                const resp = await fetch("/api/v1/library/sync-central", { method: "POST" });
+                if (resp.ok) { const r = await resp.json(); showToast(`Central sync: ${r.created} new, ${r.updated} updated`); loadItems(); }
+                else if (resp.status === 403) { showToast("Admin only"); }
+                else { showToast("No central S3 provider configured"); }
+              }}>Sync Central</Button>
+            </ToolbarItem>
+            <ToolbarItem>
               <Button variant="primary" onClick={() => setShowUpload(!showUpload)}>
                 {showUpload ? "Cancel" : "+ Upload"}
               </Button>
@@ -406,9 +416,9 @@ export default function ImagesPage() {
                     />
                   ) : (
                     <strong
-                      onClick={() => { setEditingName(item.id); setEditNameValue(item.name); }}
-                      title="Click to rename"
-                      style={{ cursor: "text" }}
+                      onClick={item.readonly ? undefined : () => { setEditingName(item.id); setEditNameValue(item.name); }}
+                      title={item.readonly ? undefined : "Click to rename"}
+                      style={{ cursor: item.readonly ? "default" : "text" }}
                     >{item.name}</strong>
                   )}
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
@@ -425,6 +435,11 @@ export default function ImagesPage() {
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
                     {item.format === "iso" ? "ISO" : item.format}
                   </span>
+                  {item.source === "central" && (
+                    <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+                      Central
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                   {item.state !== "importing" && formatSize(item.size_bytes)}
@@ -434,7 +449,7 @@ export default function ImagesPage() {
               </div>
             </CardBody>
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8, alignItems: "center" }}>
-              {item.state === "ready" && (
+              {item.state === "ready" && !item.readonly && (
                 <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginRight: 8, opacity: 0.7 }}>
                   <input type="checkbox" checked={item.format === "iso" ? (item.tags?.ocp_default_iso || false) : (item.tags?.ocp_default_image || false)} onChange={async (e) => {
                     const tagKey = item.format === "iso" ? "ocp_default_iso" : "ocp_default_image";
@@ -487,7 +502,7 @@ export default function ImagesPage() {
                   Cancel
                 </Button>
               )}
-              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
+              <Button variant="danger" onClick={() => deleteItem(item.id)} isDisabled={item.readonly || ["uploading", "importing", "downloading", "uploading_s3"].includes(item.state)}>
                 Delete
               </Button>
             </CardBody>

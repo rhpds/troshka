@@ -208,7 +208,7 @@ export default function PatternsPage() {
 
   // Poll faster while any pattern is still saving
   useEffect(() => {
-    const hasPending = patterns.some((p) => p.state === "creating" || p.state === "capturing");
+    const hasPending = patterns.some((p) => p.state === "creating" || p.state === "capturing" || p.state === "importing");
     if (!hasPending) return;
     const timer = setInterval(loadPatterns, 3000);
     return () => clearInterval(timer);
@@ -277,6 +277,22 @@ export default function PatternsPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </ToolbarItem>
+            <ToolbarItem align={{ default: "alignEnd" }}>
+              <Button variant="secondary" onClick={() => {
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = ".tar";
+                input.onchange = async () => {
+                  const file = input.files?.[0];
+                  if (!file) return;
+                  const form = new FormData();
+                  form.append("file", file);
+                  const resp = await fetch("/api/v1/patterns/import", { method: "POST", body: form });
+                  if (resp.ok) { loadPatterns(); }
+                };
+                input.click();
+              }}>Import Pattern</Button>
+            </ToolbarItem>
           </ToolbarContent>
         </Toolbar>
       </PageSection>
@@ -318,7 +334,7 @@ export default function PatternsPage() {
           })()}
           <div>
             {filtered.map((pattern) => {
-              const saving = pattern.state === "creating" || pattern.state === "capturing";
+              const saving = pattern.state === "creating" || pattern.state === "capturing" || pattern.state === "importing";
               const ageMonths = (Date.now() - new Date(pattern.created_at).getTime()) / (1000 * 60 * 60 * 24 * 30);
               const certWarning = pattern.is_ocp && ageMonths >= 6;
               return (
@@ -384,7 +400,7 @@ export default function PatternsPage() {
                         </Tooltip>
                       )}
                       {saving ? (
-                        <Label color="orange">saving…</Label>
+                        <Label color="orange">{pattern.state === "importing" ? "importing…" : "saving…"}</Label>
                       ) : pattern.state === "error" ? (
                         <Label color="red">error</Label>
                       ) : (
@@ -440,6 +456,9 @@ export default function PatternsPage() {
                   </Button>
                   <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setBulkPatternId(pattern.id)}>
                     Bulk Deploy
+                  </Button>
+                  <Button variant="link" size="sm" isDisabled={saving} component="a" href={`/api/v1/patterns/${pattern.id}/export`}>
+                    Export
                   </Button>
                   {saving && (
                     <Button variant="warning" size="sm" onClick={() => {

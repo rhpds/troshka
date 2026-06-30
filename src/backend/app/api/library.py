@@ -46,6 +46,14 @@ class LibraryItemResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def _check_not_central(item: LibraryItem):
+    """Reject mutations on central (read-only) library items."""
+    if getattr(item, "source", "local") == "central":
+        raise HTTPException(
+            status_code=403, detail="Central library items are read-only"
+        )
+
+
 def _ensure_user_library(user: User, db: Session) -> Library:
     """Get or create the user's personal library."""
     lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()
@@ -75,10 +83,14 @@ def list_items(
         for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()
     ]
 
+    central_lib = db.query(Library).filter_by(type="central").first()
+    central_lib_id = central_lib.id if central_lib else None
+
     query = db.query(LibraryItem).filter(
         or_(
             LibraryItem.library_id == lib.id,
             LibraryItem.id.in_(shared_ids) if shared_ids else False,
+            LibraryItem.library_id == central_lib_id if central_lib_id else False,
         )
     )
 
@@ -111,6 +123,8 @@ def list_items(
             "created_at": str(i.created_at),
             "owned": i.library_id == lib.id,
             "owner_id": owner_libs.get(i.library_id),
+            "source": getattr(i, "source", "local"),
+            "readonly": getattr(i, "source", "local") == "central",
         }
         for i in items
     ]
@@ -155,6 +169,7 @@ def update_item(
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    _check_not_central(item)
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -467,6 +482,7 @@ def delete_item(
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    _check_not_central(item)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
@@ -735,6 +751,17 @@ def unshare_item(
         db.commit()
 
     return {"unshared": user_email}
+
+
+@router.post("/sync-central")
+def sync_central(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Sync library items from the central read-only S4 bucket."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    from app.services.central_library import sync_central_library
+
+    return sync_central_library(db)
 
 
 @router.post("/scan-s3")

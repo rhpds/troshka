@@ -901,6 +901,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         "s3_key": item.s3_key,
                         "cache_path": cache_path,
                         "expected_size": item.size_bytes,
+                        "source": getattr(item, "source", "local"),
+                        "source_provider_id": getattr(item, "source_provider_id", None),
                     }
                 )
 
@@ -920,6 +922,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         "s3_key": item.s3_key,
                         "cache_path": cache_path,
                         "expected_size": item.size_bytes,
+                        "source": getattr(item, "source", "local"),
+                        "source_provider_id": getattr(item, "source_provider_id", None),
                     }
                 )
 
@@ -1029,13 +1033,20 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         return
 
     # Start download jobs using aws s3 cp
-    from app.services.s3_storage import _get_s3_config
+    from app.services.s3_storage import _get_readonly_s3_config, _get_s3_config
 
     s3_creds = _get_s3_config()
     s3_bucket = s3_storage._bucket()
+    central_creds = _get_readonly_s3_config()
     active_jobs = []
     for ic in items_to_download:
-        s3_url = f"s3://{s3_bucket}/{ic['s3_key']}"
+        if ic.get("source") == "central" and central_creds:
+            dl_creds = central_creds
+            dl_bucket = central_creds["bucket"]
+        else:
+            dl_creds = s3_creds
+            dl_bucket = s3_bucket
+        s3_url = f"s3://{dl_bucket}/{ic['s3_key']}"
         try:
             job_id = start_job(
                 host,
@@ -1047,10 +1058,10 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     "expected_format": (
                         "qcow2" if ic["cache_path"].endswith(".qcow2") else None
                     ),
-                    "aws_access_key_id": s3_creds.get("access_key_id", ""),
-                    "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
-                    "aws_region": s3_creds.get("region", "us-east-1"),
-                    "aws_endpoint_url": s3_creds.get("endpoint_url", ""),
+                    "aws_access_key_id": dl_creds.get("access_key_id", ""),
+                    "aws_secret_access_key": dl_creds.get("secret_access_key", ""),
+                    "aws_region": dl_creds.get("region", "us-east-1"),
+                    "aws_endpoint_url": dl_creds.get("endpoint_url", ""),
                 },
             )
             active_jobs.append(

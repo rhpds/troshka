@@ -8,13 +8,14 @@ import random
 import threading
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.models.pattern import Pattern, PatternShare
+from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.pattern import (
@@ -429,6 +430,83 @@ def export_pattern_template(
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
     header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
     return Response(content=header + yaml_str, media_type="text/yaml")
+
+
+@router.get("/{pattern_id}/export")
+def export_pattern(
+    pattern_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Export a pattern as a downloadable tar archive with topology + disk images."""
+    from app.services.pattern_export import estimate_export_size, stream_pattern_export
+
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern:
+        raise HTTPException(status_code=404, detail="Pattern not found")
+
+    if (
+        pattern.owner_id != user.id
+        and user.role != "admin"
+        and pattern.visibility != "public"
+    ):
+        shared = (
+            db.query(PatternShare)
+            .filter_by(pattern_id=pattern_id, user_id=user.id)
+            .first()
+        )
+        if not shared:
+            raise HTTPException(status_code=404, detail="Pattern not found")
+
+    if pattern.state != "available":
+        raise HTTPException(
+            status_code=400, detail="Pattern must be in 'available' state to export"
+        )
+
+    disks = (
+        db.query(PatternDisk).filter_by(pattern_id=pattern_id, state="available").all()
+    )
+
+    filename = pattern.name.replace(" ", "_").replace("/", "_") + ".tar"
+    content_length = estimate_export_size(pattern, disks)
+
+    return StreamingResponse(
+        stream_pattern_export(pattern_id, db),
+        media_type="application/x-tar",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(content_length),
+        },
+    )
+
+
+@router.post("/import", status_code=202)
+def import_pattern(
+    file: UploadFile = File(...),
+    name: str | None = Query(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Import a pattern from a tar archive upload."""
+    from app.services.pattern_export import import_pattern_from_tar
+
+    pattern = Pattern(
+        name=name or "Importing...",
+        owner_id=user.id,
+        topology={"nodes": [], "edges": []},
+        state="importing",
+    )
+    db.add(pattern)
+    db.commit()
+    db.refresh(pattern)
+
+    threading.Thread(
+        target=import_pattern_from_tar,
+        args=(pattern.id, file.file, user.id, name),
+        daemon=True,
+    ).start()
+
+    return {"id": pattern.id, "state": "importing", "name": pattern.name}
 
 
 @router.patch("/{pattern_id}")

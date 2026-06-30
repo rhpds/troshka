@@ -138,3 +138,62 @@ def file_exists(key: str) -> bool:
         return True
     except client.exceptions.ClientError:
         return False
+
+
+def _get_readonly_s3_config() -> dict | None:
+    """Get read-only central S3 config from DB provider (type='s3_readonly')."""
+    try:
+        from app.core.database import SessionLocal
+        from app.models.provider import Provider
+
+        s = SessionLocal()
+        provider = (
+            s.query(Provider).filter_by(type="s3_readonly", state="active").first()
+        )
+        if provider:
+            creds = provider.get_credentials()
+            result = {
+                "provider_id": provider.id,
+                "region": creds.get("region") or provider.default_region or "us-east-1",
+                "access_key_id": creds.get("access_key_id", ""),
+                "secret_access_key": creds.get("secret_access_key", ""),
+                "bucket": creds.get("bucket", "troshka-gold-images"),
+                "endpoint_url": creds.get("endpoint_url", ""),
+            }
+            s.close()
+            return result
+        s.close()
+    except Exception:
+        pass
+    return None
+
+
+def _get_readonly_s3_client():
+    cfg = _get_readonly_s3_config()
+    if not cfg:
+        return None
+    kwargs = {"region_name": cfg["region"]}
+    if cfg["access_key_id"]:
+        kwargs["aws_access_key_id"] = cfg["access_key_id"]
+    if cfg["secret_access_key"]:
+        kwargs["aws_secret_access_key"] = cfg["secret_access_key"]
+    if cfg["endpoint_url"]:
+        kwargs["endpoint_url"] = cfg["endpoint_url"]
+    return boto3.client("s3", **kwargs)
+
+
+def generate_presigned_url_for_config(cfg: dict, key: str, expires: int = 3600) -> str:
+    """Generate a presigned download URL using a specific S3 config."""
+    kwargs = {"region_name": cfg["region"]}
+    if cfg["access_key_id"]:
+        kwargs["aws_access_key_id"] = cfg["access_key_id"]
+    if cfg["secret_access_key"]:
+        kwargs["aws_secret_access_key"] = cfg["secret_access_key"]
+    if cfg["endpoint_url"]:
+        kwargs["endpoint_url"] = cfg["endpoint_url"]
+    client = boto3.client("s3", **kwargs)
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": cfg["bucket"], "Key": key},
+        ExpiresIn=expires,
+    )

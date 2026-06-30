@@ -115,7 +115,32 @@ echo ""
 echo "=== Merging agnosticv CI ==="
 MERGED_FILE="/tmp/troshka-merged-${GUID}.yaml"
 cd "$AGV_DIR"
-agnosticv --merge "$CI_PATH" 2>/dev/null > "$MERGED_FILE"
+
+# Concatenate common.yaml + CI file, resolving local #include directives
+# (global includes like /includes/secrets/ are passed via -e @PTR_CREDS_FILE)
+CI_FULL="$AGV_DIR/$CI_PATH"
+CI_DIR="$(dirname "$CI_FULL")"
+CI_COMMON="$CI_DIR/common.yaml"
+{
+    echo "---"
+    for src in "$CI_COMMON" "$CI_FULL"; do
+        [[ -f "$src" ]] || continue
+        [[ "$src" == "$CI_COMMON" && "$(basename "$CI_FULL")" == "common.yaml" ]] && continue
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^#include\ +(/.*) ]]; then
+                inc="${BASH_REMATCH[1]}"
+                inc_file="$AGV_DIR${inc}"
+                # Resolve local includes (same CI dir), skip global ones
+                if [[ -f "$inc_file" && "$inc_file" == "$CI_DIR"/* ]]; then
+                    grep -v '^---' "$inc_file"
+                fi
+            elif [[ "$line" != "---" ]]; then
+                echo "$line"
+            fi
+        done < "$src"
+    done
+} > "$MERGED_FILE"
+
 echo "  Merged to:  $MERGED_FILE"
 echo "  Lines:      $(wc -l < "$MERGED_FILE")"
 
@@ -154,6 +179,13 @@ echo ""
 cd "$AGD_DIR"
 export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 export PYTHONUNBUFFERED=1
+VAULT_ARGS=""
+VAULT_PW_FILE="$HOME/secrets/vault_pw.txt"
+if [[ -f "$VAULT_PW_FILE" ]] && grep -q '!vault' "$MERGED_FILE" 2>/dev/null; then
+    VAULT_ARGS="--vault-password-file $VAULT_PW_FILE"
+fi
+
+ANSIBLE_COLLECTIONS_PATH="$HOME/.ansible/collections" \
 ansible-navigator run ansible/main.yml \
     --mode stdout \
     --ee false \
@@ -167,6 +199,7 @@ ansible-navigator run ansible/main.yml \
     -e output_dir=/tmp/agnosticd-output \
     ${PULL_SECRET_FILE:+-e @/tmp/troshka-pull-secret-vars.yaml} \
     ${PTR_CREDS_FILE:+-e @"$PTR_CREDS_FILE"} \
+    $VAULT_ARGS \
     $PATTERN_ARGS \
     -v ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} 2>&1 | tee "$LOG_FILE"
 
