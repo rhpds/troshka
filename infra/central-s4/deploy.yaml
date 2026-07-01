@@ -61,7 +61,7 @@
             name: s4-data
             namespace: "{{ s4_namespace }}"
           spec:
-            accessModes: [ReadWriteMany]
+            accessModes: [ReadWriteOnce]
             resources:
               requests:
                 storage: "{{ s4_pvc_size }}"

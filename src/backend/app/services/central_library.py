@@ -183,13 +183,16 @@ def sync_central_patterns(
             skipped += 1
             continue
 
+        topology = meta.get("topology", {"nodes": [], "edges": []})
+        _remap_library_refs(topology, db)
+
         pattern = Pattern(
             id=pid,
             name=meta.get("name", f"pattern-{pid[:8]}"),
             description=meta.get("description"),
             owner_id=owner_id or meta.get("owner_id", "system"),
             visibility="public",
-            topology=meta.get("topology", {"nodes": [], "edges": []}),
+            topology=topology,
             state="available",
             total_size_bytes=meta.get("total_size_bytes", 0),
             tags={
@@ -223,6 +226,62 @@ def sync_central_patterns(
 
     logger.info("Central pattern sync: %d created, %d skipped", created, skipped)
     return {"created": created, "skipped": skipped}
+
+
+def _remap_library_refs(topology: dict, db: Session):
+    """Remap libraryItemId references in topology to match local library items.
+
+    Pattern topologies may reference library items by UUID from the original
+    instance. This remaps them to local items matched by size+format.
+    """
+    from app.models.library import LibraryItem
+
+    local_items = db.query(LibraryItem).filter(LibraryItem.source == "local").all()
+    local_by_size = {}
+    for item in local_items:
+        key = (item.size_bytes, item.format)
+        if key not in local_by_size:
+            local_by_size[key] = item
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        data = node.get("data", {})
+        item_id = data.get("libraryItemId")
+        if not item_id or data.get("source") == "pattern":
+            continue
+
+        existing = db.query(LibraryItem).filter_by(id=item_id).first()
+        if existing:
+            continue
+
+        fmt = data.get("format", "qcow2")
+        size = data.get("sizeBytes", 0)
+        for local in local_items:
+            if (
+                local.format == fmt
+                and local.name.lower() in data.get("label", "").lower()
+            ):
+                data["libraryItemId"] = local.id
+                data["libraryItemName"] = local.name
+                logger.info(
+                    "Remapped library ref %s -> %s (%s)",
+                    item_id[:8],
+                    local.id[:8],
+                    local.name,
+                )
+                break
+        else:
+            matched = local_by_size.get((size, fmt))
+            if matched:
+                data["libraryItemId"] = matched.id
+                data["libraryItemName"] = matched.name
+                logger.info(
+                    "Remapped library ref %s -> %s (%s) by size",
+                    item_id[:8],
+                    matched.id[:8],
+                    matched.name,
+                )
 
 
 def _load_manifest(client, bucket: str) -> list[dict]:

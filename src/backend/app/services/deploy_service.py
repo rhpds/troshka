@@ -1162,7 +1162,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                             f"{aj['name']}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
                         )
                     elif total_gb > 0:
-                        items.append(f"{aj['name']}: 0 / {total_gb:.1f} GB (0%)")
+                        items.append(f"{aj['name']}: downloading {total_gb:.1f} GB...")
                     else:
                         items.append(f"{aj['name']}: downloading...")
             progress_callback(f"{done_count}/{len(active_jobs)}", items)
