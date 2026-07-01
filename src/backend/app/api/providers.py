@@ -258,7 +258,7 @@ def create_provider(
         azure_location=provider.azure_location,
         state=provider.state,
         has_credentials=True,
-        endpoint_url=creds.get("endpoint_url"),
+        endpoint_url=str(creds.get("endpoint_url", "")) or None,
         host_count=0,
         created_at=provider.created_at.isoformat() if provider.created_at else "",
     )

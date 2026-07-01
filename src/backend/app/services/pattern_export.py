@@ -153,19 +153,24 @@ def import_pattern_from_tar(
         tf = tarfile.open(fileobj=tar_stream, mode="r|")
         topology = None
         metadata = None
-        disk_map = {}
+        disk_map: dict[str, dict[str, str | int]] = {}
 
         for member in tf:
             if member.name == "topology.json":
-                topology = json.loads(tf.extractfile(member).read())
+                f = tf.extractfile(member)
+                if f:
+                    topology = json.loads(f.read())
             elif member.name == "metadata.json":
-                metadata = json.loads(tf.extractfile(member).read())
+                f = tf.extractfile(member)
+                if f:
+                    metadata = json.loads(f.read())
             elif member.name.startswith("disks/") and member.size > 0:
                 disk_id = member.name.split("/")[-1].rsplit(".", 1)[0]
                 fmt = member.name.rsplit(".", 1)[-1] if "." in member.name else "qcow2"
                 s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-
-                _upload_tar_member_to_s3(tf.extractfile(member), s3_key, member.size)
+                f = tf.extractfile(member)
+                if f:
+                    _upload_tar_member_to_s3(f, s3_key, member.size)
 
                 disk_map[disk_id] = {
                     "s3_key": s3_key,
@@ -211,12 +216,12 @@ def import_pattern_from_tar(
                 s3_key=info["s3_key"],
                 format=info["format"],
                 size_bytes=info["size_bytes"],
-                virtual_size_bytes=md.get("virtual_size_bytes", 0),
+                virtual_size_bytes=int(md.get("virtual_size_bytes", 0)),
                 checksum_sha256=md.get("checksum_sha256"),
                 state="available",
             )
             db.add(pd)
-            total_size += info["size_bytes"]
+            total_size += info["size_bytes"]  # type: ignore[operator]
 
             _update_topology_disk_refs(new_topo, old_id, pd.id, pattern_id)
 
