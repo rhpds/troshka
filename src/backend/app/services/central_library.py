@@ -257,11 +257,9 @@ def _remap_library_refs(topology: dict, db: Session):
 
         fmt = data.get("format", "qcow2")
         size = data.get("sizeBytes", 0)
+        ref_name = (data.get("libraryItemName") or data.get("label") or "").lower()
         for local in local_items:
-            if (
-                local.format == fmt
-                and local.name.lower() in data.get("label", "").lower()
-            ):
+            if local.format == fmt and local.name.lower() == ref_name:
                 data["libraryItemId"] = local.id
                 data["libraryItemName"] = local.name
                 logger.info(
