@@ -64,6 +64,7 @@ def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
     created = 0
     updated = 0
     skipped = 0
+    removed = 0
 
     for entry in manifest:
         s3_key = entry["s3_key"]
@@ -72,6 +73,7 @@ def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
         if fingerprint in local_fingerprints:
             if s3_key in existing:
                 db.delete(existing[s3_key])
+                removed += 1
             skipped += 1
             continue
 
@@ -101,7 +103,6 @@ def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
         created += 1
 
     current_keys = {e["s3_key"] for e in manifest}
-    removed = 0
     for s3_key, item in existing.items():
         if s3_key not in current_keys:
             db.delete(item)
