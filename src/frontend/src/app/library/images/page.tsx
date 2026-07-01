@@ -248,14 +248,6 @@ export default function ImagesPage() {
               <input style={{ ...inputStyle, width: 200 }} placeholder="Search images..." value={filter} onChange={(e) => setFilter(e.target.value)} />
             </ToolbarItem>
             <ToolbarItem align={{ default: "alignEnd" }}>
-              <Button variant="secondary" onClick={async () => {
-                const resp = await fetch("/api/v1/library/sync-central", { method: "POST" });
-                if (resp.ok) { const r = await resp.json(); showToast(`Central sync: ${r.created} new, ${r.updated} updated`); loadItems(); }
-                else if (resp.status === 403) { showToast("Admin only"); }
-                else { showToast("No central S3 provider configured"); }
-              }}>Sync Central</Button>
-            </ToolbarItem>
-            <ToolbarItem>
               <Button variant="primary" onClick={() => setShowUpload(!showUpload)}>
                 {showUpload ? "Cancel" : "+ Upload"}
               </Button>

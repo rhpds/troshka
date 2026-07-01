@@ -190,6 +190,7 @@ export default function PatternsPage() {
   const [selectedPatterns, setSelectedPatterns] = useState<Set<string>>(new Set());
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState("");
+  const [exportPattern, setExportPattern] = useState<Pattern | null>(null);
 
   const loadPatterns = () => {
     fetch("/api/v1/patterns/")
@@ -457,7 +458,7 @@ export default function PatternsPage() {
                   <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setBulkPatternId(pattern.id)}>
                     Bulk Deploy
                   </Button>
-                  <Button variant="link" size="sm" isDisabled={saving} component="a" href={`/api/v1/patterns/${pattern.id}/export`}>
+                  <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setExportPattern(pattern)}>
                     Export
                   </Button>
                   {saving && (
@@ -510,6 +511,29 @@ export default function PatternsPage() {
         onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
+
+      {exportPattern && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}
+          onClick={() => setExportPattern(null)}>
+          <div style={{ background: "var(--pf-t--global--background--color--primary--default)", borderRadius: 12, padding: 24, minWidth: 360, maxWidth: 460, boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }}
+            onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0, marginBottom: 16 }}>Export Pattern</h2>
+            <p style={{ fontSize: 14, opacity: 0.8, marginBottom: 8 }}>
+              <strong>{exportPattern.name}</strong>
+            </p>
+            <p style={{ fontSize: 14, opacity: 0.7, marginBottom: 20 }}>
+              Download size: <strong>{formatSize(exportPattern.total_size_bytes)}</strong> (compressed tar archive with topology + disk images)
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Button variant="secondary" onClick={() => setExportPattern(null)}>Cancel</Button>
+              <Button variant="primary" onClick={() => {
+                window.location.href = `/api/v1/patterns/${exportPattern.id}/export`;
+                setExportPattern(null);
+              }}>Download</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

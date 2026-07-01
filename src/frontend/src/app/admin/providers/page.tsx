@@ -24,6 +24,7 @@ interface ProviderInfo {
   security_group_id: string | null;
   state: string;
   has_credentials: boolean;
+  endpoint_url?: string | null;
   host_count: number;
   created_at: string;
   console_base_domain?: string;
@@ -72,8 +73,11 @@ export default function AdminProvidersPage() {
   const [editName, setEditName] = useState("");
   const [editRegion, setEditRegion] = useState("");
   const [s3Bucket, setS3Bucket] = useState("troshka-images");
+  const [useCustomEndpoint, setUseCustomEndpoint] = useState(false);
+  const [endpointUrl, setEndpointUrl] = useState("");
   const [editAccessKey, setEditAccessKey] = useState("");
   const [editSecretKey, setEditSecretKey] = useState("");
+  const [editEndpointUrl, setEditEndpointUrl] = useState("");
   const [apiUrl, setApiUrl] = useState("");
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
@@ -180,7 +184,8 @@ export default function AdminProvidersPage() {
       : {
           name, type, default_region: region,
           access_key_id: accessKey, secret_access_key: secretKey,
-          ...(type === "s3" ? { bucket: s3Bucket } : {}),
+          ...((type === "s3" || type === "s3_readonly") ? { bucket: s3Bucket } : {}),
+          ...(useCustomEndpoint && endpointUrl ? { endpoint_url: endpointUrl } : {}),
         };
     const resp = await fetch("/api/v1/providers/", {
       method: "POST",
@@ -188,8 +193,11 @@ export default function AdminProvidersPage() {
       body: JSON.stringify(body),
     });
     if (resp.ok) {
+      if (type === "s3_readonly") {
+        fetch("/api/v1/library/sync-central", { method: "POST" });
+      }
       setShowAdd(false);
-      setName(""); setAccessKey(""); setSecretKey("");
+      setName(""); setAccessKey(""); setSecretKey(""); setEndpointUrl(""); setUseCustomEndpoint(false);
       setApiUrl(""); setToken(""); setNamespace("troshka"); setVerifySsl(true);
       setGcpProjectId(""); setServiceAccountJson("");
       setAzureTenantId(""); setAzureClientId(""); setAzureClientSecret(""); setAzureSubscriptionId(""); setAzureLocation("");
@@ -225,6 +233,7 @@ export default function AdminProvidersPage() {
     setEditRegion(p.type === "ocpvirt" ? (p.default_region || "troshka") : (p.default_region || "us-east-1"));
     setEditAccessKey("");
     setEditSecretKey("");
+    setEditEndpointUrl(p.endpoint_url || "");
   };
 
   const saveEdit = async () => {
@@ -240,6 +249,7 @@ export default function AdminProvidersPage() {
       if (editRegion) body.default_region = editRegion;
       if (editAccessKey) body.access_key_id = editAccessKey;
       if (editSecretKey) body.secret_access_key = editSecretKey;
+      if (editEndpointUrl !== undefined) body.endpoint_url = editEndpointUrl;
     }
 
     const resp = await fetch(`/api/v1/providers/${editId}`, {
@@ -446,16 +456,17 @@ export default function AdminProvidersPage() {
                     <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Type</label>
                     <select style={inputStyle} value={type} onChange={(e) => {
                       setType(e.target.value);
-                      if (e.target.value === "s3") setRegion("us-east-1");
+                      if (e.target.value === "s3" || e.target.value === "s3_readonly") setRegion("us-east-1");
                     }}>
                       <option value="ec2">AWS EC2</option>
                       <option value="ocpvirt">OCP Virtualization</option>
                       <option value="s3">S3 Storage</option>
+                      <option value="s3_readonly">S3 Read-Only</option>
                       <option value="gcp">GCP</option>
                       <option value="azure">Azure</option>
                     </select>
                   </div>
-                  {type !== "ocpvirt" && (
+                  {type !== "ocpvirt" && !useCustomEndpoint && (
                     <div style={{ flex: 1 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
                       <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
@@ -464,11 +475,25 @@ export default function AdminProvidersPage() {
                     </div>
                   )}
                 </div>
-                {type === "s3" && (
-                  <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>S3 Bucket</label>
-                    <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" />
-                  </div>
+                {(type === "s3" || type === "s3_readonly") && (
+                  <>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>S3 Bucket</label>
+                      <input style={inputStyle} value={s3Bucket} onChange={(e) => setS3Bucket(e.target.value)} placeholder="troshka-images" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                        <input type="checkbox" checked={useCustomEndpoint} onChange={(e) => setUseCustomEndpoint(e.target.checked)} />
+                        S4 / Custom S3 Endpoint
+                      </label>
+                    </div>
+                    {useCustomEndpoint && (
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Endpoint URL</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={endpointUrl} onChange={(e) => setEndpointUrl(e.target.value)} placeholder="https://s4-troshka-images.apps.example.com" />
+                      </div>
+                    )}
+                  </>
                 )}
                 {type === "ocpvirt" ? (
                   <>
@@ -572,12 +597,14 @@ export default function AdminProvidersPage() {
                     </>
                   ) : (
                     <>
-                      <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
-                        <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
-                          {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-                        </select>
-                      </div>
+                      {!editEndpointUrl && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
+                          <select style={inputStyle} value={editRegion} onChange={(e) => setEditRegion(e.target.value)}>
+                            {regions.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                          </select>
+                        </div>
+                      )}
                       <div>
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Access Key ID <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editAccessKey} onChange={(e) => setEditAccessKey(e.target.value)} placeholder="Leave blank to keep current" />
@@ -586,6 +613,18 @@ export default function AdminProvidersPage() {
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Secret Access Key <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
                       </div>
+                      <div>
+                        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                          <input type="checkbox" checked={!!editEndpointUrl} onChange={(e) => setEditEndpointUrl(e.target.checked ? (editEndpointUrl || "https://") : "")} />
+                          S4 / Custom S3 Endpoint
+                        </label>
+                      </div>
+                      {!!editEndpointUrl && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Endpoint URL</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editEndpointUrl} onChange={(e) => setEditEndpointUrl(e.target.value)} placeholder="https://s4-example.apps.cluster.com" />
+                        </div>
+                      )}
                     </>
                   )}
                   <div style={{ display: "flex", gap: 8 }}>
@@ -599,7 +638,7 @@ export default function AdminProvidersPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : p.type === "gcp" ? "rgba(96,165,250,0.15)" : p.type === "azure" ? "rgba(34,211,238,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : p.type === "gcp" ? "#60a5fa" : p.type === "azure" ? "#22d3ee" : "#a78bfa" }}>
-                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : "OCP Virt"}
+                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "s3_readonly" ? "S3 Read-Only" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : "OCP Virt"}
                       </span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
                         {p.state}
@@ -608,7 +647,8 @@ export default function AdminProvidersPage() {
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                       {p.type !== "ocpvirt" && p.default_region}
-                      {p.type !== "s3" && <span>{p.type !== "ocpvirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
+                      {p.type !== "s3" && p.type !== "s3_readonly" && <span>{p.type !== "ocpvirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
+                      {(p.type === "s3" || p.type === "s3_readonly") && <span> · {p.endpoint_url || "AWS S3"}</span>}
                       {p.type === "ec2" && (
                         p.default_image
                           ? <span> · Image: <code style={{ fontSize: 11 }}>{p.default_image}</code></span>
@@ -866,6 +906,18 @@ export default function AdminProvidersPage() {
                           setTestResult((prev) => ({ ...prev, [p.id]: `Scan failed: ${data.detail || "unknown error"}` }));
                         }
                       }}>Scan S3</Button>
+                    )}
+                    {p.type === "s3_readonly" && (
+                      <Button variant="secondary" onClick={async () => {
+                        setTestResult((prev) => ({ ...prev, [p.id]: "Syncing..." }));
+                        const resp = await fetch("/api/v1/library/sync-central", { method: "POST" });
+                        if (resp.ok) {
+                          const r = await resp.json();
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Synced: ${r.created} new, ${r.updated} updated, ${r.skipped} unchanged` }));
+                        } else {
+                          setTestResult((prev) => ({ ...prev, [p.id]: "Sync failed" }));
+                        }
+                      }}>Sync Library</Button>
                     )}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));

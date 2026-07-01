@@ -25,6 +25,7 @@ class ProviderCreate(BaseModel):
     access_key_id: str = ""
     secret_access_key: str = ""
     bucket: str | None = None
+    endpoint_url: str | None = None
     # OCP Virt fields
     api_url: str = ""
     token: str = ""
@@ -87,6 +88,7 @@ class ProviderResponse(BaseModel):
 
     state: str
     has_credentials: bool
+    endpoint_url: str | None = None
     host_count: int
     created_at: str
 
@@ -125,6 +127,9 @@ def list_providers(
             azure_location=p.azure_location,
             state=p.state,
             has_credentials=bool(p.credentials),
+            endpoint_url=(
+                p.get_credentials().get("endpoint_url") if p.credentials else None
+            ),
             host_count=len(p.hosts),
             created_at=p.created_at.isoformat() if p.created_at else "",
         )
@@ -206,19 +211,30 @@ def create_provider(
         }
         provider.azure_subscription_id = body.azure_subscription_id
         provider.azure_location = body.azure_location or body.default_region or None
-    elif body.type in ("ec2", "s3"):
+    elif body.type in ("ec2", "s3", "s3_readonly"):
         creds = {
             "access_key_id": body.access_key_id,
             "secret_access_key": body.secret_access_key,
         }
         if body.bucket:
             creds["bucket"] = body.bucket
+        if body.endpoint_url:
+            creds["endpoint_url"] = body.endpoint_url
     else:
         raise HTTPException(400, f"Unknown provider type: {body.type}")
     provider.set_credentials(creds)
     db.add(provider)
     db.commit()
     db.refresh(provider)
+
+    if body.type == "s3_readonly":
+        try:
+            from app.services.central_library import sync_central_library
+
+            result = sync_central_library(db)
+            logger.info("Auto-synced central library on provider creation: %s", result)
+        except Exception as e:
+            logger.warning("Central library auto-sync failed: %s", e)
 
     return ProviderResponse(
         id=provider.id,
@@ -242,6 +258,7 @@ def create_provider(
         azure_location=provider.azure_location,
         state=provider.state,
         has_credentials=True,
+        endpoint_url=creds.get("endpoint_url"),
         host_count=0,
         created_at=provider.created_at.isoformat() if provider.created_at else "",
     )
