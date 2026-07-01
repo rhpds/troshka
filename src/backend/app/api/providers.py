@@ -231,7 +231,7 @@ def create_provider(
         try:
             from app.services.central_library import sync_central_library
 
-            result = sync_central_library(db)
+            result = sync_central_library(db, owner_id=user.id)
             logger.info("Auto-synced central library on provider creation: %s", result)
         except Exception as e:
             logger.warning("Central library auto-sync failed: %s", e)

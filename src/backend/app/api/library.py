@@ -761,7 +761,7 @@ def sync_central(user: User = Depends(get_current_user), db: Session = Depends(g
 
     from app.services.central_library import sync_central_library
 
-    return sync_central_library(db)
+    return sync_central_library(db, owner_id=user.id)
 
 
 @router.post("/scan-s3")

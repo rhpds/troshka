@@ -876,7 +876,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         progress_callback: optional callback(downloaded_bytes, total_bytes)
     """
     from app.models.library import LibraryItem
-    from app.models.pattern import PatternDisk
+    from app.models.pattern import Pattern, PatternDisk
     from app.services import s3_storage
     from app.services.troshkad_client import poll_job
 
@@ -947,6 +947,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 disk_name = (
                     data.get("label") or data.get("name") or node.get("id", "")[:8]
                 )
+                pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
+                pattern_tags = (pattern_obj.tags or {}) if pattern_obj else {}
                 items_to_cache.append(
                     {
                         "item_id": pattern_disk_id,
@@ -954,6 +956,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         "s3_key": pd.s3_key,
                         "cache_path": cache_path,
                         "expected_size": pd.size_bytes,
+                        "source": pattern_tags.get("source", "local"),
+                        "source_provider_id": pattern_tags.get("source_provider_id"),
                     }
                 )
 
