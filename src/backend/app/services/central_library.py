@@ -51,12 +51,30 @@ def sync_central_library(db: Session) -> dict:
         for item in db.query(LibraryItem).filter_by(library_id=lib.id, source="central")
     }
 
+    local_items = (
+        db.query(LibraryItem)
+        .filter(
+            LibraryItem.library_id != lib.id,
+            LibraryItem.source == "local",
+        )
+        .all()
+    )
+    local_fingerprints = {(item.size_bytes, item.format) for item in local_items}
+
     created = 0
     updated = 0
     skipped = 0
 
     for entry in manifest:
         s3_key = entry["s3_key"]
+        fingerprint = (entry.get("size_bytes", 0), entry.get("format", "qcow2"))
+
+        if fingerprint in local_fingerprints:
+            if s3_key in existing:
+                db.delete(existing[s3_key])
+            skipped += 1
+            continue
+
         if s3_key in existing:
             item = existing[s3_key]
             if item.size_bytes != entry.get("size_bytes", 0):
@@ -82,14 +100,27 @@ def sync_central_library(db: Session) -> dict:
         db.add(item)
         created += 1
 
+    current_keys = {e["s3_key"] for e in manifest}
+    removed = 0
+    for s3_key, item in existing.items():
+        if s3_key not in current_keys:
+            db.delete(item)
+            removed += 1
+
     db.commit()
     logger.info(
-        "Central library sync: %d created, %d updated, %d skipped",
+        "Central library sync: %d created, %d updated, %d skipped, %d removed",
         created,
         updated,
         skipped,
+        removed,
     )
-    return {"created": created, "updated": updated, "skipped": skipped}
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "removed": removed,
+    }
 
 
 def _load_manifest(client, bucket: str) -> list[dict]:
@@ -116,11 +147,14 @@ def _scan_bucket(client, bucket: str) -> list[dict]:
             key = obj["Key"]
             if key.endswith("/") or key == "library/manifest.json":
                 continue
+            if key.startswith("patterns/"):
+                continue
             name = key.rsplit("/", 1)[-1]
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
             fmt = ext if ext in ("qcow2", "iso", "raw", "vmdk") else "qcow2"
             item_type = "iso" if ext == "iso" else "image"
-            display_name = name.rsplit(".", 1)[0].replace("-", " ").replace("_", " ")
+            stem = name.rsplit(".", 1)[0]
+            display_name = stem.replace("-", " ").replace("_", " ").title()
             items.append(
                 {
                     "s3_key": key,
