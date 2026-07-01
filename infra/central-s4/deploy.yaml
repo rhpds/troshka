@@ -61,7 +61,7 @@
             name: s4-data
             namespace: "{{ s4_namespace }}"
           spec:
-            accessModes: [ReadWriteOnce]
+            accessModes: [ReadWriteMany]
             resources:
               requests:
                 storage: "{{ s4_pvc_size }}"
@@ -112,14 +112,31 @@
                         mountPath: /var/lib/ceph/radosgw
                     resources:
                       requests:
-                        cpu: 250m
-                        memory: 512Mi
+                        cpu: 500m
+                        memory: 4Gi
                       limits:
-                        memory: 2Gi
+                        cpu: 500m
+                        memory: 4Gi
                 volumes:
                   - name: data
                     persistentVolumeClaim:
                       claimName: s4-data
+
+    - name: Create PodDisruptionBudget
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: s4
+            namespace: "{{ s4_namespace }}"
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: s4
 
     - name: Create S4 Service
       kubernetes.core.k8s:
