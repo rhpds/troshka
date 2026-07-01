@@ -153,7 +153,7 @@ def import_pattern_from_tar(
         tf = tarfile.open(fileobj=tar_stream, mode="r|")
         topology = None
         metadata = None
-        disk_map: dict[str, dict[str, str | int]] = {}
+        disk_map = {}
 
         for member in tf:
             if member.name == "topology.json":
