@@ -200,7 +200,6 @@ def import_pattern_from_tar(
                 pass
 
         total_size = 0
-        old_disk_ids = [d["id"] for d in (metadata or {}).get("disks", [])]
         meta_disks = {d["id"]: d for d in (metadata or {}).get("disks", [])}
 
         for old_id, info in disk_map.items():
