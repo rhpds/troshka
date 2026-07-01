@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import datetime
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
@@ -15,6 +18,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 class Pattern(Base):
