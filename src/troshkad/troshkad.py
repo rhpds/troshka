@@ -1789,6 +1789,404 @@ def _handle_vm_modify_fs(job, params):
 COMMAND_HANDLERS["vms/modify-fs"] = _handle_vm_modify_fs
 
 
+# ── Recert (OCP certificate regeneration) ──
+
+RECERT_IMAGE = "quay.io/edge-infrastructure/recert:latest"
+ETCD_IMAGE = "gcr.io/etcd-development/etcd:v3.6.0"
+_ETCD_PORT_START = 2389
+_ETCD_PORT_END = 2399
+
+_recert_lock = threading.Lock()
+_nbd_devices_in_use = set()
+_nbd_module_loaded = False
+
+
+def _ensure_nbd_module():
+    global _nbd_module_loaded
+    if _nbd_module_loaded:
+        return
+    result = subprocess.run(["lsmod"], capture_output=True, text=True, timeout=5)
+    if "nbd" not in result.stdout:
+        subprocess.run(
+            ["modprobe", "nbd", "max_part=8"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    _nbd_module_loaded = True
+
+
+def _allocate_nbd_device():
+    with _recert_lock:
+        for i in range(8):
+            dev = f"/dev/nbd{i}"
+            if dev in _nbd_devices_in_use:
+                continue
+            subprocess.run(
+                ["qemu-nbd", "--disconnect", dev],
+                capture_output=True,
+                timeout=10,
+            )
+            time.sleep(0.5)
+            if os.path.exists(f"{dev}p1"):
+                continue
+            _nbd_devices_in_use.add(dev)
+            return dev
+    raise RuntimeError("No free NBD devices (0-7)")
+
+
+def _release_nbd_device(dev):
+    with _recert_lock:
+        _nbd_devices_in_use.discard(dev)
+
+
+def _allocate_etcd_port():
+    with _recert_lock:
+        for port in range(_ETCD_PORT_START, _ETCD_PORT_END + 1):
+            if not _port_in_use(port) and not _port_in_use(port + 10):
+                return port
+    raise RuntimeError(
+        f"No free etcd ports in range {_ETCD_PORT_START}-{_ETCD_PORT_END}"
+    )
+
+
+def _ensure_container_image(job, image):
+    result = subprocess.run(
+        ["podman", "image", "exists", image],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        _job_log(job, f"Pulling {image}")
+        _run_cmd(job, ["podman", "pull", image], timeout=300)
+
+
+def _handle_vm_recert(job, params):
+    """Regenerate OCP certificates on a stopped SNO's boot disk using recert.
+
+    Params:
+        disk: path to RHCOS qcow2 boot disk
+        extend_expiration: bool (default True) — extend cert validity
+        force_expire: bool (default False) — intentionally expire all certs (for pattern capture)
+        cluster_rename: optional "name:domain" for cluster identity change
+        kubeadmin_password_hash: optional new kubeadmin password hash
+        bastion_disk: optional path to bastion qcow2 — injects updated kubeconfig after recert
+        bastion_kubeconfig_path: guest path on bastion for kubeconfig (default /home/cloud-user/ocp-install/auth/kubeconfig)
+    """
+    disk = _validate_path(params.get("disk", ""))
+    if not disk or not os.path.exists(disk):
+        raise RuntimeError(f"disk not found: {disk}")
+
+    extend_expiration = params.get("extend_expiration", True)
+    force_expire = params.get("force_expire", False)
+    cluster_rename = params.get("cluster_rename")
+    kubeadmin_password_hash = params.get("kubeadmin_password_hash")
+    common_password = params.get("common_password")
+    bastion_disk = params.get("bastion_disk")
+    if bastion_disk:
+        bastion_disk = _validate_path(bastion_disk)
+        if not os.path.exists(bastion_disk):
+            raise RuntimeError(f"bastion disk not found: {bastion_disk}")
+    bastion_kubeconfig_path = params.get(
+        "bastion_kubeconfig_path", "/home/cloud-user/ocp-install/auth/kubeconfig"
+    )
+
+    _ensure_nbd_module()
+    _ensure_container_image(job, ETCD_IMAGE)
+    _ensure_container_image(job, RECERT_IMAGE)
+
+    nbd_dev = _allocate_nbd_device()
+    etcd_port = _allocate_etcd_port()
+    etcd_peer_port = etcd_port + 10
+    mount_dir = f"/var/lib/troshka/tmp/recert-{job['job_id'][:8]}"
+    etcd_ctr = f"recert-etcd-{job['job_id'][:8]}"
+    mounted = False
+
+    try:
+        _job_log(job, f"Connecting {os.path.basename(disk)} to {nbd_dev}")
+        _run_cmd(job, ["qemu-nbd", "--connect", nbd_dev, disk], timeout=30)
+        time.sleep(1)
+        _run_cmd(job, ["partprobe", nbd_dev], timeout=15, check=False)
+        time.sleep(1)
+
+        partition = f"{nbd_dev}p4"
+        if not os.path.exists(partition):
+            raise RuntimeError(
+                f"Partition {partition} not found — disk may not be RHCOS"
+            )
+
+        os.makedirs(mount_dir, exist_ok=True)
+        _job_log(job, f"Mounting {partition}")
+        _run_cmd(job, ["mount", "-o", "nouuid", partition, mount_dir], timeout=30)
+        mounted = True
+
+        deploy_dir = os.path.join(mount_dir, "ostree/deploy/rhcos/deploy")
+        if not os.path.isdir(deploy_dir):
+            raise RuntimeError("Not an OSTree/RHCOS disk — no ostree deploy dir")
+        entries = [e for e in os.listdir(deploy_dir) if not e.endswith(".origin")]
+        if not entries:
+            raise RuntimeError("No OSTree deployment found")
+        deploy_hash = entries[0]
+        _job_log(job, f"OSTree deployment: {deploy_hash[:12]}...")
+
+        deploy_root = os.path.join(deploy_dir, deploy_hash)
+        var_root = os.path.join(mount_dir, "ostree/deploy/rhcos/var")
+
+        etc_k8s = os.path.join(deploy_root, "etc/kubernetes")
+        etc_mcd = os.path.join(deploy_root, "etc/machine-config-daemon")
+        var_kubelet = os.path.join(var_root, "lib/kubelet")
+        var_etcd = os.path.join(var_root, "lib/etcd")
+
+        for d in [etc_k8s, var_kubelet, var_etcd]:
+            if not os.path.isdir(d):
+                raise RuntimeError(f"Expected dir not found: {d}")
+
+        _job_log(job, f"Starting temp etcd on port {etcd_port}")
+        _run_cmd(
+            job,
+            [
+                "podman",
+                "run",
+                "-d",
+                "--name",
+                etcd_ctr,
+                "--network",
+                "host",
+                "--security-opt",
+                "label=disable",
+                "-v",
+                f"{var_etcd}:/data-dir",
+                ETCD_IMAGE,
+                "etcd",
+                "--data-dir=/data-dir",
+                "--name=recert-temp",
+                f"--listen-client-urls=http://127.0.0.1:{etcd_port}",
+                f"--advertise-client-urls=http://127.0.0.1:{etcd_port}",
+                f"--listen-peer-urls=http://127.0.0.1:{etcd_peer_port}",
+                "--force-new-cluster",
+            ],
+            timeout=60,
+        )
+
+        _job_log(job, "Waiting for etcd to become healthy...")
+        deadline = time.time() + 30
+        healthy = False
+        while time.time() < deadline:
+            try:
+                result = subprocess.run(
+                    [
+                        "podman",
+                        "exec",
+                        etcd_ctr,
+                        "etcdctl",
+                        f"--endpoints=http://127.0.0.1:{etcd_port}",
+                        "endpoint",
+                        "health",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and "healthy" in result.stdout.lower():
+                    healthy = True
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        if not healthy:
+            raise RuntimeError("etcd did not become healthy within 30s")
+        _job_log(job, "etcd is healthy")
+
+        recert_cmd = [
+            "podman",
+            "run",
+            "--rm",
+            "--network",
+            "host",
+            "--security-opt",
+            "label=disable",
+            "-v",
+            f"{etc_k8s}:/etc/kubernetes",
+            "-v",
+            f"{etc_mcd}:/etc/machine-config-daemon",
+            "-v",
+            f"{var_kubelet}:/var/lib/kubelet",
+            RECERT_IMAGE,
+            f"--etcd-endpoint=http://127.0.0.1:{etcd_port}",
+            "--crypto-dir",
+            "/etc/kubernetes",
+            "--crypto-dir",
+            "/etc/machine-config-daemon",
+            "--crypto-dir",
+            "/var/lib/kubelet",
+            "--cluster-customization-dir",
+            "/etc/kubernetes",
+            "--cluster-customization-dir",
+            "/var/lib/kubelet",
+        ]
+        if force_expire:
+            recert_cmd.append("--force-expire")
+        elif extend_expiration:
+            recert_cmd.append("--extend-expiration")
+        if cluster_rename:
+            recert_cmd.extend(["--cluster-rename", cluster_rename])
+        if kubeadmin_password_hash:
+            recert_cmd.extend(["--kubeadmin-password-hash", kubeadmin_password_hash])
+
+        _job_log(job, "Running recert...")
+        _run_cmd(job, recert_cmd, timeout=300)
+        _job_log(job, "Recert completed successfully")
+
+        if bastion_disk and not force_expire:
+            kubeconfig_src = os.path.join(
+                etc_k8s,
+                "static-pod-resources/kube-apiserver-certs/secrets/"
+                "node-kubeconfigs/lb-ext.kubeconfig",
+            )
+            if os.path.isfile(kubeconfig_src):
+                _job_log(job, "Injecting updated kubeconfig into bastion disk")
+                kubeconfig_content = open(kubeconfig_src).read()
+                tmp_kc = os.path.join(mount_dir, ".kubeconfig-tmp")
+                with open(tmp_kc, "w") as f:
+                    f.write(kubeconfig_content)
+                ff_rm_cmds = ""
+                try:
+                    ff = subprocess.run(
+                        [
+                            "guestfish",
+                            "--ro",
+                            "-a",
+                            bastion_disk,
+                            "-i",
+                            "glob",
+                            "echo",
+                            "/home/cloud-user/.mozilla/firefox/*.default*",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    for prof in ff.stdout.strip().split():
+                        if prof and ".default" in prof:
+                            ff_rm_cmds += f"rm-f {prof}/cert9.db\n"
+                            ff_rm_cmds += f"rm-f {prof}/key4.db\n"
+                except Exception:
+                    pass
+                pw_upload_cmd = ""
+                if common_password:
+                    tmp_pw = os.path.join(mount_dir, ".kubeadmin-pw-tmp")
+                    with open(tmp_pw, "w") as f:
+                        f.write(common_password)
+                    pw_upload_cmd = f"upload {tmp_pw} /home/cloud-user/ocp-install/auth/kubeadmin-password\n"
+                gf_script = (
+                    f"upload {tmp_kc} {bastion_kubeconfig_path}\n"
+                    "rm-f /etc/pki/ca-trust/source/anchors/ocp-ingress.pem\n"
+                    + ff_rm_cmds
+                    + pw_upload_cmd
+                )
+                result = subprocess.run(
+                    ["guestfish", "--rw", "-a", bastion_disk, "-i"],
+                    input=gf_script,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                os.unlink(tmp_kc)
+                if common_password:
+                    try:
+                        os.unlink(tmp_pw)
+                    except OSError:
+                        pass
+                if result.returncode == 0:
+                    _job_log(job, "Bastion kubeconfig and certs updated")
+                else:
+                    _job_log(
+                        job,
+                        f"Bastion kubeconfig update failed: {result.stderr.strip()}",
+                    )
+            else:
+                _job_log(
+                    job,
+                    f"No kubeconfig found at {kubeconfig_src}, skipping bastion update",
+                )
+
+        return {"status": "completed", "disk": disk}
+
+    finally:
+        try:
+            _run_cmd(job, ["podman", "rm", "-f", etcd_ctr], timeout=15, check=False)
+        except Exception:
+            pass
+        if mounted:
+            try:
+                _run_cmd(job, ["umount", mount_dir], timeout=30, check=False)
+            except Exception:
+                pass
+        try:
+            _run_cmd(
+                job, ["qemu-nbd", "--disconnect", nbd_dev], timeout=15, check=False
+            )
+        except Exception:
+            pass
+        try:
+            os.rmdir(mount_dir)
+        except OSError:
+            pass
+        _release_nbd_device(nbd_dev)
+
+
+COMMAND_HANDLERS["vms/recert"] = _handle_vm_recert
+
+
+def _cleanup_stale_recert():
+    """Clean up leftover recert artifacts from a previous agent crash."""
+    import glob as _glob
+
+    tmp_base = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    for d in _glob.glob(os.path.join(tmp_base, "recert-*")):
+        if os.path.ismount(d):
+            logger.warning("Cleaning stale recert mount: %s", d)
+            subprocess.run(["umount", d], capture_output=True, timeout=15)
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+
+    for i in range(8):
+        dev = f"/dev/nbd{i}"
+        if os.path.exists(f"{dev}p1"):
+            subprocess.run(
+                ["qemu-nbd", "--disconnect", dev],
+                capture_output=True,
+                timeout=10,
+            )
+
+    result = subprocess.run(
+        [
+            "podman",
+            "ps",
+            "-a",
+            "--filter",
+            "name=recert-etcd-",
+            "--format",
+            "{{.Names}}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    for name in result.stdout.strip().split("\n"):
+        if name and name.startswith("recert-etcd-"):
+            logger.warning("Removing stale recert container: %s", name)
+            subprocess.run(
+                ["podman", "rm", "-f", name],
+                capture_output=True,
+                timeout=15,
+            )
+
+
 # ── Storage handlers ──
 
 _DISK_FORMATS = {"qcow2", "raw", "vmdk"}
@@ -6159,6 +6557,7 @@ def main():
     cleanup_thread.start()
 
     _cleanup_nbd_ports()
+    _cleanup_stale_recert()
     threading.Thread(target=_nbd_reaper_loop, daemon=True).start()
 
     # Restore services from previous deploy

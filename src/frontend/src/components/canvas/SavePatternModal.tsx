@@ -6,17 +6,19 @@ interface SavePatternModalProps {
   projectId: string;
   projectName: string;
   hasRunningVMs: boolean;
+  isSno?: boolean;
   onSaved: (patternId: string) => void;
   onClose: () => void;
 }
 
-export default function SavePatternModal({ projectId, projectName, hasRunningVMs, onSaved, onClose }: SavePatternModalProps) {
+export default function SavePatternModal({ projectId, projectName, hasRunningVMs, isSno, onSaved, onClose }: SavePatternModalProps) {
   const [name, setName] = useState(`${projectName}-pattern`);
   const [description, setDescription] = useState("");
   const [stopVMs, setStopVMs] = useState(false);
   const [restartAfter, setRestartAfter] = useState(true);
   const [quiesceCluster, setQuiesceCluster] = useState(true);
   const [captureClockTarget, setCaptureClockTarget] = useState(false);
+  const [recert, setRecert] = useState(isSno ?? false);
   const [saving, setSaving] = useState(false);
   const [savingStatus, setSavingStatus] = useState("");
   const [error, setError] = useState("");
@@ -86,8 +88,9 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           visibility: "private",
           source_project_id: projectId,
           restart_after: restartAfter,
-          quiesce_cluster: quiesceCluster,
+          quiesce_cluster: recert ? false : quiesceCluster,
           capture_clock_target: captureClockTarget,
+          recert,
         }),
       });
       if (resp.ok) {
@@ -194,9 +197,9 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
                 Restart project after capture
               </label>
             )}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1 }}>
-              <input type="checkbox" checked={quiesceCluster} onChange={(e) => setQuiesceCluster(e.target.checked)} disabled={saving} />
-              Quiesce OCP cluster before capture
+            <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: (saving || recert) ? "not-allowed" : "pointer", opacity: (saving || recert) ? 0.5 : 1 }}>
+              <input type="checkbox" checked={recert ? false : quiesceCluster} onChange={(e) => setQuiesceCluster(e.target.checked)} disabled={saving || recert} />
+              Quiesce OCP cluster before capture{recert ? " (skipped — recert replaces certs)" : ""}
             </label>
           </div>
         )}
@@ -220,6 +223,12 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
             <input type="checkbox" checked={captureClockTarget} onChange={(e) => setCaptureClockTarget(e.target.checked)} disabled={saving} />
             Capture clock target for backdating
           </label>
+          {isSno && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.5 : 1, fontSize: 13 }}>
+              <input type="checkbox" checked={recert} onChange={(e) => setRecert(e.target.checked)} disabled={saving} />
+              Prepare for recert (expire certificates for fast deploy)
+            </label>
+          )}
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
 
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>

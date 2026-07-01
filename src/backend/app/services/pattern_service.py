@@ -13,6 +13,69 @@ log = logging.getLogger(__name__)
 _capture_progress: dict[str, dict] = {}
 
 
+def _run_recert_force_expire(host, pattern_id, topology, disks, db):
+    """Run recert --force-expire on the RHCOS boot disk to expire all certs.
+
+    Called after pattern capture when pattern.recert is True. Operates on the
+    flattened pattern disk in the local cache. Non-fatal — pattern is still
+    marked available if this fails, but recert flag is cleared.
+    """
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    vms = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+    rhcos_vms = [v for v in vms if v.get("data", {}).get("os") == "rhcos"]
+    if len(rhcos_vms) != 1:
+        log.warning(
+            "Pattern %s: recert requested but %d RHCOS VMs (need exactly 1), skipping",
+            pattern_id[:8],
+            len(rhcos_vms),
+        )
+        return
+
+    rhcos_vm = rhcos_vms[0]
+    rhcos_disk = None
+    for d in disks:
+        if d.source_vm_id == rhcos_vm["id"] and d.format == "qcow2":
+            rhcos_disk = d
+            break
+    if not rhcos_disk:
+        log.warning("Pattern %s: no RHCOS qcow2 disk found for recert", pattern_id[:8])
+        return
+
+    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{rhcos_disk.id}.{rhcos_disk.format}"
+
+    log.info(
+        "Pattern %s: running recert --force-expire on %s", pattern_id[:8], cache_path
+    )
+    try:
+        job_id = start_job(
+            host,
+            "/vms/recert",
+            {"disk": cache_path, "force_expire": True, "extend_expiration": False},
+        )
+        job = wait_for_job(host, job_id, timeout=300)
+        if job.get("status") == "completed":
+            log.info("Pattern %s: recert force-expire completed", pattern_id[:8])
+        else:
+            log.warning(
+                "Pattern %s: recert force-expire failed: %s — clearing recert flag",
+                pattern_id[:8],
+                job.get("result", {}).get("error", "unknown"),
+            )
+            pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+            if pattern:
+                pattern.recert = False
+    except Exception:
+        log.warning(
+            "Pattern %s: recert force-expire error — clearing recert flag",
+            pattern_id[:8],
+            exc_info=True,
+        )
+        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+        if pattern:
+            pattern.recert = False
+
+
 def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
     """Wait for OCP cluster to be in a clean state before pattern capture.
 
@@ -860,6 +923,11 @@ def capture_pattern_disks(
             text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
             {"topo": json.dumps(copy.deepcopy(topo)), "pid": pattern_id},
         )
+
+        if pattern.recert:
+            _run_recert_force_expire(
+                worker_host or host, pattern_id, topo, pattern.disks, db
+            )
 
         pattern.state = "available"
         pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)

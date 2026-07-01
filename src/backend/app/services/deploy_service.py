@@ -13,6 +13,7 @@ import threading
 import time as _time
 
 from app.models.host import Host
+from app.models.pattern import Pattern
 from app.services.troshkad_client import (
     TroshkadError,
     start_job,
@@ -2556,6 +2557,40 @@ def deploy_project_async(
                 logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
                 raise
 
+        # Step 4a: Recert RHCOS disks (must happen before virt-install locks the disks)
+        if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
+            _update_deploy_progress(project_id, "certs", "regenerating certificates")
+            deploy_recert = topology.pop("_deploy_recert", None)
+            common_password = topology.pop("_deploy_common_password", None)
+            if deploy_recert is None:
+                for node in topology.get("nodes", []):
+                    if node.get("type") == "storageNode":
+                        pid = node.get("data", {}).get("patternId")
+                        if pid:
+                            pat = s.query(Pattern).filter_by(id=pid).first()
+                            if pat and pat.recert:
+                                deploy_recert = True
+                            break
+            if not common_password:
+                for n in topology.get("nodes", []):
+                    if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+                        common_password = n.get("data", {}).get("ciCloudUserPassword")
+                        if common_password:
+                            break
+            if deploy_recert is False:
+                logger.info(
+                    "Deploy %s: recert disabled by user, using guestfish",
+                    project_id[:8],
+                )
+            _clean_kubelet_certs(
+                host,
+                project_id,
+                topology,
+                pool,
+                pattern_recert=bool(deploy_recert),
+                common_password=common_password,
+            )
+
         # Create VM definitions sequentially (virt-install storage pool race condition)
         _checkpoint(s, project_id, "vms")
         for vi, vm in enumerate(vms):
@@ -2697,13 +2732,6 @@ def deploy_project_async(
             )
             _deploy_progress.pop(project_id, None)
             return
-
-        # Step 4d: Clean kubelet certs on RHCOS disks (pattern + OCP only)
-        if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
-            _update_deploy_progress(
-                project_id, "certs", "cleaning kubelet certificates"
-            )
-            _clean_kubelet_certs(host, project_id, topology, pool)
 
         # Step 5: Start VMs (unless auto_start is disabled)
         _checkpoint(s, project_id, "starting")
@@ -2897,17 +2925,103 @@ def deploy_project_async(
         s.close()
 
 
-def _clean_kubelet_certs(host, project_id, topology, pool):
-    """Delete stale kubelet PKI from RHCOS disks before VM startup.
+def _clean_kubelet_certs(
+    host, project_id, topology, pool, pattern_recert=False, common_password=None
+):
+    """Regenerate or delete stale kubelet PKI from RHCOS disks before VM startup.
 
-    Uses guestfish via troshkad /vms/modify-fs to remove expired certs
-    so kubelet bootstraps fresh ones on boot instead of retrying stale certs.
+    For SNO (1 RHCOS VM): Uses recert to regenerate all OCP certificates offline,
+    reducing boot time from ~15 min to ~2-3 min. Falls back to guestfish on failure
+    unless pattern_recert is True (certs are deliberately expired — guestfish won't help).
+    For multi-node: Uses guestfish to delete kubelet PKI so it bootstraps fresh.
     Non-fatal — deploy continues regardless of outcome.
     """
     vms = _extract_vms(topology)
     rhcos_vms = [vm for vm in vms if vm.get("os") == "rhcos"]
     if not rhcos_vms:
         return
+
+    is_sno = len(rhcos_vms) == 1
+
+    if is_sno:
+        vm = rhcos_vms[0]
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
+        if boot_disk:
+            disk = _disk_path(
+                project_id,
+                vm["node_id"],
+                boot_disk["node_id"],
+                boot_disk["format"],
+                pool,
+            )
+            bastion_vm = next((v for v in vms if v.get("name") == "bastion"), None)
+            bastion_disk_path = None
+            if bastion_vm:
+                bastion_disks = _find_vm_disks(bastion_vm["node_id"], topology)
+                bastion_boot = next(
+                    (d for d in bastion_disks if d.get("format") == "qcow2"), None
+                )
+                if bastion_boot:
+                    bastion_disk_path = _disk_path(
+                        project_id,
+                        bastion_vm["node_id"],
+                        bastion_boot["node_id"],
+                        bastion_boot["format"],
+                        pool,
+                    )
+            vm_name = vm.get("name", vm["node_id"][:8])
+            logger.info(
+                "Deploy %s: running recert on SNO disk for %s",
+                project_id[:8],
+                vm_name,
+            )
+            try:
+                recert_params = {"disk": disk, "extend_expiration": True}
+                if bastion_disk_path:
+                    recert_params["bastion_disk"] = bastion_disk_path
+                if common_password:
+                    recert_params["common_password"] = common_password
+                    import bcrypt
+
+                    pw_hash = bcrypt.hashpw(
+                        common_password.encode(), bcrypt.gensalt(rounds=10)
+                    ).decode()
+                    recert_params["kubeadmin_password_hash"] = pw_hash
+                job_id = start_job(host, "/vms/recert", recert_params)
+                job = wait_for_job(host, job_id, timeout=300)
+                if job.get("status") == "completed":
+                    logger.info(
+                        "Deploy %s: recert completed for %s",
+                        project_id[:8],
+                        vm_name,
+                    )
+                    return
+                else:
+                    err = job.get("result", {}).get("error", "unknown")
+                    if pattern_recert:
+                        raise RuntimeError(
+                            f"Recert required (pattern has expired certs) but failed: {err}"
+                        )
+                    logger.warning(
+                        "Deploy %s: recert failed for %s: %s — falling back to guestfish",
+                        project_id[:8],
+                        vm_name,
+                        err,
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                if pattern_recert:
+                    raise RuntimeError(
+                        "Recert required (pattern has expired certs) but recert endpoint unavailable"
+                    )
+                logger.warning(
+                    "Deploy %s: recert error for %s — falling back to guestfish",
+                    project_id[:8],
+                    vm_name,
+                    exc_info=True,
+                )
 
     operations = [
         {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
@@ -3719,6 +3833,42 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             break
         _push("certs", f"approved {approved} certificate(s)")
         _t.sleep(10)
+
+    if _is_pattern_deploy(topology):
+        used_recert = False
+        for node in topology.get("nodes", []):
+            if node.get("type") == "storageNode":
+                pid = node.get("data", {}).get("patternId")
+                if pid:
+                    try:
+                        from app.core.database import SessionLocal as _SL
+
+                        _db = _SL()
+                        pat = _db.query(Pattern).filter_by(id=pid).first()
+                        used_recert = bool(pat and pat.recert)
+                        _db.close()
+                    except Exception:
+                        pass
+                    break
+        rhcos_count = sum(
+            1
+            for n in topology.get("nodes", [])
+            if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
+        )
+        if used_recert or rhcos_count == 1:
+            _push("certs", "refreshing bastion certificates")
+            _exec_on_bastion(
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+                "oc get secret -n openshift-ingress router-certs-default "
+                "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+                "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+                "&& sudo update-ca-trust",
+                timeout=15,
+            )
 
     elapsed_secs = int(_t.time() - start)
     _push("ready", "cluster ready")

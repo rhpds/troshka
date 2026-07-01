@@ -26,6 +26,7 @@ class PatternCreate(BaseModel):
     restart_after: bool = True
     quiesce_cluster: bool = True
     capture_clock_target: bool = False
+    recert: bool = False
     topology: dict | None = None
     disk_mappings: list[dict] | None = None
 
@@ -49,6 +50,7 @@ class PatternResponse(BaseModel):
     total_size_bytes: int
     tags: dict | None = None
     clock_target: datetime.datetime | None = None
+    recert: bool = False
     created_at: datetime.datetime
     disks: list[PatternDiskResponse] = []
 
@@ -83,6 +85,7 @@ class PatternDeployRequest(BaseModel):
     dns_provider_id: str | None = None
     auto_deploy: bool = True
     auto_start: bool = True
+    recert: bool | None = None
     common_password: str | None = None
     inject_vars: dict | None = None
     ssh_keys: list[str] | None = None

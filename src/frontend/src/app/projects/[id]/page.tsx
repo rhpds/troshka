@@ -944,6 +944,7 @@ export default function ProjectCanvasPage() {
           projectId={projectId}
           projectName={projectName}
           hasRunningVMs={nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).status === "running")}
+          isSno={nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).os === "rhcos").length === 1}
           onSaved={() => {
             setShowPatternModal(false);
             showToast("Pattern saved successfully");

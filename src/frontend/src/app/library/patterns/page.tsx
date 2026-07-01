@@ -46,11 +46,13 @@ interface Pattern {
   total_disk_gb?: number;
   vm_count?: number;
   is_ocp?: boolean;
+  is_sno?: boolean;
+  recert?: boolean;
 }
 
-function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
-  patternName: string; deploying: boolean;
-  onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => void;
+function DeployNameModal({ patternName, deploying, isSno, onDeploy, onClose }: {
+  patternName: string; deploying: boolean; isSno?: boolean;
+  onDeploy: (name: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string, recert?: boolean) => void;
   onClose: () => void;
 }) {
   const [name, setName] = useState(patternName);
@@ -60,6 +62,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
   const [dnsProviders, setDnsProviders] = useState<Array<{id: string; name: string}>>([]);
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [autoStart, setAutoStart] = useState(true);
+  const [recert, setRecert] = useState(isSno ?? false);
   const [userRole, setUserRole] = useState("");
   const [availableHosts, setAvailableHosts] = useState<Array<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}>>([]);
   const [deployHostId, setDeployHostId] = useState("");
@@ -106,7 +109,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             onChange={(e) => setName(e.target.value)}
             placeholder="Project name"
             autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined, recert); }}
           />
         </div>
         <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
@@ -142,6 +145,12 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
                 <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
                 Start VMs after deploy
               </label>
+              {isSno && (
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 20 }}>
+                  <input type="checkbox" checked={recert} onChange={(e) => setRecert(e.target.checked)} />
+                  Recert (regenerate certificates for fast boot)
+                </label>
+              )}
               {userRole === "admin" && availableHosts.length > 0 && (
                 <div style={{ marginTop: 4 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
@@ -163,7 +172,7 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             style={{ ...inputStyle, width: "auto", cursor: deploying ? "not-allowed" : "pointer", padding: "6px 16px", opacity: deploying ? 0.4 : 1 }}>
             Cancel
           </button>
-          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined)} disabled={!name.trim() || deploying}
+          <button onClick={() => onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined, recert)} disabled={!name.trim() || deploying}
             style={{
               ...inputStyle, width: "auto", cursor: deploying ? "wait" : "pointer",
               padding: "6px 16px", background: "rgba(74,222,128,0.15)",
@@ -185,7 +194,7 @@ export default function PatternsPage() {
   const [search, setSearch] = useState("");
   const [bulkPatternId, setBulkPatternId] = useState<string | null>(null);
   const [previewPattern, setPreviewPattern] = useState<{ id: string; name: string } | null>(null);
-  const [deployPattern, setDeployPattern] = useState<{ id: string; name: string } | null>(null);
+  const [deployPattern, setDeployPattern] = useState<{ id: string; name: string; is_sno?: boolean } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
   const [selectedPatterns, setSelectedPatterns] = useState<Set<string>>(new Set());
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -221,10 +230,11 @@ export default function PatternsPage() {
     return p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q);
   });
 
-  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string) => {
+  const handleDeploy = async (patternId: string, projectName: string, guid?: string, domain?: string, dnsProviderId?: string, autoDeploy?: boolean, autoStart?: boolean, hostId?: string, recert?: boolean) => {
     setDeploying(patternId);
     try {
       const body: Record<string, any> = { name: projectName, auto_deploy: autoDeploy ?? true, auto_start: autoStart ?? true };
+      if (recert !== undefined) body.recert = recert;
       if (guid) body.guid = guid;
       if (domain) body.domain = domain;
       if (dnsProviderId) body.dns_provider_id = dnsProviderId;
@@ -452,7 +462,7 @@ export default function PatternsPage() {
                       loadPatterns();
                     }}
                   />
-                  <Button variant="primary" size="sm" isDisabled={saving} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name })}>
+                  <Button variant="primary" size="sm" isDisabled={saving} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name, is_sno: pattern.is_sno })}>
                     Create Project
                   </Button>
                   <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setBulkPatternId(pattern.id)}>
@@ -508,7 +518,8 @@ export default function PatternsPage() {
       {deployPattern && <DeployNameModal
         patternName={deployPattern.name}
         deploying={deploying === deployPattern.id}
-        onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId)}
+        isSno={deployPattern.is_sno}
+        onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId, recert) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId, recert)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
 

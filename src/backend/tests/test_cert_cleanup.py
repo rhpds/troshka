@@ -171,9 +171,11 @@ def test_clean_kubelet_certs_nonfatal_on_failure(mock_start, mock_wait):
         ]
     )
 
-    # Should not raise
+    # Should not raise — SNO tries recert (fails), falls back to guestfish (also fails)
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
-    assert mock_start.call_count == 1
+    assert mock_start.call_count == 2
+    assert mock_start.call_args_list[0][0][1] == "/vms/recert"
+    assert mock_start.call_args_list[1][0][1] == "/vms/modify-fs"
 
 
 @patch("app.services.deploy_service.wait_for_job")
@@ -197,9 +199,9 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
 @patch("app.services.deploy_service.wait_for_job")
 @patch("app.services.deploy_service.start_job")
 def test_clean_kubelet_certs_sno(mock_start, mock_wait):
-    """Verify cert cleanup works for SNO (single RHCOS node)."""
+    """Verify SNO cert cleanup uses recert instead of guestfish."""
     mock_start.return_value = "job-001"
-    mock_wait.return_value = {"status": "complete", "result": {"results": []}}
+    mock_wait.return_value = {"status": "completed", "result": {"status": "completed"}}
     host = MagicMock()
 
     topo = _make_ocp_topology(
@@ -211,8 +213,10 @@ def test_clean_kubelet_certs_sno(mock_start, mock_wait):
 
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
-    # SNO: exactly 1 RHCOS VM
+    # SNO: recert succeeds, no guestfish fallback
     assert mock_start.call_count == 1
+    assert mock_start.call_args[0][1] == "/vms/recert"
+    assert mock_start.call_args[0][2]["extend_expiration"] is True
 
 
 @patch("app.services.deploy_service.wait_for_job")

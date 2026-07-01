@@ -1642,6 +1642,7 @@ def update_agent(
             TroshkadError,
             check_health,
             push_update,
+            troshkad_request,
         )
 
         s = SessionLocal()

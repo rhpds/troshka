@@ -154,7 +154,9 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
     """Serialize a Pattern for list responses (lightweight)."""
     nodes = (p.topology or {}).get("nodes", [])
     vms = [n for n in nodes if n.get("type") == "vmNode"]
-    is_ocp = any(vm.get("data", {}).get("os") == "rhcos" for vm in vms)
+    rhcos_vms = [vm for vm in vms if vm.get("data", {}).get("os") == "rhcos"]
+    is_ocp = len(rhcos_vms) > 0
+    is_sno = len(rhcos_vms) == 1
     total_vcpus = 0
     total_ram_gb = 0
     total_disk_gb = 0
@@ -186,6 +188,8 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "total_ram_gb": total_ram_gb,
         "total_disk_gb": total_disk_gb,
         "is_ocp": is_ocp,
+        "is_sno": is_sno,
+        "recert": p.recert,
     }
 
 
@@ -285,6 +289,7 @@ def create_pattern(
         state=state,
         tags=body.tags,
         clock_target=clock_target,
+        recert=body.recert,
     )
     db.add(pattern)
     db.commit()
@@ -795,6 +800,13 @@ def deploy_pattern(
     db.add(project)
     db.commit()
     db.refresh(project)
+
+    if body.recert is not None:
+        topo = project.topology or {}
+        topo["_deploy_recert"] = body.recert
+        if body.common_password:
+            topo["_deploy_common_password"] = body.common_password
+        project.topology = topo
 
     if body.auto_deploy:
         from app.services.deploy_service import deploy_project_async
