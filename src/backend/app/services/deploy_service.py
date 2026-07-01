@@ -892,6 +892,29 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         item_id = node.get("data", {}).get("libraryItemId")
         if item_id:
             item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+            if not item:
+                item_name = node.get("data", {}).get("libraryItemName")
+                fmt = node.get("data", {}).get("format", "qcow2")
+                if item_name:
+                    from sqlalchemy import func as sa_func
+
+                    item = (
+                        db_session.query(LibraryItem)
+                        .filter(
+                            sa_func.lower(LibraryItem.name) == item_name.lower(),
+                            LibraryItem.format == fmt,
+                        )
+                        .first()
+                    )
+                    if item:
+                        logger.info(
+                            "Library item %s not found by ID, resolved by name '%s' → %s",
+                            item_id[:8],
+                            item_name,
+                            item.id[:8],
+                        )
+                        node["data"]["libraryItemId"] = item.id
+                        item_id = item.id
             if item and item.s3_key:
                 fmt = node.get("data", {}).get("format", "qcow2")
                 cache_path = _image_cache_path(item_id, fmt, pool)

@@ -2046,66 +2046,103 @@ def _handle_vm_recert(job, params):
                 "node-kubeconfigs/lb-ext.kubeconfig",
             )
             if os.path.isfile(kubeconfig_src):
-                _job_log(job, "Injecting updated kubeconfig into bastion disk")
-                kubeconfig_content = open(kubeconfig_src).read()
-                tmp_kc = os.path.join(mount_dir, ".kubeconfig-tmp")
-                with open(tmp_kc, "w") as f:
-                    f.write(kubeconfig_content)
-                ff_rm_cmds = ""
+                _job_log(job, "Updating bastion disk")
+                bastion_nbd = _allocate_nbd_device()
+                bastion_mount = (
+                    f"/var/lib/troshka/tmp/recert-bastion-{job['job_id'][:8]}"
+                )
+                bastion_mounted = False
                 try:
-                    ff = subprocess.run(
-                        [
-                            "guestfish",
-                            "--ro",
-                            "-a",
-                            bastion_disk,
-                            "-i",
-                            "glob",
-                            "echo",
-                            "/home/cloud-user/.mozilla/firefox/*.default*",
-                        ],
-                        capture_output=True,
-                        text=True,
+                    _run_cmd(
+                        job,
+                        ["qemu-nbd", "--connect", bastion_nbd, bastion_disk],
                         timeout=30,
                     )
-                    for prof in ff.stdout.strip().split():
-                        if prof and ".default" in prof:
-                            ff_rm_cmds += f"rm-f {prof}/cert9.db\n"
-                            ff_rm_cmds += f"rm-f {prof}/key4.db\n"
-                except Exception:
-                    pass
-                pw_upload_cmd = ""
-                if common_password:
-                    tmp_pw = os.path.join(mount_dir, ".kubeadmin-pw-tmp")
-                    with open(tmp_pw, "w") as f:
-                        f.write(common_password)
-                    pw_upload_cmd = f"upload {tmp_pw} /home/cloud-user/ocp-install/auth/kubeadmin-password\n"
-                gf_script = (
-                    f"upload {tmp_kc} {bastion_kubeconfig_path}\n"
-                    "rm-f /etc/pki/ca-trust/source/anchors/ocp-ingress.pem\n"
-                    + ff_rm_cmds
-                    + pw_upload_cmd
-                )
-                result = subprocess.run(
-                    ["guestfish", "--rw", "-a", bastion_disk, "-i"],
-                    input=gf_script,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                os.unlink(tmp_kc)
-                if common_password:
+                    time.sleep(1)
+                    _run_cmd(job, ["partprobe", bastion_nbd], timeout=15, check=False)
+                    time.sleep(1)
+                    bastion_part = f"{bastion_nbd}p3"
+                    if not os.path.exists(bastion_part):
+                        bastion_part = f"{bastion_nbd}p1"
+                    os.makedirs(bastion_mount, exist_ok=True)
+                    _run_cmd(
+                        job,
+                        ["mount", "-o", "nouuid", bastion_part, bastion_mount],
+                        timeout=30,
+                    )
+                    bastion_mounted = True
+
+                    kc_dest = os.path.join(
+                        bastion_mount, bastion_kubeconfig_path.lstrip("/")
+                    )
+                    os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
+                    with open(kubeconfig_src) as f:
+                        kc_content = f.read()
+                    with open(kc_dest, "w") as f:
+                        f.write(kc_content)
+                    _job_log(job, "Bastion kubeconfig updated")
+
+                    pem = os.path.join(
+                        bastion_mount,
+                        "etc/pki/ca-trust/source/anchors/ocp-ingress.pem",
+                    )
+                    if os.path.exists(pem):
+                        os.unlink(pem)
+
+                    if common_password:
+                        pw_path = os.path.join(
+                            bastion_mount,
+                            "home/cloud-user/ocp-install/auth/kubeadmin-password",
+                        )
+                        if os.path.exists(os.path.dirname(pw_path)):
+                            with open(pw_path, "w") as f:
+                                f.write(common_password)
+                            _job_log(job, "Bastion kubeadmin password updated")
+
+                    import glob as _glob
+
+                    for db_file in _glob.glob(
+                        os.path.join(
+                            bastion_mount,
+                            "home/cloud-user/.mozilla/firefox/*.default*/cert9.db",
+                        )
+                    ):
+                        os.unlink(db_file)
+                    for db_file in _glob.glob(
+                        os.path.join(
+                            bastion_mount,
+                            "home/cloud-user/.mozilla/firefox/*.default*/key4.db",
+                        )
+                    ):
+                        os.unlink(db_file)
+
+                except Exception as e:
+                    _job_log(job, f"Bastion update failed: {e}")
+                finally:
+                    if bastion_mounted:
+                        try:
+                            _run_cmd(
+                                job,
+                                ["umount", bastion_mount],
+                                timeout=30,
+                                check=False,
+                            )
+                        except Exception:
+                            pass
                     try:
-                        os.unlink(tmp_pw)
+                        _run_cmd(
+                            job,
+                            ["qemu-nbd", "--disconnect", bastion_nbd],
+                            timeout=15,
+                            check=False,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        os.rmdir(bastion_mount)
                     except OSError:
                         pass
-                if result.returncode == 0:
-                    _job_log(job, "Bastion kubeconfig and certs updated")
-                else:
-                    _job_log(
-                        job,
-                        f"Bastion kubeconfig update failed: {result.stderr.strip()}",
-                    )
+                    _release_nbd_device(bastion_nbd)
             else:
                 _job_log(
                     job,
