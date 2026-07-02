@@ -534,7 +534,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                       )}
                     </div>
                     <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux Binary DVD ISO <span style={{ color: "#f87171" }}>*</span></label>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux Binary DVD ISO (For local package repos) <span style={{ color: "#f87171" }}>*</span></label>
                       <select style={inputStyle} value={bastionIsoId} onChange={(e) => setBastionIsoId(e.target.value)}>
                         <option value="">Select an ISO...</option>
                         {libraryIsos.map((img) => (

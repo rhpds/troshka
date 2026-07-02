@@ -339,7 +339,7 @@ def _generate_topology_from_vms(
                 port_forwards.append(
                     {
                         "extIpId": eip_id,
-                        "extPort": "22",
+                        "extPort": "2222",
                         "intIp": bastion_ip,
                         "intPort": "22",
                         "proto": "tcp",
