@@ -815,7 +815,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
                   opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)))) ? 0.4 : 1,
                 }}
               >
-                {creating ? (autoDeploy && mode === "template" ? "Creating & Deploying..." : "Creating...") : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? (autoDeploy ? "Create & Deploy" : "Create from Template") : "Create Project"}
+                {creating ? "Creating..." : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create" : "Create Project"}
               </button>
             </div>
           </div>

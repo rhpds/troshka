@@ -2516,7 +2516,7 @@ export default function PropertiesPanel() {
                                   })()}
                                 </div>
                               </div>
-                              <div className="props-field" style={{ flex: "0 0 50px" }}>
+                              <div className="props-field" style={{ flex: "0 0 64px" }}>
                                 {<label className="props-label">Ext Port</label>}
                                 <input className="props-input" value={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
                                   onChange={(e) => {
@@ -2577,7 +2577,7 @@ export default function PropertiesPanel() {
                                   );
                                 })()}
                               </div>
-                              <div className="props-field" style={{ flex: "0 0 50px" }}>
+                              <div className="props-field" style={{ flex: "0 0 64px" }}>
                                 {<label className="props-label">Int Port</label>}
                                 <input className="props-input" value={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
                                   onChange={(e) => {
