@@ -2602,6 +2602,7 @@ export default function PropertiesPanel() {
                               if (!pf.intIp) errors.push("Internal IP required");
                               if (!pf.intPort) errors.push("Internal port required");
                               if (pf.extPort && !/^\d+$/.test(pf.extPort)) errors.push("External port must be a number");
+                              if (pf.extPort === "22" && useCanvasStore.getState().providerType === "ocpvirt") errors.push("Port 22 is blocked on OCP Virt — use another port");
                               if (pf.intPort && !/^\d+$/.test(pf.intPort)) errors.push("Internal port must be a number");
                               if (pf.intIp && !/^\d+\.\d+\.\d+\.\d+$/.test(pf.intIp)) errors.push("Invalid internal IP format");
                               return errors.length > 0 ? (

@@ -88,6 +88,7 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
+        useCanvasStore.setState({ providerType: data.provider_type || null });
         setDeployError(data.deploy_error || null);
         setAutoStopMinutes(data.auto_stop_minutes ?? null);
         setAutoDeleteMinutes(data.auto_delete_minutes ?? null);

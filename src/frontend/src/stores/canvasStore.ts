@@ -157,6 +157,7 @@ interface CanvasState {
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
   panMode: boolean;
+  providerType: string | null;
 
   // React Flow callbacks
   onNodesChange: OnNodesChange;
@@ -280,6 +281,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   hiddenNodeIds: [],
   suppressDeleteWarning: false,
   panMode: true,
+  providerType: null,
   currentProjectId: null as string | null,
   projectState: "draft" as string,
   deployedVmIds: new Set<string>(),

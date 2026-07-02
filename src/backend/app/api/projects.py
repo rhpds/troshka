@@ -108,6 +108,19 @@ def _project_response_dict(project):
     bmc_data = deployed_topo.get("bmc")
     if bmc_data:
         result["bmc"] = bmc_data
+    if project.host_id:
+        from app.models.host import Host
+        from app.models.provider import Provider
+
+        from sqlalchemy.orm import Session as _S
+
+        s: _S = object.__getattribute__(project, "_sa_instance_state").session
+        if s:
+            h = s.get(Host, project.host_id)
+            if h and h.provider_id:
+                prov = s.get(Provider, h.provider_id)
+                if prov:
+                    result["provider_type"] = prov.type
     return result
 
 
@@ -2042,6 +2055,50 @@ def reconfigure_project(
                                 if pf.get("extPort")
                             ]
                             sync_security_group_rules(s, provider, desired_sg)
+
+                        if provider.type != "ec2" and gw_node:
+                            from app.services.eip_service import allocate_transit_ports
+                            from app.services.providers import get_provider_driver
+
+                            driver = get_provider_driver(provider)
+                            pf_list = gw_node.get("data", {}).get("portForwards", [])
+                            eip_map = {}
+                            for eip_obj in s.query(ElasticIp).filter_by(
+                                project_id=p_id
+                            ):
+                                eip_map[eip_obj.canvas_eip_id] = eip_obj
+
+                            for canvas_id, eip_obj in eip_map.items():
+                                pf_for_eip = [
+                                    pf
+                                    for pf in pf_list
+                                    if pf.get("extIpId") == canvas_id
+                                ]
+                                if not pf_for_eip:
+                                    continue
+                                eip_obj.port_map = None
+                                s.commit()
+                                port_map = allocate_transit_ports(
+                                    s, eip_obj, h, pf_for_eip
+                                )
+                                driver.update_eip_ports(
+                                    provider,
+                                    h,
+                                    eip_obj.allocation_id,
+                                    [
+                                        {
+                                            "port": int(ep),
+                                            "targetPort": tp,
+                                            "name": f"pf-{i}",
+                                        }
+                                        for i, (ep, tp) in enumerate(port_map.items())
+                                    ],
+                                )
+                                logger.info(
+                                    "Reconfigure %s: updated EIP LB ports %s",
+                                    p_id[:8],
+                                    port_map,
+                                )
                 except Exception:
                     logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
                     errors.append(
