@@ -2864,6 +2864,7 @@ def deploy_project_async(
 
         # Store BMC addresses in deployed topology for UI display
         if bmc_config:
+            node_map = {n["id"]: n for n in topology.get("nodes", [])}
             deployed_topo = project.deployed_topology or {}
             deployed_topo["bmc"] = {
                 "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
@@ -2871,7 +2872,7 @@ def deploy_project_async(
                 "vms": {
                     vm["node_id"]: {
                         "ip": vm["bmc_ip"],
-                        "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['domain_name']}",
+                        "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
                         "ipmi_address": f"{vm['bmc_ip']}:623",
                     }
                     for vm in bmc_config["vms"]

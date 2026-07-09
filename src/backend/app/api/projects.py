@@ -1126,6 +1126,14 @@ def get_all_vm_states(
     if not project.host_id:
         return {"states": {}}
 
+    # Return cached states from the background poller when available
+    # (avoids blocking troshkad calls on every browser poll)
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(project_id)
+    if cached:
+        return cached
+
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host or not host.private_key or not host.ip_address:
         return {"states": {}}

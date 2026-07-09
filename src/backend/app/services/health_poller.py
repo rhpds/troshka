@@ -240,7 +240,19 @@ def _poll_hosts():
                         else:
                             _skip_until[host.id] = time.time() + 15
                     elif host.agent_status == "disconnected":
-                        _skip_until[host.id] = time.time() + 30
+                        if (
+                            host.host_type == "pattern_buffer"
+                            and host.last_health_at
+                            and (now_dt - host.last_health_at).total_seconds() > 600
+                        ):
+                            host.state = "stopped"
+                            _skip_until[host.id] = time.time() + 86400
+                            logger.info(
+                                "Host %s (pattern buffer) auto-stopped after 10min disconnect",
+                                host.id[:8],
+                            )
+                        else:
+                            _skip_until[host.id] = time.time() + 30
                     else:
                         _skip_until[host.id] = time.time() + 60
             except Exception:

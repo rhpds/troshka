@@ -202,6 +202,94 @@ def _generate_ocp_mount_script(topology):
     return lines
 
 
+def _generate_dns_manifests(topology, base_domain):
+    """Generate extra manifests for disconnected registry DNS resolution.
+
+    Two manifests:
+    1. MachineConfig appending registry hostname to /etc/hosts (works before CoreDNS starts)
+    2. DNS operator forwarder for the lab domain (works after CoreDNS takes over)
+    """
+    import base64 as _b64
+    import yaml as _yaml
+
+    cluster_cidr = _find_cluster_cidr(topology)
+    net = ipaddress.ip_network(cluster_cidr, strict=False)
+    gateway_ip = str(net.network_address + 1)
+
+    dns_records = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        for rec in node.get("data", {}).get("dnsRecords", []):
+            if rec.get("ip") and rec.get("name") and not rec["name"].startswith("."):
+                dns_records.append(rec)
+
+    if not dns_records:
+        return ""
+
+    lines = "    # Create extra manifests for disconnected DNS resolution\n"
+    lines += "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+
+    hosts_lines = "\\n".join(f"{rec['ip']} {rec['name']}" for rec in dns_records)
+    mc = {
+        "apiVersion": "machineconfiguration.openshift.io/v1",
+        "kind": "MachineConfig",
+        "metadata": {
+            "labels": {"machineconfiguration.openshift.io/role": "master"},
+            "name": "99-lab-etc-hosts",
+        },
+        "spec": {
+            "config": {
+                "ignition": {"version": "3.2.0"},
+                "systemd": {
+                    "units": [
+                        {
+                            "name": "lab-etc-hosts.service",
+                            "enabled": True,
+                            "contents": (
+                                "[Unit]\n"
+                                "Description=Add lab DNS entries to /etc/hosts\n"
+                                "Before=crio.service kubelet.service\n"
+                                "After=network-online.target\n"
+                                "[Service]\n"
+                                "Type=oneshot\n"
+                                "RemainAfterExit=yes\n"
+                                f"ExecStart=/bin/bash -c 'grep -q lab-etc-hosts /etc/hosts || echo -e \"{hosts_lines}  # lab-etc-hosts\" >> /etc/hosts'\n"
+                                "[Install]\n"
+                                "WantedBy=multi-user.target\n"
+                            ),
+                        }
+                    ]
+                },
+            }
+        },
+    }
+    mc_yaml = _yaml.dump(mc, default_flow_style=False)
+    mc_b64 = _b64.b64encode(mc_yaml.encode()).decode()
+    lines += f"    echo '{mc_b64}' | base64 -d > /home/cloud-user/ocp-install/openshift/99-lab-etc-hosts.yaml\n"
+
+    dns_fwd = {
+        "apiVersion": "operator.openshift.io/v1",
+        "kind": "DNS",
+        "metadata": {"name": "default"},
+        "spec": {
+            "servers": [
+                {
+                    "name": "lab-forward",
+                    "zones": [base_domain],
+                    "forwardPlugin": {"upstreams": [gateway_ip]},
+                }
+            ]
+        },
+    }
+    dns_b64 = _b64.b64encode(
+        _yaml.dump(dns_fwd, default_flow_style=False).encode()
+    ).decode()
+    lines += f"    echo '{dns_b64}' | base64 -d > /home/cloud-user/ocp-install/openshift/99-dns-forwarder.yaml\n"
+    lines += f"    echo 'Created DNS manifests for {base_domain} (hosts + forwarder)'\n"
+    return lines
+
+
 def _find_sno_node_ip(topology):
     """Find the SNO node's cluster IP — the single controller VM."""
     for node in topology.get("nodes", []):
@@ -1055,6 +1143,7 @@ def _build_install_script(
             "    cp agent-config.yaml agent-config.yaml.bak\n"
             "    [ -d openshift ] && cp -a openshift openshift.bak\n"
             + _generate_ocp_mount_script(topology or {})
+            + _generate_dns_manifests(topology or {}, base_domain)
             + '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
             "    \n"
             "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"

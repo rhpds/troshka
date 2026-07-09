@@ -153,13 +153,37 @@ for var in cloud_provider env_type troshka_deploy_mode vms networks; do
     fi
 done
 
-# --- Install collection from local checkout (dev override) ---
+# --- Install collections ---
+echo ""
+echo "=== Installing collections ==="
 if [ -d "$HOME/troshka-ansible-collection" ]; then
-    echo ""
-    echo "=== Installing collection from local checkout ==="
     ansible-galaxy collection install "$HOME/troshka-ansible-collection" \
         -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
 fi
+# Install collections from requirements_content in merged vars
+python3 - "$MERGED_FILE" <<'PYREQS'
+import sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+rc = data.get("requirements_content", {})
+if rc and rc.get("collections"):
+    reqs = {"collections": rc["collections"]}
+    with open("/tmp/troshka-requirements.yml", "w") as f:
+        yaml.dump(reqs, f)
+    print("  Generated /tmp/troshka-requirements.yml")
+PYREQS
+if [ -f /tmp/troshka-requirements.yml ]; then
+    ansible-galaxy collection install -r /tmp/troshka-requirements.yml \
+        -p "$HOME/.ansible/collections" --force 2>&1 | grep -E 'Installing|was installed'
+    rm -f /tmp/troshka-requirements.yml
+fi
+# Install from local checkouts if available (dev overrides)
+for local_col in "$HOME/demo_workloads" "$HOME/core_workloads"; do
+    if [ -d "$local_col/galaxy.yml" ] || [ -d "$local_col/roles" ]; then
+        ansible-galaxy collection install "$local_col" \
+            -p "$HOME/.ansible/collections" --force 2>&1 | tail -1
+    fi
+done
 
 # --- Pattern deploy mode ---
 PATTERN_ARGS=""

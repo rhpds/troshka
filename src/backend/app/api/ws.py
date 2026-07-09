@@ -86,22 +86,30 @@ def _build_snapshot(project: Project, db) -> dict:
     # Close DB session before making network calls to troshkad
     db.close()
 
-    for node in topology_nodes:
-        if node.get("type") != "vmNode":
-            continue
-        dom_name = _domain_name(project_id, node["id"])
-        if dom_name in _redeploy_progress:
-            snapshot["vm_states"][node["id"]] = "redeploying"
-            snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
-        else:
-            try:
-                vm_info = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
-                state = vm_info["state"]
-                if state == "shut_off":
-                    state = "stopped"
-                snapshot["vm_states"][node["id"]] = state
-            except Exception:
-                snapshot["vm_states"][node["id"]] = "unknown"
+    # Try cached states first, fall back to live fetch (runs in thread via to_thread)
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(project_id)
+    if cached and cached.get("states"):
+        snapshot["vm_states"] = cached["states"]
+        snapshot["vm_progress"] = cached.get("progress", {})
+    elif host_copy and host_copy.get("agent_status") == "connected":
+        for node in topology_nodes:
+            if node.get("type") != "vmNode":
+                continue
+            dom_name = _domain_name(project_id, node["id"])
+            if dom_name in _redeploy_progress:
+                snapshot["vm_states"][node["id"]] = "redeploying"
+                snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
+            else:
+                try:
+                    vm_info = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
+                    state = vm_info["state"]
+                    if state == "shut_off":
+                        state = "stopped"
+                    snapshot["vm_states"][node["id"]] = state
+                except Exception:
+                    snapshot["vm_states"][node["id"]] = "unknown"
 
     return snapshot
 
@@ -128,7 +136,7 @@ async def project_websocket(websocket: WebSocket, project_id: str):
         await websocket.accept()
         subscribe(project_id, websocket)
 
-        snapshot = _build_snapshot(project, db)
+        snapshot = await asyncio.to_thread(_build_snapshot, project, db)
         db = None  # _build_snapshot closes the session before troshkad calls
         await websocket.send_json(snapshot)
 

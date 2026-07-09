@@ -779,6 +779,11 @@ def capture_pattern_disks(
                         job = poll_job(host, jinfo["job_id"])
                     except TroshkadError:
                         job = {"status": "failed", "result": {"error": "Job lost"}}
+                if not job:
+                    job = {
+                        "status": "failed",
+                        "result": {"error": "Job result missing"},
+                    }
                 try:
                     if job["status"] == "failed":
                         error_msg = job.get("result", {}).get(
@@ -794,7 +799,7 @@ def capture_pattern_disks(
                         db.commit()
                         return
 
-                    disk_results = job.get("result", {}).get("disks", [])
+                    disk_results = (job or {}).get("result", {}).get("disks", [])
                     for j, metadata in enumerate(jinfo["disk_metadata"]):
                         size_bytes = (
                             disk_results[j].get("size_bytes", 0)

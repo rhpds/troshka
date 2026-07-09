@@ -95,7 +95,19 @@ def unsubscribe_pattern(pattern_id: str, ws: WebSocket):
 
 
 _last_states: dict[str, dict] = {}
-_POLL_INTERVAL = 5
+_POLL_INTERVAL = 2
+
+
+def get_cached_vm_states(project_id: str) -> dict | None:
+    """Return cached VM states from the last poll cycle, or None if not cached."""
+    cached = _last_states.get(project_id)
+    if not cached:
+        return None
+    return {
+        "states": cached.get("vm_states", {}),
+        "container_states": cached.get("container_states", {}),
+        "progress": cached.get("vm_progress", {}),
+    }
 
 
 def _poll_loop():

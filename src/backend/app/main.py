@@ -1,4 +1,10 @@
+import faulthandler
 import logging
+import signal
+import sys
+
+faulthandler.enable()
+faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
 
 logging.basicConfig(
     level=logging.INFO,
