@@ -512,6 +512,39 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
     });
 
+    // Auto-add NIC when connecting a network to a VM that has no free NIC handle
+    if ((sType === "networkNode" && tType === "vmNode") || (tType === "networkNode" && sType === "vmNode")) {
+      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      const vmHandle = sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
+      const vmNics = ((vmNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string}>;
+      const nicForHandle = vmNics.find((nic) => nic.id === vmHandle);
+      if (!nicForHandle) {
+        const newNic = {
+          id: generateNicId(),
+          name: `eth${vmNics.length}`,
+          mac: generateMac(),
+          model: "virtio",
+        };
+        const updatedNics = [...vmNics, newNic];
+        set({
+          nodes: get().nodes.map((n) =>
+            n.id === vmNode.id
+              ? { ...n, data: { ...n.data, nics: updatedNics } }
+              : n
+          ),
+          edges: get().edges.map((e) => {
+            if (e.source === vmNode.id && e.sourceHandle === vmHandle) {
+              return { ...e, sourceHandle: newNic.id };
+            }
+            if (e.target === vmNode.id && e.targetHandle === vmHandle) {
+              return { ...e, targetHandle: newNic.id };
+            }
+            return e;
+          }),
+        });
+      }
+    }
+
     // Force disk format to raw when connecting storage to a container
     const diskId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
     const containerConnected = sType === "containerNode" || tType === "containerNode";
@@ -781,6 +814,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         diskControllers: ((source.data as Record<string, any>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
           .map((dc) => ({ ...dc, id: generateDiskControllerId() })),
       };
+      if (newData.bmcEnabled && newData.bmcIp) {
+        newData.bmcIp = allocateBmcIp();
+      }
     }
 
     const newNode: Node = {
