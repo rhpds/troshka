@@ -1127,7 +1127,7 @@ useCanvasStore.subscribe((state) => {
         return `${n.id}:${JSON.stringify(stable)}`;
       }
       return `${n.id}:${JSON.stringify(n.data)}`;
-    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|");
+    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;
