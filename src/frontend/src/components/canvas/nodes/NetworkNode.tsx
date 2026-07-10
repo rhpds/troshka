@@ -1,6 +1,7 @@
 "use client";
 
 import React, { memo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -33,6 +34,7 @@ function BmcWarning({ nodeId }: { nodeId: string }) {
 function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const d = data as unknown as NetworkNodeData;
   const [fwdExpanded, setFwdExpanded] = useState(false);
+  const [routesOpen, setRoutesOpen] = useState(false);
   const projectState = useCanvasStore((s) => s.projectState);
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
   const isDirty = React.useMemo(() => {
@@ -126,9 +128,11 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                 const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
                 const routeHostnames = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
                 return (withIps.length > 0 || routeHostnames.length > 0) ? (
-                  <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3 }}>
-                    {withIps.map((eip) => <div key={eip.id}>{eip.ip}</div>)}
-                    {routeHostnames.map((ep, i) => <div key={`rt-${i}`} style={{ wordBreak: "break-all" }}><a href={`https://${ep.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }} onClick={(e) => e.stopPropagation()}>{ep.hostname}</a></div>)}
+                  <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3, cursor: "pointer", textDecoration: "underline", opacity: 0.8 }}
+                    onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
+                    {withIps.length > 0 && <span>{withIps.length} IP{withIps.length !== 1 ? "s" : ""}</span>}
+                    {withIps.length > 0 && routeHostnames.length > 0 && " + "}
+                    {routeHostnames.length > 0 && <span>{routeHostnames.length} route{routeHostnames.length !== 1 ? "s" : ""}</span>}
                   </div>
                 ) : null;
               })()}
@@ -143,26 +147,9 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                 return (
                   <>
                     {portForwards.length > 0 && (
-                      <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", lineHeight: 1.4 }}>
-                        <div
-                          style={{ cursor: "pointer", userSelect: "none", color: "var(--troshka-text-dim)", marginBottom: 2 }}
-                          onClick={(e) => { e.stopPropagation(); setFwdExpanded(!fwdExpanded); }}
-                        >
-                          {fwdExpanded ? "▾" : "▸"} {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
-                        </div>
-                        {fwdExpanded && portForwards.map((pf, i) => {
-                          const extIpId = (pf as Record<string, string>).extIpId;
-                          const eip = externalIps.find((e) => e.id === extIpId);
-                          const routeEndpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
-                          const routeMatch = routeEndpoints.find((ep) => ep.type === "route" && String(ep.port) === String(pf.extPort));
-                          const ipLabel = routeMatch ? "route" : eip ? (eip.ip || "auto") : "";
-                          return (
-                            <div key={i} style={{ marginBottom: 2 }}>
-                              {ipLabel ? `${ipLabel}:` : ""}{pf.extPort || "?"} →
-                              <div style={{ paddingLeft: 10 }}>{pf.intIp || "?"}:{pf.intPort || "?"}</div>
-                            </div>
-                          );
-                        })}
+                      <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", cursor: "pointer", userSelect: "none" }}
+                        onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
+                        ▸ {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
                       </div>
                     )}
                     {portForwards.length === 0 && (
@@ -241,6 +228,109 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
         </>
       )}
+
+      {routesOpen && (() => {
+        const gw = d as Record<string, any>;
+        const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
+        const routes = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
+        const eips = useCanvasStore.getState().externalIps.filter((eip) => eip.ip);
+        const pfs = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string; extIpId?: string}>) || [];
+        const allEips = useCanvasStore.getState().externalIps;
+        return createPortal(
+          <div className="nodrag nopan" onClick={(e) => { e.stopPropagation(); setRoutesOpen(false); }}
+            style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)" }}>
+            <div onClick={(e) => e.stopPropagation()}
+              style={{ background: "var(--troshka-surface)", border: "1px solid var(--troshka-border)", borderRadius: 12, padding: 20, width: 720, maxWidth: "90vw", maxHeight: "70vh", overflow: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <span style={{ fontWeight: 600, fontSize: 15 }}>External Access</span>
+                <button onClick={() => setRoutesOpen(false)} style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", fontSize: 18 }}>✕</button>
+              </div>
+              {eips.length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--troshka-text-dim)", marginBottom: 6 }}>Elastic IPs</div>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse", marginBottom: 16 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--troshka-border)", textAlign: "left" }}>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Name</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>IP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {eips.map((eip) => (
+                        <tr key={eip.id} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
+                          <td style={{ padding: "6px 8px" }}>{eip.name}</td>
+                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
+                            {eip.ip}
+                            <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                              onClick={() => navigator.clipboard.writeText(eip.ip)} title="Copy">Copy</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              {pfs.length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--troshka-text-dim)", marginBottom: 6 }}>Port Forwards</div>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse", marginBottom: 16 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--troshka-border)", textAlign: "left" }}>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Ext Port</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Int IP</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Int Port</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Via</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pfs.map((pf, i) => {
+                        const routeMatch = routes.find((ep) => String(ep.port) === String(pf.extPort));
+                        const eip = allEips.find((e) => e.id === pf.extIpId);
+                        return (
+                          <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.extPort || "—"}</td>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}</td>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intPort || "—"}</td>
+                            <td style={{ padding: "6px 8px", fontSize: 11 }}>{routeMatch ? "Route" : eip?.ip || eip?.name || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              {routes.length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--troshka-text-dim)", marginBottom: 6 }}>OCP Routes</div>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--troshka-border)", textAlign: "left" }}>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>VM</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Port</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Hostname</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {routes.map((ep, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
+                          <td style={{ padding: "6px 8px" }}>{ep.vmName || "—"}</td>
+                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{ep.port}</td>
+                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
+                            <a href={`https://${ep.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{ep.hostname}</a>
+                            <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                              onClick={() => navigator.clipboard.writeText(ep.hostname || "")} title="Copy">Copy</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          </div>,
+          document.body,
+        );
+      })()}
     </div>
   );
 }
