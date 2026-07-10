@@ -149,7 +149,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                     {portForwards.length > 0 && (
                       <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", cursor: "pointer", userSelect: "none" }}
                         onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
-                        ▸ {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
+                        {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
                       </div>
                     )}
                     {portForwards.length === 0 && (
