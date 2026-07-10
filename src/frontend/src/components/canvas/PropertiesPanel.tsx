@@ -2518,12 +2518,15 @@ export default function PropertiesPanel() {
                               </div>
                               <div className="props-field" style={{ flex: "0 0 64px" }}>
                                 {<label className="props-label">Ext Port</label>}
-                                <input className="props-input" value={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
-                                  onChange={(e) => {
-                                    const updated = [...portForwards];
-                                    updated[i] = { ...pf, extPort: e.target.value };
-                                    update("portForwards", updated);
+                                <input className="props-input" key={`ext-${i}`} defaultValue={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
+                                  onBlur={(e) => {
+                                    if (e.target.value !== pf.extPort) {
+                                      const updated = [...portForwards];
+                                      updated[i] = { ...pf, extPort: e.target.value };
+                                      update("portForwards", updated);
+                                    }
                                   }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
                                 />
                               </div>
                             </div>
@@ -2543,13 +2546,16 @@ export default function PropertiesPanel() {
                                   const isCustom = (pf.intIp && !vmIps.some((v) => v.ip === pf.intIp));
                                   return isCustom ? (
                                     <div style={{ display: "flex", gap: 4 }}>
-                                      <input className="props-input" value={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
+                                      <input className="props-input" defaultValue={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
                                         autoFocus
-                                        onChange={(e) => {
-                                          const updated = [...portForwards];
-                                          updated[i] = { ...pf, intIp: e.target.value };
-                                          update("portForwards", updated);
+                                        onBlur={(e) => {
+                                          if (e.target.value !== pf.intIp) {
+                                            const updated = [...portForwards];
+                                            updated[i] = { ...pf, intIp: e.target.value };
+                                            update("portForwards", updated);
+                                          }
                                         }}
+                                        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
                                       />
                                       {vmIps.length > 0 && (
                                         <button style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 10, flexShrink: 0 }}
@@ -2579,12 +2585,15 @@ export default function PropertiesPanel() {
                               </div>
                               <div className="props-field" style={{ flex: "0 0 64px" }}>
                                 {<label className="props-label">Int Port</label>}
-                                <input className="props-input" value={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
-                                  onChange={(e) => {
-                                    const updated = [...portForwards];
-                                    updated[i] = { ...pf, intPort: e.target.value };
-                                    update("portForwards", updated);
+                                <input className="props-input" key={`int-${i}`} defaultValue={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
+                                  onBlur={(e) => {
+                                    if (e.target.value !== pf.intPort) {
+                                      const updated = [...portForwards];
+                                      updated[i] = { ...pf, intPort: e.target.value };
+                                      update("portForwards", updated);
+                                    }
                                   }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
                                 />
                               </div>
                             </div>
