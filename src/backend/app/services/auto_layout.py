@@ -126,16 +126,7 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     bottom_nets = [n for n in networks if n["id"] in bottom_net_ids]
 
     # --- Layout rows ---
-    current_y = 40
-
-    # Row 0: Gateways
-    if gateways:
-        gw_spacing = max(net_w + gap_x, disk_w + disk_gap + vm_w + gap_x)
-        for i, n in enumerate(gateways):
-            updated[n["id"]] = {"x": 40 + i * gw_spacing, "y": current_y}
-        current_y += net_h + gap_y
-
-    # Row 1: Top networks + routers
+    # Pre-calculate VM row width to center infrastructure above it
     router_to_nets: dict[str, list[str]] = {}
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -150,25 +141,49 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             if tgt_sub in ("router", "gateway"):
                 router_to_nets.setdefault(tgt["id"], []).append(src["id"])
 
+    vm_row_width = 0
+    for vm in workload_nodes:
+        disks = vm_to_storage.get(vm["id"], [])
+        if disks:
+            vm_row_width += disk_w + disk_gap
+        vm_row_width += vm_w + gap_x
+    vm_row_width = max(vm_row_width, 400)
+
+    current_y = 40
+
+    # Row 0: Gateways — centered above VM row
+    if gateways:
+        gw_total = len(gateways) * (net_w + gap_x) - gap_x
+        gw_start_x = 40 + max(0, (vm_row_width - gw_total) / 2 - vm_row_width * 0.15)
+        for i, n in enumerate(gateways):
+            updated[n["id"]] = {"x": gw_start_x + i * (net_w + gap_x), "y": current_y}
+        current_y += net_h + gap_y
+
+    # Row 1: Top networks + routers — centered-right above VM row
     placed_infra: set[str] = set()
     if top_nets or routers:
-        net_x = 40
+        infra_items = []
         for net in top_nets:
-            updated[net["id"]] = {"x": net_x, "y": current_y}
+            infra_items.append(net)
             placed_infra.add(net["id"])
-            net_x += net_w + gap_x
             for r in routers:
                 if r["id"] in placed_infra:
                     continue
-                conn_nets = router_to_nets.get(r["id"], [])
-                if net["id"] in conn_nets:
-                    updated[r["id"]] = {"x": net_x, "y": current_y}
+                if net["id"] in router_to_nets.get(r["id"], []):
+                    infra_items.append(r)
                     placed_infra.add(r["id"])
-                    net_x += net_w + gap_x
         for r in routers:
             if r["id"] not in placed_infra:
-                updated[r["id"]] = {"x": net_x, "y": current_y}
-                net_x += net_w + gap_x
+                infra_items.append(r)
+        infra_total = len(infra_items) * (net_w + gap_x) - gap_x
+        infra_start_x = 40 + max(
+            0, (vm_row_width - infra_total) / 2 + vm_row_width * 0.15
+        )
+        for i, n in enumerate(infra_items):
+            updated[n["id"]] = {
+                "x": infra_start_x + i * (net_w + gap_x),
+                "y": current_y,
+            }
         current_y += net_h + gap_y
 
     # Row 2: VMs and containers with disks
