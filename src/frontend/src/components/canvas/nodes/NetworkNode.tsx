@@ -291,37 +291,18 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                             <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.extPort || "—"}</td>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}</td>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intPort || "—"}</td>
-                            <td style={{ padding: "6px 8px", fontSize: 11 }}>{routeMatch ? "Route" : eip?.ip || eip?.name || "—"}</td>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>
+                              {routeMatch ? (
+                                <>
+                                  <a href={`https://${routeMatch.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{routeMatch.hostname}</a>
+                                  <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                                    onClick={() => navigator.clipboard.writeText(routeMatch.hostname || "")} title="Copy">Copy</span>
+                                </>
+                              ) : eip?.ip || eip?.name || "—"}
+                            </td>
                           </tr>
                         );
                       })}
-                    </tbody>
-                  </table>
-                </>
-              )}
-              {routes.length > 0 && (
-                <>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--troshka-text-dim)", marginBottom: 6 }}>OCP Routes</div>
-                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr style={{ borderBottom: "1px solid var(--troshka-border)", textAlign: "left" }}>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>VM</th>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Port</th>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Hostname</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {routes.map((ep, i) => (
-                        <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
-                          <td style={{ padding: "6px 8px" }}>{ep.vmName || "—"}</td>
-                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{ep.port}</td>
-                          <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
-                            <a href={`https://${ep.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{ep.hostname}</a>
-                            <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                              onClick={() => navigator.clipboard.writeText(ep.hostname || "")} title="Copy">Copy</span>
-                          </td>
-                        </tr>
-                      ))}
                     </tbody>
                   </table>
                 </>
