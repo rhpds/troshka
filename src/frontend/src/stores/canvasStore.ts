@@ -508,7 +508,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const nicForHandle = vmNics.find((nic) =>
         vmHandle === `nic-${nic.id}-top` || vmHandle === `nic-${nic.id}-bottom`
       );
-      if (!nicForHandle) {
+      const handleAlreadyConnected = nicForHandle && get().edges.some((e) =>
+        (e.source === vmNode.id && e.sourceHandle === vmHandle) ||
+        (e.target === vmNode.id && e.targetHandle === vmHandle)
+      );
+      if (!nicForHandle || handleAlreadyConnected) {
         const netData = netNode.data as Record<string, any>;
         const cidr = netData.cidr || "";
         const base = cidr ? cidr.split("/")[0].split(".").slice(0, 3).join(".") : "";
