@@ -276,9 +276,8 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                   <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse", marginBottom: 16 }}>
                     <thead>
                       <tr style={{ borderBottom: "1px solid var(--troshka-border)", textAlign: "left" }}>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Int IP</th>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Int Port</th>
-                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Via</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>External</th>
+                        <th style={{ padding: "6px 8px", color: "var(--troshka-text-dim)", fontWeight: 500 }}>Internal</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -287,8 +286,6 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                         const eip = allEips.find((e) => e.id === pf.extIpId);
                         return (
                           <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
-                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}</td>
-                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intPort || "—"}</td>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>
                               {(() => {
                                 if (routeMatch) {
@@ -315,6 +312,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                 return eip?.name || "—";
                               })()}
                             </td>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}:{pf.intPort || "—"}</td>
                           </tr>
                         );
                       })}
