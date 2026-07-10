@@ -485,19 +485,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // BMC network: reject if the NIC handle already has a connection to another network
-    if (isBmcSource || isBmcTarget) {
-      const vmHandle = sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
-      const vmId = sType === "vmNode" ? connection.source : connection.target;
-      if (vmHandle) {
-        const handleInUse = get().edges.some((e) =>
-          (e.source === vmId && e.sourceHandle === vmHandle) ||
-          (e.target === vmId && e.targetHandle === vmHandle)
-        );
-        if (handleInUse) return;
-      }
-    }
-
     // Auto-add NIC before creating edge when connecting a network to a VM with no matching handle
     const finalConnection = { ...connection };
     if ((sType === "networkNode" && tType === "vmNode") || (tType === "networkNode" && sType === "vmNode")) {
@@ -508,9 +495,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       const nicForHandle = vmNics.find((nic) =>
         vmHandle === `nic-${nic.id}-top` || vmHandle === `nic-${nic.id}-bottom`
       );
+      const nicHandleTop = nicForHandle ? `nic-${nicForHandle.id}-top` : null;
+      const nicHandleBottom = nicForHandle ? `nic-${nicForHandle.id}-bottom` : null;
       const handleAlreadyConnected = nicForHandle && get().edges.some((e) =>
-        (e.source === vmNode.id && e.sourceHandle === vmHandle) ||
-        (e.target === vmNode.id && e.targetHandle === vmHandle)
+        (e.source === vmNode.id && (e.sourceHandle === nicHandleTop || e.sourceHandle === nicHandleBottom)) ||
+        (e.target === vmNode.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
       );
       if (!nicForHandle || handleAlreadyConnected) {
         const netData = netNode.data as Record<string, any>;
