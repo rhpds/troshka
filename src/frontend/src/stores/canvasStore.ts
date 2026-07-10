@@ -512,19 +512,41 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ),
     });
 
-    // Auto-add NIC when connecting a network to a VM that has no free NIC handle
+    // Auto-add NIC when connecting a network to a VM that has no matching NIC handle
     if ((sType === "networkNode" && tType === "vmNode") || (tType === "networkNode" && sType === "vmNode")) {
       const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+      const netNode = sType === "networkNode" ? sourceNode : targetNode;
       const vmHandle = sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
-      const vmNics = ((vmNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string}>;
-      const nicForHandle = vmNics.find((nic) => nic.id === vmHandle);
+      const vmNics = ((vmNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
+      const nicForHandle = vmNics.find((nic) =>
+        vmHandle === `nic-${nic.id}-top` || vmHandle === `nic-${nic.id}-bottom`
+      );
       if (!nicForHandle) {
+        const netData = netNode.data as Record<string, any>;
+        const cidr = netData.cidr || "";
+        const base = cidr ? cidr.split("/")[0].split(".").slice(0, 3).join(".") : "";
+        let autoIp = "";
+        if (base) {
+          const usedIps = new Set<string>();
+          for (const n of get().nodes) {
+            if (n.type !== "vmNode") continue;
+            const nics = ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>;
+            for (const nic of nics) if (nic.ip) usedIps.add(nic.ip);
+          }
+          for (let i = 10; i < 250; i++) {
+            const candidate = `${base}.${i}`;
+            if (!usedIps.has(candidate)) { autoIp = candidate; break; }
+          }
+        }
+        const suffix = vmHandle?.endsWith("-top") ? "top" : "bottom";
         const newNic = {
           id: generateNicId(),
           name: `eth${vmNics.length}`,
           mac: generateMac(),
           model: "virtio",
+          ...(autoIp ? { ip: autoIp } : {}),
         };
+        const newHandle = `nic-${newNic.id}-${suffix}`;
         const updatedNics = [...vmNics, newNic];
         set({
           nodes: get().nodes.map((n) =>
@@ -534,10 +556,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           ),
           edges: get().edges.map((e) => {
             if (e.source === vmNode.id && e.sourceHandle === vmHandle) {
-              return { ...e, sourceHandle: newNic.id };
+              return { ...e, sourceHandle: newHandle };
             }
             if (e.target === vmNode.id && e.targetHandle === vmHandle) {
-              return { ...e, targetHandle: newNic.id };
+              return { ...e, targetHandle: newHandle };
             }
             return e;
           }),
