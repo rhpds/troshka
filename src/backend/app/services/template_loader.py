@@ -939,19 +939,26 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         net_names[nid] = d.get("name", d.get("label", nid[:8]))
 
     # Build NIC -> network mapping from edges
-    # targetHandle format: "nic-{nic_id}-{top|bottom}" where nic_id itself is "nic-{uuid}"
+    # Handle format: "nic-{nic_id}-{top|bottom}" where nic_id itself is "nic-{uuid}"
     nic_to_net = {}
+
+    def _extract_nic_id(handle: str) -> str:
+        h = handle.removeprefix("nic-")
+        for suffix in ("-top", "-bottom"):
+            if h.endswith(suffix):
+                h = h.removesuffix(suffix)
+                break
+        return h
+
     for e in edges:
         src = e.get("source", "")
-        tgt_handle = e.get("targetHandle", "")
-        if src in net_names and tgt_handle.startswith("nic-"):
-            # Strip "nic-" prefix and "-top"/"-bottom" suffix to get the nic ID
-            nic_id = tgt_handle.removeprefix("nic-")
-            for suffix in ("-top", "-bottom"):
-                if nic_id.endswith(suffix):
-                    nic_id = nic_id.removesuffix(suffix)
-                    break
-            nic_to_net[nic_id] = net_names[src]
+        tgt = e.get("target", "")
+        src_h = e.get("sourceHandle", "")
+        tgt_h = e.get("targetHandle", "")
+        if src in net_names and tgt_h.startswith("nic-"):
+            nic_to_net[_extract_nic_id(tgt_h)] = net_names[src]
+        elif tgt in net_names and src_h.startswith("nic-"):
+            nic_to_net[_extract_nic_id(src_h)] = net_names[tgt]
 
     # ── Networks ──
     networks = {}
