@@ -421,7 +421,8 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
             onClick={() => setShowOcpStatus(!showOcpStatus)}
           >
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "error" && ocpHealth.phase !== "timeout" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              {ocpHealth.phase !== "ready" && ocpHealth.phase !== "error" && ocpHealth.phase !== "timeout" && ocpHealth.phase !== "waiting" && <span className="project-btn-spinner" style={{ width: 10, height: 10 }} />}
+              {ocpHealth.phase === "waiting" && <span style={{ color: "#fbbf24" }}>⏸</span>}
               {(ocpHealth.phase === "error" || ocpHealth.phase === "timeout") && <span style={{ color: "#f87171" }}>✗</span>}
               OCP STATUS
             </span>
