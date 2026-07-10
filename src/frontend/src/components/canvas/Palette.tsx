@@ -450,8 +450,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 </div>
               )}
               {ocpHealth.phase === "ready" && (() => {
+                const ocpVm = nodes.find((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeadminPassword);
                 const bastionPw = passwords.find(p => p.label.includes("bastion"));
-                const kubeadminPw = bastionPw?.value || "";
+                const kubeadminPw = (ocpVm?.data as any)?.ocpKubeadminPassword || bastionPw?.value || "";
                 return (
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                     <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>

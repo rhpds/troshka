@@ -1220,6 +1220,28 @@ def _handle_vm_config(job, params):
     root = ET.fromstring(result.stdout)
 
     boot_devs = [b.get("dev") for b in root.findall(".//os/boot")]
+    # Fall back to per-device boot orders if no os/boot elements
+    if not boot_devs:
+        dev_boots = []
+        devices = root.find("devices")
+        if devices is not None:
+            for dev_elem in devices:
+                boot_child = dev_elem.find("boot")
+                if boot_child is not None:
+                    order = int(boot_child.get("order", 999))
+                    if dev_elem.tag == "disk":
+                        dev_type = "cdrom" if dev_elem.get("device") == "cdrom" else "hd"
+                    elif dev_elem.tag == "interface":
+                        dev_type = "network"
+                    else:
+                        continue
+                    dev_boots.append((order, dev_type))
+        if dev_boots:
+            seen = set()
+            for _, dt in sorted(dev_boots):
+                if dt not in seen:
+                    boot_devs.append(dt)
+                    seen.add(dt)
     vcpus = int(root.findtext("vcpu", "0"))
     mem_elem = root.find("memory")
     mem_kib = int(mem_elem.text) if mem_elem is not None else 0
@@ -1366,6 +1388,13 @@ def _handle_vm_reconfigure(job, params):
             boot_elem = ET.Element("boot")
             boot_elem.set("dev", dev)
             os_elem.insert(insert_idx + i, boot_elem)
+        # Strip per-device boot orders — can't mix with os/boot elements
+        devices = root.find("devices")
+        if devices is not None:
+            for dev_elem in devices:
+                boot_child = dev_elem.find("boot")
+                if boot_child is not None:
+                    dev_elem.remove(boot_child)
 
     # ── vCPUs ──
     if vcpus is not None:

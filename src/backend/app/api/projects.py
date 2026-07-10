@@ -1131,7 +1131,7 @@ def get_all_vm_states(
     from app.services.ws_pubsub import get_cached_vm_states
 
     cached = get_cached_vm_states(project_id)
-    if cached:
+    if cached and cached.get("states"):
         return cached
 
     host = db.query(Host).filter_by(id=project.host_id).first()
@@ -2019,7 +2019,9 @@ def reconfigure_project(
                                 .filter_by(project_id=p_id, canvas_eip_id=canvas_id)
                                 .first()
                             )
-                            eip = existing or allocate_eip(s, provider, p_id, canvas_id)
+                            eip = existing or allocate_eip(
+                                s, provider, p_id, canvas_id, h
+                            )
                             if eip.state != "associated":
                                 associate_eip(s, eip, h)
                             ext_ip["ip"] = eip.public_ip

@@ -329,6 +329,7 @@ export default function ProjectCanvasPage() {
 
   const doReconfigure = async (restartVmIds?: string[]) => {
     setReconfigWarnings(null);
+    setDeployError(null);
     setApplyingChanges(true);
     try {
       await saveTopology();
@@ -695,6 +696,7 @@ export default function ProjectCanvasPage() {
                 ▶ Start
               </button>
               <button className="project-publish-btn" onClick={async () => {
+                setDeployError(null);
                 const s = useCanvasStore.getState();
                 await fetch(`/api/v1/projects/${projectId}`, {
                   method: "PATCH",

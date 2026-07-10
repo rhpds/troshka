@@ -3005,11 +3005,16 @@ def _clean_kubelet_certs(
                 if bastion_disk_path:
                     recert_params["bastion_disk"] = bastion_disk_path
                 if common_password:
-                    recert_params["common_password"] = common_password
                     import bcrypt
+                    import secrets as _secrets
 
+                    # OCP 4.22+ requires kubeadmin password >= 23 chars
+                    kubeadmin_pw = common_password
+                    if len(kubeadmin_pw) < 23:
+                        kubeadmin_pw = _secrets.token_urlsafe(24)
+                    recert_params["common_password"] = kubeadmin_pw
                     pw_hash = bcrypt.hashpw(
-                        common_password.encode(), bcrypt.gensalt(rounds=10)
+                        kubeadmin_pw.encode(), bcrypt.gensalt(rounds=10)
                     ).decode()
                     recert_params["kubeadmin_password_hash"] = pw_hash
                 job_id = start_job(host, "/vms/recert", recert_params)
@@ -3020,6 +3025,13 @@ def _clean_kubelet_certs(
                         project_id[:8],
                         vm_name,
                     )
+                    if common_password:
+                        for n in topology.get("nodes", []):
+                            if n["id"] == vm["node_id"]:
+                                n.setdefault("data", {})[
+                                    "ocpKubeadminPassword"
+                                ] = kubeadmin_pw
+                                break
                     return
                 else:
                     err = job.get("result", {}).get("error", "unknown")

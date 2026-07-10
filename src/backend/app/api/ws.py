@@ -73,6 +73,7 @@ def _build_snapshot(project: Project, db) -> dict:
     # Collect all data we need from DB objects before closing the session
     project_id = project.id
     topology_nodes = (project.topology or {}).get("nodes", [])
+    agent_connected = host.agent_status == "connected"
     host_copy = type(
         "H",
         (),
@@ -93,7 +94,7 @@ def _build_snapshot(project: Project, db) -> dict:
     if cached and cached.get("states"):
         snapshot["vm_states"] = cached["states"]
         snapshot["vm_progress"] = cached.get("progress", {})
-    elif host_copy and host_copy.get("agent_status") == "connected":
+    elif agent_connected:
         for node in topology_nodes:
             if node.get("type") != "vmNode":
                 continue
