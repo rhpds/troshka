@@ -146,12 +146,16 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                 const noIps = externalIps.length === 0 && portForwards.length > 0 && !hasRoutes;
                 return (
                   <>
-                    {portForwards.length > 0 && (
-                      <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", cursor: "pointer", userSelect: "none" }}
-                        onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
-                        {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
-                      </div>
-                    )}
+                    {portForwards.length > 0 && (() => {
+                      const eps = (gw.externalEndpoints as Array<{type?: string}>) || [];
+                      const hasAccess = externalIps.some((e) => e.ip) || eps.some((e) => e.type === "route");
+                      return !hasAccess ? (
+                        <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", cursor: "pointer", userSelect: "none" }}
+                          onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
+                          {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
+                        </div>
+                      ) : null;
+                    })()}
                     {portForwards.length === 0 && (
                       <div style={{ fontSize: 9, color: "var(--troshka-yellow)" }}>⚠ No port forwards</div>
                     )}
