@@ -2130,20 +2130,64 @@ def _handle_vm_recert(job, params):
 
                     import glob as _glob
 
-                    for db_file in _glob.glob(
+                    for pattern in (
+                        "cert9.db",
+                        "key4.db",
+                        "logins.json",
+                    ):
+                        for db_file in _glob.glob(
+                            os.path.join(
+                                bastion_mount,
+                                f"home/cloud-user/.mozilla/firefox/*.default*/{pattern}",
+                            )
+                        ):
+                            os.unlink(db_file)
+
+                    if common_password and os.path.exists(
                         os.path.join(
                             bastion_mount,
-                            "home/cloud-user/.mozilla/firefox/*.default*/cert9.db",
+                            "home/cloud-user/ocp-autologin.py",
                         )
                     ):
-                        os.unlink(db_file)
-                    for db_file in _glob.glob(
-                        os.path.join(
+                        boot_script = os.path.join(
                             bastion_mount,
-                            "home/cloud-user/.mozilla/firefox/*.default*/key4.db",
+                            "home/cloud-user/ocp-autologin-boot.sh",
                         )
-                    ):
-                        os.unlink(db_file)
+                        with open(boot_script, "w") as f:
+                            f.write(
+                                "#!/bin/bash\n"
+                                "sleep 5\n"
+                                "API=$(grep server: ~/ocp-install/auth/kubeconfig"
+                                " | head -1 | sed 's|.*https://api\\.||;s|:.*||')\n"
+                                '[ -z "$API" ] && exit 1\n'
+                                "CONSOLE=https://console-openshift-console.apps.$API\n"
+                                "export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0"
+                                " XDG_RUNTIME_DIR=/run/user/$(id -u)"
+                                " MOZ_ENABLE_WAYLAND=1\n"
+                                "python3 ~/ocp-autologin.py $CONSOLE 2>/dev/null\n"
+                                "rm -f ~/ocp-autologin-boot.sh"
+                                " ~/.config/autostart/ocp-autologin.desktop\n"
+                            )
+                        os.chmod(boot_script, 0o755)
+                        autostart_dir = os.path.join(
+                            bastion_mount,
+                            "home/cloud-user/.config/autostart",
+                        )
+                        os.makedirs(autostart_dir, exist_ok=True)
+                        with open(
+                            os.path.join(
+                                autostart_dir, "ocp-autologin.desktop"
+                            ),
+                            "w",
+                        ) as f:
+                            f.write(
+                                "[Desktop Entry]\n"
+                                "Type=Application\n"
+                                "Name=OCP Auto-Login\n"
+                                "Exec=/home/cloud-user/ocp-autologin-boot.sh\n"
+                                "X-GNOME-Autostart-enabled=true\n"
+                            )
+                        _job_log(job, "Firefox auto-login scheduled for first boot")
 
                 except Exception as e:
                     _job_log(job, f"Bastion update failed: {e}")
