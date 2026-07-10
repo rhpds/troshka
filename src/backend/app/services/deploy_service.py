@@ -3337,7 +3337,20 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         dns_domain,
     )
 
-    # Phase 1: Wait for bastion SSH
+    # Phase 1: Wait for bastion SSH — but skip if bastion VM is stopped
+    from app.services.troshkad_client import get_vm_state as _get_vm_st
+
+    bastion_dom = _vm_domain_name(project_id, bastion["id"])
+    try:
+        vm_info = _get_vm_st(host, bastion_dom, timeout=5)
+        if vm_info.get("state") in ("shut_off", "shutoff"):
+            _push(
+                "waiting", "bastion is powered off — start it to enable OCP monitoring"
+            )
+            return
+    except Exception:
+        pass
+
     _push("ssh", "waiting for bastion")
     while _t.time() < deadline:
         result = _exec_on_bastion(
