@@ -498,21 +498,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       }
     }
 
-    get().pushHistory();
-    set({
-      edges: addEdge(
-        {
-          ...connection,
-          type: "smoothstep",
-          style: edgeStyle,
-          animated,
-          className,
-        },
-        get().edges,
-      ),
-    });
-
-    // Auto-add NIC when connecting a network to a VM that has no matching NIC handle
+    // Auto-add NIC before creating edge when connecting a network to a VM with no matching handle
+    const finalConnection = { ...connection };
     if ((sType === "networkNode" && tType === "vmNode") || (tType === "networkNode" && sType === "vmNode")) {
       const vmNode = sType === "vmNode" ? sourceNode : targetNode;
       const netNode = sType === "networkNode" ? sourceNode : targetNode;
@@ -530,8 +517,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           const usedIps = new Set<string>();
           for (const n of get().nodes) {
             if (n.type !== "vmNode") continue;
-            const nics = ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>;
-            for (const nic of nics) if (nic.ip) usedIps.add(nic.ip);
+            for (const nic of ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>) {
+              if (nic.ip) usedIps.add(nic.ip);
+            }
           }
           for (let i = 10; i < 250; i++) {
             const candidate = `${base}.${i}`;
@@ -547,25 +535,31 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           ...(autoIp ? { ip: autoIp } : {}),
         };
         const newHandle = `nic-${newNic.id}-${suffix}`;
-        const updatedNics = [...vmNics, newNic];
+        if (sType === "vmNode") finalConnection.sourceHandle = newHandle;
+        else finalConnection.targetHandle = newHandle;
         set({
           nodes: get().nodes.map((n) =>
             n.id === vmNode.id
-              ? { ...n, data: { ...n.data, nics: updatedNics } }
+              ? { ...n, data: { ...n.data, nics: [...vmNics, newNic] } }
               : n
           ),
-          edges: get().edges.map((e) => {
-            if (e.source === vmNode.id && e.sourceHandle === vmHandle) {
-              return { ...e, sourceHandle: newHandle };
-            }
-            if (e.target === vmNode.id && e.targetHandle === vmHandle) {
-              return { ...e, targetHandle: newHandle };
-            }
-            return e;
-          }),
         });
       }
     }
+
+    get().pushHistory();
+    set({
+      edges: addEdge(
+        {
+          ...finalConnection,
+          type: "smoothstep",
+          style: edgeStyle,
+          animated,
+          className,
+        },
+        get().edges,
+      ),
+    });
 
     // Force disk format to raw when connecting storage to a container
     const diskId = sType === "storageNode" ? sourceNode.id : tType === "storageNode" ? targetNode.id : null;
