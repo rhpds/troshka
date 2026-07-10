@@ -839,6 +839,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     // Duplicate connections
     const newEdges: Edge[] = [];
     const newNodes: Node[] = [newNode];
+    const diskIdMap: Record<string, string> = {};
 
     if (source.type === "vmNode") {
       const sourceEdges = get().edges.filter((e) => e.source === nodeId || e.target === nodeId);
@@ -906,6 +907,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               selected: false,
               data: { ...otherNode.data, name: diskNewName, label: diskNewName },
             });
+            diskIdMap[otherNodeId] = diskNewId;
             diskTargetId = diskNewId;
           }
 
@@ -929,6 +931,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           };
           newEdges.push(newEdge);
         }
+      }
+    }
+
+    // Remap bootDevices to cloned disk IDs
+    if (source.type === "vmNode" && Object.keys(diskIdMap).length > 0) {
+      const bootDevs = (newNode.data as Record<string, any>).bootDevices as string[] | undefined;
+      if (bootDevs) {
+        (newNode.data as Record<string, any>).bootDevices = bootDevs.map(
+          (id) => diskIdMap[id] || id
+        );
       }
     }
 
