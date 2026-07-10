@@ -2156,30 +2156,38 @@ def _handle_vm_recert(job, params):
                         with open(boot_script, "w") as f:
                             f.write(
                                 "#!/bin/bash\n"
-                                "sleep 5\n"
+                                "# Wait for OCP oauth-server to be ready\n"
                                 "API=$(grep server: ~/ocp-install/auth/kubeconfig"
                                 " | head -1 | sed 's|.*https://api\\.||;s|:.*||')\n"
                                 '[ -z "$API" ] && exit 1\n'
                                 "CONSOLE=https://console-openshift-console.apps.$API\n"
+                                "for i in $(seq 1 60); do\n"
+                                "  curl -skL -o /dev/null -w '%{http_code}'"
+                                " $CONSOLE/auth/login 2>/dev/null | grep -q 200"
+                                " && break\n"
+                                "  sleep 10\n"
+                                "done\n"
                                 "export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0"
                                 " XDG_RUNTIME_DIR=/run/user/$(id -u)"
                                 " MOZ_ENABLE_WAYLAND=1\n"
                                 "python3 ~/ocp-autologin.py $CONSOLE 2>/dev/null\n"
-                                "rm -f ~/ocp-autologin-boot.sh"
+                                "if [ $? -eq 0 ]; then\n"
+                                "  rm -f ~/ocp-autologin-boot.sh"
                                 " ~/.config/autostart/ocp-autologin.desktop\n"
+                                "fi\n"
                             )
                         os.chmod(boot_script, 0o755)
+                        # chown to cloud-user (UID 1000) so the script can self-cleanup
+                        os.chown(boot_script, 1000, 1000)
                         autostart_dir = os.path.join(
                             bastion_mount,
                             "home/cloud-user/.config/autostart",
                         )
                         os.makedirs(autostart_dir, exist_ok=True)
-                        with open(
-                            os.path.join(
-                                autostart_dir, "ocp-autologin.desktop"
-                            ),
-                            "w",
-                        ) as f:
+                        desktop_file = os.path.join(
+                            autostart_dir, "ocp-autologin.desktop"
+                        )
+                        with open(desktop_file, "w") as f:
                             f.write(
                                 "[Desktop Entry]\n"
                                 "Type=Application\n"
@@ -2187,6 +2195,8 @@ def _handle_vm_recert(job, params):
                                 "Exec=/home/cloud-user/ocp-autologin-boot.sh\n"
                                 "X-GNOME-Autostart-enabled=true\n"
                             )
+                        os.chown(autostart_dir, 1000, 1000)
+                        os.chown(desktop_file, 1000, 1000)
                         _job_log(job, "Firefox auto-login scheduled for first boot")
 
                 except Exception as e:
