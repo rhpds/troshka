@@ -811,7 +811,7 @@ class OCPVirtDriver(ProviderDriver):
         except client.ApiException:
             pass
 
-        tls_termination = "edge"
+        passthrough = port in (6443,)
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -822,11 +822,15 @@ class OCPVirtDriver(ProviderDriver):
             },
             "spec": {
                 "to": {"kind": "Service", "name": resource_name},
-                "port": {"targetPort": f"pf-{port}"},
-                "tls": {
-                    "termination": tls_termination,
-                    "insecureEdgeTerminationPolicy": "Redirect",
-                },
+                **({"port": {"targetPort": f"pf-{port}"}} if not passthrough else {}),
+                "tls": (
+                    {"termination": "passthrough"}
+                    if passthrough
+                    else {
+                        "termination": "edge",
+                        "insecureEdgeTerminationPolicy": "Redirect",
+                    }
+                ),
             },
         }
         try:

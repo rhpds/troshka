@@ -1085,7 +1085,7 @@ export default function PropertiesPanel() {
             {!isCollapsed("tags") && (
               <div className="props-section-body">
                 {Object.entries((data as Record<string, any>).tags || {}).map(([key, value], idx) => (
-                  <div key={idx} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                  <div key={`${node.id}-${key}`} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                     <input
                       className="props-input"
                       defaultValue={key}
@@ -1126,9 +1126,9 @@ export default function PropertiesPanel() {
                   className="props-library-btn"
                   onClick={() => {
                     const tags = { ...((data as Record<string, any>).tags || {}) };
-                    let newKey = "NewTag";
+                    let newKey = "";
                     let i = 1;
-                    while (newKey in tags) { newKey = `NewTag${i++}`; }
+                    while (newKey in tags) { newKey = `tag${i++}`; }
                     tags[newKey] = "";
                     update("tags", tags);
                   }}
@@ -2466,19 +2466,46 @@ export default function PropertiesPanel() {
                       )}
                       {(() => {
                         const externalIps = useCanvasStore.getState().externalIps;
-                        return portForwards.map((pf, i) => (
-                          <div key={i} style={{ background: "var(--troshka-surface2)", borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                        return portForwards.map((pf, i) => {
+                          const isDirty = (form: HTMLFormElement) => {
+                            const fd = new FormData(form);
+                            return fd.get("extPort") !== (pf.extPort || "") ||
+                              fd.get("intPort") !== (pf.intPort || "") ||
+                              fd.get("extIpId") !== ((pf as Record<string, string>).extIpId || "") ||
+                              fd.get("intIp") !== (pf.intIp || "");
+                          };
+                          const applyChanges = (form: HTMLFormElement) => {
+                            const fd = new FormData(form);
+                            const updated = [...portForwards];
+                            updated[i] = { ...pf, extPort: fd.get("extPort") as string || "", intPort: fd.get("intPort") as string || "", intIp: fd.get("intIp") as string || "" };
+                            (updated[i] as Record<string, string>).extIpId = fd.get("extIpId") as string || "";
+                            update("portForwards", updated);
+                            const btn = form.querySelector<HTMLElement>("[data-apply]");
+                            if (btn) {
+                              btn.style.background = "#4ade80"; btn.textContent = "Saved";
+                              setTimeout(() => { btn.style.background = ""; btn.textContent = "Apply"; btn.style.display = "none"; }, 800);
+                            }
+                          };
+                          const formSetup = (form: HTMLFormElement | null) => {
+                            if (!form || (form as any).__pfBound) return;
+                            (form as any).__pfBound = true;
+                            const check = () => {
+                              const btn = form.querySelector<HTMLElement>("[data-apply]");
+                              if (btn) btn.style.display = isDirty(form) ? "" : "none";
+                            };
+                            form.addEventListener("input", check);
+                            form.addEventListener("change", check);
+                          };
+                          return (
+                          <form key={i} ref={formSetup} style={{ background: "var(--troshka-surface2)", borderRadius: 6, padding: 8, marginBottom: 6 }}
+                            onSubmit={(e) => { e.preventDefault(); applyChanges(e.currentTarget); }}>
                             <div className="props-row" style={{ marginBottom: 4, alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
-                                {<label className="props-label">External IP</label>}
+                                <label className="props-label">External IP</label>
                                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                  <select className="props-select" style={{ fontSize: 11, flex: 1 }}
-                                    value={(pf as Record<string, string>).extIpId || ""}
-                                    onChange={(e) => {
-                                      const updated = [...portForwards];
-                                      (updated[i] as Record<string, string>).extIpId = e.target.value;
-                                      update("portForwards", updated);
-                                    }}>
+                                  <select className="props-select" name="extIpId" style={{ fontSize: 11, flex: 1 }}
+                                    defaultValue={(pf as Record<string, string>).extIpId || ""}
+                                    >
                                     {externalIps.length === 0 ? (
                                       <option value="">No IPs — click +</option>
                                     ) : (
@@ -2491,7 +2518,7 @@ export default function PropertiesPanel() {
                                     )}
                                   </select>
                                   {externalIps.length === 0 ? (
-                                    <button
+                                    <button type="button"
                                       style={{ background: "none", border: "1px solid var(--troshka-cyan)", color: "var(--troshka-cyan)", cursor: "pointer", padding: "2px 8px", flexShrink: 0, borderRadius: 4, fontSize: 11, fontWeight: 600 }}
                                       title="Create an external IP"
                                       onClick={() => {
@@ -2505,7 +2532,7 @@ export default function PropertiesPanel() {
                                   ) : (() => {
                                     const selEip = externalIps.find((e) => e.id === (pf as Record<string, string>).extIpId);
                                     return selEip?.ip ? (
-                                      <button
+                                      <button type="button"
                                         style={{ background: "none", border: "none", color: "var(--troshka-cyan)", cursor: "pointer", padding: 0, flexShrink: 0, opacity: 0.7, transition: "opacity 0.15s" }}
                                         onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
                                         onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
@@ -2517,23 +2544,16 @@ export default function PropertiesPanel() {
                                 </div>
                               </div>
                               <div className="props-field" style={{ flex: "0 0 64px" }}>
-                                {<label className="props-label">Ext Port</label>}
-                                <input className="props-input" key={`ext-${i}`} defaultValue={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
-                                  onBlur={(e) => {
-                                    if (e.target.value !== pf.extPort) {
-                                      const updated = [...portForwards];
-                                      updated[i] = { ...pf, extPort: e.target.value };
-                                      update("portForwards", updated);
-                                    }
-                                  }}
-                                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                <label className="props-label">Ext Port</label>
+                                <input className="props-input" name="extPort" defaultValue={pf.extPort} placeholder="80" style={{ fontFamily: "monospace" }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); const f = e.currentTarget.closest("form"); if (f) applyChanges(f); } }}
                                 />
                               </div>
                             </div>
                             <div style={{ textAlign: "center", color: "var(--troshka-text-dim)", fontSize: 10, lineHeight: 1, margin: "0" }}>↓</div>
                             <div className="props-row" style={{ alignItems: "end" }}>
                               <div className="props-field" style={{ flex: 1 }}>
-                                {<label className="props-label">Internal IP</label>}
+                                <label className="props-label">Internal IP</label>
                                 {(() => {
                                   const vmIps: { ip: string; vmName: string }[] = [];
                                   for (const n of nodes) {
@@ -2546,32 +2566,26 @@ export default function PropertiesPanel() {
                                   const isCustom = (pf.intIp && !vmIps.some((v) => v.ip === pf.intIp));
                                   return isCustom ? (
                                     <div style={{ display: "flex", gap: 4 }}>
-                                      <input className="props-input" defaultValue={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
+                                      <input className="props-input" name="intIp" defaultValue={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
                                         autoFocus
-                                        onBlur={(e) => {
-                                          if (e.target.value !== pf.intIp) {
-                                            const updated = [...portForwards];
-                                            updated[i] = { ...pf, intIp: e.target.value };
-                                            update("portForwards", updated);
-                                          }
-                                        }}
-                                        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); const f = e.currentTarget.closest("form"); if (f) applyChanges(f); } }}
                                       />
                                       {vmIps.length > 0 && (
-                                        <button style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 10, flexShrink: 0 }}
+                                        <button type="button" style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 10, flexShrink: 0 }}
                                           title="Switch to VM picker"
                                           onClick={() => { const updated = [...portForwards]; updated[i] = { ...pf, intIp: "" }; update("portForwards", updated); }}
                                         >▾</button>
                                       )}
                                     </div>
                                   ) : (
-                                    <select className="props-select" style={{ fontFamily: "monospace", fontSize: 11 }}
-                                      value={pf.intIp}
+                                    <select className="props-select" name="intIp" style={{ fontFamily: "monospace", fontSize: 11 }}
+                                      defaultValue={pf.intIp}
                                       onChange={(e) => {
-                                        const val = e.target.value;
-                                        const updated = [...portForwards];
-                                        updated[i] = { ...pf, intIp: val === "__other__" ? " " : val };
-                                        update("portForwards", updated);
+                                        if (e.target.value === "__other__") {
+                                          const updated = [...portForwards]; updated[i] = { ...pf, intIp: " " }; update("portForwards", updated);
+                                        } else {
+                                          /* dirty check handled by native listener */
+                                        }
                                       }}>
                                       <option value="">Select VM...</option>
                                       {vmIps.map((v) => (
@@ -2584,26 +2598,20 @@ export default function PropertiesPanel() {
                                 })()}
                               </div>
                               <div className="props-field" style={{ flex: "0 0 64px" }}>
-                                {<label className="props-label">Int Port</label>}
-                                <input className="props-input" key={`int-${i}`} defaultValue={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
-                                  onBlur={(e) => {
-                                    if (e.target.value !== pf.intPort) {
-                                      const updated = [...portForwards];
-                                      updated[i] = { ...pf, intPort: e.target.value };
-                                      update("portForwards", updated);
-                                    }
-                                  }}
-                                  onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                                <label className="props-label">Int Port</label>
+                                <input className="props-input" name="intPort" defaultValue={pf.intPort} placeholder="80" style={{ fontFamily: "monospace" }}
+                                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); const f = e.currentTarget.closest("form"); if (f) applyChanges(f); } }}
                                 />
                               </div>
                             </div>
-                            <button
-                              style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", padding: "4px", alignSelf: "end" }}
-                              onClick={() => {
-                                const updated = portForwards.filter((_, idx) => idx !== i);
-                                update("portForwards", updated);
-                              }}
-                            >✕</button>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                              <button type="button"
+                                style={{ background: "none", border: "none", color: "var(--troshka-red)", cursor: "pointer", padding: "4px", fontSize: 12 }}
+                                onClick={() => { update("portForwards", portForwards.filter((_, idx) => idx !== i)); }}
+                              >✕ Remove</button>
+                              <button type="submit" data-apply style={{ display: "none", background: "var(--troshka-cyan)", color: "#000", border: "none", cursor: "pointer", padding: "3px 12px", borderRadius: 4, fontSize: 11, fontWeight: 600, transition: "background 0.2s" }}
+                              >Apply</button>
+                            </div>
                             {(() => {
                               const errors: string[] = [];
                               if (!(pf as Record<string, string>).extIpId) errors.push("External IP required");
@@ -2622,8 +2630,9 @@ export default function PropertiesPanel() {
                                 </div>
                               ) : null;
                             })()}
-                          </div>
-                        ));
+                          </form>
+                        );
+                        });
                       })()}
                       <button
                         className="props-library-btn"

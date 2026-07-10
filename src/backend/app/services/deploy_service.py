@@ -2267,7 +2267,7 @@ def deploy_project_async(
                         continue
                     for pf in node_data.get("portForwards", []):
                         ext_port = int(pf.get("extPort", 0))
-                        if ext_port not in (80, 443):
+                        if ext_port not in (80, 443, 6443):
                             continue
                         int_ip = pf.get("intIp", "")
                         int_port = int(pf.get("intPort", ext_port))
