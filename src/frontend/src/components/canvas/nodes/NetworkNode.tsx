@@ -150,7 +150,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                       const eps = (gw.externalEndpoints as Array<{type?: string}>) || [];
                       const hasAccess = externalIps.some((e) => e.ip) || eps.some((e) => e.type === "route");
                       return !hasAccess ? (
-                        <div style={{ fontSize: 9, color: "var(--troshka-text-dim)", fontFamily: "monospace", cursor: "pointer", userSelect: "none" }}
+                        <div style={{ fontSize: 9, color: "var(--troshka-green)", fontFamily: "monospace", cursor: "pointer", userSelect: "none", textDecoration: "underline", opacity: 0.8 }}
                           onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
                           {portForwards.length} forward{portForwards.length !== 1 ? "s" : ""}
                         </div>
