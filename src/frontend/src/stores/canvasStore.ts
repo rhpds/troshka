@@ -816,10 +816,28 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     // Generate new NIC IDs and MACs for VMs
     let newData: Record<string, any> = { ...source.data, name: newName, label: newName };
     if (source.type === "vmNode") {
-      const nics = (source.data as Record<string, any>).nics as Array<{id: string; name: string; mac: string; model: string}> || [];
+      const nics = (source.data as Record<string, any>).nics as Array<{id: string; name: string; mac: string; model: string; ip?: string}> || [];
+      const usedIps = new Set<string>();
+      for (const n of get().nodes) {
+        if (n.type !== "vmNode") continue;
+        for (const nic of ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>) {
+          if (nic.ip) usedIps.add(nic.ip);
+        }
+      }
       newData = {
         ...newData,
-        nics: nics.map((nic, i) => ({ ...nic, id: generateNicId(), mac: generateMac() })),
+        nics: nics.map((nic, i) => {
+          let newIp = nic.ip;
+          if (newIp) {
+            const parts = newIp.split(".");
+            const base = parts.slice(0, 3).join(".");
+            let octet = parseInt(parts[3], 10) + 1;
+            while (octet < 250 && usedIps.has(`${base}.${octet}`)) octet++;
+            newIp = octet < 250 ? `${base}.${octet}` : newIp;
+            usedIps.add(newIp);
+          }
+          return { ...nic, id: generateNicId(), mac: generateMac(), ...(newIp ? { ip: newIp } : {}) };
+        }),
         diskControllers: ((source.data as Record<string, any>).diskControllers as Array<{id: string; name: string; bus: string}> || [])
           .map((dc) => ({ ...dc, id: generateDiskControllerId() })),
       };
