@@ -292,13 +292,30 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                             <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}</td>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intPort || "—"}</td>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>
-                              {routeMatch ? (
-                                <>
-                                  <a href={`https://${routeMatch.hostname}`} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{routeMatch.hostname}</a>
-                                  <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                                    onClick={() => navigator.clipboard.writeText(routeMatch.hostname || "")} title="Copy">Copy</span>
-                                </>
-                              ) : eip?.ip || eip?.name || "—"}
+                              {(() => {
+                                if (routeMatch) {
+                                  const port = String(pf.extPort);
+                                  const url = port === "443" ? `https://${routeMatch.hostname}` : `https://${routeMatch.hostname}:${port}`;
+                                  return (
+                                    <>
+                                      <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{url}</a>
+                                      <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                                        onClick={() => navigator.clipboard.writeText(url)} title="Copy">Copy</span>
+                                    </>
+                                  );
+                                }
+                                if (eip?.ip) {
+                                  const addr = `${eip.ip}:${pf.extPort}`;
+                                  return (
+                                    <>
+                                      <span>{addr}</span>
+                                      <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
+                                        onClick={() => navigator.clipboard.writeText(addr)} title="Copy">Copy</span>
+                                    </>
+                                  );
+                                }
+                                return eip?.name || "—";
+                              })()}
                             </td>
                           </tr>
                         );
