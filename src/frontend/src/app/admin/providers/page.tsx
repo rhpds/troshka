@@ -217,6 +217,8 @@ export default function AdminProvidersPage() {
         setTestResult((prev) => ({ ...prev, [id]: data.message }));
       } else if (data.bucket) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
+      } else if (data.operator !== undefined) {
+        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}` }));
       } else if (data.nodes !== undefined) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
       } else {
@@ -506,10 +508,12 @@ export default function AdminProvidersPage() {
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token</label>
                       <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sha256~..." />
                     </div>
-                    <div>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
-                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="troshka" />
-                    </div>
+                    {type === "ocpvirt" && (
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="troshka" />
+                      </div>
+                    )}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
                       <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
@@ -591,10 +595,12 @@ export default function AdminProvidersPage() {
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
                       </div>
-                      <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder="troshka" />
-                      </div>
+                      {p.type === "ocpvirt" && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder="troshka" />
+                        </div>
+                      )}
                     </>
                   ) : (
                     <>

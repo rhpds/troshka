@@ -921,14 +921,53 @@ def test_provider(
                 _get_k8s_clients as _get_kv_clients,
             )
 
-            _, core_api, _ = _get_kv_clients(provider)
+            custom_api, core_api, _ = _get_kv_clients(provider)
             nodes = core_api.list_node()
             node_count = len(nodes.items)
+
+            operator_ready = False
+            operator_status = "not installed"
+            try:
+                core_api.read_namespace("troshka-operator")
+                deps = custom_api.list_namespaced_custom_object(
+                    group="apps",
+                    version="v1",
+                    namespace="troshka-operator",
+                    plural="deployments",
+                )
+                for dep in deps.get("items", []):
+                    if dep["metadata"]["name"] == "troshka-operator":
+                        ready = dep.get("status", {}).get("readyReplicas", 0)
+                        operator_ready = ready > 0
+                        operator_status = (
+                            f"running ({ready} replica)"
+                            if operator_ready
+                            else "not ready"
+                        )
+                        break
+                else:
+                    operator_status = "namespace exists, deployment missing"
+            except Exception:
+                pass
+
+            crds_installed = False
+            try:
+                from kubernetes import client as k8s_client
+
+                ext_api = k8s_client.ApiextensionsV1Api(_get_kv_clients(provider)[2])
+                ext_api.read_custom_resource_definition(
+                    "troshkaprojects.troshka.redhat.com"
+                )
+                crds_installed = True
+            except Exception:
+                pass
+
             return {
                 "status": "ok",
                 "cluster": creds.get("api_url", ""),
-                "namespace": creds.get("namespace", "troshka"),
                 "nodes": node_count,
+                "operator": operator_status,
+                "crds_installed": crds_installed,
             }
         elif provider.type == "gcp":
             import google.auth.transport.requests
