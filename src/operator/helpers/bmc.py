@@ -1,7 +1,7 @@
 import json
 
 
-SUSHY_IMAGE = "quay.io/troshka/sushy-kubevirt:latest"
+SUSHY_IMAGE = "quay.io/redhat-gpte/troshka-sushy:latest"
 
 
 def build_bmc_pod(

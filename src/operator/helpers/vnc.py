@@ -1,4 +1,4 @@
-VNC_PROXY_IMAGE = "quay.io/troshka/vnc-proxy:latest"
+VNC_PROXY_IMAGE = "quay.io/redhat-gpte/troshka-vnc-proxy:latest"
 
 
 def build_vnc_proxy_pod(project_name, namespace):

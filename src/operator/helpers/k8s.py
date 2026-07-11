@@ -3,9 +3,9 @@ import json
 
 CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
-TOOLS_IMAGE = "quay.io/troshka/troshka-tools:latest"
-DNSMASQ_IMAGE = "quay.io/troshka/dnsmasq:latest"
-GATEWAY_IMAGE = "quay.io/troshka/gateway:latest"
+TOOLS_IMAGE = "quay.io/redhat-gpte/troshka-tools:latest"
+DNSMASQ_IMAGE = "quay.io/redhat-gpte/troshka-dnsmasq:latest"
+GATEWAY_IMAGE = "quay.io/redhat-gpte/troshka-gateway:latest"
 
 
 def owner_ref(cr):

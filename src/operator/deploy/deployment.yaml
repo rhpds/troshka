@@ -16,7 +16,7 @@ spec:
       serviceAccountName: troshka-operator
       containers:
         - name: operator
-          image: quay.io/troshka/operator:latest
+          image: quay.io/redhat-gpte/troshka-operator:latest
           command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces"]
           resources:
             requests:
