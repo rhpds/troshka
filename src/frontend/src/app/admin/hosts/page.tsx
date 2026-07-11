@@ -909,9 +909,11 @@ export default function AdminHostsPage() {
             </CardBody>
             {/* Row 2: Action buttons */}
             <CardBody style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", display: "flex", gap: 8, flexWrap: "wrap", paddingTop: 8, paddingBottom: 8 }}>
-              <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
-                {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
-              </Button>
+              {h.host_type !== "kubevirt-cluster" && (
+                <Button variant="secondary" onClick={() => showKeyPair(h.id)}>
+                  {showKeyFor === h.id ? "Hide Access Info" : "Host Access Info"}
+                </Button>
+              )}
               {(() => {
                 const isPowering = poweringHosts.has(h.id);
                 const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
@@ -924,7 +926,7 @@ export default function AdminHostsPage() {
                   </>
                 );
                 return (<>
-              {h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
+              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
                 <Button variant="secondary" onClick={() => {
                   if (!window.confirm(`Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`)) return;
                   installAgent(h.id);
@@ -1058,7 +1060,7 @@ export default function AdminHostsPage() {
                   </Button>}
                 </>
               )}
-              {h.state === "active" && (
+              {h.host_type !== "kubevirt-cluster" && h.state === "active" && (
                 <Button variant="secondary" onClick={() => {
                   const msg = h.used_vcpus > 0
                     ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`

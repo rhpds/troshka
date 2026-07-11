@@ -1228,9 +1228,26 @@ def install_operator(
         raise HTTPException(status_code=500, detail=f"Failed to install operator: {e}")
 
     from app.models.host import Host
+    from app.services.providers import get_provider_driver
+
+    drv = get_provider_driver(provider)
+    try:
+        capacity = drv.provision_host(
+            provider=provider,
+            host_id="capacity-check",
+            instance_type="kubevirt-cluster",
+            storage_size_gb=0,
+        )
+    except Exception:
+        capacity = {"total_vcpus": 0, "total_ram_mb": 0}
 
     host = db.query(Host).filter_by(provider_id=provider.id).first()
-    if not host:
+    if host:
+        host.total_vcpus = capacity.get("total_vcpus", 0)
+        host.total_ram_mb = capacity.get("total_ram_mb", 0)
+        host.agent_status = "connected"
+        db.commit()
+    else:
         import uuid as _uuid
 
         host = Host(
@@ -1241,8 +1258,8 @@ def install_operator(
             region=provider.default_region or "",
             state="active",
             host_type="kubevirt-cluster",
-            total_vcpus=0,
-            total_ram_mb=0,
+            total_vcpus=capacity.get("total_vcpus", 0),
+            total_ram_mb=capacity.get("total_ram_mb", 0),
             ip_address=provider.get_credentials()
             .get("api_url", "")
             .replace("https://", "")
