@@ -19,7 +19,7 @@ rules:
     resources: ["datavolumes"]
     verbs: ["*"]
   - apiGroups: ["k8s.cni.cncf.io"]
-    resources: ["net-attach-defs"]
+    resources: ["network-attachment-definitions"]
     verbs: ["*"]
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]

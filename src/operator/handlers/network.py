@@ -26,7 +26,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             group="k8s.cni.cncf.io",
             version="v1",
             namespace=namespace,
-            plural="net-attach-defs",
+            plural="network-attachment-definitions",
             body=nad,
         )
         logger.info(f"Created NAD {nad['metadata']['name']}")
