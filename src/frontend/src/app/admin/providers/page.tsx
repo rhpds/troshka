@@ -78,6 +78,7 @@ export default function AdminProvidersPage() {
   const [editAccessKey, setEditAccessKey] = useState("");
   const [editSecretKey, setEditSecretKey] = useState("");
   const [editEndpointUrl, setEditEndpointUrl] = useState("");
+  const [editCacheNamespace, setEditCacheNamespace] = useState("");
   const [apiUrl, setApiUrl] = useState("");
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
@@ -257,6 +258,7 @@ export default function AdminProvidersPage() {
       if (editAccessKey) body.api_url = editAccessKey;
       if (editSecretKey) body.token = editSecretKey;
       if (editRegion) body.namespace = editRegion;
+      if (editCacheNamespace) body.cache_namespace = editCacheNamespace;
     } else {
       if (editRegion) body.default_region = editRegion;
       if (editAccessKey) body.access_key_id = editAccessKey;
@@ -613,6 +615,12 @@ export default function AdminProvidersPage() {
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{p.type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder={p.type === "kubevirt" ? "troshka-operator" : "troshka"} />
                       </div>
+                      {p.type === "kubevirt" && (
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editCacheNamespace} onChange={(e) => setEditCacheNamespace(e.target.value)} placeholder="troshka-cache" />
+                        </div>
+                      )}
                     </>
                   ) : (
                     <>
