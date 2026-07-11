@@ -455,10 +455,85 @@ def delete_provider(
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
-    if provider.hosts:
+
+    if provider.type == "kubevirt":
+        from app.models.host import Host
+
+        try:
+            from app.services.providers.kubevirt import _get_k8s_clients
+
+            custom_api, core_api, api_client = _get_k8s_clients(provider)
+            creds = provider.get_credentials()
+            operator_ns = creds.get("namespace", "troshka-operator")
+            cache_ns = creds.get("cache_namespace", "troshka-cache")
+
+            from kubernetes import client as k8s_client
+
+            apps_api = k8s_client.AppsV1Api(api_client)
+
+            try:
+                apps_api.delete_namespaced_deployment(
+                    name="troshka-operator", namespace=operator_ns
+                )
+            except Exception:
+                pass
+            try:
+                core_api.delete_namespaced_service_account(
+                    name="troshka-operator", namespace=operator_ns
+                )
+            except Exception:
+                pass
+
+            ext_api = k8s_client.ApiextensionsV1Api(api_client)
+            for crd_name in [
+                "troshkaprojects.troshka.redhat.com",
+                "troshkanetworks.troshka.redhat.com",
+                "troshkavms.troshka.redhat.com",
+            ]:
+                try:
+                    ext_api.delete_custom_resource_definition(name=crd_name)
+                except Exception:
+                    pass
+
+            for ns in [operator_ns, cache_ns]:
+                try:
+                    core_api.delete_namespace(name=ns)
+                except Exception:
+                    pass
+
+            logger.info(
+                "Cleaned up kubevirt operator resources for provider %s",
+                provider_id[:8],
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to clean up kubevirt resources for %s: %s",
+                provider_id[:8],
+                e,
+            )
+
+        from app.models.project import Project
+
+        hosts = db.query(Host).filter_by(provider_id=provider.id).all()
+        host_ids = [h.id for h in hosts]
+        if host_ids:
+            projects = db.query(Project).filter(Project.host_id.in_(host_ids)).all()
+            for project in projects:
+                try:
+                    prefix = creds.get("project_prefix", "troshka-")
+                    proj_ns = f"{prefix}{project.id[:8]}"
+                    core_api.delete_namespace(name=proj_ns)
+                except Exception:
+                    pass
+                db.delete(project)
+
+        for host in hosts:
+            db.delete(host)
+    elif provider.hosts:
         raise HTTPException(
             status_code=409, detail="Provider has hosts — remove them first"
         )
+
     db.delete(provider)
     db.commit()
 

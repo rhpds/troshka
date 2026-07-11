@@ -1051,8 +1051,8 @@ export default function AdminProvidersPage() {
                         Clean
                       </Button>
                     )}
-                    <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.host_count > 0}>
-                      {p.host_count > 0 ? "Has Hosts" : "Delete"}
+                    <Button variant="danger" onClick={() => deleteProvider(p.id)} isDisabled={p.type !== "kubevirt" && p.host_count > 0}>
+                      {p.type !== "kubevirt" && p.host_count > 0 ? "Has Hosts" : "Delete"}
                     </Button>
               </CardBody>
             )}
