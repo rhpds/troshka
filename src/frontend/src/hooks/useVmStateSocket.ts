@@ -103,9 +103,13 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             if ("lifetime_expires_at" in msg) setLifetimeExpiresAt(msg.lifetime_expires_at ?? null);
             if ("auto_stopped" in msg) setAutoStopped(!!msg.auto_stopped);
             break;
-          case "deploy-progress":
-            setDeployProgress({ step: msg.step || "", detail: msg.detail || "", items: msg.items });
+          case "deploy-progress": {
+            const dp = msg.progress || msg;
+            if (dp.step || dp.detail) {
+              setDeployProgress({ step: dp.step || "", detail: dp.detail || "", items: dp.items });
+            }
             break;
+          }
           case "ocp-health":
             setOcpHealth({ phase: msg.phase, detail: msg.detail, items: msg.items });
             break;
