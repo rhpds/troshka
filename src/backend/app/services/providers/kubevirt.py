@@ -154,6 +154,15 @@ class KubeVirtDriver(ProviderDriver):
         try:
             nodes = core_api.list_node()
             for node in nodes.items:
+                labels = node.metadata.labels or {}
+                taints = node.spec.taints or []
+
+                is_worker = "node-role.kubernetes.io/worker" in labels
+                is_unschedulable = node.spec.unschedulable or False
+                has_noschedule = any(t.effect == "NoSchedule" for t in taints)
+                if not is_worker or is_unschedulable or has_noschedule:
+                    continue
+
                 alloc = node.status.allocatable or {}
                 cpu_str = alloc.get("cpu", "0")
                 mem_str = alloc.get("memory", "0")
