@@ -15,7 +15,6 @@ def owner_ref(cr):
         "name": cr["metadata"]["name"],
         "uid": cr["metadata"]["uid"],
         "controller": True,
-        "blockOwnerDeletion": True,
     }
 
 
