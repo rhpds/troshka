@@ -40,12 +40,7 @@ spec:
                 bootOrder:
                   type: array
                   items:
-                    type: object
-                    properties:
-                      type:
-                        type: string
-                      id:
-                        type: string
+                    x-kubernetes-preserve-unknown-fields: true
                 disks:
                   type: array
                   items:
