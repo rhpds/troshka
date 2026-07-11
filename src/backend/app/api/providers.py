@@ -54,6 +54,9 @@ class ProviderUpdate(BaseModel):
     security_group_id: str | None = None
     access_key_id: str | None = None
     secret_access_key: str | None = None
+    api_url: str | None = None
+    token: str | None = None
+    namespace: str | None = None
     state: str | None = None
 
 
@@ -211,6 +214,22 @@ def create_provider(
         }
         provider.azure_subscription_id = body.azure_subscription_id
         provider.azure_location = body.azure_location or body.default_region or None
+    elif body.type == "kubevirt":
+        if not body.api_url or not body.token:
+            raise HTTPException(
+                status_code=400,
+                detail="KubeVirt providers require api_url and token",
+            )
+        creds = {
+            "api_url": body.api_url,
+            "token": body.token,
+            "namespace": body.namespace or "troshka",
+            "verify_ssl": body.verify_ssl,
+        }
+        api_host = (
+            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+        )
+        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
     elif body.type in ("ec2", "s3", "s3_readonly"):
         creds = {
             "access_key_id": body.access_key_id,
@@ -290,7 +309,16 @@ def update_provider(
     if body.state is not None:
         provider.state = body.state
 
-    if body.access_key_id or body.secret_access_key:
+    if body.api_url or body.token or body.namespace:
+        creds = provider.get_credentials()
+        if body.api_url:
+            creds["api_url"] = body.api_url
+        if body.token:
+            creds["token"] = body.token
+        if body.namespace:
+            creds["namespace"] = body.namespace
+        provider.set_credentials(creds)
+    elif body.access_key_id or body.secret_access_key:
         creds = provider.get_credentials()
         if body.access_key_id:
             creds["access_key_id"] = body.access_key_id

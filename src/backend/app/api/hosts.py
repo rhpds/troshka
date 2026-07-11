@@ -348,6 +348,16 @@ def add_host(
             h.private_key = result.get("private_key")
             h.storage_size_gb = result.get("storage_size_gb", 500)
             h.max_eips = result.get("max_eips", 0)
+
+            # KubeVirt native: no SSH, no agent install — operator is deployed by provision_host
+            if provider_type == "kubevirt":
+                h.host_type = "kubevirt-cluster"
+                h.agent_status = "connected"
+                h.agent_token = prov.get_credentials().get("token", "")
+                s.commit()
+                logger.info("KubeVirt cluster host %s ready", host_id[:8])
+                return
+
             s.commit()
 
             ssh_host = result.get("_ssh_host") or result.get("public_ip")

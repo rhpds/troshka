@@ -64,6 +64,12 @@ from app.services.ws_pubsub import notify_project
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+def _get_k8s_clients_for_kubevirt(provider):
+    from app.services.providers.kubevirt import _get_k8s_clients
+
+    return _get_k8s_clients(provider)
+
+
 def _project_response_dict(project):
     result = {
         "id": project.id,
@@ -1205,6 +1211,31 @@ def start_vm(
 ):
     project, host = _get_project_and_host(project_id, user, db)
 
+    # KubeVirt native: patch VM running state via K8s API
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            kv_name = f"troshka-vm-{vm_id[:8]}"
+            namespace = f"troshka-{project_id[:8]}"
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=kv_name,
+                    body={"spec": {"running": True}},
+                )
+            except Exception as e:
+                raise HTTPException(500, f"Failed to start VM: {e}")
+        if project.state == "stopped":
+            project.state = "active"
+            db.commit()
+        return {"ok": True}
+
     if project.state in ("stopped", "starting"):
         import threading
 
@@ -1367,6 +1398,35 @@ def stop_vm(
     db: Session = Depends(get_db),
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    # KubeVirt native: patch VM running state via K8s API
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            kv_name = f"troshka-vm-{vm_id[:8]}"
+            namespace = f"troshka-{project_id[:8]}"
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=kv_name,
+                    body={"spec": {"running": False}},
+                )
+                notify_project(
+                    project_id,
+                    {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},
+                )
+                return {"action": "stop", "success": True}
+            except Exception as e:
+                logger.error("Failed to stop KubeVirt VM %s: %s", kv_name, e)
+                return {"action": "stop", "success": False}
+        return {"action": "stop", "success": False}
+
     dom = _domain_name(project_id, vm_id)
     try:
         job_id = start_job(host, "/vms/stop", {"domain_name": dom})
@@ -1446,6 +1506,22 @@ def get_vm_console(
     db: Session = Depends(get_db),
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    # KubeVirt native: VNC via proxy pod + KubeVirt subresource API
+    if host.host_type == "kubevirt-cluster":
+        kv_vm_name = f"troshka-vm-{vm_id[:8]}"
+        namespace = f"troshka-{project_id[:8]}"
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        console_domain = provider.console_base_domain if provider else ""
+        if not console_domain:
+            return {"error": "Console domain not configured"}
+        return {
+            "ws_url": f"wss://vnc-{namespace}.{console_domain}/{kv_vm_name}",
+            "kubevirt": True,
+        }
+
     dom = _domain_name(project_id, vm_id)
     vnc_port = troshkad_get_vnc_port(host, dom)
 
