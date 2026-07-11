@@ -219,7 +219,7 @@ export default function AdminProvidersPage() {
       } else if (data.bucket) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
       } else if (data.operator !== undefined) {
-        const nsInfo = data.namespaces ? `, ns: ${Object.entries(data.namespaces).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+        const nsInfo = data.namespaces ? `, ${Object.entries(data.namespaces).map(([k, v]) => `${k} namespace: ${v}`).join(", ")}` : "";
         const needsHost = data.operator === "not installed" || !data.crds_installed;
         const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}${nsInfo}`;
         setTestResult((prev) => ({ ...prev, [id]: needsHost ? `${msg}\n⚠ Add a host to deploy the operator and CRDs` : msg }));
