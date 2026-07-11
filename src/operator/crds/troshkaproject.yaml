@@ -1,0 +1,62 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: troshkaprojects.troshka.redhat.com
+spec:
+  group: troshka.redhat.com
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [projectId, topology, s3Config]
+              properties:
+                projectId:
+                  type: string
+                topology:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                s3Config:
+                  type: object
+                  properties:
+                    bucket:
+                      type: string
+                    endpoint:
+                      type: string
+                    region:
+                      type: string
+                    credentialsSecret:
+                      type: string
+                registryCredentials:
+                  type: object
+                  properties:
+                    secretRef:
+                      type: string
+                commonPassword:
+                  type: string
+                action:
+                  type: string
+                  enum: [deploy, destroy, capture]
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+  scope: Namespaced
+  names:
+    plural: troshkaprojects
+    singular: troshkaproject
+    kind: TroshkaProject
+    shortNames: [tp]

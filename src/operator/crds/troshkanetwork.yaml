@@ -1,0 +1,75 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: troshkanetworks.troshka.redhat.com
+spec:
+  group: troshka.redhat.com
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [networkId, cidr]
+              properties:
+                networkId:
+                  type: string
+                cidr:
+                  type: string
+                gateway:
+                  type: string
+                dhcpRange:
+                  type: string
+                networkType:
+                  type: string
+                  enum: [standard, external, bmc]
+                  default: standard
+                staticLeases:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      mac:
+                        type: string
+                      ip:
+                        type: string
+                      hostname:
+                        type: string
+                pxeConfig:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    libraryIsoId:
+                      type: string
+                    isoS3Path:
+                      type: string
+                dnsForwarders:
+                  type: array
+                  items:
+                    type: string
+                externalAccess:
+                  type: boolean
+                  default: false
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: CIDR
+          type: string
+          jsonPath: .spec.cidr
+  scope: Namespaced
+  names:
+    plural: troshkanetworks
+    singular: troshkanetwork
+    kind: TroshkaNetwork
+    shortNames: [tn]
