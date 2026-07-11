@@ -2908,7 +2908,7 @@ def redeploy_project(
     if reqs["vm_count"] == 0:
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
-    result = place_project(db, project)
+    result = place_project(db, project, host_id=project.host_id)
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
