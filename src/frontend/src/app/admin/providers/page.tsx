@@ -163,7 +163,7 @@ export default function AdminProvidersPage() {
         setError("Name, Tenant ID, Client ID, Client Secret, and Subscription ID are required");
         return;
       }
-    } else if (type === "ocpvirt") {
+    } else if (type === "ocpvirt" || type === "kubevirt") {
       if (!name.trim() || !apiUrl.trim() || !token.trim()) {
         setError("Name, API URL, and Token are required");
         return;
@@ -179,7 +179,7 @@ export default function AdminProvidersPage() {
       ? { name, type, default_region: region, gcp_project_id: gcpProjectId, service_account_json: serviceAccountJson }
       : type === "azure"
       ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
-      : type === "ocpvirt"
+      : (type === "ocpvirt" || type === "kubevirt")
       ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl }
       : {
           name, type, default_region: region,
@@ -230,7 +230,7 @@ export default function AdminProvidersPage() {
   const startEdit = (p: ProviderInfo) => {
     setEditId(p.id);
     setEditName(p.name);
-    setEditRegion(p.type === "ocpvirt" ? (p.default_region || "troshka") : (p.default_region || "us-east-1"));
+    setEditRegion((p.type === "ocpvirt" || p.type === "kubevirt") ? (p.default_region || "troshka") : (p.default_region || "us-east-1"));
     setEditAccessKey("");
     setEditSecretKey("");
     setEditEndpointUrl(p.endpoint_url || "");
@@ -241,7 +241,7 @@ export default function AdminProvidersPage() {
     const editProvider = providers.find((p) => p.id === editId);
     const body: Record<string, string> = {};
     if (editName) body.name = editName;
-    if (editProvider?.type === "ocpvirt") {
+    if (editProvider?.type === "ocpvirt" || editProvider?.type === "kubevirt") {
       if (editAccessKey) body.api_url = editAccessKey;
       if (editSecretKey) body.token = editSecretKey;
       if (editRegion) body.namespace = editRegion;
@@ -460,13 +460,14 @@ export default function AdminProvidersPage() {
                     }}>
                       <option value="ec2">AWS EC2</option>
                       <option value="ocpvirt">OCP Virtualization</option>
+                      <option value="kubevirt">KubeVirt Native</option>
                       <option value="s3">S3 Storage</option>
                       <option value="s3_readonly">S3 Read-Only</option>
                       <option value="gcp">GCP</option>
                       <option value="azure">Azure</option>
                     </select>
                   </div>
-                  {type !== "ocpvirt" && !useCustomEndpoint && (
+                  {type !== "ocpvirt" && type !== "kubevirt" && !useCustomEndpoint && (
                     <div style={{ flex: 1 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Default Region</label>
                       <select style={inputStyle} value={region} onChange={(e) => setRegion(e.target.value)}>
@@ -495,7 +496,7 @@ export default function AdminProvidersPage() {
                     )}
                   </>
                 )}
-                {type === "ocpvirt" ? (
+                {(type === "ocpvirt" || type === "kubevirt") ? (
                   <>
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
@@ -580,7 +581,7 @@ export default function AdminProvidersPage() {
                     <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Name</label>
                     <input style={inputStyle} value={editName} onChange={(e) => setEditName(e.target.value)} />
                   </div>
-                  {p.type === "ocpvirt" ? (
+                  {(p.type === "ocpvirt" || p.type === "kubevirt") ? (
                     <>
                       <div>
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>API URL</label>
@@ -646,8 +647,8 @@ export default function AdminProvidersPage() {
                       {p.has_credentials && <span style={{ fontSize: 11, color: "#4ade80" }}>🔑</span>}
                     </div>
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
-                      {p.type !== "ocpvirt" && p.default_region}
-                      {p.type !== "s3" && p.type !== "s3_readonly" && <span>{p.type !== "ocpvirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
+                      {p.type !== "ocpvirt" && p.type !== "kubevirt" && p.default_region}
+                      {p.type !== "s3" && p.type !== "s3_readonly" && <span>{p.type !== "ocpvirt" && p.type !== "kubevirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
                       {(p.type === "s3" || p.type === "s3_readonly") && <span> · {p.endpoint_url || "AWS S3"}</span>}
                       {p.type === "ec2" && (
                         p.default_image
@@ -685,7 +686,7 @@ export default function AdminProvidersPage() {
                         {testResult[p.id]}
                       </div>
                     )}
-                    {["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
+                    {["ec2", "gcp", "azure", "ocpvirt", "kubevirt"].includes(p.type) && p.type !== "s3" && (
                       <details style={{ marginTop: 12 }} onToggle={async (e) => {
                         if (!(e.target as HTMLDetailsElement).open) return;
                         if (imageOptions[p.id]?.length) return;
@@ -758,7 +759,7 @@ export default function AdminProvidersPage() {
                             return (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                {p.type !== "ocpvirt" && p.type !== "gcp" && p.type !== "azure" && (
+                                {p.type !== "ocpvirt" && p.type !== "kubevirt" && p.type !== "gcp" && p.type !== "azure" && (
                                   <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
                                     <option value="all">All</option>
                                     <option value="BYOS">BYOS</option>
@@ -850,12 +851,12 @@ export default function AdminProvidersPage() {
                         </CardBody>
                       </Card>
                     )}
-                    {p.console_configured && p.console_base_domain && p.type === "ocpvirt" && (
+                    {p.console_configured && p.console_base_domain && (p.type === "ocpvirt" || p.type === "kubevirt") && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)" }}>
                         Console Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
                       </div>
                     )}
-                    {p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && (
+                    {p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && p.type !== "kubevirt" && (
                       <details style={{ marginTop: 12 }}>
                         <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
                           Console DNS Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
