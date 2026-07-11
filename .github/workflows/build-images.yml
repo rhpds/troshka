@@ -148,10 +148,30 @@ jobs:
           podman push quay.io/redhat-gpte/troshka-tools:${{ steps.tags.outputs.sha_tag }}
           podman push quay.io/redhat-gpte/troshka-tools:latest
 
+      - name: Build and push sushy image
+        run: |
+          podman build \
+            -f src/operator/images/sushy/Dockerfile \
+            -t quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }} \
+            -t quay.io/redhat-gpte/troshka-sushy:latest \
+            src/operator/images/sushy/
+          podman push quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }}
+          podman push quay.io/redhat-gpte/troshka-sushy:latest
+
+      - name: Build and push vnc-proxy image
+        run: |
+          podman build \
+            -f src/operator/images/vnc-proxy/Dockerfile \
+            -t quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }} \
+            -t quay.io/redhat-gpte/troshka-vnc-proxy:latest \
+            src/operator/images/vnc-proxy/
+          podman push quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }}
+          podman push quay.io/redhat-gpte/troshka-vnc-proxy:latest
+
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          for img in troshka-operator troshka-dnsmasq troshka-gateway troshka-tools; do
+          for img in troshka-operator troshka-dnsmasq troshka-gateway troshka-tools troshka-sushy troshka-vnc-proxy; do
             podman tag \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.sha_tag }} \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.version_tag }}
