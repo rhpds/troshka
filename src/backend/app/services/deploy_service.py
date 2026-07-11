@@ -2117,9 +2117,16 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     cache_lines.append(line)
                 else:
                     clone_lines.append(line)
-            dv_lines = cache_lines + clone_lines
+            best_status = {}
+            for line in cache_lines + clone_lines:
+                label = line.split(":")[0].strip()
+                status = line.split(":", 1)[1].strip() if ":" in line else ""
+                prev = best_status.get(label, "")
+                if "downloading" in status or "done" in status or "cloning" in status:
+                    best_status[label] = status
+                elif not prev:
+                    best_status[label] = status
 
-            seen_labels = {l.split(":")[0] for l in dv_lines}
             for node in topology.get("nodes", []):
                 ndata3 = node.get("data", {})
                 if node.get("type") == "storageNode" and ndata3.get("source") in (
@@ -2127,8 +2134,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     "library",
                 ):
                     label = ndata3.get("label", ndata3.get("name", ""))[:24]
-                    if label and label not in seen_labels:
-                        dv_lines.append(f"{label}: waiting")
+                    if label and label not in best_status:
+                        best_status[label] = "waiting"
+
+            dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
         except Exception:
             pass
 
