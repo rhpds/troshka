@@ -104,7 +104,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             if ("auto_stopped" in msg) setAutoStopped(!!msg.auto_stopped);
             break;
           case "deploy-progress":
-            setDeployProgress(msg.progress || null);
+            setDeployProgress({ step: msg.step || "", detail: msg.detail || "", items: msg.items });
             break;
           case "ocp-health":
             setOcpHealth({ phase: msg.phase, detail: msg.detail, items: msg.items });
