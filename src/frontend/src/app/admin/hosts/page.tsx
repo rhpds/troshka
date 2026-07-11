@@ -887,8 +887,8 @@ export default function AdminHostsPage() {
                 {(() => { const si = storageInfo[h.id]; const optimizing = si && (h.storage_size_gb - Math.round(si.total_gb)) > Math.round(h.storage_size_gb * 0.05); return (
                 <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>Storage</div>
-                  <div>{si ? <><strong>{si.used_pct}%</strong> of {Math.round(si.total_gb)} GB</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb} GB</span>}</div>
-                  {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(si.free_gb)} GB free</div>}
+                  <div>{si ? <><strong>{si.used_pct}%</strong> of {si.total_gb > 900 ? `${(si.total_gb / 1024).toFixed(1)} TB` : `${Math.round(si.total_gb)} GB`}</> : <span style={{ opacity: 0.4 }}>{h.storage_size_gb > 900 ? `${(h.storage_size_gb / 1024).toFixed(1)} TB` : `${h.storage_size_gb} GB`}</span>}</div>
+                  {si && <div style={{ fontSize: 10, opacity: 0.4 }}>{si.free_gb > 900 ? `${(si.free_gb / 1024).toFixed(1)} TB` : `${Math.round(si.free_gb)} GB`} free</div>}
                   {optimizing && <div style={{ fontSize: 10, color: "#facc15" }}>Optimizing → {h.storage_size_gb} GB</div>}
                 </div>); })()}
                 <div style={{ textAlign: "center" }}>
