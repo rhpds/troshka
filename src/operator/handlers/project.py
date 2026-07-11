@@ -7,6 +7,8 @@ from helpers.topology import (
     extract_networks,
     extract_vms,
     build_static_leases,
+    resolve_vm_disks,
+    resolve_nic_networks,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         }
 
     vms = extract_vms(topology)
+    vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
+    nic_network_map = resolve_nic_networks(topology)
 
     patch.status["deployProgress"] = {
         "percent": 30,
@@ -217,34 +221,16 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     for i, vm in enumerate(vms):
         vm_name = f"vm-{vm['id'][:8]}"
 
-        disk_specs = []
-        for disk in vm.get("disks", []):
-            disk_spec = {
-                "id": disk.get("id", ""),
-                "sizeGb": disk.get("sizeGb", disk.get("size_gb", 20)),
-                "bus": disk.get("bus", "virtio"),
-            }
-            lib_item_id = disk.get(
-                "libraryItemId", disk.get("library_item_id", "")
-            )
-            if lib_item_id:
-                disk_spec["libraryImage"] = {
-                    "s3Path": f"library/{lib_item_id}.qcow2",
-                    "format": "qcow2",
-                }
-            elif disk.get("patternImage"):
-                disk_spec["patternImage"] = disk["patternImage"]
-            else:
-                disk_spec["blank"] = True
-            disk_specs.append(disk_spec)
+        disk_specs = vm_disks_map.get(vm["id"], [])
 
         nic_specs = []
         for nic in vm.get("nics", []):
+            nic_id = nic.get("id", "")
             nic_spec = {
-                "id": nic.get("id", ""),
+                "id": nic_id,
                 "mac": nic.get("mac", ""),
                 "model": nic.get("model", "virtio"),
-                "networkRef": "",
+                "networkRef": nic_network_map.get(nic_id, ""),
             }
             nic_specs.append(nic_spec)
 
@@ -273,8 +259,9 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 "bootOrder": vm.get("bootOrder", []),
             },
         }
-        if vm.get("cdrom") and vm["cdrom"].get("s3Path"):
-            vm_cr["spec"]["cdrom"] = vm["cdrom"]
+        cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")
+        if cdrom and cdrom.get("s3Path"):
+            vm_cr["spec"]["cdrom"] = cdrom
         if vm.get("guestfishCommands"):
             vm_cr["spec"]["guestfishCommands"] = vm["guestfishCommands"]
 

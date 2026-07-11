@@ -82,6 +82,122 @@ def extract_containers(topology):
     return containers
 
 
+def resolve_nic_networks(topology):
+    """Map NIC IDs to network node IDs by following edges from networkNode → vmNode."""
+    edges = topology.get("edges", [])
+    nodes = topology.get("nodes", [])
+
+    node_types = {}
+    for node in nodes:
+        data = node.get("data", {})
+        node_id = data.get("id", node.get("id", ""))
+        node_types[node_id] = node.get("type")
+
+    nic_to_network = {}
+
+    for edge in edges:
+        source = edge.get("source", "")
+        target = edge.get("target", "")
+        target_handle = edge.get("targetHandle", "")
+
+        if node_types.get(source) == "networkNode" and node_types.get(target) == "vmNode":
+            nic_id = ""
+            if "nic-" in target_handle:
+                parts = target_handle.split("nic-")
+                if len(parts) >= 2:
+                    nic_id = parts[1].rsplit("-", 1)[0]
+            if nic_id:
+                nic_to_network[nic_id] = f"net-{source[:8]}"
+        elif node_types.get(target) == "networkNode" and node_types.get(source) == "vmNode":
+            source_handle = edge.get("sourceHandle", "")
+            nic_id = ""
+            if "nic-" in source_handle:
+                parts = source_handle.split("nic-")
+                if len(parts) >= 2:
+                    nic_id = parts[1].rsplit("-", 1)[0]
+            if nic_id:
+                nic_to_network[nic_id] = f"net-{target[:8]}"
+
+    return nic_to_network
+
+
+def resolve_vm_disks(topology):
+    """Resolve disks for each VM by following edges from storageNode → vmNode."""
+    nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+
+    node_map = {}
+    for node in nodes:
+        data = node.get("data", {})
+        node_id = data.get("id", node.get("id", ""))
+        node_map[node_id] = {"type": node.get("type"), "data": data}
+
+    vm_disks = {}
+    vm_cdroms = {}
+
+    for edge in edges:
+        source = edge.get("source", "")
+        target = edge.get("target", "")
+
+        source_info = node_map.get(source, {})
+        target_info = node_map.get(target, {})
+
+        storage_id = None
+        vm_id = None
+        if source_info.get("type") == "storageNode" and target_info.get("type") == "vmNode":
+            storage_id = source
+            vm_id = target
+        elif target_info.get("type") == "storageNode" and source_info.get("type") == "vmNode":
+            storage_id = target
+            vm_id = source
+
+        if not storage_id or not vm_id:
+            continue
+
+        sd = node_map[storage_id]["data"]
+        fmt = sd.get("format", "qcow2")
+        size_gb = sd.get("size", sd.get("sizeGb", 20))
+        source_type = sd.get("source", "")
+
+        if fmt == "iso":
+            cdrom = {"libraryIsoId": sd.get("libraryItemId", ""), "s3Path": ""}
+            if cdrom["libraryIsoId"]:
+                cdrom["s3Path"] = f"library/{cdrom['libraryIsoId']}.iso"
+            vm_cdroms[vm_id] = cdrom
+            continue
+
+        disk = {
+            "id": storage_id,
+            "sizeGb": int(size_gb) if size_gb else 20,
+            "bus": "virtio",
+            "format": fmt,
+        }
+
+        if source_type == "pattern":
+            pattern_id = sd.get("patternId", "")
+            disk_id = sd.get("patternDiskId", "")
+            if pattern_id and disk_id:
+                disk["patternImage"] = {
+                    "s3Path": f"patterns/{pattern_id}/{disk_id}.qcow2",
+                    "format": "qcow2",
+                }
+        elif source_type == "library":
+            lib_id = sd.get("libraryItemId", "")
+            if lib_id:
+                disk["libraryImage"] = {
+                    "s3Path": f"library/{lib_id}.qcow2",
+                    "format": fmt,
+                }
+        else:
+            disk["blank"] = True
+
+        if vm_id not in vm_disks:
+            vm_disks[vm_id] = []
+        vm_disks[vm_id].append(disk)
+
+    return vm_disks, vm_cdroms
+
+
 def extract_start_order(topology):
     nodes = topology.get("nodes", [])
     for node in nodes:
