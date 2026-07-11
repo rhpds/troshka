@@ -1906,6 +1906,125 @@ def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
     wait_for_job(host, job_id, timeout=120)
 
 
+def _deploy_kubevirt_native(project_id, project, host, topology, db):
+    """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
+    import time
+
+    from app.models.provider import Provider
+    from app.services.providers import get_provider_driver
+    from app.services.s3_storage import _get_s3_config
+    from app.services.ws_pubsub import notify_project
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        project.state = "error"
+        project.deploy_error = "No provider found for kubevirt host"
+        db.commit()
+        return
+
+    driver = get_provider_driver(provider)
+
+    s3_config = _get_s3_config()
+    _update_deploy_progress(project_id, "networks", "creating operator resources")
+    notify_project(
+        project_id,
+        {
+            "type": "deploy-progress",
+            "step": "networks",
+            "detail": "creating operator resources",
+        },
+    )
+
+    try:
+        cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
+    except Exception as e:
+        project.state = "error"
+        project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
+        db.commit()
+        notify_project(
+            project_id,
+            {
+                "type": "project-state",
+                "state": "error",
+                "deploy_error": project.deploy_error,
+            },
+        )
+        return
+
+    logger.info(
+        "Deploy %s: created TroshkaProject CR %s, polling status",
+        project_id[:8],
+        cr_name,
+    )
+
+    for attempt in range(360):
+        if _project_deleted(project_id):
+            return
+        try:
+            status = driver.get_project_status(provider, project_id)
+        except Exception:
+            status = {}
+
+        phase = status.get("phase", "Pending")
+        progress = status.get("deployProgress", {})
+
+        if progress:
+            step = progress.get("stage", "")
+            detail = progress.get("detail", "")
+            percent = progress.get("percent", 0)
+            _deploy_progress[project_id] = {
+                "step": step,
+                "detail": detail,
+                "percent": percent,
+            }
+            notify_project(
+                project_id,
+                {
+                    "type": "deploy-progress",
+                    "step": step,
+                    "detail": detail,
+                    "percent": percent,
+                },
+            )
+
+        if phase == "Running":
+            project.state = "active"
+            project.deployed_topology = topology
+            project.deploy_error = None
+            db.commit()
+            _deploy_progress.pop(project_id, None)
+            notify_project(project_id, {"type": "project-state", "state": "active"})
+            logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
+            return
+
+        if phase == "Error":
+            error_msg = status.get("message", "Operator reported an error")
+            project.state = "error"
+            project.deploy_error = error_msg
+            db.commit()
+            _deploy_progress.pop(project_id, None)
+            notify_project(
+                project_id,
+                {"type": "project-state", "state": "error", "deploy_error": error_msg},
+            )
+            return
+
+        time.sleep(5)
+
+    project.state = "error"
+    project.deploy_error = "Deploy timed out waiting for operator (30 min)"
+    db.commit()
+    _deploy_progress.pop(project_id, None)
+    notify_project(
+        project_id,
+        {
+            "type": "project-state",
+            "state": "error",
+            "deploy_error": project.deploy_error,
+        },
+    )
+
+
 def deploy_project_async(
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
@@ -1985,6 +2104,11 @@ def deploy_project_async(
             project.vni_map = vni_map
             s.commit()
             logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
+
+        # KubeVirt native: delegate entire deploy to operator via CRDs
+        if host.host_type == "kubevirt-cluster":
+            _deploy_kubevirt_native(project_id, project, host, topology, s)
+            return
 
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
@@ -4234,6 +4358,18 @@ def destroy_project_sync(ctx: dict):
     try:
         host = s.query(Host).filter_by(id=ctx["host_id"]).first()
         if not host or not host.ip_address:
+            return
+
+        # KubeVirt native: delegate destroy to operator
+        if host.host_type == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.providers import get_provider_driver
+
+            provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider:
+                driver = get_provider_driver(provider)
+                driver.destroy_project(provider, project_id)
+                logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
             return
 
         vni_map = ctx.get("vni_map", {})

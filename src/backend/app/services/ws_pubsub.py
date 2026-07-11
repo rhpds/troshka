@@ -163,7 +163,24 @@ def _poll_active_projects():
             ):
                 continue
             host = db.query(Host).filter_by(id=project.host_id).first()
-            if not host or not host.ip_address or host.agent_status != "connected":
+            if not host or not host.ip_address:
+                continue
+            if host.host_type == "kubevirt-cluster":
+                # KubeVirt native: read VM states from operator CR status
+                from app.models.provider import Provider
+                from app.services.providers import get_provider_driver
+
+                provider = db.query(Provider).filter_by(id=host.provider_id).first()
+                if provider:
+                    try:
+                        driver = get_provider_driver(provider)
+                        vm_states = driver.get_vm_states(provider, project.id)
+                        if vm_states:
+                            host_batch_states[project.host_id] = vm_states
+                    except Exception:
+                        pass
+                continue
+            if host.agent_status != "connected":
                 continue
             hosts_polled[project.host_id] = host
             try:

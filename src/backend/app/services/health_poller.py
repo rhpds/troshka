@@ -131,6 +131,27 @@ def _poll_hosts():
         _checked_pools = set()
         now = time.time()
         for host in hosts:
+            # KubeVirt native: check K8s API reachability instead of troshkad
+            if host.host_type == "kubevirt-cluster":
+                try:
+                    from app.models.provider import Provider
+                    from app.services.providers import get_provider_driver
+
+                    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+                    if provider:
+                        driver = get_provider_driver(provider)
+                        status = driver.get_host_status(provider, host.instance_id)
+                        if status:
+                            host.agent_status = "connected"
+                            host.last_health_at = datetime.now(UTC)
+                        else:
+                            host.agent_status = "disconnected"
+                    db.commit()
+                except Exception:
+                    host.agent_status = "disconnected"
+                    db.commit()
+                continue
+
             if not host.agent_cert_fingerprint:
                 continue
             skip_ts = _skip_until.get(host.id)
