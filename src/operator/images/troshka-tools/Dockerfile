@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM quay.io/fedora/fedora:41
 
 RUN dnf install -y \
     qemu-img \
@@ -7,8 +7,7 @@ RUN dnf install -y \
     isomd5sum \
     python3 \
     python3-pip \
+    awscli \
     && dnf clean all
-
-RUN pip3 install awscli
 
 CMD ["sleep", "infinity"]
