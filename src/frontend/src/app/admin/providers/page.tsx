@@ -639,7 +639,7 @@ export default function AdminProvidersPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <strong>{p.name}</strong>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.type === "ec2" ? "rgba(251,146,60,0.15)" : p.type === "s3" ? "rgba(74,222,128,0.15)" : p.type === "gcp" ? "rgba(96,165,250,0.15)" : p.type === "azure" ? "rgba(34,211,238,0.15)" : "rgba(108,99,255,0.15)", color: p.type === "ec2" ? "#fb923c" : p.type === "s3" ? "#4ade80" : p.type === "gcp" ? "#60a5fa" : p.type === "azure" ? "#22d3ee" : "#a78bfa" }}>
-                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "s3_readonly" ? "S3 Read-Only" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : "OCP Virt"}
+                        {p.type === "ec2" ? "AWS EC2" : p.type === "s3" ? "S3 Storage" : p.type === "s3_readonly" ? "S3 Read-Only" : p.type === "gcp" ? "GCP" : p.type === "azure" ? "Azure" : p.type === "kubevirt" ? "KubeVirt" : "OCP Virt"}
                       </span>
                       <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: p.state === "active" ? "rgba(74,222,128,0.15)" : "rgba(148,163,184,0.15)", color: p.state === "active" ? "#4ade80" : "#94a3b8" }}>
                         {p.state}
@@ -686,7 +686,7 @@ export default function AdminProvidersPage() {
                         {testResult[p.id]}
                       </div>
                     )}
-                    {["ec2", "gcp", "azure", "ocpvirt", "kubevirt"].includes(p.type) && p.type !== "s3" && (
+                    {["ec2", "gcp", "azure", "ocpvirt"].includes(p.type) && p.type !== "s3" && (
                       <details style={{ marginTop: 12 }} onToggle={async (e) => {
                         if (!(e.target as HTMLDetailsElement).open) return;
                         if (imageOptions[p.id]?.length) return;
