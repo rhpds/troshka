@@ -2124,34 +2124,30 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         dv_detail = "\n".join(dv_lines) if dv_lines else ""
 
         last = _deploy_progress.get(project_id, {})
-        step = progress.get("stage", "") if progress else ""
-        detail = (
-            dv_detail
-            or last.get("detail", "")
-            or (progress.get("detail", "") if progress else "")
-        )
-        if dv_lines or last.get("step") == "images":
-            step = "images"
-        elif not step:
-            step = "networks"
+        step = "images" if dv_lines else (last.get("step", "") or "deploying")
+        detail = dv_detail or last.get("detail", "")
         percent = progress.get("percent", 0) if progress else 0
+
+        if not detail and not dv_lines:
+            continue
 
         new_progress = {
             "step": step,
             "detail": detail,
             "percent": percent,
         }
-        if new_progress != last:
-            _deploy_progress[project_id] = new_progress
-            notify_project(
-                project_id,
-                {
-                    "type": "deploy-progress",
-                    "step": step,
-                    "detail": detail,
-                    "percent": percent,
-                },
-            )
+        if new_progress == last:
+            continue
+        _deploy_progress[project_id] = new_progress
+        notify_project(
+            project_id,
+            {
+                "type": "deploy-progress",
+                "step": step,
+                "detail": detail,
+                "percent": percent,
+            },
+        )
 
         if phase == "Running":
             project.state = "active"
