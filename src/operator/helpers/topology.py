@@ -82,6 +82,21 @@ def extract_containers(topology):
     return containers
 
 
+def _extract_nic_id(handle):
+    """Extract NIC ID from edge handle like 'nic-nic-UUID-direction'."""
+    if not handle or "nic-" not in handle:
+        return ""
+    for suffix in ("-top", "-bottom", "-left", "-right"):
+        if handle.endswith(suffix):
+            handle = handle[: -len(suffix)]
+            break
+    if handle.startswith("nic-"):
+        handle = handle[4:]
+    if handle.startswith("nic-"):
+        return handle
+    return f"nic-{handle}" if handle else ""
+
+
 def resolve_nic_networks(topology):
     """Map NIC IDs to network node IDs by following edges from networkNode → vmNode."""
     edges = topology.get("edges", [])
@@ -101,20 +116,12 @@ def resolve_nic_networks(topology):
         target_handle = edge.get("targetHandle", "")
 
         if node_types.get(source) == "networkNode" and node_types.get(target) == "vmNode":
-            nic_id = ""
-            if "nic-" in target_handle:
-                parts = target_handle.split("nic-")
-                if len(parts) >= 2:
-                    nic_id = parts[1].rsplit("-", 1)[0]
+            nic_id = _extract_nic_id(target_handle)
             if nic_id:
                 nic_to_network[nic_id] = f"net-{source[:8]}"
         elif node_types.get(target) == "networkNode" and node_types.get(source) == "vmNode":
             source_handle = edge.get("sourceHandle", "")
-            nic_id = ""
-            if "nic-" in source_handle:
-                parts = source_handle.split("nic-")
-                if len(parts) >= 2:
-                    nic_id = parts[1].rsplit("-", 1)[0]
+            nic_id = _extract_nic_id(source_handle)
             if nic_id:
                 nic_to_network[nic_id] = f"net-{target[:8]}"
 
