@@ -212,8 +212,81 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
     nic_network_map = resolve_nic_networks(topology)
 
+    all_disks = []
+    for vm in vms:
+        all_disks.extend(vm_disks_map.get(vm["id"], []))
+    for cdrom in vm_cdroms_map.values():
+        if cdrom and cdrom.get("s3Path"):
+            all_disks.append({"libraryImage": cdrom})
+
+    if all_disks:
+        from helpers.kubevirt import build_datavolume_from_s3, CACHE_NAMESPACE
+        from helpers.k8s import golden_pvc_name
+
+        s3_config = spec.get("s3Config", {})
+        core_api = client.CoreV1Api()
+
+        try:
+            core_api.create_namespace(
+                body=client.V1Namespace(
+                    metadata=client.V1ObjectMeta(
+                        name=CACHE_NAMESPACE,
+                        labels={"app": "troshka-cache"},
+                    )
+                )
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
+        patch.status["deployProgress"] = {
+            "percent": 30,
+            "stage": "Downloading images",
+            "detail": f"0/{len(all_disks)} disks",
+        }
+
+        for disk in all_disks:
+            s3_path = None
+            presigned_url = ""
+            if disk.get("libraryImage", {}).get("s3Path"):
+                s3_path = disk["libraryImage"]["s3Path"]
+                presigned_url = disk["libraryImage"].get("presignedUrl", "")
+            elif disk.get("patternImage", {}).get("s3Path"):
+                s3_path = disk["patternImage"]["s3Path"]
+                presigned_url = disk["patternImage"].get("presignedUrl", "")
+            if not s3_path:
+                continue
+
+            pvc_name = golden_pvc_name(s3_path)
+            try:
+                core_api.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=CACHE_NAMESPACE
+                )
+                continue
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    raise
+
+            size_gb = disk.get("sizeGb", 20)
+            dv = build_datavolume_from_s3(
+                pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config,
+                presigned_url=presigned_url,
+            )
+            try:
+                custom_api.create_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace=CACHE_NAMESPACE,
+                    plural="datavolumes",
+                    body=dv,
+                )
+                logger.info(f"Pre-created golden PVC {pvc_name} for parallel download")
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+
     patch.status["deployProgress"] = {
-        "percent": 30,
+        "percent": 40,
         "stage": "Creating VMs",
         "detail": f"0/{len(vms)} VMs",
     }
