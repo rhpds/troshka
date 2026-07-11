@@ -33,6 +33,7 @@ class ProviderCreate(BaseModel):
     verify_ssl: bool = False
     iso_pvc: str | None = None
     cache_namespace: str = ""
+    project_prefix: str = ""
 
     # GCP fields
     gcp_project_id: str = ""
@@ -59,6 +60,7 @@ class ProviderUpdate(BaseModel):
     token: str | None = None
     namespace: str | None = None
     cache_namespace: str | None = None
+    project_prefix: str | None = None
     state: str | None = None
 
 
@@ -230,6 +232,7 @@ def create_provider(
             "namespace": op_ns,
             "verify_ssl": body.verify_ssl,
             "cache_namespace": body.cache_namespace or "troshka-cache",
+            "project_prefix": body.project_prefix or "troshka-",
         }
         provider.default_region = op_ns
         api_host = (
@@ -402,6 +405,8 @@ def update_provider(
                 provider.default_region = body.namespace
         if body.cache_namespace:
             creds["cache_namespace"] = body.cache_namespace
+        if body.project_prefix:
+            creds["project_prefix"] = body.project_prefix
         provider.set_credentials(creds)
     elif body.access_key_id or body.secret_access_key:
         creds = provider.get_credentials()

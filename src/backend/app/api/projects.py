@@ -70,6 +70,12 @@ def _get_k8s_clients_for_kubevirt(provider):
     return _get_k8s_clients(provider)
 
 
+def _kubevirt_project_ns(provider, project_id):
+    from app.services.providers.kubevirt import _project_ns
+
+    return _project_ns(provider, project_id)
+
+
 def _project_response_dict(project):
     result = {
         "id": project.id,
@@ -1219,7 +1225,7 @@ def start_vm(
         if provider:
             custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
             kv_name = f"troshka-vm-{vm_id[:8]}"
-            namespace = f"troshka-{project_id[:8]}"
+            namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.patch_namespaced_custom_object(
                     group="kubevirt.io",
@@ -1407,7 +1413,7 @@ def stop_vm(
         if provider:
             custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
             kv_name = f"troshka-vm-{vm_id[:8]}"
-            namespace = f"troshka-{project_id[:8]}"
+            namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.patch_namespaced_custom_object(
                     group="kubevirt.io",
@@ -1510,10 +1516,10 @@ def get_vm_console(
     # KubeVirt native: VNC via proxy pod + KubeVirt subresource API
     if host.host_type == "kubevirt-cluster":
         kv_vm_name = f"troshka-vm-{vm_id[:8]}"
-        namespace = f"troshka-{project_id[:8]}"
         from app.models.provider import Provider
 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        namespace = _kubevirt_project_ns(provider, project_id) if provider else ""
         console_domain = provider.console_base_domain if provider else ""
         if not console_domain:
             return {"error": "Console domain not configured"}

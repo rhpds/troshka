@@ -16,6 +16,12 @@ OPERATOR_DIR = os.path.join(
 )
 
 
+def _project_ns(provider, project_id):
+    creds = provider.get_credentials()
+    prefix = creds.get("project_prefix", "troshka-")
+    return f"{prefix}{project_id[:8]}"
+
+
 def _get_k8s_clients(provider):
     from kubernetes import client
 
@@ -395,7 +401,7 @@ class KubeVirtDriver(ProviderDriver):
     ):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
-        namespace = f"troshka-{project_id[:8]}"
+        namespace = _project_ns(provider, project_id)
         tgt_port = target_port or port
 
         svc_name = f"rt-{vm_name}-{port}"[:63]
@@ -467,7 +473,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def delete_route_access(self, provider, project_id, namespace=None):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        ns = namespace or f"troshka-{project_id[:8]}"
+        ns = namespace or _project_ns(provider, project_id)
         label = f"troshka-project={project_id[:8]}"
         try:
             svcs = core_api.list_namespaced_service(namespace=ns, label_selector=label)
@@ -496,7 +502,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        namespace = f"troshka-{project_id[:8]}"
+        namespace = _project_ns(provider, project_id)
 
         from kubernetes import client as k8s_client
 
@@ -561,7 +567,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def destroy_project(self, provider, project_id):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        namespace = f"troshka-{project_id[:8]}"
+        namespace = _project_ns(provider, project_id)
         try:
             custom_api.delete_namespaced_custom_object(
                 group=CRD_GROUP,
@@ -579,7 +585,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def get_project_status(self, provider, project_id):
         custom_api, _ = _get_k8s_clients(provider)
-        namespace = f"troshka-{project_id[:8]}"
+        namespace = _project_ns(provider, project_id)
         try:
             cr = custom_api.get_namespaced_custom_object(
                 group=CRD_GROUP,

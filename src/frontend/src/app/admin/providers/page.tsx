@@ -79,10 +79,12 @@ export default function AdminProvidersPage() {
   const [editSecretKey, setEditSecretKey] = useState("");
   const [editEndpointUrl, setEditEndpointUrl] = useState("");
   const [editCacheNamespace, setEditCacheNamespace] = useState("");
+  const [editProjectPrefix, setEditProjectPrefix] = useState("");
   const [apiUrl, setApiUrl] = useState("");
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
   const [cacheNamespace, setCacheNamespace] = useState("");
+  const [projectPrefix, setProjectPrefix] = useState("");
   const [verifySsl, setVerifySsl] = useState(true);
   // GCP fields
   const [gcpProjectId, setGcpProjectId] = useState("");
@@ -182,7 +184,7 @@ export default function AdminProvidersPage() {
       : type === "azure"
       ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
       : (type === "ocpvirt" || type === "kubevirt")
-      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl, ...(type === "kubevirt" && cacheNamespace ? { cache_namespace: cacheNamespace } : {}) }
+      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl, ...(type === "kubevirt" ? { ...(cacheNamespace ? { cache_namespace: cacheNamespace } : {}), ...(projectPrefix ? { project_prefix: projectPrefix } : {}) } : {}) }
       : {
           name, type, default_region: region,
           access_key_id: accessKey, secret_access_key: secretKey,
@@ -259,6 +261,7 @@ export default function AdminProvidersPage() {
       if (editSecretKey) body.token = editSecretKey;
       if (editRegion) body.namespace = editRegion;
       if (editCacheNamespace) body.cache_namespace = editCacheNamespace;
+      if (editProjectPrefix) body.project_prefix = editProjectPrefix;
     } else {
       if (editRegion) body.default_region = editRegion;
       if (editAccessKey) body.access_key_id = editAccessKey;
@@ -525,10 +528,16 @@ export default function AdminProvidersPage() {
                       <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder={type === "kubevirt" ? "troshka-operator" : "troshka"} />
                     </div>
                     {type === "kubevirt" && (
-                      <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={cacheNamespace} onChange={(e) => setCacheNamespace(e.target.value)} placeholder="troshka-cache" />
-                      </div>
+                      <>
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={cacheNamespace} onChange={(e) => setCacheNamespace(e.target.value)} placeholder="troshka-cache" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Namespace Prefix</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={projectPrefix} onChange={(e) => setProjectPrefix(e.target.value)} placeholder="troshka-" />
+                        </div>
+                      </>
                     )}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
@@ -616,10 +625,16 @@ export default function AdminProvidersPage() {
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder={p.type === "kubevirt" ? "troshka-operator" : "troshka"} />
                       </div>
                       {p.type === "kubevirt" && (
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editCacheNamespace} onChange={(e) => setEditCacheNamespace(e.target.value)} placeholder="troshka-cache" />
-                        </div>
+                        <>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editCacheNamespace} onChange={(e) => setEditCacheNamespace(e.target.value)} placeholder="troshka-cache" />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Project Namespace Prefix</label>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editProjectPrefix} onChange={(e) => setEditProjectPrefix(e.target.value)} placeholder="troshka-" />
+                          </div>
+                        </>
                       )}
                     </>
                   ) : (
