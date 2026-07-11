@@ -170,11 +170,12 @@ def create_provider(
         creds = {
             "api_url": body.api_url,
             "token": body.token,
-            "namespace": body.namespace,
+            "namespace": body.namespace or "troshka",
             "verify_ssl": body.verify_ssl,
         }
         if body.iso_pvc is not None:
             creds["iso_pvc"] = body.iso_pvc
+        provider.default_region = body.namespace or "troshka"
         api_host = (
             body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
         )
@@ -222,13 +223,15 @@ def create_provider(
                 status_code=400,
                 detail="KubeVirt providers require api_url and token",
             )
+        op_ns = body.namespace or "troshka-operator"
         creds = {
             "api_url": body.api_url,
             "token": body.token,
-            "namespace": body.namespace or "troshka-operator",
+            "namespace": op_ns,
             "verify_ssl": body.verify_ssl,
             "cache_namespace": body.cache_namespace or "troshka-cache",
         }
+        provider.default_region = op_ns
         api_host = (
             body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
         )
@@ -320,6 +323,8 @@ def update_provider(
             creds["token"] = body.token
         if body.namespace:
             creds["namespace"] = body.namespace
+            if provider.type in ("ocpvirt", "kubevirt"):
+                provider.default_region = body.namespace
         if body.cache_namespace:
             creds["cache_namespace"] = body.cache_namespace
         provider.set_credentials(creds)
