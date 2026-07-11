@@ -189,9 +189,9 @@ export default function ProjectCanvasPage() {
     if (ws.autoStopped !== undefined) setAutoStopped(ws.autoStopped);
   }, [ws.autoStopExpiresAt, ws.lifetimeExpiresAt, ws.autoStopped]);
 
-  // WebSocket → deploy progress
+  // WebSocket → deploy progress (only update, never clear during deploy)
   useEffect(() => {
-    setDeployProgress(ws.deployProgress);
+    if (ws.deployProgress) setDeployProgress(ws.deployProgress);
   }, [ws.deployProgress]);
 
   // WebSocket → topology update from another session
