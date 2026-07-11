@@ -2076,9 +2076,14 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         except Exception:
             pass
 
+        last = _deploy_progress.get(project_id, {})
         step = progress.get("stage", "") if progress else ""
-        detail = dv_detail or (progress.get("detail", "") if progress else "")
-        if not step and dv_detail:
+        detail = (
+            dv_detail
+            or last.get("detail", "")
+            or (progress.get("detail", "") if progress else "")
+        )
+        if dv_detail or last.get("step") == "images":
             step = "images"
         elif not step:
             step = "networks"
