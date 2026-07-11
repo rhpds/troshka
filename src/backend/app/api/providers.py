@@ -1320,6 +1320,7 @@ def install_operator(
     if host:
         host.total_vcpus = capacity.get("total_vcpus", 0)
         host.total_ram_mb = capacity.get("total_ram_mb", 0)
+        host.storage_size_gb = capacity.get("storage_size_gb", 0)
         host.agent_status = "connected"
         db.commit()
     else:
@@ -1341,7 +1342,7 @@ def install_operator(
             .split(":")[0],
             agent_status="connected",
             agent_token=provider.get_credentials().get("token", ""),
-            storage_size_gb=0,
+            storage_size_gb=capacity.get("storage_size_gb", 0),
             max_eips=0,
         )
         db.add(host)
