@@ -513,7 +513,7 @@ export default function AdminHostsPage() {
                 )}
                 {!newProviderId ? null : selectedProvider?.type === "kubevirt" ? (
                   <div style={{ fontSize: 13, opacity: 0.7, padding: "8px 0" }}>
-                    Adding a host will deploy the Troshka operator and CRDs to the cluster and register it as a virtual host.
+                    Adding a host will deploy the Troshka operator and CRDs to the cluster and register it as a host.
                   </div>
                 ) : selectedProvider?.type === "ocpvirt" ? (
                   <>
