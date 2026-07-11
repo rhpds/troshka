@@ -185,9 +185,9 @@ class KubeVirtDriver(ProviderDriver):
                 label_selector="app=rook-ceph-tools",
             )
             if toolbox_pods.items:
-                from kubernetes.stream import stream
+                from kubernetes.stream import stream as k8s_stream
 
-                resp = stream(
+                resp = k8s_stream(
                     core_api.connect_get_namespaced_pod_exec,
                     toolbox_pods.items[0].metadata.name,
                     "openshift-storage",
@@ -196,10 +196,20 @@ class KubeVirtDriver(ProviderDriver):
                     stdout=True,
                     stdin=False,
                     tty=False,
+                    _preload_content=False,
                 )
+                stdout = ""
+                while resp.is_open():
+                    resp.update(timeout=10)
+                    if resp.peek_stdout():
+                        stdout += resp.read_stdout()
+                    if resp.peek_stderr():
+                        resp.read_stderr()
+                resp.close()
+
                 import json
 
-                ceph_df = json.loads(resp)
+                ceph_df = json.loads(stdout)
                 stats = ceph_df.get("stats", {})
                 total_bytes = stats.get("total_bytes", 0)
                 storage_gb = int(total_bytes / (1024**3))

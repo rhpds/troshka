@@ -939,12 +939,12 @@ export default function AdminHostsPage() {
                   Installing...
                 </Button>
               )}
-              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && h.host_type !== "pattern_buffer" && (
+              {h.state === "active" && h.agent_status === "connected" && h.storage_pool_id && h.host_type !== "pattern_buffer" && h.host_type !== "kubevirt-cluster" && (
                 <Button variant="secondary" isDisabled={hostBusy} onClick={() => handleEvacuate(h.id)}>
                   Evacuate
                 </Button>
               )}
-              {h.state === "active" && h.agent_status === "connected" && (
+              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "kubevirt-cluster" && (
                 <>
                   {expectedVersion && h.agent_version && h.agent_version !== expectedVersion && <Button variant="primary"
                           isLoading={updatingHosts.has(h.id)} isDisabled={hostBusy} onClick={async (e) => {
@@ -1096,7 +1096,7 @@ export default function AdminHostsPage() {
                 </Button>
               )}
               </>); })()}
-              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && !isOcpVirtHost(h) && (
+              {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.host_type !== "kubevirt-cluster" && !isOcpVirtHost(h) && (
                 <>
                   <span style={{ borderLeft: "1px solid var(--pf-t--global--border--color--default)", height: 24, margin: "0 4px" }} />
                   <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
