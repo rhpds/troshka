@@ -223,7 +223,7 @@ export default function AdminHostsPage() {
   const instanceTypes = instanceTypesByProvider[selectedProvider?.type || "ec2"] || instanceTypesByProvider.ec2;
   const selectedProviderHasImage = selectedProvider ? !!selectedProvider.default_image : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
-  const selectedProviderReady = selectedProvider?.type === "ocpvirt" || selectedProvider?.type === "gcp" || selectedProvider?.type === "azure" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
+  const selectedProviderReady = selectedProvider?.type === "ocpvirt" || selectedProvider?.type === "gcp" || selectedProvider?.type === "azure" || selectedProvider?.type === "kubevirt" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
   const filteredHosts = hosts.filter((h) => {
