@@ -2118,6 +2118,17 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 else:
                     clone_lines.append(line)
             dv_lines = cache_lines + clone_lines
+
+            seen_labels = {l.split(":")[0] for l in dv_lines}
+            for node in topology.get("nodes", []):
+                ndata3 = node.get("data", {})
+                if node.get("type") == "storageNode" and ndata3.get("source") in (
+                    "pattern",
+                    "library",
+                ):
+                    label = ndata3.get("label", ndata3.get("name", ""))[:24]
+                    if label and label not in seen_labels:
+                        dv_lines.append(f"{label}: waiting")
         except Exception:
             pass
 
