@@ -2045,12 +2045,25 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         phase = status.get("phase", "Pending")
         progress = status.get("deployProgress", {})
 
-        dv_detail = ""
+        dv_lines = []
         try:
             from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+            import hashlib
+
+            golden_name_map = {}
+            for node in topology.get("nodes", []):
+                ndata = node.get("data", {})
+                if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
+                    h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[
+                        :16
+                    ]
+                    golden_name_map[f"golden-{h}"] = ndata.get(
+                        "label", ndata.get("name", "")
+                    )
 
             custom_api, _, _ = _get_k8s_clients(provider)
             proj_ns = _project_ns(provider, project_id)
+            all_dvs = []
             for ns in ["troshka-cache", proj_ns]:
                 try:
                     dvs = custom_api.list_namespaced_custom_object(
@@ -2059,22 +2072,27 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                         namespace=ns,
                         plural="datavolumes",
                     )
-                    for dv in dvs.get("items", []):
-                        dv_phase = dv.get("status", {}).get("phase", "")
-                        dv_progress = dv.get("status", {}).get("progress", "")
-                        dv_name = dv["metadata"]["name"]
-                        if dv_phase == "ImportInProgress" and dv_progress != "N/A":
-                            dv_detail = f"downloading {dv_name[:20]}... {dv_progress}"
-                            break
-                        elif dv_phase == "CloneInProgress":
-                            dv_detail = f"cloning {dv_name[:20]}..."
-                            break
+                    all_dvs.extend(dvs.get("items", []))
                 except Exception:
                     pass
-                if dv_detail:
-                    break
+            for dv in all_dvs:
+                dv_phase = dv.get("status", {}).get("phase", "")
+                dv_progress = dv.get("status", {}).get("progress", "N/A")
+                raw_name = dv["metadata"]["name"]
+                dv_name = golden_name_map.get(raw_name, raw_name)[:24]
+                if dv_phase == "Succeeded":
+                    dv_lines.append(f"{dv_name}: done")
+                elif dv_phase == "ImportInProgress":
+                    pct = dv_progress if dv_progress != "N/A" else "starting"
+                    dv_lines.append(f"{dv_name}: {pct}")
+                elif dv_phase == "CloneInProgress" or dv_phase == "CloneScheduled":
+                    dv_lines.append(f"{dv_name}: cloning")
+                elif dv_phase:
+                    dv_lines.append(f"{dv_name}: {dv_phase.lower()}")
         except Exception:
             pass
+
+        dv_detail = " | ".join(dv_lines) if dv_lines else ""
 
         last = _deploy_progress.get(project_id, {})
         step = progress.get("stage", "") if progress else ""
@@ -2083,7 +2101,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             or last.get("detail", "")
             or (progress.get("detail", "") if progress else "")
         )
-        if dv_detail or last.get("step") == "images":
+        if dv_lines or last.get("step") == "images":
             step = "images"
         elif not step:
             step = "networks"
