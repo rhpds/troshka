@@ -20,6 +20,39 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     api = client.CoreV1Api()
     custom_api = client.CustomObjectsApi()
 
+    try:
+        api.create_namespaced_service_account(
+            namespace=namespace,
+            body=client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(name="troshka-network"),
+            ),
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    try:
+        scc = custom_api.get_cluster_custom_object(
+            group="security.openshift.io",
+            version="v1",
+            plural="securitycontextconstraints",
+            name="troshka-network-pods",
+        )
+        sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
+        users = scc.get("users", []) or []
+        if sa_ref not in users:
+            users.append(sa_ref)
+            custom_api.patch_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-network-pods",
+                body={"users": users},
+            )
+            logger.info(f"Added {sa_ref} to troshka-network-pods SCC")
+    except Exception as e:
+        logger.warning(f"Could not patch SCC for {namespace}: {e}")
+
     nad = build_nad(body)
     try:
         custom_api.create_namespaced_custom_object(

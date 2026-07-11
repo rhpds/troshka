@@ -180,6 +180,8 @@ def resolve_vm_disks(topology):
             "format": fmt,
         }
 
+        presigned_url = sd.get("presignedUrl", "")
+
         if source_type == "pattern":
             pattern_id = sd.get("patternId", "")
             disk_id = sd.get("patternDiskId", "")
@@ -188,13 +190,17 @@ def resolve_vm_disks(topology):
                     "s3Path": f"patterns/{pattern_id}/{disk_id}.qcow2",
                     "format": "qcow2",
                 }
+                if presigned_url:
+                    disk["patternImage"]["presignedUrl"] = presigned_url
         elif source_type == "library":
             lib_id = sd.get("libraryItemId", "")
             if lib_id:
                 disk["libraryImage"] = {
-                    "s3Path": f"library/{lib_id}.qcow2",
+                    "s3Path": f"library/{lib_id}.{fmt}",
                     "format": fmt,
                 }
+                if presigned_url:
+                    disk["libraryImage"]["presignedUrl"] = presigned_url
         else:
             disk["blank"] = True
 

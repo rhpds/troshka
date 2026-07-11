@@ -54,7 +54,7 @@ def _wait_for_datavolume(custom_api, name, namespace, timeout=600):
     return False
 
 
-def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config):
+def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, presigned_url=""):
     pvc_name = golden_pvc_name(s3_path)
     try:
         core_api.read_namespaced_persistent_volume_claim(
@@ -80,7 +80,8 @@ def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config):
             raise
 
     dv = build_datavolume_from_s3(
-        pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config
+        pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config,
+        presigned_url=presigned_url,
     )
     try:
         custom_api.create_namespaced_custom_object(
@@ -120,15 +121,19 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         pvc_name = f"{name}-disk-{disk_id}"
 
         s3_path = None
+        presigned_url = ""
         if disk.get("libraryImage", {}).get("s3Path"):
             s3_path = disk["libraryImage"]["s3Path"]
+            presigned_url = disk["libraryImage"].get("presignedUrl", "")
         elif disk.get("patternImage", {}).get("s3Path"):
             s3_path = disk["patternImage"]["s3Path"]
+            presigned_url = disk["patternImage"].get("presignedUrl", "")
 
         if s3_path:
             size_gb = disk.get("sizeGb", 20)
             golden_name = _ensure_golden_pvc(
-                custom_api, core_api, s3_path, size_gb, s3_config
+                custom_api, core_api, s3_path, size_gb, s3_config,
+                presigned_url=presigned_url,
             )
 
             clone_dv = build_clone_datavolume(

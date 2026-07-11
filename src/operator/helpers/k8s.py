@@ -73,6 +73,7 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
             "annotations": annotations,
         },
         "spec": {
+            "serviceAccountName": "troshka-network",
             "containers": [
                 {
                     "name": "dnsmasq",
@@ -125,6 +126,7 @@ def build_gateway_pod(network_cr, all_network_nads):
             },
         },
         "spec": {
+            "serviceAccountName": "troshka-network",
             "containers": [
                 {
                     "name": "gateway",

@@ -1925,6 +1925,40 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     driver = get_provider_driver(provider)
 
     s3_config = _get_s3_config()
+
+    import boto3
+
+    s3_client = boto3.client(
+        "s3",
+        region_name=s3_config.get("region", "us-east-1"),
+        aws_access_key_id=s3_config.get("access_key_id", ""),
+        aws_secret_access_key=s3_config.get("secret_access_key", ""),
+        endpoint_url=s3_config.get("endpoint_url") or None,
+    )
+    bucket = s3_config.get("bucket", "troshka-images")
+
+    def _presign(s3_path):
+        return s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": s3_path},
+            ExpiresIn=86400,
+        )
+
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") == "storageNode":
+            if (
+                data.get("source") == "pattern"
+                and data.get("patternId")
+                and data.get("patternDiskId")
+            ):
+                s3_path = f"patterns/{data['patternId']}/{data['patternDiskId']}.qcow2"
+                data["presignedUrl"] = _presign(s3_path)
+            elif data.get("source") == "library" and data.get("libraryItemId"):
+                fmt = data.get("format", "qcow2")
+                s3_path = f"library/{data['libraryItemId']}.{fmt}"
+                data["presignedUrl"] = _presign(s3_path)
+
     _update_deploy_progress(project_id, "networks", "creating operator resources")
     notify_project(
         project_id,
