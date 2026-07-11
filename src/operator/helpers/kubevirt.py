@@ -210,7 +210,7 @@ def build_datavolume_from_s3(
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
                 "resources": {
-                    "requests": {"storage": f"{size_gb}Gi"}
+                    "requests": {"storage": f"{max(size_gb + 5, int(size_gb * 1.1))}Gi"}
                 },
                 "storageClassName": STORAGE_CLASS,
             },
@@ -256,7 +256,7 @@ def build_clone_datavolume(
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
                 "resources": {
-                    "requests": {"storage": f"{size_gb}Gi"}
+                    "requests": {"storage": f"{max(size_gb + 5, int(size_gb * 1.1))}Gi"}
                 },
                 "storageClassName": STORAGE_CLASS,
             },

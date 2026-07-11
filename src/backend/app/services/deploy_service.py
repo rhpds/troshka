@@ -2075,20 +2075,49 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     all_dvs.extend(dvs.get("items", []))
                 except Exception:
                     pass
+            clone_name_map = {}
+            for node in topology.get("nodes", []):
+                ndata2 = node.get("data", {})
+                if node.get("type") == "storageNode":
+                    sid = ndata2.get("id", node.get("id", ""))[:8]
+                    label = ndata2.get("label", ndata2.get("name", ""))
+                    for edge in topology.get("edges", []):
+                        if edge.get("source") == ndata2.get("id", node.get("id", "")):
+                            vm_id = edge.get("target", "")[:8]
+                            clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
+                        elif edge.get("target") == ndata2.get("id", node.get("id", "")):
+                            vm_id = edge.get("source", "")[:8]
+                            clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
+
+            cache_lines = []
+            clone_lines = []
             for dv in all_dvs:
                 dv_phase = dv.get("status", {}).get("phase", "")
                 dv_progress = dv.get("status", {}).get("progress", "N/A")
                 raw_name = dv["metadata"]["name"]
-                dv_name = golden_name_map.get(raw_name, raw_name)[:24]
+                ns = dv["metadata"]["namespace"]
+                friendly = (
+                    golden_name_map.get(raw_name)
+                    or clone_name_map.get(raw_name)
+                    or raw_name
+                )
+                friendly = friendly[:24]
                 if dv_phase == "Succeeded":
-                    dv_lines.append(f"{dv_name}: done")
+                    line = f"{friendly}: done"
                 elif dv_phase == "ImportInProgress":
                     pct = dv_progress if dv_progress != "N/A" else "starting"
-                    dv_lines.append(f"{dv_name}: {pct}")
-                elif dv_phase == "CloneInProgress" or dv_phase == "CloneScheduled":
-                    dv_lines.append(f"{dv_name}: cloning")
+                    line = f"{friendly}: downloading {pct}"
+                elif dv_phase in ("CloneInProgress", "CloneScheduled"):
+                    line = f"{friendly}: cloning"
                 elif dv_phase:
-                    dv_lines.append(f"{dv_name}: {dv_phase.lower()}")
+                    line = f"{friendly}: {dv_phase.lower()}"
+                else:
+                    line = f"{friendly}: waiting"
+                if ns == "troshka-cache":
+                    cache_lines.append(line)
+                else:
+                    clone_lines.append(line)
+            dv_lines = cache_lines + clone_lines
         except Exception:
             pass
 
