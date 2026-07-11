@@ -142,6 +142,61 @@ def host_storage(
     )
     result = {}
     for h in hosts:
+        if h.host_type == "kubevirt-cluster":
+            try:
+                from app.models.provider import Provider
+                from app.services.providers.kubevirt import _get_k8s_clients
+
+                provider = db.query(Provider).filter_by(id=h.provider_id).first()
+                if not provider:
+                    continue
+                _, core_api, _ = _get_k8s_clients(provider)
+                toolbox_pods = core_api.list_namespaced_pod(
+                    namespace="openshift-storage",
+                    label_selector="app=rook-ceph-tools",
+                )
+                if toolbox_pods.items:
+                    from kubernetes.stream import stream as k8s_stream
+
+                    resp = k8s_stream(
+                        core_api.connect_get_namespaced_pod_exec,
+                        toolbox_pods.items[0].metadata.name,
+                        "openshift-storage",
+                        command=["ceph", "df", "-f", "json"],
+                        stderr=True,
+                        stdout=True,
+                        stdin=False,
+                        tty=False,
+                        _preload_content=False,
+                    )
+                    stdout = ""
+                    while resp.is_open():
+                        resp.update(timeout=10)
+                        if resp.peek_stdout():
+                            stdout += resp.read_stdout()
+                        if resp.peek_stderr():
+                            resp.read_stderr()
+                    resp.close()
+
+                    import json
+
+                    ceph_df = json.loads(stdout)
+                    stats = ceph_df.get("stats", {})
+                    total_bytes = stats.get("total_bytes", 0)
+                    used_bytes = stats.get("total_used_bytes", 0)
+                    free_bytes = total_bytes - used_bytes
+                    used_pct = (
+                        round(used_bytes / total_bytes * 100, 1) if total_bytes else 0
+                    )
+                    result[h.id] = {
+                        "used_pct": used_pct,
+                        "free_gb": round(free_bytes / (1024**3), 1),
+                        "total_gb": round(total_bytes / (1024**3), 1),
+                    }
+            except Exception:
+                pass
+            continue
+
         try:
             disk = check_disk_usage(h)
         except Exception:
