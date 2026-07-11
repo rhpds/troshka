@@ -497,7 +497,7 @@ export default function AdminHostsPage() {
                     }}
                   >
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
+                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
@@ -702,13 +702,13 @@ export default function AdminHostsPage() {
               />
               <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All types</option>
-                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => p.type))].map((t) => (
+                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => p.type))].map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
               <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All providers</option>
-                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
+                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
                 ))}
               </select>
