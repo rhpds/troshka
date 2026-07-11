@@ -881,8 +881,8 @@ export default function AdminHostsPage() {
                 </div>
                 <div style={{ textAlign: "center" }}>
                   <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 2 }}>RAM</div>
-                  <div><strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{Math.round(h.total_ram_mb * ramRatio / 1024)} GB</div>
-                  <div style={{ fontSize: 10, opacity: 0.4 }}>{Math.round(h.total_ram_mb / 1024)} phys · {ramRatio}:1</div>
+                  <div><strong>{Math.round(h.used_ram_mb / 1024)}</strong>/{(() => { const gb = Math.round(h.total_ram_mb * ramRatio / 1024); return gb > 900 ? `${(gb / 1024).toFixed(1)} TB` : `${gb} GB`; })()}</div>
+                  <div style={{ fontSize: 10, opacity: 0.4 }}>{(() => { const gb = Math.round(h.total_ram_mb / 1024); return gb > 900 ? `${(gb / 1024).toFixed(1)} TB` : `${gb} GB`; })()} phys · {ramRatio}:1</div>
                 </div>
                 {(() => { const si = storageInfo[h.id]; const optimizing = si && (h.storage_size_gb - Math.round(si.total_gb)) > Math.round(h.storage_size_gb * 0.05); return (
                 <div style={{ textAlign: "center", color: si && si.used_pct >= 80 ? "#f87171" : undefined }}>
