@@ -511,7 +511,11 @@ export default function AdminHostsPage() {
                         : "No VPC set. Go to Providers and click Setup VPC."
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}
-                {!newProviderId ? null : selectedProvider?.type === "ocpvirt" ? (
+                {!newProviderId ? null : selectedProvider?.type === "kubevirt" ? (
+                  <div style={{ fontSize: 13, opacity: 0.7, padding: "8px 0" }}>
+                    Adding a host will deploy the Troshka operator and CRDs to the cluster and register it as a virtual host.
+                  </div>
+                ) : selectedProvider?.type === "ocpvirt" ? (
                   <>
                     <div style={{ minWidth: 120 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>CPU Cores</label>
@@ -578,7 +582,7 @@ export default function AdminHostsPage() {
                     )}
                   </>
                 )}
-                {newProviderId && <div style={{ minWidth: 220 }}>
+                {newProviderId && selectedProvider?.type !== "kubevirt" && <div style={{ minWidth: 220 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
                   <select
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
