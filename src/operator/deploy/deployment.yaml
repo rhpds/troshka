@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-operator
+  namespace: troshka-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: troshka-operator
+  template:
+    metadata:
+      labels:
+        app: troshka-operator
+    spec:
+      serviceAccountName: troshka-operator
+      containers:
+        - name: operator
+          image: quay.io/troshka/operator:latest
+          command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
