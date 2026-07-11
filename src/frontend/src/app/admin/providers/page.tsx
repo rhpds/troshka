@@ -81,6 +81,7 @@ export default function AdminProvidersPage() {
   const [apiUrl, setApiUrl] = useState("");
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
+  const [cacheNamespace, setCacheNamespace] = useState("");
   const [verifySsl, setVerifySsl] = useState(true);
   // GCP fields
   const [gcpProjectId, setGcpProjectId] = useState("");
@@ -180,7 +181,7 @@ export default function AdminProvidersPage() {
       : type === "azure"
       ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
       : (type === "ocpvirt" || type === "kubevirt")
-      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl }
+      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl, ...(type === "kubevirt" && cacheNamespace ? { cache_namespace: cacheNamespace } : {}) }
       : {
           name, type, default_region: region,
           access_key_id: accessKey, secret_access_key: secretKey,
@@ -218,7 +219,8 @@ export default function AdminProvidersPage() {
       } else if (data.bucket) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
       } else if (data.operator !== undefined) {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}` }));
+        const nsInfo = data.namespaces ? `, ns: ${Object.entries(data.namespaces).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
+        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}${nsInfo}` }));
       } else if (data.nodes !== undefined) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
       } else {
@@ -512,6 +514,12 @@ export default function AdminProvidersPage() {
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
                       <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder={type === "kubevirt" ? "troshka-operator" : "troshka"} />
                     </div>
+                    {type === "kubevirt" && (
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cache Namespace</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={cacheNamespace} onChange={(e) => setCacheNamespace(e.target.value)} placeholder="troshka-cache" />
+                      </div>
+                    )}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
                       <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>

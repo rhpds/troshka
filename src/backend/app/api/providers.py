@@ -26,12 +26,13 @@ class ProviderCreate(BaseModel):
     secret_access_key: str = ""
     bucket: str | None = None
     endpoint_url: str | None = None
-    # OCP Virt fields
+    # OCP Virt / KubeVirt fields
     api_url: str = ""
     token: str = ""
     namespace: str = "troshka"
     verify_ssl: bool = False
     iso_pvc: str | None = None
+    cache_namespace: str = ""
 
     # GCP fields
     gcp_project_id: str = ""
@@ -57,6 +58,7 @@ class ProviderUpdate(BaseModel):
     api_url: str | None = None
     token: str | None = None
     namespace: str | None = None
+    cache_namespace: str | None = None
     state: str | None = None
 
 
@@ -223,8 +225,9 @@ def create_provider(
         creds = {
             "api_url": body.api_url,
             "token": body.token,
-            "namespace": body.namespace or "troshka",
+            "namespace": body.namespace or "troshka-operator",
             "verify_ssl": body.verify_ssl,
+            "cache_namespace": body.cache_namespace or "troshka-cache",
         }
         api_host = (
             body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
@@ -317,6 +320,8 @@ def update_provider(
             creds["token"] = body.token
         if body.namespace:
             creds["namespace"] = body.namespace
+        if body.cache_namespace:
+            creds["cache_namespace"] = body.cache_namespace
         provider.set_credentials(creds)
     elif body.access_key_id or body.secret_access_key:
         creds = provider.get_credentials()
@@ -963,12 +968,38 @@ def test_provider(
             except Exception:
                 pass
 
+            cache_ns = creds.get("cache_namespace", "troshka-cache")
+            ns_checks = {}
+            for ns_name, ns_label in [
+                (operator_ns, "operator"),
+                (cache_ns, "cache"),
+            ]:
+                try:
+                    core_api.read_namespace(ns_name)
+                    ns_checks[ns_label] = "exists"
+                except Exception:
+                    try:
+                        core_api.create_namespace(
+                            body={
+                                "apiVersion": "v1",
+                                "kind": "Namespace",
+                                "metadata": {
+                                    "name": ns_name,
+                                    "labels": {"app": "troshka"},
+                                },
+                            }
+                        )
+                        ns_checks[ns_label] = "created"
+                    except Exception as e:
+                        ns_checks[ns_label] = f"error: {e}"
+
             return {
                 "status": "ok",
                 "cluster": creds.get("api_url", ""),
                 "nodes": node_count,
                 "operator": operator_status,
                 "crds_installed": crds_installed,
+                "namespaces": ns_checks,
             }
         elif provider.type == "gcp":
             import google.auth.transport.requests
