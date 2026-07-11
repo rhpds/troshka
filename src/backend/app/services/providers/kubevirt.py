@@ -178,6 +178,34 @@ class KubeVirtDriver(ProviderDriver):
             total_vcpus = 256
             total_ram_mb = 1024 * 1024
 
+        storage_gb = 0
+        try:
+            toolbox_pods = core_api.list_namespaced_pod(
+                namespace="openshift-storage",
+                label_selector="app=rook-ceph-tools",
+            )
+            if toolbox_pods.items:
+                from kubernetes.stream import stream
+
+                resp = stream(
+                    core_api.connect_get_namespaced_pod_exec,
+                    toolbox_pods.items[0].metadata.name,
+                    "openshift-storage",
+                    command=["ceph", "df", "-f", "json"],
+                    stderr=True,
+                    stdout=True,
+                    stdin=False,
+                    tty=False,
+                )
+                import json
+
+                ceph_df = json.loads(resp)
+                stats = ceph_df.get("stats", {})
+                total_bytes = stats.get("total_bytes", 0)
+                storage_gb = int(total_bytes / (1024**3))
+        except Exception as e:
+            logger.warning(f"Failed to query Ceph storage capacity: {e}")
+
         return {
             "host_id": host_id,
             "instance_id": api_url,
@@ -188,7 +216,7 @@ class KubeVirtDriver(ProviderDriver):
             "total_ram_mb": total_ram_mb,
             "private_key": "",
             "key_pair_name": "",
-            "storage_size_gb": storage_size_gb or 0,
+            "storage_size_gb": storage_gb or storage_size_gb or 0,
             "max_eips": 0,
         }
 

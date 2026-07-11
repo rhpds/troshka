@@ -1090,9 +1090,11 @@ export default function AdminHostsPage() {
                   Starting...
                 </Button>
               )}
-              <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
-                {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
-              </Button>
+              {h.host_type !== "kubevirt-cluster" && (
+                <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id) || h.state === "shutting_down"} isLoading={removingHosts.has(h.id) || h.state === "shutting_down"}>
+                  {(removingHosts.has(h.id) || h.state === "shutting_down") ? "Terminating..." : "Remove"}
+                </Button>
+              )}
               </>); })()}
               {h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && !isOcpVirtHost(h) && (
                 <>
