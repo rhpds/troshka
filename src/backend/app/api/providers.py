@@ -916,6 +916,20 @@ def test_provider(
                 "namespace": ns,
                 "nodes": node_count,
             }
+        elif provider.type == "kubevirt":
+            from app.services.providers.kubevirt import (
+                _get_k8s_clients as _get_kv_clients,
+            )
+
+            _, core_api, _ = _get_kv_clients(provider)
+            nodes = core_api.list_node()
+            node_count = len(nodes.items)
+            return {
+                "status": "ok",
+                "cluster": creds.get("api_url", ""),
+                "namespace": creds.get("namespace", "troshka"),
+                "nodes": node_count,
+            }
         elif provider.type == "gcp":
             import google.auth.transport.requests
             from google.oauth2 import service_account
