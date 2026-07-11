@@ -1993,24 +1993,43 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         },
     )
 
+    existing_cr = None
     try:
-        cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
-    except Exception as e:
-        project.state = "error"
-        project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
-        db.commit()
-        notify_project(
-            project_id,
-            {
-                "type": "project-state",
-                "state": "error",
-                "deploy_error": project.deploy_error,
-            },
+        existing_cr = driver.get_project_status(provider, project_id)
+    except Exception:
+        pass
+
+    if existing_cr and existing_cr.get("phase"):
+        cr_name = f"project-{project_id[:8]}"
+        logger.info(
+            "Deploy %s: resuming existing TroshkaProject CR %s (phase: %s)",
+            project_id[:8],
+            cr_name,
+            existing_cr.get("phase"),
         )
-        return
+    else:
+        try:
+            cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
+        except Exception as e:
+            if "AlreadyExists" in str(e):
+                cr_name = f"project-{project_id[:8]}"
+                logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
+            else:
+                project.state = "error"
+                project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
+                db.commit()
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": project.deploy_error,
+                    },
+                )
+                return
 
     logger.info(
-        "Deploy %s: created TroshkaProject CR %s, polling status",
+        "Deploy %s: polling TroshkaProject CR %s",
         project_id[:8],
         cr_name,
     )
