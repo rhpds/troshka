@@ -976,7 +976,7 @@ def test_provider(
             ]:
                 try:
                     core_api.read_namespace(ns_name)
-                    ns_checks[ns_label] = "exists"
+                    ns_checks[ns_label] = "ok"
                 except Exception:
                     try:
                         core_api.create_namespace(
@@ -989,9 +989,9 @@ def test_provider(
                                 },
                             }
                         )
-                        ns_checks[ns_label] = "created"
+                        ns_checks[ns_label] = "ok (just created)"
                     except Exception as e:
-                        ns_checks[ns_label] = f"error: {e}"
+                        ns_checks[ns_label] = "no access"
 
             return {
                 "status": "ok",
