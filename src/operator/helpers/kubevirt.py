@@ -44,10 +44,9 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
         disk_entry = {"name": vol_name, "disk": {"bus": bus}}
 
         for bo in spec.get("bootOrder", []):
-            if (
-                bo.get("type") == "disk"
-                and bo.get("id") == disk_info.get("id")
-            ):
+            bo_id = bo.get("id") if isinstance(bo, dict) else bo
+            bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
+            if bo_type == "disk" and bo_id == disk_info.get("id"):
                 disk_entry["disk"]["bootOrder"] = boot_idx
                 boot_idx += 1
                 break
@@ -88,10 +87,9 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             iface["model"] = model
 
         for bo in spec.get("bootOrder", []):
-            if (
-                bo.get("type") == "network"
-                and bo.get("id") == nic.get("id")
-            ):
+            bo_id = bo.get("id") if isinstance(bo, dict) else bo
+            bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
+            if bo_type == "network" and bo_id == nic.get("id"):
                 iface["bootOrder"] = boot_idx
                 boot_idx += 1
                 break
