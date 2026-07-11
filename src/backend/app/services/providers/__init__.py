@@ -19,4 +19,9 @@ def get_provider_driver(provider) -> ProviderDriver:
         from app.services.providers.azure import AzureDriver
 
         return AzureDriver()
-    raise ValueError(f"Unknown provider type: {provider.type}")
+    elif provider.type == "kubevirt":
+        from app.services.providers.kubevirt import KubeVirtDriver
+
+        return KubeVirtDriver()
+    else:
+        raise ValueError(f"Unknown provider type: {provider.type}")
