@@ -2026,24 +2026,59 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         phase = status.get("phase", "Pending")
         progress = status.get("deployProgress", {})
 
-        if progress:
-            step = progress.get("stage", "")
-            detail = progress.get("detail", "")
-            percent = progress.get("percent", 0)
-            _deploy_progress[project_id] = {
+        dv_detail = ""
+        try:
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            custom_api, _, _ = _get_k8s_clients(provider)
+            proj_ns = _project_ns(provider, project_id)
+            for ns in ["troshka-cache", proj_ns]:
+                try:
+                    dvs = custom_api.list_namespaced_custom_object(
+                        group="cdi.kubevirt.io",
+                        version="v1beta1",
+                        namespace=ns,
+                        plural="datavolumes",
+                    )
+                    for dv in dvs.get("items", []):
+                        dv_phase = dv.get("status", {}).get("phase", "")
+                        dv_progress = dv.get("status", {}).get("progress", "")
+                        dv_name = dv["metadata"]["name"]
+                        if dv_phase == "ImportInProgress" and dv_progress != "N/A":
+                            dv_detail = f"downloading {dv_name[:20]}... {dv_progress}"
+                            break
+                        elif dv_phase == "CloneInProgress":
+                            dv_detail = f"cloning {dv_name[:20]}..."
+                            break
+                except Exception:
+                    pass
+                if dv_detail:
+                    break
+        except Exception:
+            pass
+
+        step = progress.get("stage", "") if progress else ""
+        detail = dv_detail or (progress.get("detail", "") if progress else "")
+        if not step and dv_detail:
+            step = "images"
+        elif not step:
+            step = "networks"
+        percent = progress.get("percent", 0) if progress else 0
+
+        _deploy_progress[project_id] = {
+            "step": step,
+            "detail": detail,
+            "percent": percent,
+        }
+        notify_project(
+            project_id,
+            {
+                "type": "deploy-progress",
                 "step": step,
                 "detail": detail,
                 "percent": percent,
-            }
-            notify_project(
-                project_id,
-                {
-                    "type": "deploy-progress",
-                    "step": step,
-                    "detail": detail,
-                    "percent": percent,
-                },
-            )
+            },
+        )
 
         if phase == "Running":
             project.state = "active"
