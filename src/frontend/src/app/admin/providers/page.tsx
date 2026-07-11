@@ -220,7 +220,9 @@ export default function AdminProvidersPage() {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
       } else if (data.operator !== undefined) {
         const nsInfo = data.namespaces ? `, ns: ${Object.entries(data.namespaces).map(([k, v]) => `${k}=${v}`).join(", ")}` : "";
-        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}${nsInfo}` }));
+        const needsHost = data.operator === "not installed" || !data.crds_installed;
+        const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}${nsInfo}`;
+        setTestResult((prev) => ({ ...prev, [id]: needsHost ? `${msg}\n⚠ Add a host to deploy the operator and CRDs` : msg }));
       } else if (data.nodes !== undefined) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
       } else {
@@ -692,7 +694,7 @@ export default function AdminProvidersPage() {
                       )}
                     </div>
                     {testResult[p.id] && (
-                      <div style={{ fontSize: 11, marginTop: 4, color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
+                      <div style={{ fontSize: 11, marginTop: 4, whiteSpace: "pre-line", color: testResult[p.id].includes("FAILED") || testResult[p.id].includes("Failed") ? "#f87171" : testResult[p.id].includes("⚠") ? "#fbbf24" : testResult[p.id].includes("does not exist") || testResult[p.id].includes("no access") ? "#fbbf24" : "#4ade80" }}>
                         {testResult[p.id]}
                       </div>
                     )}
