@@ -284,13 +284,56 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "detail": f"{i + 1}/{len(vms)} VMs",
         }
 
-    patch.status["phase"] = "Running"
+    patch.status["phase"] = "Deploying"
     patch.status["deployProgress"] = {
-        "percent": 100,
-        "stage": "Done",
-        "detail": "",
+        "percent": 90,
+        "stage": "Waiting for VMs",
+        "detail": f"0/{len(vms)} VMs ready",
     }
-    logger.info(f"TroshkaProject {name} deploy complete")
+    logger.info(f"TroshkaProject {name} CRs created, waiting for VMs")
+
+
+@kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
+async def project_status_check(spec, status, namespace, name, patch, **_):
+    phase = status.get("phase", "")
+    if phase != "Deploying":
+        return
+
+    custom_api = client.CustomObjectsApi()
+    vms = custom_api.list_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural="troshkavms",
+    )
+    vm_items = vms.get("items", [])
+    if not vm_items:
+        return
+
+    vm_states = {}
+    ready_count = 0
+    for vm in vm_items:
+        vm_name = vm.get("spec", {}).get("name", vm["metadata"]["name"])
+        state = vm.get("status", {}).get("state", "")
+        vm_states[vm.get("spec", {}).get("vmId", vm["metadata"]["name"])] = state or "creating"
+        if state in ("Running", "Stopped"):
+            ready_count += 1
+
+    patch.status["vmStates"] = vm_states
+    patch.status["deployProgress"] = {
+        "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
+        "stage": "Waiting for VMs",
+        "detail": f"{ready_count}/{len(vm_items)} VMs ready",
+    }
+
+    if ready_count == len(vm_items):
+        patch.status["phase"] = "Running"
+        patch.status["deployProgress"] = {
+            "percent": 100,
+            "stage": "Done",
+            "detail": "",
+        }
+        logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
