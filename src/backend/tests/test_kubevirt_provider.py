@@ -36,7 +36,7 @@ def test_provision_host_returns_cluster_info():
         mock_custom = MagicMock()
         mock_core = MagicMock()
         mock_core.list_node.return_value = mock_nodes
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         result = driver.provision_host(
             provider, "test-host-id", "kubevirt-cluster", 1000
@@ -55,7 +55,7 @@ def test_get_host_status_returns_running():
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
         mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         result = driver.get_host_status(
             provider, "https://api.cluster.example.com:6443"
@@ -78,7 +78,7 @@ def test_deploy_project_creates_namespace_and_cr():
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
         mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         result = driver.deploy_project(
             provider,
@@ -102,7 +102,7 @@ def test_destroy_project_deletes_cr_and_namespace():
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
         mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         driver.destroy_project(provider, "12345678-1234-1234-1234-123456789abc")
 
@@ -124,7 +124,7 @@ def test_create_console_record_creates_service_and_route():
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
         mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         host = MagicMock()
         driver.create_console_record(
@@ -144,7 +144,7 @@ def test_delete_console_record_cleans_up():
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
         mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         host = MagicMock()
         driver.delete_console_record(
@@ -165,7 +165,7 @@ def test_create_route_access_creates_service_and_route():
         mock_custom.create_namespaced_custom_object.return_value = {
             "spec": {"host": "bastion-443.apps.cluster.example.com"}
         }
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         host = MagicMock()
         result = driver.create_route_access(
@@ -189,7 +189,7 @@ def test_delete_route_access_cleans_up_by_label():
         mock_core = MagicMock()
         mock_core.list_namespaced_service.return_value.items = [mock_svc]
         mock_custom.list_namespaced_custom_object.return_value = {"items": [mock_route]}
-        mock_clients.return_value = (mock_custom, mock_core)
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         driver.delete_route_access(provider, "proj-1234-5678")
 

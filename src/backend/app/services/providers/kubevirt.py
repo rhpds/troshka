@@ -1,5 +1,8 @@
 import logging
+import os
 import time
+
+import yaml
 
 from app.services.providers.base import ProviderDriver
 
@@ -7,6 +10,10 @@ logger = logging.getLogger(__name__)
 
 CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
+
+OPERATOR_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "..", "operator"
+)
 
 
 def _get_k8s_clients(provider):
@@ -21,14 +28,94 @@ def _get_k8s_clients(provider):
     return (
         client.CustomObjectsApi(api_client),
         client.CoreV1Api(api_client),
+        client.ApiClient(config),
     )
+
+
+def _deploy_operator(provider):
+    from kubernetes import client
+
+    custom_api, core_api, api_client = _get_k8s_clients(provider)
+    apps_api = client.AppsV1Api(api_client)
+    rbac_api = client.RbacAuthorizationV1Api(api_client)
+    ext_api = client.ApiextensionsV1Api(api_client)
+
+    operator_dir = os.path.normpath(OPERATOR_DIR)
+
+    crd_files = [
+        os.path.join(operator_dir, "crds", "troshkaproject.yaml"),
+        os.path.join(operator_dir, "crds", "troshkanetwork.yaml"),
+        os.path.join(operator_dir, "crds", "troshkavm.yaml"),
+    ]
+    for crd_path in crd_files:
+        with open(crd_path) as f:
+            crd_body = yaml.safe_load(f)
+        try:
+            ext_api.create_custom_resource_definition(body=crd_body)
+            logger.info(f"Created CRD {crd_body['metadata']['name']}")
+        except client.exceptions.ApiException as e:
+            if e.status == 409:
+                ext_api.patch_custom_resource_definition(
+                    name=crd_body["metadata"]["name"], body=crd_body
+                )
+                logger.info(f"Updated CRD {crd_body['metadata']['name']}")
+            else:
+                raise
+
+    deploy_dir = os.path.join(operator_dir, "deploy")
+    manifest_order = [
+        "namespace.yaml",
+        "serviceaccount.yaml",
+        "clusterrole.yaml",
+        "clusterrolebinding.yaml",
+        "deployment.yaml",
+    ]
+
+    for filename in manifest_order:
+        path = os.path.join(deploy_dir, filename)
+        with open(path) as f:
+            body = yaml.safe_load(f)
+
+        kind = body["kind"]
+        name = body["metadata"]["name"]
+        ns = body["metadata"].get("namespace")
+
+        try:
+            if kind == "Namespace":
+                core_api.create_namespace(body=body)
+            elif kind == "ServiceAccount":
+                core_api.create_namespaced_service_account(namespace=ns, body=body)
+            elif kind == "ClusterRole":
+                rbac_api.create_cluster_role(body=body)
+            elif kind == "ClusterRoleBinding":
+                rbac_api.create_cluster_role_binding(body=body)
+            elif kind == "Deployment":
+                apps_api.create_namespaced_deployment(namespace=ns, body=body)
+            logger.info(f"Created {kind} {name}")
+        except client.exceptions.ApiException as e:
+            if e.status == 409:
+                if kind == "Deployment":
+                    apps_api.patch_namespaced_deployment(
+                        name=name, namespace=ns, body=body
+                    )
+                elif kind == "ClusterRole":
+                    rbac_api.patch_cluster_role(name=name, body=body)
+                elif kind == "ClusterRoleBinding":
+                    rbac_api.patch_cluster_role_binding(name=name, body=body)
+                logger.info(f"Updated {kind} {name}")
+            else:
+                raise
+
+    logger.info("Operator deployed successfully")
 
 
 class KubeVirtDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
     ):
-        custom_api, core_api = _get_k8s_clients(provider)
+        _deploy_operator(provider)
+
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         api_url = creds["api_url"]
 
@@ -71,7 +158,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def get_host_status(self, provider, instance_id):
         try:
-            _, core_api = _get_k8s_clients(provider)
+            _, core_api, _ = _get_k8s_clients(provider)
             core_api.get_api_versions()
             return {
                 "instance_id": instance_id,
@@ -105,7 +192,7 @@ class KubeVirtDriver(ProviderDriver):
         }
 
     def create_console_record(self, provider, host, hostname, ip_address):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
 
@@ -162,7 +249,7 @@ class KubeVirtDriver(ProviderDriver):
                 raise
 
     def delete_console_record(self, provider, host, hostname, ip_address):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
         try:
@@ -183,7 +270,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def delete_console(self, provider):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
         try:
@@ -216,7 +303,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def allocate_eip(self, provider, host, eip_id):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
 
@@ -253,7 +340,7 @@ class KubeVirtDriver(ProviderDriver):
         return {}
 
     def release_eip(self, provider, allocation_id, namespace=None):
-        _, core_api = _get_k8s_clients(provider)
+        _, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         ns = namespace or creds.get("namespace", "troshka")
         try:
@@ -262,7 +349,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def update_eip_ports(self, provider, host, allocation_id, ports):
-        _, core_api = _get_k8s_clients(provider)
+        _, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
         svc_ports = [
@@ -282,7 +369,7 @@ class KubeVirtDriver(ProviderDriver):
     def create_route_access(
         self, provider, host, project_id, vm_name, int_ip, port, target_port=None
     ):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         namespace = f"troshka-{project_id[:8]}"
         tgt_port = target_port or port
@@ -355,7 +442,7 @@ class KubeVirtDriver(ProviderDriver):
         }
 
     def delete_route_access(self, provider, project_id, namespace=None):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or f"troshka-{project_id[:8]}"
         label = f"troshka-project={project_id[:8]}"
         try:
@@ -384,7 +471,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = f"troshka-{project_id[:8]}"
 
         from kubernetes import client as k8s_client
@@ -449,7 +536,7 @@ class KubeVirtDriver(ProviderDriver):
         return f"project-{project_id[:8]}"
 
     def destroy_project(self, provider, project_id):
-        custom_api, core_api = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = f"troshka-{project_id[:8]}"
         try:
             custom_api.delete_namespaced_custom_object(
