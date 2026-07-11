@@ -1944,16 +1944,40 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             ExpiresIn=86400,
         )
 
+    pattern_disk_map = {}
+    pattern_ids_seen = set()
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") == "storageNode" and data.get("source") == "pattern":
+            pid = data.get("patternId", "")
+            if pid:
+                pattern_ids_seen.add(pid)
+
+    if pattern_ids_seen:
+        from app.models.pattern import Pattern as PatternModel
+
+        for pid in pattern_ids_seen:
+            pat = db.query(PatternModel).filter_by(id=pid).first()
+            if pat and pat.topology:
+                for pn in pat.topology.get("nodes", []):
+                    pd = pn.get("data", {})
+                    if pn.get("type") == "storageNode":
+                        orig_id = pd.get("id", pn.get("id", ""))
+                        label = pd.get("label", "")
+                        pattern_disk_map[(pid, label)] = orig_id
+
     for node in topology.get("nodes", []):
         data = node.get("data", {})
         if node.get("type") == "storageNode":
-            if (
-                data.get("source") == "pattern"
-                and data.get("patternId")
-                and data.get("patternDiskId")
-            ):
-                s3_path = f"patterns/{data['patternId']}/{data['patternDiskId']}.qcow2"
+            if data.get("source") == "pattern" and data.get("patternId"):
+                pid = data["patternId"]
+                label = data.get("label", "")
+                orig_disk_id = pattern_disk_map.get(
+                    (pid, label), data.get("patternDiskId", "")
+                )
+                s3_path = f"patterns/{pid}/{orig_disk_id}.qcow2"
                 data["presignedUrl"] = _presign(s3_path)
+                data["resolvedS3Path"] = s3_path
             elif data.get("source") == "library" and data.get("libraryItemId"):
                 fmt = data.get("format", "qcow2")
                 s3_path = f"library/{data['libraryItemId']}.{fmt}"

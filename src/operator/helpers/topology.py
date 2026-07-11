@@ -185,9 +185,10 @@ def resolve_vm_disks(topology):
         if source_type == "pattern":
             pattern_id = sd.get("patternId", "")
             disk_id = sd.get("patternDiskId", "")
-            if pattern_id and disk_id:
+            resolved_path = sd.get("resolvedS3Path", "")
+            if pattern_id and (disk_id or resolved_path):
                 disk["patternImage"] = {
-                    "s3Path": f"patterns/{pattern_id}/{disk_id}.qcow2",
+                    "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
                     "format": "qcow2",
                 }
                 if presigned_url:
