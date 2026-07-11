@@ -40,6 +40,9 @@ def _deploy_operator(provider):
     rbac_api = client.RbacAuthorizationV1Api(api_client)
     ext_api = client.ApiextensionsV1Api(api_client)
 
+    creds = provider.get_credentials()
+    operator_ns = creds.get("namespace", "troshka-operator")
+
     operator_dir = os.path.normpath(OPERATOR_DIR)
 
     crd_files = [
@@ -79,6 +82,17 @@ def _deploy_operator(provider):
         kind = body["kind"]
         name = body["metadata"]["name"]
         ns = body["metadata"].get("namespace")
+
+        if ns:
+            body["metadata"]["namespace"] = operator_ns
+            ns = operator_ns
+        if kind == "Namespace":
+            body["metadata"]["name"] = operator_ns
+            name = operator_ns
+        if kind == "ClusterRoleBinding":
+            for subj in body.get("subjects", []):
+                if subj.get("namespace"):
+                    subj["namespace"] = operator_ns
 
         try:
             if kind == "Namespace":

@@ -508,12 +508,10 @@ export default function AdminProvidersPage() {
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token</label>
                       <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="sha256~..." />
                     </div>
-                    {type === "ocpvirt" && (
-                      <div>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
-                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="troshka" />
-                      </div>
-                    )}
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
+                      <input style={{ ...inputStyle, fontFamily: "monospace" }} value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder={type === "kubevirt" ? "troshka-operator" : "troshka"} />
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
                       <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
@@ -595,12 +593,10 @@ export default function AdminProvidersPage() {
                         <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Token <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
                         <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editSecretKey} onChange={(e) => setEditSecretKey(e.target.value)} placeholder="Leave blank to keep current" />
                       </div>
-                      {p.type === "ocpvirt" && (
-                        <div>
-                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Namespace</label>
-                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder="troshka" />
-                        </div>
-                      )}
+                      <div>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{p.type === "kubevirt" ? "Operator Namespace" : "Namespace"}</label>
+                        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editRegion} onChange={(e) => setEditRegion(e.target.value)} placeholder={p.type === "kubevirt" ? "troshka-operator" : "troshka"} />
+                      </div>
                     </>
                   ) : (
                     <>

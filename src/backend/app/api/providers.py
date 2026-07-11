@@ -925,14 +925,15 @@ def test_provider(
             nodes = core_api.list_node()
             node_count = len(nodes.items)
 
+            operator_ns = creds.get("namespace", "troshka-operator")
             operator_ready = False
             operator_status = "not installed"
             try:
-                core_api.read_namespace("troshka-operator")
+                core_api.read_namespace(operator_ns)
                 deps = custom_api.list_namespaced_custom_object(
                     group="apps",
                     version="v1",
-                    namespace="troshka-operator",
+                    namespace=operator_ns,
                     plural="deployments",
                 )
                 for dep in deps.get("items", []):
