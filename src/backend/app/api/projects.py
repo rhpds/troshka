@@ -2868,8 +2868,8 @@ def redeploy_project(
     _check_library_items_ready(project.topology or {}, db)
 
     # Destroy existing and release capacity
+    old_host_id = project.host_id
     if project.host_id:
-        old_host_id = project.host_id
         old_host = db.query(Host).filter_by(id=old_host_id).first()
         if not old_host or not old_host.ip_address:
             raise HTTPException(
@@ -2892,9 +2892,10 @@ def redeploy_project(
 
         sync_host_capacity(db, old_host)
 
-    # Reset for fresh deploy
+    # Reset for fresh deploy — redeploy on the same host
     project.state = "deploying"
-    project.host_id = None
+    if not project.host_id and old_host_id:
+        project.host_id = old_host_id
     project.vni_map = None
     project.deploy_error = None
     db.commit()
