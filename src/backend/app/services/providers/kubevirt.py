@@ -189,7 +189,7 @@ class KubeVirtDriver(ProviderDriver):
     def get_host_status(self, provider, instance_id):
         try:
             _, core_api, _ = _get_k8s_clients(provider)
-            core_api.get_api_versions()
+            core_api.list_namespace(limit=1)
             return {
                 "instance_id": instance_id,
                 "state": "running",
