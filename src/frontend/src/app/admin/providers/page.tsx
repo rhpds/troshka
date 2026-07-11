@@ -220,9 +220,15 @@ export default function AdminProvidersPage() {
         setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
       } else if (data.operator !== undefined) {
         const nsInfo = data.namespaces ? `, ${Object.entries(data.namespaces).map(([k, v]) => `${k} namespace: ${v}`).join(", ")}` : "";
-        const needsHost = data.operator === "not installed" || !data.crds_installed;
-        const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds_installed ? "installed" : "missing"}${nsInfo}`;
-        setTestResult((prev) => ({ ...prev, [id]: needsHost ? `${msg}\n⚠ Add a host to deploy the operator and CRDs` : msg }));
+        const needsInstall = data.operator === "not installed" || !data.crds_installed;
+        const noPermission = data.crds && data.crds.includes("no permission");
+        const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds || (data.crds_installed ? "installed" : "missing")}${nsInfo}`;
+        const warning = noPermission
+          ? `\n⚠ Service account lacks permissions to manage CRDs — update the ClusterRole`
+          : needsInstall
+          ? `\n⚠ Operator not installed — click Install Operator below`
+          : "";
+        setTestResult((prev) => ({ ...prev, [id]: msg + warning }));
       } else if (data.nodes !== undefined) {
         setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
       } else {
@@ -931,6 +937,19 @@ export default function AdminProvidersPage() {
                           setTestResult((prev) => ({ ...prev, [p.id]: "Sync failed" }));
                         }
                       }}>Sync Library</Button>
+                    )}
+                    {p.type === "kubevirt" && (
+                      <Button variant="secondary" onClick={async () => {
+                        setTestResult((prev) => ({ ...prev, [p.id]: "Installing operator..." }));
+                        const resp = await fetch(`/api/v1/providers/${p.id}/install-operator`, { method: "POST" });
+                        if (resp.ok) {
+                          setTestResult((prev) => ({ ...prev, [p.id]: "Operator installed successfully" }));
+                          loadProviders();
+                        } else {
+                          const data = await resp.json().catch(() => ({}));
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
+                        }
+                      }}>Install Operator</Button>
                     )}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));

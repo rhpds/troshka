@@ -415,6 +415,29 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **EIPs**: not supported on OCP Virt — `externalAccess` toggle disabled for ocpvirt hosts
 - **Resize**: not supported (KubeVirt requires stop → modify → start, disabled for now)
 
+### KubeVirt Native Provider Setup
+- Provider type `kubevirt` — creates KubeVirt VMs directly on OCP (no nested virt, no troshkad)
+- **Architecture**: kopf-based operator manages CRDs (`TroshkaProject`, `TroshkaNetwork`, `TroshkaVM`) that reconcile into KubeVirt VMs, OVN networks, and helper pods
+- **Provider driver**: `src/backend/app/services/providers/kubevirt.py` — thin layer creating/watching CRDs
+- **Operator**: `src/operator/` — Python/kopf, deployed to `troshka-operator` namespace (configurable)
+- **CRDs**: `src/operator/crds/` — TroshkaProject, TroshkaNetwork, TroshkaVM
+- **Container images**: operator, dnsmasq, gateway, troshka-tools, sushy, vnc-proxy — built by CI, pushed to `quay.io/redhat-gpte/troshka-*`
+- **Prerequisites**: OCP 4.14+, OpenShift Virtualization (KubeVirt + CDI), ODF (Ceph RBD + CephFS), OVN-Kubernetes secondary networks
+- **RBAC**: uses same `troshka` SA as nested ocpvirt — `infra/ocpvirt-rbac.yaml` has all permissions for both provider types
+- **RBAC escalation**: K8s prevents the SA from creating ClusterRoles with permissions it doesn't hold. An OCP admin must pre-apply the operator RBAC:
+  ```bash
+  oc apply -f src/operator/deploy/clusterrole.yaml
+  oc apply -f src/operator/deploy/clusterrolebinding.yaml
+  ```
+- **Setup flow**: Create provider in admin UI → auto-creates virtual host → background thread deploys operator + CRDs → "Install Operator" button for repair/retry
+- **Virtual host**: one Host record per provider with `host_type="kubevirt-cluster"` — represents cluster capacity, no SSH/agent
+- **Networking**: OVN layer2 secondary networks (NADs) + dnsmasq Pod (DHCP/DNS) + gateway Pod (NAT) per project
+- **BMC**: sushy emulator Pod with custom KubeVirt driver (Redfish only, no IPMI)
+- **VNC console**: proxy Pod relaying noVNC to KubeVirt VNC subresource API, exposed via OCP Route
+- **Patterns**: fully portable across providers — same topology JSONB, same S3 disk images (qcow2), CDI import → golden PVC → Ceph RBD clone
+- **Pattern capture**: VolumeSnapshot → export Job (qemu-img convert + S3 upload)
+- **Not supported**: clock backdating (no `virsh domtime` equivalent in KubeVirt)
+
 ### GCP Provider Setup
 - Provider type `gcp` — creates nested-virt RHEL VMs on Google Compute Engine
 - **Driver**: `src/backend/app/services/providers/gcp.py` (~800 lines, self-contained)

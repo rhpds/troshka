@@ -261,6 +261,81 @@ def create_provider(
         except Exception as e:
             logger.warning("Central library auto-sync failed: %s", e)
 
+    if body.type == "kubevirt":
+        import threading
+        import uuid as _uuid
+
+        from app.models.host import Host
+
+        host_id = str(_uuid.uuid4())
+        host = Host(
+            id=host_id,
+            provider_id=provider.id,
+            instance_id="",
+            instance_type="kubevirt-cluster",
+            region=provider.default_region or "",
+            state="provisioning",
+            host_type="kubevirt-cluster",
+            total_vcpus=0,
+            total_ram_mb=0,
+            ip_address="",
+            agent_status="provisioning",
+            storage_size_gb=0,
+            max_eips=0,
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+
+        _provider_id = provider.id
+        _host_id = host_id
+
+        def _provision_kubevirt_host():
+            from app.core.database import SessionLocal
+            from app.models.host import Host as HostModel
+            from app.models.provider import Provider as ProvModel
+            from app.services.providers import get_provider_driver
+
+            s = SessionLocal()
+            try:
+                h = s.query(HostModel).filter_by(id=_host_id).first()
+                prov = s.query(ProvModel).filter_by(id=_provider_id).first()
+                if not h or not prov:
+                    return
+                drv = get_provider_driver(prov)
+                result = drv.provision_host(
+                    provider=prov,
+                    host_id=_host_id,
+                    instance_type="kubevirt-cluster",
+                    storage_size_gb=0,
+                )
+                h.instance_id = result["instance_id"]
+                h.instance_type = result["instance_type"]
+                h.state = "active"
+                h.total_vcpus = result["total_vcpus"]
+                h.total_ram_mb = result["total_ram_mb"]
+                h.ip_address = result["public_ip"]
+                h.private_ip = result.get("private_ip")
+                h.agent_status = "connected"
+                h.agent_token = prov.get_credentials().get("token", "")
+                s.commit()
+                logger.info(
+                    "KubeVirt host %s provisioned for provider %s",
+                    _host_id[:8],
+                    _provider_id[:8],
+                )
+            except Exception:
+                logger.exception("Failed to provision kubevirt host %s", _host_id[:8])
+                h = s.query(HostModel).filter_by(id=_host_id).first()
+                if h:
+                    h.state = "error"
+                    h.agent_status = "provision_failed"
+                    s.commit()
+            finally:
+                s.close()
+
+        threading.Thread(target=_provision_kubevirt_host, daemon=True).start()
+
     return ProviderResponse(
         id=provider.id,
         name=provider.name,
@@ -962,6 +1037,7 @@ def test_provider(
                 pass
 
             crds_installed = False
+            crds_status = "missing"
             try:
                 from kubernetes import client as k8s_client
 
@@ -970,8 +1046,14 @@ def test_provider(
                     "troshkaprojects.troshka.redhat.com"
                 )
                 crds_installed = True
+                crds_status = "installed"
+            except k8s_client.exceptions.ApiException as e:
+                if e.status == 403:
+                    crds_status = "no permission (SA needs apiextensions.k8s.io access)"
+                else:
+                    crds_status = "missing"
             except Exception:
-                pass
+                crds_status = "missing"
 
             cache_ns = creds.get("cache_namespace", "troshka-cache")
             ns_checks = {}
@@ -1003,6 +1085,7 @@ def test_provider(
                 "cluster": creds.get("api_url", ""),
                 "nodes": node_count,
                 "operator": operator_status,
+                "crds": crds_status,
                 "crds_installed": crds_installed,
                 "namespaces": ns_checks,
             }
@@ -1099,6 +1182,75 @@ def create_s3_bucket(
     except Exception as e:
         logger.exception("Failed to create bucket %s: %s", bucket, e)
         raise HTTPException(status_code=500, detail=f"Failed to create bucket: {e}")
+
+
+@router.post("/{provider_id}/install-operator")
+def install_operator(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    if provider.type != "kubevirt":
+        raise HTTPException(
+            status_code=400, detail="Install operator is only for kubevirt providers"
+        )
+
+    try:
+        from app.services.providers.kubevirt import _deploy_operator
+
+        _deploy_operator(provider)
+    except Exception as e:
+        err_str = str(e)
+        if "Forbidden" in err_str and (
+            "clusterroles" in err_str or "clusterrolebindings" in err_str
+        ):
+            api_url = provider.get_credentials().get("api_url", "")
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "The service account lacks permission to create ClusterRoles. "
+                    "An OCP admin must run these commands first:\n\n"
+                    f"oc login {api_url}\n"
+                    "oc apply -f src/operator/deploy/clusterrole.yaml\n"
+                    "oc apply -f src/operator/deploy/clusterrolebinding.yaml\n\n"
+                    "Then click Install Operator again."
+                ),
+            )
+        logger.exception("Failed to install operator for %s", provider_id[:8])
+        raise HTTPException(status_code=500, detail=f"Failed to install operator: {e}")
+
+    from app.models.host import Host
+
+    host = db.query(Host).filter_by(provider_id=provider.id).first()
+    if not host:
+        import uuid as _uuid
+
+        host = Host(
+            id=str(_uuid.uuid4()),
+            provider_id=provider.id,
+            instance_id=provider.get_credentials().get("api_url", ""),
+            instance_type="kubevirt-cluster",
+            region=provider.default_region or "",
+            state="active",
+            host_type="kubevirt-cluster",
+            total_vcpus=0,
+            total_ram_mb=0,
+            ip_address=provider.get_credentials()
+            .get("api_url", "")
+            .replace("https://", "")
+            .split(":")[0],
+            agent_status="connected",
+            agent_token=provider.get_credentials().get("token", ""),
+            storage_size_gb=0,
+            max_eips=0,
+        )
+        db.add(host)
+        db.commit()
+
+    return {"status": "ok", "message": "Operator installed successfully"}
 
 
 @router.get("/{provider_id}/availability-zones")

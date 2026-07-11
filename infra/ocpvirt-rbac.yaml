@@ -54,14 +54,57 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list"]
-  # Pods — find Rook toolbox for ceph commands
+  # Pods — find Rook toolbox for ceph commands, operator helper pods
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    verbs: ["create", "delete", "get", "list"]
   # Pod exec — run ceph CLI in Rook toolbox (NFS export management)
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create", "get"]
+  # ConfigMaps — dnsmasq config for kubevirt native
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "get", "list"]
+  # CRDs — kubevirt native operator install
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  # Troshka CRDs — kubevirt native operator
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects", "troshkanetworks", "troshkavms"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects/status", "troshkanetworks/status", "troshkavms/status"]
+    verbs: ["get", "patch"]
+  # Deployments — operator install
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  # RBAC — operator install (ClusterRole, ClusterRoleBinding, ServiceAccount)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["create", "delete", "get", "patch"]
+  # ServiceAccounts — operator install
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "delete", "get"]
+  # NetworkAttachmentDefinitions — kubevirt native OVN networks
+  - apiGroups: ["k8s.cni.cncf.io"]
+    resources: ["net-attach-defs"]
+    verbs: ["create", "delete", "get", "list"]
+  # VolumeSnapshots — pattern capture
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "delete", "get", "list"]
+  # Jobs — guestfish, PXE init, pattern export
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "delete", "get", "list"]
+  # Events — operator progress reporting
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

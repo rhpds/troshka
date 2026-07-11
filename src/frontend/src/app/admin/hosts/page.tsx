@@ -223,7 +223,7 @@ export default function AdminHostsPage() {
   const instanceTypes = instanceTypesByProvider[selectedProvider?.type || "ec2"] || instanceTypesByProvider.ec2;
   const selectedProviderHasImage = selectedProvider ? !!selectedProvider.default_image : false;
   const selectedProviderHasVpc = selectedProvider ? !!selectedProvider.vpc_id : false;
-  const selectedProviderReady = selectedProvider?.type === "ocpvirt" || selectedProvider?.type === "gcp" || selectedProvider?.type === "azure" || selectedProvider?.type === "kubevirt" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
+  const selectedProviderReady = selectedProvider?.type === "ocpvirt" || selectedProvider?.type === "gcp" || selectedProvider?.type === "azure" ? true : (selectedProviderHasImage && selectedProviderHasVpc);
   const isOcpVirtHost = (h: Host) => h.instance_type ? /^\d+c-\d+g$/.test(h.instance_type) : false;
   const providerTypeById = Object.fromEntries(providers.map((p) => [p.id, p.type]));
   const filteredHosts = hosts.filter((h) => {
@@ -497,7 +497,7 @@ export default function AdminHostsPage() {
                     }}
                   >
                     <option value="">Select provider...</option>
-                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => (
+                    {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
                     ))}
                   </select>
@@ -511,11 +511,7 @@ export default function AdminHostsPage() {
                         : "No VPC set. Go to Providers and click Setup VPC."
                   } style={{ width: "100%", flexBasis: "100%" }} />
                 )}
-                {!newProviderId ? null : selectedProvider?.type === "kubevirt" ? (
-                  <div style={{ fontSize: 13, opacity: 0.7, padding: "8px 0" }}>
-                    Adding a host will deploy the Troshka operator and CRDs to the cluster and register it as a host.
-                  </div>
-                ) : selectedProvider?.type === "ocpvirt" ? (
+                {!newProviderId ? null : selectedProvider?.type === "ocpvirt" ? (
                   <>
                     <div style={{ minWidth: 120 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>CPU Cores</label>
@@ -582,7 +578,7 @@ export default function AdminHostsPage() {
                     )}
                   </>
                 )}
-                {newProviderId && selectedProvider?.type !== "kubevirt" && <div style={{ minWidth: 220 }}>
+                {newProviderId && <div style={{ minWidth: 220 }}>
                   <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Storage Pool</label>
                   <select
                     style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)", fontSize: 13 }}
@@ -706,13 +702,13 @@ export default function AdminHostsPage() {
               />
               <select value={filterProviderType} onChange={(e) => setFilterProviderType(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All types</option>
-                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => p.type))].map((t) => (
+                {[...new Set(providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => p.type))].map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
               <select value={filterProvider} onChange={(e) => setFilterProvider(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
                 <option value="">All providers</option>
-                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure" || p.type === "kubevirt").map((p) => (
+                {providers.filter((p) => p.type === "ec2" || p.type === "ocpvirt" || p.type === "gcp" || p.type === "azure").map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.type})</option>
                 ))}
               </select>
