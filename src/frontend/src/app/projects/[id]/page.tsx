@@ -792,9 +792,9 @@ export default function ProjectCanvasPage() {
               )}
             </h3>
             {deployProgress && projectState !== "error" && (
-              <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0 }}>
+              <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0, whiteSpace: "pre-line" }}>
                 <span style={{ opacity: 0.7 }}>{deployProgress.step}</span>
-                {deployProgress.detail ? `: ${deployProgress.detail}` : ""}
+                {deployProgress.detail ? `:\n${deployProgress.detail}` : ""}
               </div>
             )}
             {deployProgress?.items && projectState !== "error" && (

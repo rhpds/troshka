@@ -2092,7 +2092,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         except Exception:
             pass
 
-        dv_detail = " | ".join(dv_lines) if dv_lines else ""
+        dv_detail = "\n".join(dv_lines) if dv_lines else ""
 
         last = _deploy_progress.get(project_id, {})
         step = progress.get("stage", "") if progress else ""
