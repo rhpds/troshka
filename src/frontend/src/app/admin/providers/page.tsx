@@ -972,7 +972,7 @@ export default function AdminProvidersPage() {
                           const data = await resp.json().catch(() => ({}));
                           setTestResult((prev) => ({ ...prev, [p.id]: `Failed: ${data.detail || "unknown error"}` }));
                         }
-                      }}>Install Operator</Button>
+                      }}>{p.host_count > 0 ? "Reinstall Operator" : "Install Operator"}</Button>
                     )}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
