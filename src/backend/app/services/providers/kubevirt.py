@@ -226,7 +226,9 @@ class KubeVirtDriver(ProviderDriver):
     def get_host_status(self, provider, instance_id):
         try:
             _, core_api, _ = _get_k8s_clients(provider)
-            core_api.read_namespace(name="default")
+            creds = provider.get_credentials()
+            op_ns = creds.get("namespace", "troshka-operator")
+            core_api.read_namespace(name=op_ns)
             return {
                 "instance_id": instance_id,
                 "state": "running",
