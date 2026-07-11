@@ -94,6 +94,20 @@ def _deploy_operator(provider):
                 if subj.get("namespace"):
                     subj["namespace"] = operator_ns
 
+        if kind in ("ClusterRole", "ClusterRoleBinding"):
+            try:
+                if kind == "ClusterRole":
+                    rbac_api.read_cluster_role(name=name)
+                else:
+                    rbac_api.read_cluster_role_binding(name=name)
+                logger.info(f"{kind} {name} already exists, skipping")
+                continue
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    pass
+                else:
+                    raise
+
         try:
             if kind == "Namespace":
                 core_api.create_namespace(body=body)
@@ -112,10 +126,6 @@ def _deploy_operator(provider):
                     apps_api.patch_namespaced_deployment(
                         name=name, namespace=ns, body=body
                     )
-                elif kind == "ClusterRole":
-                    rbac_api.patch_cluster_role(name=name, body=body)
-                elif kind == "ClusterRoleBinding":
-                    rbac_api.patch_cluster_role_binding(name=name, body=body)
                 logger.info(f"Updated {kind} {name}")
             else:
                 raise
