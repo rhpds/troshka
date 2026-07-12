@@ -165,11 +165,16 @@ def resolve_vm_disks(topology):
         fmt = sd.get("format", "qcow2")
         size_gb = sd.get("size", sd.get("sizeGb", 20))
         source_type = sd.get("source", "")
+        presigned_url = sd.get("presignedUrl", "")
 
         if fmt == "iso":
-            cdrom = {"libraryIsoId": sd.get("libraryItemId", ""), "s3Path": ""}
-            if cdrom["libraryIsoId"]:
-                cdrom["s3Path"] = f"library/{cdrom['libraryIsoId']}.iso"
+            resolved = sd.get("resolvedS3Path", "")
+            cdrom = {
+                "libraryIsoId": sd.get("libraryItemId", ""),
+                "s3Path": resolved or f"library/{sd.get('libraryItemId', '')}.iso",
+            }
+            if presigned_url:
+                cdrom["presignedUrl"] = presigned_url
             vm_cdroms[vm_id] = cdrom
             continue
 
@@ -179,8 +184,6 @@ def resolve_vm_disks(topology):
             "bus": "virtio",
             "format": fmt,
         }
-
-        presigned_url = sd.get("presignedUrl", "")
 
         if source_type == "pattern":
             pattern_id = sd.get("patternId", "")
@@ -195,9 +198,10 @@ def resolve_vm_disks(topology):
                     disk["patternImage"]["presignedUrl"] = presigned_url
         elif source_type == "library":
             lib_id = sd.get("libraryItemId", "")
-            if lib_id:
+            resolved = sd.get("resolvedS3Path", "")
+            if lib_id or resolved:
                 disk["libraryImage"] = {
-                    "s3Path": f"library/{lib_id}.{fmt}",
+                    "s3Path": resolved or f"library/{lib_id}.{fmt}",
                     "format": fmt,
                 }
                 if presigned_url:
