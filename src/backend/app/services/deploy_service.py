@@ -2012,6 +2012,19 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 data["presignedUrl"] = _presign(s3_path)
                 data["resolvedS3Path"] = s3_path
 
+    # Regenerate cloud-init userdata so deploy-time settings (guest-exec, etc.) take effect
+    from app.services.cloud_init import generate_userdata
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if not data.get("cloudInit"):
+            continue
+        if not project.guest_exec_enabled:
+            data["guestExecEnabled"] = False
+        data["ciUserData"] = generate_userdata(data)
+
     _update_deploy_progress(project_id, "networks", "creating operator resources")
     notify_project(
         project_id,
