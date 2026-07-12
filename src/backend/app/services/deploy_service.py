@@ -2208,7 +2208,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             best_status = {}
             for line in cache_lines + clone_lines:
                 label = line.split(":")[0].strip()
-                status = line.split(":", 1)[1].strip() if ":" in line else ""
+                dv_status = line.split(":", 1)[1].strip() if ":" in line else ""
                 prev = best_status.get(label, "")
                 rank = {
                     "done": 5,
@@ -2224,8 +2224,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                             return v
                     return 0
 
-                if _rank(status) >= _rank(prev):
-                    best_status[label] = status
+                if _rank(dv_status) >= _rank(prev):
+                    best_status[label] = dv_status
 
             for node in topology.get("nodes", []):
                 ndata3 = node.get("data", {})
