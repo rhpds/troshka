@@ -10,6 +10,7 @@ interface VmProgress {
 interface DeployProgress {
   step: string;
   detail: string;
+  items?: string[];
 }
 
 export interface OcpHealth {
