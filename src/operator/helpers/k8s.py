@@ -39,7 +39,6 @@ def build_nad(network_cr):
         "netAttachDefName": f"{namespace}/{nad_name}",
         "type": "ovn-k8s-cni-overlay",
         "topology": "layer2",
-        "allowPersistentIPs": True,
     }
 
     return {
