@@ -33,11 +33,12 @@ def build_nad(network_cr):
     namespace = network_cr["metadata"]["namespace"]
 
     nad_name = f"{name}-nad"
+    bridge_name = f"br-{name[-8:]}"
     config = {
         "cniVersion": "0.3.1",
         "name": nad_name,
         "type": "cnv-bridge",
-        "bridge": nad_name,
+        "bridge": bridge_name,
         "macspoofchk": False,
         "preserveDefaultVlan": False,
     }
