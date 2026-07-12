@@ -54,13 +54,13 @@ def build_nad(network_cr):
     }
 
 
-def _gateway_ip_from_cidr(cidr):
-    """Derive .1 gateway IP and prefix from CIDR (e.g., '10.0.0.0/24' -> '10.0.0.1/24')."""
+def _dnsmasq_ip_from_cidr(cidr):
+    """Derive .2 IP for dnsmasq and prefix from CIDR (gateway gets .1)."""
     if not cidr or "/" not in cidr:
         return "", ""
     parts = cidr.split("/")
     octets = parts[0].split(".")
-    octets[3] = "1"
+    octets[3] = "2"
     return ".".join(octets), parts[1]
 
 
@@ -75,14 +75,11 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
     annotations = {"k8s.v1.cni.cncf.io/networks": nad_name}
 
     cidr = spec.get("cidr", "")
-    gw_ip, prefix = _gateway_ip_from_cidr(cidr)
-    gateway_spec = spec.get("gateway", "")
-    if gateway_spec:
-        gw_ip = gateway_spec
+    dnsmasq_ip, prefix = _dnsmasq_ip_from_cidr(cidr)
 
     setup_cmd = "true"
-    if gw_ip and prefix and _IPV4_RE.match(gw_ip) and _PREFIX_RE.match(prefix):
-        setup_cmd = f"ip addr add {gw_ip}/{prefix} dev net1 && ip link set net1 up"
+    if dnsmasq_ip and prefix and _IPV4_RE.match(dnsmasq_ip) and _PREFIX_RE.match(prefix):
+        setup_cmd = f"ip addr add {dnsmasq_ip}/{prefix} dev net1 && ip link set net1 up"
 
     return {
         "apiVersion": "v1",
