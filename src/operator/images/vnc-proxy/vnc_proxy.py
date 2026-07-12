@@ -15,9 +15,9 @@ NAMESPACE = os.environ.get("NAMESPACE", "default")
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
 
 config.load_incluster_config()
-api_client = client.ApiClient()
-K8S_HOST = client.Configuration().host
-K8S_TOKEN = client.Configuration().api_key.get(
+_cfg = client.Configuration.get_default_copy()
+K8S_HOST = _cfg.host
+K8S_TOKEN = _cfg.api_key.get(
     "authorization", ""
 ).replace("Bearer ", "")
 
