@@ -194,35 +194,38 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     if spec.get("cdrom", {}).get("s3Path"):
         cdrom_pvc = f"{name}-cdrom"
         cdrom_s3 = spec["cdrom"]["s3Path"]
-        golden_name = _ensure_golden_pvc(
-            custom_api, core_api, cdrom_s3, 10, s3_config
-        )
-        cdrom_size = 10
         try:
-            golden_pvc = core_api.read_namespaced_persistent_volume_claim(
-                name=golden_name, namespace=CACHE_NAMESPACE
+            golden_name = _ensure_golden_pvc(
+                custom_api, core_api, cdrom_s3, 10, s3_config
             )
-            golden_storage = golden_pvc.spec.resources.requests.get("storage", "10Gi")
-            cdrom_size = max(cdrom_size, int(golden_storage.rstrip("Gi")))
-        except Exception:
-            pass
-        clone_dv = build_clone_datavolume(
-            cdrom_pvc, namespace, golden_name, CACHE_NAMESPACE, cdrom_size
-        )
-        clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
-        try:
-            custom_api.create_namespaced_custom_object(
-                group="cdi.kubevirt.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="datavolumes",
-                body=clone_dv,
+            cdrom_size = 10
+            try:
+                golden_pvc = core_api.read_namespaced_persistent_volume_claim(
+                    name=golden_name, namespace=CACHE_NAMESPACE
+                )
+                golden_storage = golden_pvc.spec.resources.requests.get("storage", "10Gi")
+                cdrom_size = max(cdrom_size, int(golden_storage.rstrip("Gi")))
+            except Exception:
+                pass
+            clone_dv = build_clone_datavolume(
+                cdrom_pvc, namespace, golden_name, CACHE_NAMESPACE, cdrom_size
             )
-        except client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        _wait_for_datavolume(custom_api, cdrom_pvc, namespace, owner_name=name, owner_namespace=namespace)
-        disk_pvcs["cdrom"] = cdrom_pvc
+            clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
+            try:
+                custom_api.create_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="datavolumes",
+                    body=clone_dv,
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            _wait_for_datavolume(custom_api, cdrom_pvc, namespace, owner_name=name, owner_namespace=namespace)
+            disk_pvcs["cdrom"] = cdrom_pvc
+        except Exception as e:
+            logger.warning(f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}")
 
     cloudinit_secret_name = None
     ci_secret = build_cloudinit_secret(body)

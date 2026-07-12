@@ -62,7 +62,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             }
         )
 
-    if spec.get("cdrom", {}).get("s3Path"):
+    if spec.get("cdrom", {}).get("s3Path") and "cdrom" in disk_pvcs:
         cd_vol_name = "cdrom"
         domain["devices"]["disks"].append(
             {
@@ -70,11 +70,10 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
                 "cdrom": {"bus": "sata"},
             }
         )
-        cd_pvc = disk_pvcs.get("cdrom", "cdrom-pvc")
         volumes.append(
             {
                 "name": cd_vol_name,
-                "persistentVolumeClaim": {"claimName": cd_pvc},
+                "persistentVolumeClaim": {"claimName": disk_pvcs["cdrom"]},
             }
         )
 
