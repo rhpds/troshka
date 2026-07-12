@@ -34,8 +34,13 @@ def generate_dnsmasq_config(network_spec):
         netmask = _cidr_to_netmask(cidr)
         lines.append(f"dhcp-range={dhcp_range},{netmask},12h")
 
-    if network_spec.get("gateway"):
-        lines.append(f"dhcp-option=3,{network_spec['gateway']}")
+    gateway = network_spec.get("gateway", "")
+    if not gateway and cidr:
+        octets = cidr.split("/")[0].split(".")
+        octets[3] = "1"
+        gateway = ".".join(octets)
+    if gateway:
+        lines.append(f"dhcp-option=3,{gateway}")
 
     for lease in network_spec.get("staticLeases", []):
         mac = lease.get("mac", "")
