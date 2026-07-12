@@ -22,9 +22,9 @@ rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachineinstances"]
     verbs: ["get", "list", "delete"]
-  # KubeVirt subresources — VNC console, serial console
+  # KubeVirt subresources — VNC console, serial console, exec
   - apiGroups: ["subresources.kubevirt.io"]
-    resources: ["virtualmachines", "virtualmachineinstances", "virtualmachineinstances/vnc", "virtualmachineinstances/console"]
+    resources: ["virtualmachines", "virtualmachineinstances", "virtualmachineinstances/vnc", "virtualmachineinstances/console", "virtualmachineinstances/exec"]
     verbs: ["get"]
   # CDI DataVolumes — created via VM dataVolumeTemplates
   - apiGroups: ["cdi.kubevirt.io"]
