@@ -36,9 +36,10 @@ def build_nad(network_cr):
     config = {
         "cniVersion": "0.3.1",
         "name": nad_name,
-        "netAttachDefName": f"{namespace}/{nad_name}",
-        "type": "ovn-k8s-cni-overlay",
-        "topology": "layer2",
+        "type": "cnv-bridge",
+        "bridge": nad_name,
+        "macspoofchk": False,
+        "preserveDefaultVlan": False,
     }
 
     return {
