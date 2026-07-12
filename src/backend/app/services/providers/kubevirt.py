@@ -786,6 +786,31 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
 
     from kubernetes.stream import stream as k8s_stream
 
+    def _pod_exec_raw(pod_name, ns, cmd, req_timeout=30):
+        """Exec in pod and return raw stdout (not Python-parsed)."""
+        ws = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            ns,
+            container="compute",
+            command=cmd,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=False,
+            _request_timeout=req_timeout,
+        )
+        out = ""
+        while ws.is_open():
+            ws.update(timeout=req_timeout)
+            if ws.peek_stdout():
+                out += ws.read_stdout()
+            if ws.peek_stderr():
+                ws.read_stderr()
+        ws.close()
+        return out
+
     # Discover the libvirt domain name inside the pod
     resp = k8s_stream(
         core_v1.connect_get_namespaced_pod_exec,
@@ -805,12 +830,10 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
         raise RuntimeError("No libvirt domain found in virt-launcher pod")
 
     # Check guest agent availability
-    check_resp = k8s_stream(
-        core_v1.connect_get_namespaced_pod_exec,
+    check_resp = _pod_exec_raw(
         launcher.metadata.name,
         namespace,
-        container="compute",
-        command=[
+        [
             "virsh",
             "qemu-agent-command",
             domain,
@@ -818,12 +841,6 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
             "--timeout",
             "10",
         ],
-        stderr=True,
-        stdout=True,
-        stdin=False,
-        tty=False,
-        _preload_content=True,
-        _request_timeout=30,
     )
     if "error" in check_resp.lower() and "guest agent" in check_resp.lower():
         raise RuntimeError(f"Guest agent not available: {check_resp}")
@@ -848,25 +865,10 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
             },
         }
     )
-    exec_resp = k8s_stream(
-        core_v1.connect_get_namespaced_pod_exec,
+    exec_resp = _pod_exec_raw(
         launcher.metadata.name,
         namespace,
-        container="compute",
-        command=[
-            "virsh",
-            "qemu-agent-command",
-            domain,
-            exec_payload,
-            "--timeout",
-            "10",
-        ],
-        stderr=True,
-        stdout=True,
-        stdin=False,
-        tty=False,
-        _preload_content=True,
-        _request_timeout=30,
+        ["virsh", "qemu-agent-command", domain, exec_payload, "--timeout", "10"],
     )
     parsed = json.loads(exec_resp)
     pid = parsed.get("return", {}).get("pid")
@@ -884,25 +886,10 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
     )
     deadline = time.time() + timeout
     while time.time() < deadline:
-        sr = k8s_stream(
-            core_v1.connect_get_namespaced_pod_exec,
+        sr = _pod_exec_raw(
             launcher.metadata.name,
             namespace,
-            container="compute",
-            command=[
-                "virsh",
-                "qemu-agent-command",
-                domain,
-                status_payload,
-                "--timeout",
-                "10",
-            ],
-            stderr=True,
-            stdout=True,
-            stdin=False,
-            tty=False,
-            _preload_content=True,
-            _request_timeout=30,
+            ["virsh", "qemu-agent-command", domain, status_payload, "--timeout", "10"],
         )
         status = json.loads(sr).get("return", {})
         if status.get("exited"):
