@@ -18,10 +18,14 @@ rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachines"]
     verbs: ["create", "delete", "get", "list", "patch"]
-  # KubeVirt VMIs — read-only for status checks
+  # KubeVirt VMIs — read + delete (delete for restart/force-stop)
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachineinstances"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "delete"]
+  # KubeVirt subresources — VNC console, serial console
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances", "virtualmachineinstances/vnc", "virtualmachineinstances/console"]
+    verbs: ["get"]
   # CDI DataVolumes — created via VM dataVolumeTemplates
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]

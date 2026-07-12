@@ -4380,7 +4380,7 @@ def stop_project_async(project_id: str):
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.ip_address:
+        if not host:
             error_msg = "Host is disconnected or unavailable — cannot stop VMs"
             project.state = "error"
             project.deploy_error = error_msg
@@ -4395,18 +4395,62 @@ def stop_project_async(project_id: str):
             )
             return
 
-        # Stop VMs via troshkad
         topology = project.topology or {}
         vms = _extract_vms(topology)
-        for vm in vms:
-            vm_name = _vm_domain_name(project_id, vm["node_id"])
-            try:
-                job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
-                wait_for_job(host, job_id, timeout=90)
-            except TroshkadError as e:
-                logger.warning(
-                    "Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e
+
+        # KubeVirt native: patch VM running state via K8s API
+        if host.host_type == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider:
+                custom_api, _, _ = _get_k8s_clients(provider)
+                namespace = _project_ns(provider, project_id)
+                for vm in vms:
+                    kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+                    try:
+                        custom_api.patch_namespaced_custom_object(
+                            group="kubevirt.io",
+                            version="v1",
+                            namespace=namespace,
+                            plural="virtualmachines",
+                            name=kv_name,
+                            body={"spec": {"running": False}},
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Stop %s: failed to stop KubeVirt VM %s: %s",
+                            project_id[:8],
+                            kv_name,
+                            e,
+                        )
+        else:
+            if not host.ip_address:
+                error_msg = "Host is disconnected or unavailable — cannot stop VMs"
+                project.state = "error"
+                project.deploy_error = error_msg
+                s.commit()
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": error_msg,
+                    },
                 )
+                return
+
+            # Stop VMs via troshkad
+            for vm in vms:
+                vm_name = _vm_domain_name(project_id, vm["node_id"])
+                try:
+                    job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
+                    wait_for_job(host, job_id, timeout=90)
+                except TroshkadError as e:
+                    logger.warning(
+                        "Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e
+                    )
 
         # BMC, networks, and EIPs stay intact on stop — only torn down on delete
         project.state = "stopped"
@@ -4470,7 +4514,86 @@ def start_project_async(project_id: str):
             return
 
         host = s.query(Host).filter_by(id=project.host_id).first()
-        if not host or not host.ip_address:
+        if not host:
+            error_msg = "Host is disconnected or unavailable — cannot start VMs"
+            project.state = "error"
+            project.deploy_error = error_msg
+            s.commit()
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": error_msg,
+                },
+            )
+            return
+
+        # KubeVirt native: just patch VMs to running, no EIPs/networks/PXE
+        if host.host_type == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            provider = s.query(Provider).filter_by(id=host.provider_id).first()
+            if provider:
+                custom_api, _, _ = _get_k8s_clients(provider)
+                namespace = _project_ns(provider, project_id)
+                topology = project.topology or {}
+                vms = _extract_vms(topology)
+                for vm in vms:
+                    kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+                    try:
+                        custom_api.patch_namespaced_custom_object(
+                            group="kubevirt.io",
+                            version="v1",
+                            namespace=namespace,
+                            plural="virtualmachines",
+                            name=kv_name,
+                            body={"spec": {"running": True}},
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Start %s: failed to start KubeVirt VM %s: %s",
+                            project_id[:8],
+                            kv_name,
+                            e,
+                        )
+
+            project.state = "active"
+            project.deploy_error = None
+            project.auto_stopped = False
+
+            if project.auto_stop_minutes:
+                now = datetime.datetime.now(datetime.UTC)
+                project.auto_stop_started_at = now
+                project.auto_stop_expires_at = now + datetime.timedelta(
+                    minutes=project.auto_stop_minutes
+                )
+                project.auto_stop_warned = False
+
+            s.commit()
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "active",
+                    "deploy_error": None,
+                    "auto_stop_expires_at": (
+                        project.auto_stop_expires_at.isoformat()
+                        if project.auto_stop_expires_at
+                        else None
+                    ),
+                    "lifetime_expires_at": (
+                        project.lifetime_expires_at.isoformat()
+                        if project.lifetime_expires_at
+                        else None
+                    ),
+                },
+            )
+            logger.info("Start %s: kubevirt VMs started", project_id[:8])
+            return
+
+        if not host.ip_address:
             error_msg = "Host is disconnected or unavailable — cannot start VMs"
             project.state = "error"
             project.deploy_error = error_msg

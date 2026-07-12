@@ -1009,18 +1009,44 @@ def force_stop_project(
         raise HTTPException(status_code=403, detail="Access denied")
 
     host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.ip_address:
+    if not host:
         raise HTTPException(status_code=503, detail="Host not available")
 
     topo = project.deployed_topology or project.topology or {}
     vms = [n for n in topo.get("nodes", []) if n.get("type") == "vmNode"]
-    for vm in vms:
-        dom = _domain_name(project_id, vm["id"])
-        try:
-            job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
-            wait_for_job(host, job_id, timeout=30, poll_interval=2)
-        except TroshkadError:
-            logger.warning("Failed to force-stop VM %s", dom)
+
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            namespace = _kubevirt_project_ns(provider, project_id)
+            for vm in vms:
+                kv_name = f"troshka-vm-{vm['id'][:8]}"
+                try:
+                    custom_api.patch_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachines",
+                        name=kv_name,
+                        body={"spec": {"running": False}},
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to force-stop KubeVirt VM %s: %s", kv_name, e
+                    )
+    else:
+        if not host.ip_address:
+            raise HTTPException(status_code=503, detail="Host not available")
+        for vm in vms:
+            dom = _domain_name(project_id, vm["id"])
+            try:
+                job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
+                wait_for_job(host, job_id, timeout=30, poll_interval=2)
+            except TroshkadError:
+                logger.warning("Failed to force-stop VM %s", dom)
 
     project.state = "stopped"
     db.commit()
@@ -1472,6 +1498,47 @@ def forcestop_vm(
     db: Session = Depends(get_db),
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    # KubeVirt native: stop VM + delete VMI for immediate shutdown
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            kv_name = f"troshka-vm-{vm_id[:8]}"
+            namespace = _kubevirt_project_ns(provider, project_id)
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=kv_name,
+                    body={"spec": {"running": False}},
+                )
+                # Delete VMI for immediate effect (gracePeriodSeconds=0)
+                try:
+                    custom_api.delete_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachineinstances",
+                        name=kv_name,
+                        grace_period_seconds=0,
+                    )
+                except Exception:
+                    pass
+                notify_project(
+                    project_id,
+                    {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},
+                )
+                return {"action": "forcestop", "success": True}
+            except Exception as e:
+                logger.error("Failed to force-stop KubeVirt VM %s: %s", kv_name, e)
+                return {"action": "forcestop", "success": False}
+        return {"action": "forcestop", "success": False}
+
     dom = _domain_name(project_id, vm_id)
     try:
         job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
@@ -1494,6 +1561,34 @@ def restart_vm(
     db: Session = Depends(get_db),
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    # KubeVirt native: delete VMI to trigger restart (VM CR stays running=true)
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            kv_name = f"troshka-vm-{vm_id[:8]}"
+            namespace = _kubevirt_project_ns(provider, project_id)
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=kv_name,
+                )
+                notify_project(
+                    project_id,
+                    {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}},
+                )
+                return {"action": "restart", "success": True}
+            except Exception as e:
+                logger.error("Failed to restart KubeVirt VM %s: %s", kv_name, e)
+                return {"action": "restart", "success": False}
+        return {"action": "restart", "success": False}
+
     dom = _domain_name(project_id, vm_id)
     try:
         job_id = start_job(host, "/vms/reboot", {"domain_name": dom})

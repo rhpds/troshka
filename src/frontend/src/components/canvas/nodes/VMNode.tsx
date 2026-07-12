@@ -97,21 +97,15 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         }
       } else if (action === "restart") {
         if (result.success) {
-          const off = await waitForShutdown(10000);
-          if (off) {
-            updateNodeData(id, { status: "stopped" });
-            // Wait for it to come back up
-            const start = Date.now();
-            while (Date.now() - start < 10000) {
-              await new Promise((r) => setTimeout(r, 2000));
-              const state = await pollVmStatus();
-              if (state === "running") {
-                updateNodeData(id, { status: "running" });
-                break;
-              }
+          updateNodeData(id, { status: "restarting" });
+          const start = Date.now();
+          while (Date.now() - start < 60000) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const state = await pollVmStatus();
+            if (state === "running") {
+              updateNodeData(id, { status: "running" });
+              break;
             }
-          } else {
-            alert("Restart signal sent but VM did not shut down within 10 seconds. Use Force Power Off, then Start.");
           }
         } else {
           alert(`Restart failed: ${result.output?.slice(-200) || "unknown error"}`);

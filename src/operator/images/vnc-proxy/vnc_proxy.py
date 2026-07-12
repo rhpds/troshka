@@ -41,43 +41,58 @@ async def _proxy(ws_client):
     logger.info(f"VNC proxy request for {vm_name}")
 
     vnc_url = _get_kubevirt_vnc_url(vm_name)
-    headers = {"Authorization": f"Bearer {K8S_TOKEN}"}
 
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    try:
-        async with websockets.connect(
-            vnc_url,
-            additional_headers=headers,
-            ssl=ssl_ctx,
-            subprotocols=["binary"],
-        ) as ws_kubevirt:
-            logger.info(f"Connected to KubeVirt VNC for {vm_name}")
-
-            async def client_to_kv():
-                try:
-                    async for msg in ws_client:
-                        await ws_kubevirt.send(msg)
-                except websockets.exceptions.ConnectionClosed:
-                    pass
-
-            async def kv_to_client():
-                try:
-                    async for msg in ws_kubevirt:
-                        await ws_client.send(msg)
-                except websockets.exceptions.ConnectionClosed:
-                    pass
-
-            await asyncio.gather(client_to_kv(), kv_to_client())
-
-    except Exception as e:
-        logger.error(f"VNC proxy error for {vm_name}: {e}")
+    max_retries = 20
+    for attempt in range(max_retries):
+        token = open(_token_path).read().strip() if os.path.exists(_token_path) else K8S_TOKEN
+        headers = {"Authorization": f"Bearer {token}"}
         try:
-            await ws_client.close(1011, str(e))
-        except Exception:
-            pass
+            async with websockets.connect(
+                vnc_url,
+                additional_headers=headers,
+                ssl=ssl_ctx,
+                subprotocols=["binary"],
+            ) as ws_kubevirt:
+                logger.info(f"Connected to KubeVirt VNC for {vm_name}")
+
+                async def client_to_kv():
+                    try:
+                        async for msg in ws_client:
+                            await ws_kubevirt.send(msg)
+                    except websockets.exceptions.ConnectionClosed:
+                        pass
+
+                async def kv_to_client():
+                    try:
+                        async for msg in ws_kubevirt:
+                            await ws_client.send(msg)
+                    except websockets.exceptions.ConnectionClosed:
+                        pass
+
+                await asyncio.gather(client_to_kv(), kv_to_client())
+                return
+
+        except websockets.exceptions.ConnectionClosed:
+            return
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.info(f"VNC for {vm_name} not ready (attempt {attempt + 1}), retrying in 3s: {e}")
+                try:
+                    pong = await asyncio.wait_for(ws_client.ping(), timeout=5)
+                except Exception:
+                    logger.info(f"Client disconnected while waiting for {vm_name}")
+                    return
+                await asyncio.sleep(3)
+            else:
+                logger.error(f"VNC proxy giving up on {vm_name} after {max_retries} attempts: {e}")
+                try:
+                    await ws_client.close(1011, str(e))
+                except Exception:
+                    pass
 
 
 async def main():
