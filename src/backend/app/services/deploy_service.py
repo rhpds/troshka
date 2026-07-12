@@ -2074,8 +2074,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         cr_name,
     )
 
-    deploy_start = project.updated_at or datetime.datetime.utcnow()
-    deploy_deadline = deploy_start.timestamp() + 7200
+    deploy_deadline = _time.time() + 7200
     for attempt in range(1440):
         if _time.time() > deploy_deadline:
             break
