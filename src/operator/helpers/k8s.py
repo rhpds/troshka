@@ -35,10 +35,7 @@ def build_nad(network_cr):
         "netAttachDefName": f"{namespace}/{nad_name}",
         "type": "ovn-k8s-cni-overlay",
         "topology": "layer2",
-        "subnets": spec["cidr"],
     }
-    if spec.get("gateway"):
-        config["excludeSubnets"] = f"{spec['gateway']}/32"
 
     return {
         "apiVersion": "k8s.cni.cncf.io/v1",
