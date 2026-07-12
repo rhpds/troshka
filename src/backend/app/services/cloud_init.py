@@ -130,6 +130,10 @@ def generate_userdata(vm_data: dict) -> str:
         lines.append(
             "  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
         )
+    if vm_data.get("guestExecEnabled", True):
+        lines.append(
+            "  - sed -i '/^BLOCK_RPCS=/s/guest-exec-status,//;/^BLOCK_RPCS=/s/guest-exec,//;/^BLOCK_RPCS=/s/,guest-exec-status//;/^BLOCK_RPCS=/s/,guest-exec//' /etc/sysconfig/qemu-ga 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
+        )
     lines.append(
         "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"
     )

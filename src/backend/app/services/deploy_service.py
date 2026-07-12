@@ -2681,6 +2681,13 @@ def deploy_project_async(
                 gateway_ip,
             )
 
+        if not project.guest_exec_enabled:
+            for node in topology.get("nodes", []):
+                if node.get("type") == "vmNode" and node.get("data", {}).get(
+                    "cloudInit"
+                ):
+                    node["data"]["guestExecEnabled"] = False
+
         # Create Route-based access for OCP Virt port forwards on 443/80
         # Runs after network setup so nftables chains exist for DNAT rules
         if host and host.provider_id:

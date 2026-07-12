@@ -214,7 +214,7 @@ interface SnapshotItem {
   vm_config: Record<string, unknown> | null;
 }
 
-export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void }) {
+export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDescription, projectGuid, onDescriptionChange, ocpHealth, projectId, hostId, autoStopMinutes, autoDeleteMinutes, onAutoStopChange, onAutoDeleteChange, clockTarget, onClockTargetChange, guestExecEnabled, onGuestExecChange }: { onOpenStartOrder?: () => void; onOpenExternalIps?: () => void; projectDescription?: string; projectGuid?: string; onDescriptionChange?: (desc: string) => void; ocpHealth?: { phase: string; detail: string; items?: string[] } | null; projectId?: string; hostId?: string; autoStopMinutes?: number | null; autoDeleteMinutes?: number | null; onAutoStopChange?: (minutes: number | null) => void; onAutoDeleteChange?: (minutes: number | null) => void; clockTarget?: string | null; onClockTargetChange?: (value: string | null) => void; guestExecEnabled?: boolean; onGuestExecChange?: (enabled: boolean) => void }) {
   const [showDesc, setShowDesc] = useState(false);
   const [editingDesc, setEditingDesc] = useState(false);
   const [showPasswords, setShowPasswords] = useState(false);
@@ -775,6 +775,31 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     >Set</button>
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* Guest Exec */}
+            <div className="palette-item" style={{ cursor: "default" }}>
+              <div className="palette-icon" style={{ background: "rgba(34,197,94,0.15)" }}>⚡</div>
+              <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="palette-item-label">Guest Exec</div>
+                  <div
+                    onClick={() => onGuestExecChange?.(!guestExecEnabled)}
+                    style={{
+                      width: 28, height: 14, borderRadius: 7, cursor: "pointer", flexShrink: 0,
+                      background: (guestExecEnabled !== false) ? "rgba(108,99,255,0.7)" : "rgba(255,255,255,0.15)",
+                      position: "relative", transition: "background 0.2s",
+                    }}
+                  >
+                    <div style={{
+                      width: 10, height: 10, borderRadius: 5,
+                      background: "#fff", position: "absolute", top: 2,
+                      left: (guestExecEnabled !== false) ? 16 : 2, transition: "left 0.2s",
+                    }} />
+                  </div>
+                </div>
+                <div className="palette-item-desc">Enable VM command exec</div>
               </div>
             </div>
           </>

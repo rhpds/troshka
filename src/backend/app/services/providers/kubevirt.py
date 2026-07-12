@@ -828,6 +828,15 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
     if "error" in check_resp.lower() and "guest agent" in check_resp.lower():
         raise RuntimeError(f"Guest agent not available: {check_resp}")
 
+    try:
+        info = json.loads(check_resp)
+        cmds = info.get("return", {}).get("supported_commands", [])
+        exec_cmd = next((c for c in cmds if c.get("name") == "guest-exec"), None)
+        if exec_cmd and not exec_cmd.get("enabled", False):
+            raise RuntimeError("guest-exec is disabled (blocked by guest agent config)")
+    except (json.JSONDecodeError, StopIteration):
+        pass
+
     # Execute command
     exec_payload = json.dumps(
         {

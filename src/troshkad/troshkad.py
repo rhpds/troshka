@@ -7927,8 +7927,21 @@ def _handle_vm_guest_exec(job, params):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"Guest agent not responding on {domain}")
 
-    # Execute command via guest-exec
     import json as _json
+
+    # Verify guest-exec is enabled (some distros block it by default)
+    try:
+        info = _json.loads(check.stdout)
+        cmds = info.get("return", {}).get("supported_commands", [])
+        exec_cmd = next((c for c in cmds if c.get("name") == "guest-exec"), None)
+        if exec_cmd and not exec_cmd.get("enabled", False):
+            raise RuntimeError(
+                f"guest-exec is disabled on {domain} (blocked by guest agent config)"
+            )
+    except (_json.JSONDecodeError, StopIteration):
+        pass
+
+    # Execute command via guest-exec
     exec_cmd = _json.dumps({
         "execute": "guest-exec",
         "arguments": {

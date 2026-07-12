@@ -113,6 +113,7 @@ def _project_response_dict(project):
         "clock_target": (
             project.clock_target.isoformat() if project.clock_target else None
         ),
+        "guest_exec_enabled": project.guest_exec_enabled,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }

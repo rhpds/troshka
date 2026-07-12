@@ -46,6 +46,7 @@ export default function ProjectCanvasPage() {
   const [lifetimeExpiresAt, setLifetimeExpiresAt] = useState<string | null>(null);
   const [autoStopped, setAutoStopped] = useState(false);
   const [clockTarget, setClockTarget] = useState<string | null>(null);
+  const [guestExecEnabled, setGuestExecEnabled] = useState(true);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -96,6 +97,7 @@ export default function ProjectCanvasPage() {
         setLifetimeExpiresAt(data.lifetime_expires_at ?? null);
         setAutoStopped(!!data.auto_stopped);
         setClockTarget(data.clock_target ?? null);
+        setGuestExecEnabled(data.guest_exec_enabled !== false);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
@@ -891,6 +893,13 @@ export default function ProjectCanvasPage() {
               setToast("Clock updated — VMs syncing");
               setTimeout(() => setToast(null), 3000);
             }
+          });
+        }} guestExecEnabled={guestExecEnabled} onGuestExecChange={(v: boolean) => {
+          setGuestExecEnabled(v);
+          fetch(`/api/v1/projects/${projectId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ guest_exec_enabled: v }),
           });
         }} />}
         <button

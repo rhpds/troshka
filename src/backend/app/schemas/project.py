@@ -26,6 +26,7 @@ class ProjectUpdate(BaseModel):
     tags: dict | None = None
     guid: str | None = None
     clock_target: datetime.datetime | None = None
+    guest_exec_enabled: bool | None = None
 
 
 class ProjectResponse(BaseModel):
@@ -55,6 +56,7 @@ class ProjectResponse(BaseModel):
     tags: dict | None = None
     guid: str | None = None
     clock_target: datetime.datetime | None = None
+    guest_exec_enabled: bool = True
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

@@ -28,6 +28,9 @@ def test_provision_host_returns_cluster_info():
     driver = get_provider_driver(provider)
 
     mock_node = MagicMock()
+    mock_node.metadata.labels = {"node-role.kubernetes.io/worker": ""}
+    mock_node.spec.unschedulable = False
+    mock_node.spec.taints = []
     mock_node.status.allocatable = {"cpu": "64", "memory": "262144Mi"}
     mock_nodes = MagicMock()
     mock_nodes.items = [mock_node]
