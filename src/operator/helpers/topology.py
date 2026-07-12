@@ -1,23 +1,62 @@
+def _gateway_ip_for_cidr(cidr):
+    if not cidr or "/" not in cidr:
+        return ""
+    octets = cidr.split("/")[0].split(".")
+    octets[3] = "1"
+    return ".".join(octets)
+
+
 def extract_networks(topology):
     nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+
+    gateway_nodes = {}
+    for node in nodes:
+        data = node.get("data", {})
+        if data.get("subtype") == "gateway":
+            gateway_nodes[node.get("id", data.get("id", ""))] = data
+
+    networks_with_gateway = set()
+    for edge in edges:
+        src, tgt = edge.get("source", ""), edge.get("target", "")
+        if src in gateway_nodes:
+            networks_with_gateway.add(tgt)
+        elif tgt in gateway_nodes:
+            networks_with_gateway.add(src)
+
     networks = []
     for node in nodes:
         data = node.get("data", {})
-        if node.get("type") == "networkNode":
-            networks.append(
-                {
-                    "id": data.get("id", node.get("id", "")),
-                    "label": data.get("label", ""),
-                    "cidr": data.get("cidr", ""),
-                    "gateway": data.get("gatewayIp", ""),
-                    "dhcpRange": data.get("dhcpRange", ""),
-                    "networkType": data.get("networkType", "standard"),
-                    "dnsForwarders": data.get("dnsForwarders", []),
-                    "externalAccess": data.get("externalAccess", False),
-                    "pxeConfig": data.get("pxeConfig", {}),
-                    "staticLeases": [],
-                }
-            )
+        if node.get("type") != "networkNode":
+            continue
+        node_id = data.get("id", node.get("id", ""))
+        cidr = data.get("cidr", "")
+        gateway_ip = data.get("gatewayIp", "")
+        if not gateway_ip and cidr:
+            gateway_ip = _gateway_ip_for_cidr(cidr)
+
+        dhcp_range = data.get("dhcpRange", "")
+        has_gateway = node_id in networks_with_gateway
+        external_access = data.get("externalAccess", has_gateway)
+
+        dns_forwarders = data.get("dnsForwarders", [])
+        if not dns_forwarders and data.get("dns") and gateway_ip:
+            dns_forwarders = [gateway_ip]
+
+        networks.append(
+            {
+                "id": node_id,
+                "label": data.get("label", ""),
+                "cidr": cidr,
+                "gateway": gateway_ip,
+                "dhcpRange": dhcp_range,
+                "networkType": data.get("networkType", "standard"),
+                "dnsForwarders": dns_forwarders,
+                "externalAccess": external_access,
+                "pxeConfig": data.get("pxeConfig", {}),
+                "staticLeases": [],
+            }
+        )
     return networks
 
 
