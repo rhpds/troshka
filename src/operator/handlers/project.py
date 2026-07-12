@@ -381,8 +381,13 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
         "rules": [
             {
+                "apiGroups": ["kubevirt.io"],
+                "resources": ["virtualmachineinstances"],
+                "verbs": ["get"],
+            },
+            {
                 "apiGroups": ["subresources.kubevirt.io"],
-                "resources": ["virtualmachineinstances/vnc"],
+                "resources": ["virtualmachineinstances", "virtualmachineinstances/vnc"],
                 "verbs": ["get"],
             },
         ],
