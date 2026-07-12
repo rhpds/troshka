@@ -375,43 +375,43 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
     # Grant troshka-vnc SA access to KubeVirt VNC subresource
     rbac_api = client.RbacAuthorizationV1Api()
+    role_body = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
+        "rules": [
+            {
+                "apiGroups": ["subresources.kubevirt.io"],
+                "resources": ["virtualmachineinstances/vnc"],
+                "verbs": ["get"],
+            },
+        ],
+    }
     try:
-        rbac_api.create_namespaced_role(
-            namespace=namespace,
-            body=client.V1Role(
-                metadata=client.V1ObjectMeta(name="troshka-vnc-access"),
-                rules=[
-                    client.V1PolicyRule(
-                        api_groups=["subresources.kubevirt.io"],
-                        resources=["virtualmachineinstances/vnc"],
-                        verbs=["get"],
-                    ),
-                ],
-            ),
-        )
+        rbac_api.create_namespaced_role(namespace=namespace, body=role_body)
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise
 
+    rb_body = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": "troshka-vnc",
+                "namespace": namespace,
+            },
+        ],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "troshka-vnc-access",
+        },
+    }
     try:
-        rbac_api.create_namespaced_role_binding(
-            namespace=namespace,
-            body=client.V1RoleBinding(
-                metadata=client.V1ObjectMeta(name="troshka-vnc-access"),
-                subjects=[
-                    client.V1Subject(
-                        kind="ServiceAccount",
-                        name="troshka-vnc",
-                        namespace=namespace,
-                    ),
-                ],
-                role_ref=client.V1RoleRef(
-                    api_group="rbac.authorization.k8s.io",
-                    kind="Role",
-                    name="troshka-vnc-access",
-                ),
-            ),
-        )
+        rbac_api.create_namespaced_role_binding(namespace=namespace, body=rb_body)
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise
