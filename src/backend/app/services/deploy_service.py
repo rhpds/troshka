@@ -2286,6 +2286,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 ndata.pop("resolvedS3Path", None)
                 ndata.pop("presignedUrl", None)
             project.deployed_topology = clean_topo
+            project.topology = clean_topo
             project.deploy_error = None
             db.commit()
             _deploy_progress.pop(project_id, None)
