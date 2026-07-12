@@ -411,6 +411,100 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_delete(spec, meta, namespace, name, **_):
-    logger.info(
-        f"TroshkaProject {name} deleting — ownerReferences handle child cascade"
-    )
+    logger.info(f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}")
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    try:
+        kv_vms = custom_api.list_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+        )
+        for vm in kv_vms.get("items", []):
+            vm_name = vm["metadata"]["name"]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=vm_name,
+                )
+                logger.info(f"Deleted KubeVirt VM {vm_name}")
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete KubeVirt VM {vm_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to list KubeVirt VMs in {namespace}: {e}")
+
+    try:
+        dvs = custom_api.list_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+        )
+        for dv in dvs.get("items", []):
+            dv_name = dv["metadata"]["name"]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="datavolumes",
+                    name=dv_name,
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete DataVolume {dv_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to list DataVolumes in {namespace}: {e}")
+
+    try:
+        nads = custom_api.list_namespaced_custom_object(
+            group="k8s.cni.cncf.io",
+            version="v1",
+            namespace=namespace,
+            plural="network-attachment-definitions",
+        )
+        for nad in nads.get("items", []):
+            nad_name = nad["metadata"]["name"]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="k8s.cni.cncf.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="network-attachment-definitions",
+                    name=nad_name,
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete NAD {nad_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to list NADs in {namespace}: {e}")
+
+    sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
+    try:
+        scc = custom_api.get_cluster_custom_object(
+            group="security.openshift.io",
+            version="v1",
+            plural="securitycontextconstraints",
+            name="troshka-network-pods",
+        )
+        users = scc.get("users", []) or []
+        if sa_ref in users:
+            users.remove(sa_ref)
+            custom_api.patch_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-network-pods",
+                body={"users": users},
+            )
+            logger.info(f"Removed {sa_ref} from SCC")
+    except Exception as e:
+        logger.warning(f"Could not clean SCC for {namespace}: {e}")
+
+    logger.info(f"TroshkaProject {name} cleanup complete")

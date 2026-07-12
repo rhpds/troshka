@@ -29,8 +29,23 @@ def _get_s3_config_from_project(namespace):
     return {}
 
 
-def _wait_for_datavolume(custom_api, name, namespace, timeout=600):
+def _wait_for_datavolume(custom_api, name, namespace, timeout=3600, owner_name=None, owner_namespace=None):
     for _ in range(timeout // 5):
+        if owner_name and owner_namespace:
+            try:
+                custom_api.get_namespaced_custom_object(
+                    group=CRD_GROUP,
+                    version=CRD_VERSION,
+                    namespace=owner_namespace,
+                    plural="troshkavms",
+                    name=owner_name,
+                )
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    logger.warning(f"Owner TroshkaVM {owner_name} deleted, aborting wait for {name}")
+                    return False
+            except Exception:
+                pass
         try:
             dv = custom_api.get_namespaced_custom_object(
                 group="cdi.kubevirt.io",
@@ -48,9 +63,14 @@ def _wait_for_datavolume(custom_api, name, namespace, timeout=600):
                     f"{dv.get('status', {}).get('conditions', [])}"
                 )
                 return False
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.warning(f"DataVolume {name} not found, may have been deleted")
+                return False
         except Exception:
             pass
         time.sleep(5)
+    logger.warning(f"DataVolume {name} timed out after {timeout}s")
     return False
 
 
@@ -152,7 +172,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 if e.status != 409:
                     raise
 
-            if not _wait_for_datavolume(custom_api, pvc_name, namespace):
+            if not _wait_for_datavolume(custom_api, pvc_name, namespace, owner_name=name, owner_namespace=namespace):
                 patch.status["state"] = "Error"
                 patch.status["message"] = f"Disk clone failed for {disk_id}"
                 raise kopf.PermanentError(f"Disk clone {pvc_name} failed")
@@ -192,7 +212,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         except client.exceptions.ApiException as e:
             if e.status != 409:
                 raise
-        _wait_for_datavolume(custom_api, cdrom_pvc, namespace)
+        _wait_for_datavolume(custom_api, cdrom_pvc, namespace, owner_name=name, owner_namespace=namespace)
         disk_pvcs["cdrom"] = cdrom_pvc
 
     cloudinit_secret_name = None
@@ -381,7 +401,61 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
-async def vm_delete(spec, meta, namespace, name, **_):
-    logger.info(
-        f"TroshkaVM {name} deleting — ownerReferences handle KubeVirt VM cascade"
-    )
+async def vm_delete(spec, status, meta, namespace, name, **_):
+    logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    kv_name = status.get("kubevirtVmName", f"troshka-{name}")
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+        )
+        logger.info(f"Deleted KubeVirt VM {kv_name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"Failed to delete KubeVirt VM {kv_name}: {e}")
+
+    for disk in spec.get("disks", []):
+        disk_id = disk.get("id", "")[:8]
+        pvc_name = f"{name}-disk-{disk_id}"
+        for resource_type in ("datavolumes", "persistentvolumeclaims"):
+            try:
+                if resource_type == "datavolumes":
+                    custom_api.delete_namespaced_custom_object(
+                        group="cdi.kubevirt.io",
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural=resource_type,
+                        name=pvc_name,
+                    )
+                else:
+                    core_api.delete_namespaced_persistent_volume_claim(
+                        name=pvc_name, namespace=namespace
+                    )
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete {resource_type}/{pvc_name}: {e}")
+
+    if spec.get("cdrom", {}).get("s3Path"):
+        cdrom_pvc = f"{name}-cdrom"
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=cdrom_pvc, namespace=namespace
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to delete cdrom PVC {cdrom_pvc}: {e}")
+
+    ci_secret_name = f"cloudinit-{name}"
+    try:
+        core_api.delete_namespaced_secret(
+            name=ci_secret_name, namespace=namespace
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"Failed to delete cloud-init secret {ci_secret_name}: {e}")
