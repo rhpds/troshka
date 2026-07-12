@@ -32,6 +32,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
         domain.setdefault("firmware", {})["bootloader"] = {
             "efi": {"secureBoot": True}
         }
+        domain.setdefault("features", {})["smm"] = {"enabled": True}
 
     volumes = []
     boot_idx = 1
