@@ -798,6 +798,7 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
         stdin=False,
         tty=False,
         _preload_content=True,
+        _request_timeout=30,
     )
     domain = resp.strip().split("\n")[0].strip()
     if not domain:
@@ -822,6 +823,7 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
         stdin=False,
         tty=False,
         _preload_content=True,
+        _request_timeout=30,
     )
     if "error" in check_resp.lower() and "guest agent" in check_resp.lower():
         raise RuntimeError(f"Guest agent not available: {check_resp}")
@@ -855,6 +857,7 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
         stdin=False,
         tty=False,
         _preload_content=True,
+        _request_timeout=30,
     )
     parsed = json.loads(exec_resp)
     pid = parsed.get("return", {}).get("pid")
@@ -890,6 +893,7 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
             stdin=False,
             tty=False,
             _preload_content=True,
+            _request_timeout=30,
         )
         status = json.loads(sr).get("return", {})
         if status.get("exited"):
@@ -967,6 +971,7 @@ def kubevirt_exec_ssh(
         stdin=False,
         tty=False,
         _preload_content=True,
+        _request_timeout=30,
     )
     # k8s_stream with _preload_content=True returns combined output as a string.
     # We can't reliably separate stdout/stderr this way, but it's sufficient.
@@ -1001,6 +1006,10 @@ def kubevirt_exec_console(
     creds = provider.get_credentials()
     api_url = creds["api_url"]
     token = creds["token"]
+    verify = creds.get("verify_ssl", False)
+    ssl_opts = (
+        {"cert_reqs": ssl.CERT_REQUIRED} if verify else {"cert_reqs": ssl.CERT_NONE}
+    )
     ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
     console_path = (
         f"/apis/subresources.kubevirt.io/v1/namespaces/{namespace}"
@@ -1008,37 +1017,38 @@ def kubevirt_exec_console(
     )
     full_url = f"{ws_url}{console_path}"
 
-    ws = websocket.create_connection(
-        full_url,
-        header=[f"Authorization: Bearer {token}"],
-        subprotocols=["plain.kubevirt.io"],
-        sslopt={"cert_reqs": ssl.CERT_NONE},
-        timeout=min(timeout, 30),
-    )
-
-    def _ws_read(secs):
-        """Read all available data from WebSocket within timeout."""
-        buf = ""
-        deadline = time.time() + secs
-        ws.settimeout(0.5)
-        while time.time() < deadline:
-            try:
-                data = ws.recv()
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8", errors="replace")
-                buf += data
-            except websocket.WebSocketTimeoutException:
-                if buf:
-                    break
-        return buf
-
-    def _ws_send(text):
-        ws.send(text.encode("utf-8") if isinstance(text, str) else text)
-
-    def _strip_ansi(s):
-        return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
-
+    ws = None
     try:
+        ws = websocket.create_connection(
+            full_url,
+            header=[f"Authorization: Bearer {token}"],
+            subprotocols=["plain.kubevirt.io"],
+            sslopt=ssl_opts,
+            timeout=min(timeout, 30),
+        )
+
+        def _ws_read(secs):
+            """Read all available data from WebSocket within timeout."""
+            buf = ""
+            deadline = time.time() + secs
+            ws.settimeout(0.5)
+            while time.time() < deadline:
+                try:
+                    data = ws.recv()
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8", errors="replace")
+                    buf += data
+                except websocket.WebSocketTimeoutException:
+                    if buf:
+                        break
+            return buf
+
+        def _ws_send(text):
+            ws.send(text.encode("utf-8") if isinstance(text, str) else text)
+
+        def _strip_ansi(s):
+            return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
+
         # Read initial output to detect state
         initial = _ws_read(3)
 
@@ -1097,7 +1107,8 @@ def kubevirt_exec_console(
             "method": "console",
         }
     finally:
-        try:
-            ws.close()
-        except Exception:
-            pass
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
