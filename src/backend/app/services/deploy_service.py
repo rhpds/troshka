@@ -2046,8 +2046,6 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             )
         except Exception:
             pass
-        import time as _time
-
         _time.sleep(3)
 
     try:
