@@ -2028,33 +2028,47 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         pass
 
     if existing_cr and existing_cr.get("phase"):
-        cr_name = f"project-{project_id[:8]}"
         logger.info(
-            "Deploy %s: resuming existing TroshkaProject CR %s (phase: %s)",
+            "Deploy %s: replacing stale CR with fresh presigned URLs",
             project_id[:8],
-            cr_name,
-            existing_cr.get("phase"),
         )
-    else:
         try:
-            cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
-        except Exception as e:
-            if "AlreadyExists" in str(e):
-                cr_name = f"project-{project_id[:8]}"
-                logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
-            else:
-                project.state = "error"
-                project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
-                db.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": project.deploy_error,
-                    },
-                )
-                return
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            custom_api, _, _ = _get_k8s_clients(provider)
+            ns = _project_ns(provider, project_id)
+            custom_api.delete_namespaced_custom_object(
+                group="troshka.redhat.com",
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkaprojects",
+                name=f"project-{project_id[:8]}",
+            )
+        except Exception:
+            pass
+        import time as _time
+
+        _time.sleep(3)
+
+    try:
+        cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
+    except Exception as e:
+        if "AlreadyExists" in str(e):
+            cr_name = f"project-{project_id[:8]}"
+            logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
+        else:
+            project.state = "error"
+            project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
+            db.commit()
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": project.deploy_error,
+                },
+            )
+            return
 
     logger.info(
         "Deploy %s: polling TroshkaProject CR %s",
