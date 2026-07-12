@@ -254,11 +254,11 @@ def build_static_leases(topology):
         if source_data.get("nics"):
             vm_data = source_data
             net_id = target
-            nic_id = source_handle
+            nic_id = _extract_nic_id(source_handle)
         elif target_data.get("nics"):
             vm_data = target_data
             net_id = source
-            nic_id = edge.get("targetHandle", "")
+            nic_id = _extract_nic_id(edge.get("targetHandle", ""))
 
         if vm_data and net_id and nic_id:
             for nic in vm_data.get("nics", []):
