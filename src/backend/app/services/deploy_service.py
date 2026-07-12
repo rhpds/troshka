@@ -2240,9 +2240,20 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
         dv_detail = "\n".join(dv_lines) if dv_lines else ""
 
+        all_disks_done = dv_lines and all(": done" in line for line in dv_lines)
+        op_stage = progress.get("stage", "") if progress else ""
+        op_detail = progress.get("detail", "") if progress else ""
+
         last = _deploy_progress.get(project_id, {})
-        step = "images" if dv_lines else (last.get("step", "") or "deploying")
-        detail = dv_detail or last.get("detail", "")
+        if all_disks_done and op_stage:
+            step = op_stage.lower()
+            detail = op_detail or step
+        elif dv_lines:
+            step = "images"
+            detail = dv_detail
+        else:
+            step = last.get("step", "") or "deploying"
+            detail = last.get("detail", "")
         percent = progress.get("percent", 0) if progress else 0
 
         if not detail and not dv_lines:
