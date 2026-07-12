@@ -34,7 +34,7 @@ export interface VMNodeData {
   vcpus: number;
   ram: number;
   os: string;
-  status: "running" | "stopped" | "redeploying";
+  status: "running" | "stopped" | "stopping" | "restarting" | "starting" | "redeploying";
   bootOrder?: number;
   bootMethod?: string;
   cloudInit?: boolean;
