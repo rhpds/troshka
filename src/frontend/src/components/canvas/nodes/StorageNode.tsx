@@ -11,7 +11,13 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
     if (!deployed) return false;
-    return JSON.stringify(d) !== deployed;
+    const transient = ["resolvedS3Path", "presignedUrl"];
+    const clean = (obj: Record<string, unknown>) => {
+      const copy = { ...obj };
+      for (const k of transient) delete copy[k];
+      return JSON.stringify(copy);
+    };
+    return clean(d as Record<string, unknown>) !== clean(JSON.parse(deployed));
   }, [id, d, deployedNodeData]);
 
   const formatLabel =
