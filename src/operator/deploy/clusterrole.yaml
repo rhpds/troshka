@@ -28,7 +28,7 @@ rules:
     resources: ["volumesnapshots"]
     verbs: ["*"]
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "services", "secrets", "configmaps", "persistentvolumeclaims"]
+    resources: ["namespaces", "pods", "services", "secrets", "configmaps", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["*"]
   - apiGroups: [""]
     resources: ["nodes"]

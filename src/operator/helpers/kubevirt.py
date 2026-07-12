@@ -27,7 +27,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
 
     firmware_type = spec.get("firmware", "bios")
     if firmware_type == "uefi":
-        domain.setdefault("firmware", {})["bootloader"] = {"efi": {}}
+        domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": False}}
     elif firmware_type == "uefi-secure":
         domain.setdefault("firmware", {})["bootloader"] = {
             "efi": {"secureBoot": True}
@@ -48,7 +48,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             bo_id = bo.get("id") if isinstance(bo, dict) else bo
             bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
             if bo_type == "disk" and bo_id == disk_info.get("id"):
-                disk_entry["disk"]["bootOrder"] = boot_idx
+                disk_entry["bootOrder"] = boot_idx
                 boot_idx += 1
                 break
 
