@@ -9,7 +9,7 @@ def _auto_dhcp_range(cidr):
     base = parts[0]
     prefix = int(parts[1]) if len(parts) > 1 else 24
     octets = base.split(".")
-    octets[3] = "2"
+    octets[3] = "10"
     start = ".".join(octets)
     octets[3] = str(min(254, (1 << (32 - prefix)) - 2))
     end = ".".join(octets)
