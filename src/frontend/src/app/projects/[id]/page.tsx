@@ -110,7 +110,7 @@ export default function ProjectCanvasPage() {
         useCanvasStore.setState({ deployedDiskSizes: depSizes });
         const depNodeData: Record<string, string> = {};
         for (const n of (data.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
           depNodeData[n.id] = JSON.stringify(stable);
         }
         const depEdgeKey = (data.deployed_topology?.edges || [])
@@ -167,7 +167,7 @@ export default function ProjectCanvasPage() {
         if (!proj) return;
         const depData: Record<string, string> = {};
         for (const n of (proj.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
+          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
           depData[n.id] = JSON.stringify(stable);
         }
         const depEdge = (proj.deployed_topology?.edges || [])
