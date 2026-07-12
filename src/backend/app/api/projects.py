@@ -1777,6 +1777,68 @@ def vm_exec(
         methods = [method]
     errors = []
 
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+        from app.services.providers.kubevirt import (
+            kubevirt_exec_guest_agent,
+            kubevirt_exec_ssh,
+            kubevirt_exec_console,
+        )
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if not provider:
+            raise HTTPException(status_code=503, detail="Provider not found")
+
+        # KubeVirt auto order: guest-agent → ssh → console (no serial — same as console)
+        kv_methods = methods
+        if method == "auto":
+            kv_methods = ["guest-agent", "ssh", "console"]
+
+        for m in kv_methods:
+            try:
+                if m == "guest-agent":
+                    return kubevirt_exec_guest_agent(
+                        provider, project_id, vm_id, command, timeout
+                    )
+                elif m == "ssh":
+                    if not vm_ip or not password:
+                        errors.append("ssh: no VM IP or credentials")
+                        continue
+                    return kubevirt_exec_ssh(
+                        provider,
+                        project_id,
+                        vm_id,
+                        vm_ip,
+                        username,
+                        password,
+                        command,
+                        timeout,
+                    )
+                elif m in ("console", "serial"):
+                    console_pass = root_password or password
+                    if not console_pass:
+                        errors.append("console: no password available")
+                        continue
+                    return kubevirt_exec_console(
+                        provider,
+                        project_id,
+                        vm_id,
+                        "root" if root_password else username,
+                        console_pass,
+                        command,
+                        timeout,
+                    )
+            except Exception as e:
+                errors.append(f"{m}: {e}")
+                if method != "auto":
+                    raise HTTPException(status_code=503, detail=f"{m} exec failed: {e}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="All exec methods failed: " + "; ".join(errors),
+        )
+
+    # Troshkad hosts — existing dispatch via start_job/wait_for_job
     for m in methods:
         try:
             if m == "guest-agent":
