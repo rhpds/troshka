@@ -633,7 +633,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def get_project_status(self, provider, project_id):
-        custom_api, _ = _get_k8s_clients(provider)
+        custom_api, _, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
         try:
             cr = custom_api.get_namespaced_custom_object(
