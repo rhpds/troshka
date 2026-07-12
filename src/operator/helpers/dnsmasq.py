@@ -1,3 +1,8 @@
+import re
+
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
 def _auto_dhcp_range(cidr):
     """Generate a DHCP range from a CIDR, reserving .1 for the gateway."""
     parts = cidr.split("/")
@@ -39,7 +44,7 @@ def generate_dnsmasq_config(network_spec):
         octets = cidr.split("/")[0].split(".")
         octets[3] = "1"
         gateway = ".".join(octets)
-    if gateway:
+    if gateway and _IPV4_RE.match(gateway):
         lines.append(f"dhcp-option=3,{gateway}")
 
     for lease in network_spec.get("staticLeases", []):

@@ -1,7 +1,11 @@
 import hashlib
 import json
+import re
 
 CRD_GROUP = "troshka.redhat.com"
+
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+_PREFIX_RE = re.compile(r"^\d{1,2}$")
 CRD_VERSION = "v1alpha1"
 TOOLS_IMAGE = "quay.io/redhat-gpte/troshka-tools:latest"
 DNSMASQ_IMAGE = "quay.io/redhat-gpte/troshka-dnsmasq:latest"
@@ -77,7 +81,7 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
         gw_ip = gateway_spec
 
     setup_cmd = "true"
-    if gw_ip and prefix:
+    if gw_ip and prefix and _IPV4_RE.match(gw_ip) and _PREFIX_RE.match(prefix):
         setup_cmd = f"ip addr add {gw_ip}/{prefix} dev net1 && ip link set net1 up"
 
     return {
