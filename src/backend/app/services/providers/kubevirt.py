@@ -762,3 +762,342 @@ class KubeVirtDriver(ProviderDriver):
     def get_vm_states(self, provider, project_id):
         status = self.get_project_status(provider, project_id)
         return status.get("vmStates", {})
+
+
+def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600):
+    """Execute command via qemu-guest-agent inside the virt-launcher pod."""
+    import json
+    import base64
+
+    _, core_v1, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    pods = core_v1.list_namespaced_pod(
+        namespace, label_selector=f"vm.kubevirt.io/name={vm_name}"
+    )
+    launcher = None
+    for p in pods.items:
+        if p.metadata.name.startswith("virt-launcher-") and p.status.phase == "Running":
+            launcher = p
+            break
+    if not launcher:
+        raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
+
+    from kubernetes.stream import stream as k8s_stream
+
+    # Discover the libvirt domain name inside the pod
+    resp = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        launcher.metadata.name,
+        namespace,
+        container="compute",
+        command=["virsh", "list", "--name"],
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=True,
+    )
+    domain = resp.strip().split("\n")[0].strip()
+    if not domain:
+        raise RuntimeError("No libvirt domain found in virt-launcher pod")
+
+    # Check guest agent availability
+    check_resp = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        launcher.metadata.name,
+        namespace,
+        container="compute",
+        command=[
+            "virsh",
+            "qemu-agent-command",
+            domain,
+            '{"execute":"guest-info"}',
+            "--timeout",
+            "10",
+        ],
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=True,
+    )
+    if "error" in check_resp.lower() and "guest agent" in check_resp.lower():
+        raise RuntimeError(f"Guest agent not available: {check_resp}")
+
+    # Execute command
+    exec_payload = json.dumps(
+        {
+            "execute": "guest-exec",
+            "arguments": {
+                "path": "/bin/sh",
+                "arg": ["-c", command],
+                "capture-output": True,
+            },
+        }
+    )
+    exec_resp = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        launcher.metadata.name,
+        namespace,
+        container="compute",
+        command=[
+            "virsh",
+            "qemu-agent-command",
+            domain,
+            exec_payload,
+            "--timeout",
+            "10",
+        ],
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=True,
+    )
+    parsed = json.loads(exec_resp)
+    pid = parsed.get("return", {}).get("pid")
+    if pid is None:
+        raise RuntimeError(f"No PID in guest-exec response: {exec_resp}")
+
+    # Poll for completion
+    import time
+
+    status_payload = json.dumps(
+        {
+            "execute": "guest-exec-status",
+            "arguments": {"pid": pid},
+        }
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sr = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            launcher.metadata.name,
+            namespace,
+            container="compute",
+            command=[
+                "virsh",
+                "qemu-agent-command",
+                domain,
+                status_payload,
+                "--timeout",
+                "10",
+            ],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+        )
+        status = json.loads(sr).get("return", {})
+        if status.get("exited"):
+            stdout = ""
+            stderr = ""
+            if status.get("out-data"):
+                stdout = base64.b64decode(status["out-data"]).decode(
+                    "utf-8", errors="replace"
+                )
+            if status.get("err-data"):
+                stderr = base64.b64decode(status["err-data"]).decode(
+                    "utf-8", errors="replace"
+                )
+            return {
+                "output": stdout,
+                "error": stderr,
+                "exit_code": status.get("exitcode", -1),
+                "method": "guest-agent",
+            }
+        time.sleep(0.5)
+
+    raise RuntimeError(f"guest-exec timed out after {timeout}s (pid={pid})")
+
+
+def kubevirt_exec_ssh(
+    provider, project_id, vm_id, vm_ip, username, password, command, timeout=600
+):
+    """Execute command via SSH from the dnsmasq pod (on the OVN network)."""
+    _, core_v1, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+
+    pods = core_v1.list_namespaced_pod(
+        namespace, label_selector=f"app=dnsmasq,troshka-project={project_id[:8]}"
+    )
+    dnsmasq_pod = None
+    for p in pods.items:
+        if p.status.phase == "Running":
+            dnsmasq_pod = p
+            break
+    if not dnsmasq_pod:
+        raise RuntimeError("No running dnsmasq pod found")
+
+    if not vm_ip:
+        raise RuntimeError("No VM IP for SSH exec")
+    if not password:
+        raise RuntimeError(
+            "No password for SSH exec (key auth not supported on KubeVirt)"
+        )
+
+    from kubernetes.stream import stream as k8s_stream
+
+    ssh_cmd = [
+        "sshpass",
+        "-p",
+        password,
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-o",
+        f"ConnectTimeout={min(timeout, 10)}",
+        f"{username}@{vm_ip}",
+        command,
+    ]
+    resp = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        dnsmasq_pod.metadata.name,
+        namespace,
+        command=ssh_cmd,
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=True,
+    )
+    # k8s_stream with _preload_content=True returns combined output as a string.
+    # We can't reliably separate stdout/stderr this way, but it's sufficient.
+    return {
+        "output": resp,
+        "error": "",
+        "exit_code": 0,
+        "method": "ssh",
+    }
+
+
+def kubevirt_exec_console(
+    provider, project_id, vm_id, username, password, command, timeout=600
+):
+    """Execute command via KubeVirt serial console (WebSocket-based)."""
+    import re
+    import time
+
+    _, core_v1, api_client = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    if not password:
+        raise RuntimeError("Password required for console exec")
+
+    # Use websocket to connect to the console subresource
+    # The kubernetes client doesn't have a native console stream helper,
+    # so we use the raw API path with the websocket protocol.
+    import websocket
+    import ssl
+
+    creds = provider.get_credentials()
+    api_url = creds["api_url"]
+    token = creds["token"]
+    ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
+    console_path = (
+        f"/apis/subresources.kubevirt.io/v1/namespaces/{namespace}"
+        f"/virtualmachineinstances/{vm_name}/console"
+    )
+    full_url = f"{ws_url}{console_path}"
+
+    ws = websocket.create_connection(
+        full_url,
+        header=[f"Authorization: Bearer {token}"],
+        subprotocols=["plain.kubevirt.io"],
+        sslopt={"cert_reqs": ssl.CERT_NONE},
+        timeout=min(timeout, 30),
+    )
+
+    def _ws_read(secs):
+        """Read all available data from WebSocket within timeout."""
+        buf = ""
+        deadline = time.time() + secs
+        ws.settimeout(0.5)
+        while time.time() < deadline:
+            try:
+                data = ws.recv()
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8", errors="replace")
+                buf += data
+            except websocket.WebSocketTimeoutException:
+                if buf:
+                    break
+        return buf
+
+    def _ws_send(text):
+        ws.send(text.encode("utf-8") if isinstance(text, str) else text)
+
+    def _strip_ansi(s):
+        return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
+
+    try:
+        # Read initial output to detect state
+        initial = _ws_read(3)
+
+        # Send enter to wake up console
+        _ws_send("\n")
+        prompt_check = _ws_read(3)
+        combined = initial + prompt_check
+
+        # Detect state: login prompt, password prompt, or shell
+        if "login:" in combined.lower():
+            _ws_send(f"{username}\n")
+            _ws_read(2)
+            _ws_send(f"{password}\n")
+            login_resp = _ws_read(3)
+            if "login incorrect" in login_resp.lower():
+                raise RuntimeError("Console login failed")
+        elif "password:" in combined.lower():
+            _ws_send(f"{password}\n")
+            login_resp = _ws_read(3)
+            if "login incorrect" in login_resp.lower():
+                raise RuntimeError("Console login failed")
+        # else: already at a shell prompt
+
+        # Send command wrapped with markers
+        _ws_send("echo TROSHKA_BEGIN\n")
+        _ws_read(1)
+        _ws_send(f"({command}) 2>&1; echo TROSHKA_END $?\n")
+
+        # Read until TROSHKA_END marker
+        output = ""
+        deadline = time.time() + min(timeout, 300)
+        while time.time() < deadline:
+            chunk = _ws_read(2)
+            output += chunk
+            if "TROSHKA_END" in output:
+                break
+
+        # Parse output between markers
+        clean = _strip_ansi(output)
+        begin_idx = clean.find("TROSHKA_BEGIN")
+        end_idx = clean.find("TROSHKA_END")
+        if begin_idx >= 0 and end_idx >= 0:
+            body = clean[begin_idx + len("TROSHKA_BEGIN") : end_idx].strip()
+            # Extract exit code from the TROSHKA_END line
+            end_line = clean[end_idx:].split("\n")[0]
+            exit_code_match = re.search(r"TROSHKA_END\s+(\d+)", end_line)
+            exit_code = int(exit_code_match.group(1)) if exit_code_match else None
+        else:
+            body = clean
+            exit_code = None
+
+        return {
+            "output": body,
+            "error": "",
+            "exit_code": exit_code,
+            "method": "console",
+        }
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
