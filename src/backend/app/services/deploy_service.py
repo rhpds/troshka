@@ -1944,6 +1944,22 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             ExpiresIn=86400,
         )
 
+    def _qcow2_virtual_size_gb(s3_path):
+        try:
+            url = _presign(s3_path)
+            import struct
+            import urllib.request
+
+            req = urllib.request.Request(url, headers={"Range": "bytes=0-31"})
+            resp = urllib.request.urlopen(req, timeout=10)
+            header = resp.read()
+            if len(header) >= 32 and header[:4] == b"QFI\xfb":
+                vsize = struct.unpack(">Q", header[24:32])[0]
+                return int(vsize / (1024**3)) + 1
+        except Exception:
+            pass
+        return 0
+
     pattern_disk_map = {}
     pattern_ids_seen = set()
     for node in topology.get("nodes", []):
@@ -1978,6 +1994,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 s3_path = f"patterns/{pid}/{orig_disk_id}.qcow2"
                 data["presignedUrl"] = _presign(s3_path)
                 data["resolvedS3Path"] = s3_path
+                real_size = _qcow2_virtual_size_gb(s3_path)
+                if real_size and real_size > (data.get("size", 0) or 0):
+                    data["size"] = real_size
             elif data.get("source") == "library" and data.get("libraryItemId"):
                 from app.models.library import LibraryItem
 
