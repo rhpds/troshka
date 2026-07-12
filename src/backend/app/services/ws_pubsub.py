@@ -166,15 +166,39 @@ def _poll_active_projects():
             if not host or not host.ip_address:
                 continue
             if host.host_type == "kubevirt-cluster":
-                # KubeVirt native: read VM states from operator CR status
                 from app.models.provider import Provider
-                from app.services.providers import get_provider_driver
+                from app.services.providers.kubevirt import (
+                    _get_k8s_clients,
+                    _project_ns,
+                )
 
                 provider = db.query(Provider).filter_by(id=host.provider_id).first()
                 if provider:
                     try:
-                        driver = get_provider_driver(provider)
-                        vm_states = driver.get_vm_states(provider, project.id)
+                        custom_api, _, _ = _get_k8s_clients(provider)
+                        namespace = _project_ns(provider, project.id)
+                        vmis = custom_api.list_namespaced_custom_object(
+                            group="kubevirt.io",
+                            version="v1",
+                            namespace=namespace,
+                            plural="virtualmachineinstances",
+                        )
+                        vmi_phases = {}
+                        for vmi in vmis.get("items", []):
+                            vmi_phases[vmi["metadata"]["name"]] = vmi.get(
+                                "status", {}
+                            ).get("phase", "Unknown")
+                        vm_states = {}
+                        topo = project.topology or {}
+                        for node in topo.get("nodes", []):
+                            if node.get("type") != "vmNode":
+                                continue
+                            node_id = node.get("data", {}).get("id", node.get("id", ""))
+                            kv_name = f"troshka-vm-{node_id[:8]}"
+                            if kv_name in vmi_phases:
+                                vm_states[node_id] = vmi_phases[kv_name]
+                            else:
+                                vm_states[node_id] = "Stopped"
                         if vm_states:
                             host_batch_states[project.host_id] = vm_states
                     except Exception:

@@ -217,6 +217,8 @@ export function generateMac(): string {
   return `52:54:00:${hex()}:${hex()}:${hex()}`;
 }
 
+const _transitionalStatuses = new Set(["stopping", "restarting", "starting"]);
+
 export function setLatestVmStates(states: Record<string, string>) {
   _latestVmStates = states;
   const store = useCanvasStore.getState();
@@ -225,7 +227,9 @@ export function setLatestVmStates(states: Record<string, string>) {
   const updated = store.nodes.map((n) => {
     if (n.type !== "vmNode" || !n.id) return n;
     const newStatus = states[n.id];
-    if (newStatus && (n.data as Record<string, unknown>).status !== newStatus) {
+    const currentStatus = (n.data as Record<string, unknown>).status as string;
+    if (_transitionalStatuses.has(currentStatus)) return n;
+    if (newStatus && currentStatus !== newStatus) {
       changed = true;
       return { ...n, data: { ...(n.data as Record<string, unknown>), status: newStatus } };
     }

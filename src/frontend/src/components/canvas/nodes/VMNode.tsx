@@ -16,6 +16,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   const d = data as unknown as VMNodeData;
   const isRunning = d.status === "running";
+  const isStopping = d.status === "stopping";
+  const isRestarting = d.status === "restarting";
   const isRedeploying = d.status === "redeploying";
   const isNotFound = (d as any).status === "not_found";
 
@@ -320,7 +322,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       <div className="vm-node-footer nopan nodrag">
-        {isDeployed && !isRunning && !isRedeploying && !isNotFound && (
+        {isDeployed && !isRunning && !isStopping && !isRestarting && !isRedeploying && !isNotFound && (
           <button
             className="vm-node-action power-stopped"
             title="Start"

@@ -1270,7 +1270,7 @@ def start_vm(
         if project.state == "stopped":
             project.state = "active"
             db.commit()
-        return {"ok": True}
+        return {"action": "start", "success": True}
 
     if project.state in ("stopped", "starting"):
         import threading
@@ -1485,6 +1485,17 @@ def get_vm_status(
     db: Session = Depends(get_db),
 ):
     project, host = _get_project_and_host(project_id, user, db)
+
+    # KubeVirt native: read state from cached WS poller data
+    if host.host_type == "kubevirt-cluster":
+        from app.services.ws_pubsub import get_cached_vm_states
+
+        cached = get_cached_vm_states(project_id)
+        state = "unknown"
+        if cached:
+            state = cached.get("states", {}).get(vm_id, "unknown")
+        return {"state": state, "boot_devs": []}
+
     dom = _domain_name(project_id, vm_id)
     vm_info = troshkad_get_vm_state(host, dom)
     return {"state": vm_info["state"], "boot_devs": vm_info.get("boot_devs", [])}
