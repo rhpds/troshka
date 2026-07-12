@@ -2,7 +2,7 @@ import kopf
 import logging
 import time
 from kubernetes import client
-from helpers.k8s import CRD_GROUP, CRD_VERSION, owner_ref
+from helpers.k8s import CRD_GROUP, CRD_VERSION, owner_ref, build_gateway_pod
 from helpers.topology import (
     extract_networks,
     extract_vms,
@@ -208,6 +208,28 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "detail": f"{i + 1}/{len(networks)} networks",
         }
 
+    # Create single gateway pod for all externalAccess networks
+    gateway_nads = []
+    gateway_ips = {}
+    for net in networks:
+        if net.get("externalAccess"):
+            nad_name = f"net-{net['id'][:8]}-nad"
+            gateway_nads.append(nad_name)
+            if net.get("gateway"):
+                gateway_ips[nad_name] = {
+                    "ip": net["gateway"],
+                    "cidr": net.get("cidr", "10.0.0.0/24"),
+                }
+
+    if gateway_nads:
+        gw_pod = build_gateway_pod(body, gateway_nads, gateway_ips)
+        try:
+            api.create_namespaced_pod(namespace=namespace, body=gw_pod)
+            logger.info(f"Created gateway pod for {name}")
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
     vms = extract_vms(topology)
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
     nic_network_map = resolve_nic_networks(topology)
@@ -358,7 +380,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         }
 
     # Create VNC console proxy (pod + service + route)
-    from helpers.vnc import build_vnc_proxy_pod, build_vnc_service, build_vnc_route
+    from helpers.vnc import build_vnc_proxy_deployment, build_vnc_service, build_vnc_route
 
     core_api = client.CoreV1Api()
 
@@ -421,10 +443,11 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         if e.status != 409:
             raise
 
-    vnc_pod = build_vnc_proxy_pod(name, namespace, owner_body=body)
+    apps_api = client.AppsV1Api()
+    vnc_dep = build_vnc_proxy_deployment(name, namespace, owner_body=body)
     try:
-        core_api.create_namespaced_pod(namespace=namespace, body=vnc_pod)
-        logger.info(f"Created VNC proxy pod for {name}")
+        apps_api.create_namespaced_deployment(namespace=namespace, body=vnc_dep)
+        logger.info(f"Created VNC proxy deployment for {name}")
     except client.exceptions.ApiException as e:
         if e.status != 409:
             raise

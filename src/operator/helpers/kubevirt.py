@@ -84,6 +84,9 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
         model = nic.get("model", "virtio")
 
         iface = {"name": iface_name, "bridge": {}}
+        mac = nic.get("mac", "")
+        if mac:
+            iface["macAddress"] = mac
         if model and model != "virtio":
             iface["model"] = model
 

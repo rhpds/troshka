@@ -6,7 +6,6 @@ from helpers.k8s import (
     CRD_VERSION,
     build_nad,
     build_dnsmasq_pod,
-    build_gateway_pod,
 )
 from helpers.dnsmasq import generate_dnsmasq_config
 
@@ -89,21 +88,10 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
         if e.status != 409:
             raise
 
-    gateway_ready = True
-    if spec.get("externalAccess"):
-        nad_name = f"{name}-nad"
-        gateway_pod = build_gateway_pod(body, [nad_name])
-        try:
-            api.create_namespaced_pod(namespace=namespace, body=gateway_pod)
-            logger.info(f"Created gateway pod for {name}")
-        except client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-
     patch.status["ready"] = True
     patch.status["nadName"] = f"{name}-nad"
     patch.status["dhcpPodReady"] = True
-    patch.status["gatewayPodReady"] = gateway_ready
+    patch.status["gatewayPodReady"] = True
     logger.info(f"Network {name} ready")
 
 
@@ -149,7 +137,7 @@ async def network_delete(spec, meta, namespace, name, **_):
         if e.status != 404:
             logger.warning(f"Failed to delete NAD {nad_name}: {e}")
 
-    for pod_name in [f"dnsmasq-{name}", f"gateway-{name}"]:
+    for pod_name in [f"dnsmasq-{name}", f"gateway-{namespace}"]:
         try:
             api.delete_namespaced_pod(name=pod_name, namespace=namespace)
             logger.info(f"Deleted pod {pod_name}")

@@ -103,13 +103,28 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
     }
 
 
-def build_gateway_pod(network_cr, all_network_nads):
-    name = network_cr["metadata"]["name"]
-    namespace = network_cr["metadata"]["namespace"]
-    project_label = namespace
+def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
+    """Build a single gateway pod for the project, attached to all networks.
 
-    pod_name = f"gateway-{project_label}"
-    net_annotations = ",".join(all_network_nads)
+    gateway_ips: dict of {nad_name: {"ip": "10.0.0.1", "cidr": "10.0.0.0/24"}}
+    """
+    namespace = project_cr["metadata"]["namespace"]
+    project_id = project_cr["spec"].get("projectId", namespace)[:8]
+
+    pod_name = f"gateway-{namespace}"
+
+    if gateway_ips:
+        net_list = []
+        for nad in all_network_nads:
+            entry = {"name": nad}
+            gw = gateway_ips.get(nad)
+            if gw:
+                prefix = gw["cidr"].split("/")[1] if "/" in gw["cidr"] else "24"
+                entry["ips"] = [f"{gw['ip']}/{prefix}"]
+            net_list.append(entry)
+        net_annotation = json.dumps(net_list)
+    else:
+        net_annotation = ",".join(all_network_nads)
 
     return {
         "apiVersion": "v1",
@@ -117,13 +132,13 @@ def build_gateway_pod(network_cr, all_network_nads):
         "metadata": {
             "name": pod_name,
             "namespace": namespace,
-            "ownerReferences": [owner_ref(network_cr)],
+            "ownerReferences": [owner_ref(project_cr)],
             "labels": {
-                "app": f"troshka-gateway-{project_label}",
+                "app": f"troshka-gateway-{project_id}",
                 "troshka-role": "gateway",
             },
             "annotations": {
-                "k8s.v1.cni.cncf.io/networks": net_annotations
+                "k8s.v1.cni.cncf.io/networks": net_annotation
             },
         },
         "spec": {
@@ -136,12 +151,6 @@ def build_gateway_pod(network_cr, all_network_nads):
                         "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
                         "privileged": False,
                     },
-                    "env": [
-                        {
-                            "name": "GATEWAY_NETWORKS",
-                            "value": net_annotations,
-                        },
-                    ],
                 }
             ],
             "restartPolicy": "Always",

@@ -3,54 +3,56 @@ from helpers.k8s import owner_ref
 VNC_PROXY_IMAGE = "quay.io/redhat-gpte/troshka-vnc-proxy:latest"
 
 
-def build_vnc_proxy_pod(project_name, namespace, owner_body=None):
-    pod_name = f"vnc-proxy-{project_name}"
+def build_vnc_proxy_deployment(project_name, namespace, owner_body=None):
+    dep_name = f"vnc-proxy-{project_name}"
+    labels = {
+        "app": f"vnc-proxy-{project_name}",
+        "troshka-role": "vnc-proxy",
+    }
 
-    pod = {
-        "apiVersion": "v1",
-        "kind": "Pod",
+    dep = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
         "metadata": {
-            "name": pod_name,
+            "name": dep_name,
             "namespace": namespace,
-            "labels": {
-                "app": f"vnc-proxy-{project_name}",
-                "troshka-role": "vnc-proxy",
-            },
+            "labels": labels,
         },
         "spec": {
-            "serviceAccountName": "troshka-vnc",
-            "containers": [
-                {
-                    "name": "vnc-proxy",
-                    "image": VNC_PROXY_IMAGE,
-                    "ports": [
+            "replicas": 1,
+            "selector": {"matchLabels": labels},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "serviceAccountName": "troshka-vnc",
+                    "containers": [
                         {
-                            "containerPort": 8080,
-                            "protocol": "TCP",
+                            "name": "vnc-proxy",
+                            "image": VNC_PROXY_IMAGE,
+                            "imagePullPolicy": "Always",
+                            "ports": [
+                                {
+                                    "containerPort": 8080,
+                                    "protocol": "TCP",
+                                }
+                            ],
+                            "env": [
+                                {"name": "NAMESPACE", "value": namespace},
+                                {"name": "LISTEN_PORT", "value": "8080"},
+                            ],
+                            "resources": {
+                                "requests": {"cpu": "100m", "memory": "64Mi"},
+                                "limits": {"cpu": "500m", "memory": "256Mi"},
+                            },
                         }
                     ],
-                    "env": [
-                        {"name": "NAMESPACE", "value": namespace},
-                        {"name": "LISTEN_PORT", "value": "8080"},
-                    ],
-                    "resources": {
-                        "requests": {
-                            "cpu": "100m",
-                            "memory": "64Mi",
-                        },
-                        "limits": {
-                            "cpu": "500m",
-                            "memory": "256Mi",
-                        },
-                    },
-                }
-            ],
-            "restartPolicy": "Always",
+                },
+            },
         },
     }
     if owner_body:
-        pod["metadata"]["ownerReferences"] = [owner_ref(owner_body)]
-    return pod
+        dep["metadata"]["ownerReferences"] = [owner_ref(owner_body)]
+    return dep
 
 
 def build_vnc_service(project_name, namespace, owner_body=None):
