@@ -224,27 +224,40 @@ def _poll_active_projects():
             vm_progress = {}
             vm_boot_devs = {}
             batch = host_batch_states.get(project.host_id) if project.host_id else None
+            host = (
+                db.query(Host).filter_by(id=project.host_id).first()
+                if project.host_id
+                else None
+            )
+            is_kubevirt = host and host.host_type == "kubevirt-cluster"
             if batch is not None and current_project_state in ("active", "stopped"):
                 for node in (project.topology or {}).get("nodes", []):
                     if node.get("type") != "vmNode":
                         continue
-                    dom_name = _domain_name(project.id, node["id"])
-                    if dom_name in _redeploy_progress:
-                        vm_states[node["id"]] = "redeploying"
-                        vm_progress[node["id"]] = _redeploy_progress[dom_name]
+                    node_id = node.get("data", {}).get("id", node.get("id", ""))
+                    if is_kubevirt:
+                        state = batch.get(node_id, "not_found")
                     else:
-                        state = batch.get(dom_name, "not_found")
-                        if state == "not_found":
+                        dom_name = _domain_name(project.id, node_id)
+                        if dom_name in _redeploy_progress:
+                            vm_states[node_id] = "redeploying"
+                            vm_progress[node_id] = _redeploy_progress[dom_name]
                             continue
-                        if state in (
-                            "shut_off",
-                            "shutting_down",
-                            "crashed",
-                            "suspended",
-                            "paused",
-                        ):
-                            state = "stopped"
-                        vm_states[node["id"]] = state
+                        state = batch.get(dom_name, "not_found")
+                    if state == "not_found":
+                        continue
+                    if state in (
+                        "shut_off",
+                        "shutting_down",
+                        "crashed",
+                        "suspended",
+                        "paused",
+                        "Stopped",
+                    ):
+                        state = "stopped"
+                    elif state == "Running":
+                        state = "running"
+                    vm_states[node_id] = state
 
             # Log VM state changes
             prev_vm_states = last.get("vm_states", {})
