@@ -3086,11 +3086,17 @@ def deploy_project_async(
                 dom_result = wait_for_job(host, dom_check, timeout=10)
                 if dom_result.get("result", {}).get("state"):
                     logger.info(
-                        "Deploy %s: VM %s already defined, skipping",
+                        "Deploy %s: stale domain %s exists, undefining before re-create",
                         project_id[:8],
                         domain_name,
                     )
-                    continue
+                    try:
+                        j = start_job(
+                            host, "/vms/destroy", {"domain_name": domain_name}
+                        )
+                        wait_for_job(host, j, timeout=60)
+                    except TroshkadError:
+                        pass
             except TroshkadError:
                 pass
 
