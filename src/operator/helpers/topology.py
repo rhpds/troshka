@@ -29,6 +29,8 @@ def extract_networks(topology):
         data = node.get("data", {})
         if node.get("type") != "networkNode":
             continue
+        if data.get("subtype") == "gateway":
+            continue
         node_id = data.get("id", node.get("id", ""))
         cidr = data.get("cidr", "")
         gateway_ip = data.get("gatewayIp", "")

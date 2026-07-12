@@ -253,6 +253,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
     topology = spec.get("topology", {})
     custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
 
     networks = extract_networks(topology)
     static_leases = build_static_leases(topology)
@@ -326,7 +327,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     if gateway_nads:
         gw_pod = build_gateway_pod(body, gateway_nads, gateway_ips)
         try:
-            api.create_namespaced_pod(namespace=namespace, body=gw_pod)
+            core_api.create_namespaced_pod(namespace=namespace, body=gw_pod)
             logger.info(f"Created gateway pod for {name}")
         except client.exceptions.ApiException as e:
             if e.status != 409:
