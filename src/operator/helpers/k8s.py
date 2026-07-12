@@ -142,19 +142,15 @@ def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
     project_id = project_cr["spec"].get("projectId", namespace)[:8]
 
     pod_name = f"gateway-{namespace}"
+    net_annotation = ",".join(all_network_nads)
 
+    gw_addrs = []
     if gateway_ips:
-        net_list = []
         for nad in all_network_nads:
-            entry = {"name": nad}
             gw = gateway_ips.get(nad)
             if gw:
                 prefix = gw["cidr"].split("/")[1] if "/" in gw["cidr"] else "24"
-                entry["ips"] = [f"{gw['ip']}/{prefix}"]
-            net_list.append(entry)
-        net_annotation = json.dumps(net_list)
-    else:
-        net_annotation = ",".join(all_network_nads)
+                gw_addrs.append(f"{gw['ip']}/{prefix}")
 
     return {
         "apiVersion": "v1",
@@ -182,6 +178,12 @@ def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
                         "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
                         "privileged": True,
                     },
+                    "env": [
+                        {
+                            "name": "GATEWAY_ADDRS",
+                            "value": ",".join(gw_addrs),
+                        },
+                    ],
                 }
             ],
             "restartPolicy": "Always",
