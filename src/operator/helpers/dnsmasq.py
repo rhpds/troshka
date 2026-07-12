@@ -1,3 +1,16 @@
+def _auto_dhcp_range(cidr):
+    """Generate a DHCP range from a CIDR, reserving .1 for the gateway."""
+    parts = cidr.split("/")
+    base = parts[0]
+    prefix = int(parts[1]) if len(parts) > 1 else 24
+    octets = base.split(".")
+    octets[3] = "2"
+    start = ".".join(octets)
+    octets[3] = str(min(254, (1 << (32 - prefix)) - 2))
+    end = ".".join(octets)
+    return f"{start},{end}"
+
+
 def generate_dnsmasq_config(network_spec):
     lines = []
 
@@ -12,10 +25,13 @@ def generate_dnsmasq_config(network_spec):
     lines.append("except-interface=lo")
     lines.append("log-dhcp")
 
-    if network_spec.get("dhcpRange"):
-        cidr = network_spec["cidr"]
+    cidr = network_spec.get("cidr", "")
+    dhcp_range = network_spec.get("dhcpRange", "")
+    if not dhcp_range and cidr:
+        dhcp_range = _auto_dhcp_range(cidr)
+
+    if dhcp_range:
         netmask = _cidr_to_netmask(cidr)
-        dhcp_range = network_spec["dhcpRange"]
         lines.append(f"dhcp-range={dhcp_range},{netmask},12h")
 
     if network_spec.get("gateway"):
