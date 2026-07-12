@@ -2248,7 +2248,14 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         last = _deploy_progress.get(project_id, {})
         if all_disks_done and op_stage:
             step = op_stage.lower()
-            detail = op_detail or step
+            vm_states = status.get("vmStates", {})
+            if vm_states:
+                ready = sum(
+                    1 for s in vm_states.values() if s in ("Running", "Stopped")
+                )
+                detail = f"{ready}/{len(vm_states)} VMs ready"
+            else:
+                detail = op_detail or step
         elif dv_lines:
             step = "images"
             detail = dv_detail
