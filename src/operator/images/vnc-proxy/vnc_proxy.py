@@ -16,10 +16,9 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
 
 config.load_incluster_config()
 _cfg = client.Configuration.get_default_copy()
-K8S_HOST = _cfg.host
-K8S_TOKEN = _cfg.api_key.get(
-    "authorization", ""
-).replace("Bearer ", "")
+K8S_HOST = _cfg.host or f"https://{os.environ.get('KUBERNETES_SERVICE_HOST', '172.30.0.1')}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}"
+_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+K8S_TOKEN = open(_token_path).read().strip() if os.path.exists(_token_path) else ""
 
 
 def _get_kubevirt_vnc_url(vm_name):
