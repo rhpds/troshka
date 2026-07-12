@@ -690,6 +690,29 @@ async def project_delete(spec, meta, namespace, name, **_):
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
+    # Force-delete VMIs first (immediate, no graceful shutdown wait)
+    try:
+        vmis = custom_api.list_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+        )
+        for vmi in vmis.get("items", []):
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=vmi["metadata"]["name"],
+                    grace_period_seconds=0,
+                )
+            except client.exceptions.ApiException:
+                pass
+    except Exception:
+        pass
+
     try:
         kv_vms = custom_api.list_namespaced_custom_object(
             group="kubevirt.io",
