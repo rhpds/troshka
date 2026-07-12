@@ -244,6 +244,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         return
 
     patch.status["phase"] = "Deploying"
+    patch.status["vmStates"] = {}
     patch.status["deployProgress"] = {
         "percent": 0,
         "stage": "Parsing topology",
