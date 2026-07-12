@@ -38,6 +38,39 @@ def _get_k8s_clients(provider):
     )
 
 
+def _ensure_s3_secret(provider, namespace, s3_config):
+    """Create or update s3-credentials Secret in the project namespace."""
+    from kubernetes import client as k8s_client
+
+    _, core_api, _ = _get_k8s_clients(provider)
+    secret_data = {
+        "AWS_ACCESS_KEY_ID": s3_config.get("access_key_id", ""),
+        "AWS_SECRET_ACCESS_KEY": s3_config.get("secret_access_key", ""),
+        "AWS_DEFAULT_REGION": s3_config.get("region", "us-east-1"),
+    }
+    endpoint = s3_config.get("endpoint_url", "")
+    if endpoint:
+        secret_data["AWS_ENDPOINT_URL"] = endpoint
+
+    try:
+        core_api.create_namespaced_secret(
+            namespace=namespace,
+            body=k8s_client.V1Secret(
+                metadata=k8s_client.V1ObjectMeta(name="s3-credentials"),
+                string_data=secret_data,
+            ),
+        )
+    except Exception as e:
+        if "AlreadyExists" in str(e):
+            core_api.patch_namespaced_secret(
+                name="s3-credentials",
+                namespace=namespace,
+                body=k8s_client.V1Secret(string_data=secret_data),
+            )
+        else:
+            raise
+
+
 def _deploy_operator(provider):
     from kubernetes import client
 

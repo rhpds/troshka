@@ -367,6 +367,309 @@ def cancel_capture(pattern_id: str, db) -> None:
             pass
 
 
+def _capture_kubevirt_native(db, pattern, project, host, restart_after):
+    """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
+    import json as _json
+    import time as _time
+
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import (
+        CRD_GROUP,
+        CRD_VERSION,
+        _ensure_s3_secret,
+        _get_k8s_clients,
+        _project_ns,
+    )
+    from app.services.s3_storage import _get_s3_config
+    from app.services.ws_pubsub import notify_pattern
+
+    pattern_id = pattern.id
+    project_id = project.id
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        pattern.state = "error"
+        pattern.deploy_error = "Provider not found"
+        db.commit()
+        return
+
+    s3_config = _get_s3_config()
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+
+    _ensure_s3_secret(provider, namespace, s3_config)
+
+    topology = project.deployed_topology or project.topology or {}
+    disk_nodes = [
+        n for n in topology.get("nodes", []) if n.get("type") == "storageNode"
+    ]
+    vm_nodes = {
+        n["id"]: n for n in topology.get("nodes", []) if n.get("type") == "vmNode"
+    }
+    edges = topology.get("edges", [])
+    disk_to_vm = {}
+    for edge in edges:
+        src, tgt = edge.get("source"), edge.get("target")
+        if src in vm_nodes and tgt in [d["id"] for d in disk_nodes]:
+            disk_to_vm[tgt] = src
+        elif tgt in vm_nodes and src in [d["id"] for d in disk_nodes]:
+            disk_to_vm[src] = tgt
+
+    disk_manifest = []
+    for disk_node in disk_nodes:
+        fmt = disk_node.get("data", {}).get("format", "qcow2")
+        if fmt == "iso":
+            continue
+        vm_id = disk_to_vm.get(disk_node["id"], "")
+        if not vm_id:
+            continue
+        vm_data = vm_nodes.get(vm_id, {}).get("data", {})
+        vm_name = f"vm-{vm_id[:8]}"
+        disk_id = disk_node["id"]
+        pvc_name = f"{vm_name}-disk-{disk_id[:8]}"
+        s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+        size_gb = int(disk_node.get("data", {}).get("size", 50))
+
+        disk_manifest.append(
+            {
+                "vmName": vm_name,
+                "vmId": vm_id,
+                "diskId": disk_id,
+                "pvcName": pvc_name,
+                "s3Key": s3_key,
+                "sizeGb": size_gb,
+                "format": fmt,
+            }
+        )
+
+    if not disk_manifest:
+        pattern.state = "error"
+        pattern.deploy_error = "No disks to capture"
+        db.commit()
+        return
+
+    capture_config = {
+        "patternId": pattern_id,
+        "s3Config": {
+            "bucket": s3_config.get("bucket", ""),
+            "endpoint": s3_config.get("endpoint_url", "https://s3.amazonaws.com"),
+            "region": s3_config.get("region", "us-east-1"),
+            "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
+        },
+        "disks": disk_manifest,
+    }
+
+    _capture_progress[pattern_id] = {
+        "step": "capturing",
+        "detail": "Triggering capture on cluster",
+    }
+    notify_pattern(
+        pattern_id,
+        {
+            "type": "capture-progress",
+            "step": "capturing",
+            "detail": "Triggering capture on cluster",
+        },
+    )
+
+    cr_name = f"project-{project_id[:8]}"
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+            body={
+                "metadata": {
+                    "annotations": {
+                        "troshka.redhat.com/capture-request": _json.dumps(
+                            capture_config
+                        )
+                    }
+                }
+            },
+        )
+    except Exception as e:
+        log.error("Failed to trigger capture on %s: %s", cr_name, e)
+        pattern.state = "error"
+        pattern.deploy_error = f"Failed to trigger capture: {e}"
+        db.commit()
+        return
+
+    # Poll CR status for capture completion (max 45 min)
+    for attempt in range(270):
+        _time.sleep(10)
+        try:
+            cr = custom_api.get_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural="troshkaprojects",
+                name=cr_name,
+            )
+            cr_status = cr.get("status", {})
+            phase = cr_status.get("phase", "")
+            progress = cr_status.get("captureProgress", "")
+
+            _capture_progress[pattern_id] = {
+                "step": "capturing",
+                "detail": progress,
+            }
+            notify_pattern(
+                pattern_id,
+                {
+                    "type": "capture-progress",
+                    "step": "capturing",
+                    "detail": progress,
+                },
+            )
+
+            if phase == "CaptureComplete":
+                captured_disks = cr_status.get("capturedDisks", [])
+                log.info(
+                    "Capture complete for %s: %d disks",
+                    pattern_id[:8],
+                    len(captured_disks),
+                )
+                break
+
+            if phase == "CaptureError":
+                err = cr_status.get("captureError", "Unknown error")
+                log.error("Capture failed for %s: %s", pattern_id[:8], err)
+                pattern.state = "error"
+                pattern.deploy_error = err
+                db.commit()
+                _capture_progress.pop(pattern_id, None)
+                return
+
+        except Exception as e:
+            log.warning("Error polling capture status for %s: %s", pattern_id[:8], e)
+    else:
+        pattern.state = "error"
+        pattern.deploy_error = "Capture timed out after 45 minutes"
+        db.commit()
+        _capture_progress.pop(pattern_id, None)
+        return
+
+    # Create PatternDisk records from captured disks
+    total_size = 0
+    for cd in captured_disks:
+        pd = PatternDisk(
+            pattern_id=pattern_id,
+            source_disk_id=cd.get("diskId", ""),
+            source_vm_id=cd.get("vmId", ""),
+            s3_key=cd.get("s3Key", ""),
+            format=cd.get("format", "qcow2"),
+            size_bytes=cd.get("sizeBytes", 0),
+            virtual_size_bytes=cd.get("virtualSizeBytes", 0),
+            state="available",
+        )
+        db.add(pd)
+        total_size += cd.get("sizeBytes", 0)
+
+    # Update topology nodes to reference pattern
+    topo = pattern.topology or {}
+    for node in topo.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        if node.get("data", {}).get("format") == "iso":
+            continue
+        node_id = node["id"]
+        matching_pd = next(
+            (cd for cd in captured_disks if cd.get("diskId") == node_id), None
+        )
+        if matching_pd:
+            node["data"]["source"] = "pattern"
+            node["data"]["patternId"] = pattern_id
+            node["data"]["patternDiskId"] = matching_pd.get("diskId", "")
+            node["data"].pop("libraryItemId", None)
+            node["data"].pop("libraryItemName", None)
+
+    import json as _json2
+    from sqlalchemy import text
+
+    db.execute(
+        text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+        {"topo": _json2.dumps(topo), "pid": pattern_id},
+    )
+
+    pattern.state = "available"
+    pattern.total_size_bytes = total_size
+    db.commit()
+
+    _capture_progress.pop(pattern_id, None)
+    notify_pattern(pattern_id, {"type": "capture-complete"})
+
+    # Save metadata to S3
+    try:
+        from app.services import s3_storage
+
+        metadata = {
+            "pattern_id": pattern_id,
+            "name": pattern.name,
+            "disks": [
+                {
+                    "disk_id": cd.get("diskId"),
+                    "s3_key": cd.get("s3Key"),
+                    "format": cd.get("format"),
+                }
+                for cd in captured_disks
+            ],
+        }
+        s3_storage.put_object(
+            f"patterns/{pattern_id}/metadata.json",
+            _json2.dumps(metadata).encode(),
+        )
+    except Exception:
+        log.warning("Failed to save metadata.json for pattern %s", pattern_id[:8])
+
+    # Optionally restart VMs
+    if restart_after:
+        try:
+            vms = custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+            )
+            for vm in vms.get("items", []):
+                custom_api.patch_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=vm["metadata"]["name"],
+                    body={"spec": {"running": True}},
+                )
+        except Exception as e:
+            log.warning("Failed to restart VMs after capture: %s", e)
+
+    # Clear the capture annotation
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+            body={
+                "metadata": {
+                    "annotations": {"troshka.redhat.com/capture-request": None}
+                }
+            },
+        )
+    except Exception:
+        pass
+
+    log.info(
+        "Pattern %s capture complete: %d disks, %d bytes",
+        pattern_id[:8],
+        len(captured_disks),
+        total_size,
+    )
+
+
 def capture_pattern_disks(
     pattern_id: str,
     project_id: str,
@@ -396,6 +699,10 @@ def capture_pattern_disks(
             pattern.state = "error"
             db.commit()
             log.error("No host found for project %s", project_id)
+            return
+
+        if host.host_type == "kubevirt-cluster":
+            _capture_kubevirt_native(db, pattern, project, host, restart_after)
             return
 
         worker_host = _get_pattern_buffer(db, host)

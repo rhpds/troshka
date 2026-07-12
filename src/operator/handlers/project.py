@@ -1,3 +1,4 @@
+import json
 import kopf
 import logging
 import time
@@ -13,120 +14,215 @@ from helpers.topology import (
 
 logger = logging.getLogger(__name__)
 
+CAPTURE_ANNOTATION = "troshka.redhat.com/capture-request"
 
-async def _handle_capture(spec, namespace, name, body, patch):
+
+async def _handle_capture(capture_config, namespace, name, patch):
+    """Handle pattern capture: stop VMs, snapshot disks, export to S3."""
     from helpers.patterns import (
         build_volume_snapshot,
         build_temp_pvc_from_snapshot,
         build_export_job,
     )
 
+    s3_config = capture_config.get("s3Config", {})
+    pattern_id = capture_config.get("patternId", name)
+    disk_manifest = capture_config.get("disks", [])
+
     patch.status["phase"] = "Capturing"
+    patch.status["captureProgress"] = "Stopping VMs"
+
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
     batch_api = client.BatchV1Api()
 
-    s3_config = spec.get("s3Config", {})
-    pattern_id = spec.get("patternId", name)
-
+    # Stop all KubeVirt VMs
     vms = custom_api.list_namespaced_custom_object(
-        group=CRD_GROUP,
-        version=CRD_VERSION,
-        namespace=namespace,
-        plural="troshkavms",
+        group=CRD_GROUP, version=CRD_VERSION,
+        namespace=namespace, plural="troshkavms",
     )
-
+    kv_names = []
     for vm_item in vms.get("items", []):
-        vm_name = vm_item["metadata"]["name"]
         kv_name = vm_item.get("status", {}).get(
-            "kubevirtVmName", f"troshka-{vm_name}"
+            "kubevirtVmName", f"troshka-{vm_item['metadata']['name']}"
         )
+        kv_names.append(kv_name)
         try:
             custom_api.patch_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": False}},
+                group="kubevirt.io", version="v1",
+                namespace=namespace, plural="virtualmachines",
+                name=kv_name, body={"spec": {"running": False}},
             )
         except Exception as e:
             logger.warning(f"Failed to stop VM {kv_name}: {e}")
 
-    time.sleep(5)
+    # Wait for all VMIs to be gone (max 120s)
+    for attempt in range(40):
+        try:
+            vmis = custom_api.list_namespaced_custom_object(
+                group="kubevirt.io", version="v1",
+                namespace=namespace, plural="virtualmachineinstances",
+            )
+            if not vmis.get("items"):
+                break
+        except Exception:
+            pass
+        time.sleep(3)
 
-    for vm_item in vms.get("items", []):
-        vm_name = vm_item["metadata"]["name"]
-        vm_spec = vm_item.get("spec", {})
+    # Snapshot and export each disk
+    captured_disks = []
+    export_jobs = []
 
-        for disk in vm_spec.get("disks", []):
-            disk_id = disk.get("id", "")[:8]
-            pvc_name = f"{vm_name}-disk-{disk_id}"
-            snap_name = f"snap-{vm_name}-{disk_id}"
-            s3_path = f"patterns/{pattern_id}/{vm_name}-{disk_id}.qcow2"
-            size_gb = disk.get("sizeGb", 20)
+    for disk_info in disk_manifest:
+        pvc_name = disk_info["pvcName"]
+        disk_id = disk_info["diskId"][:8]
+        vm_name = disk_info["vmName"]
+        s3_key = disk_info["s3Key"]
+        size_gb = disk_info.get("sizeGb", 50)
 
-            snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
+        snap_name = f"snap-{vm_name}-{disk_id}"
+        temp_pvc_name = f"export-{vm_name}-{disk_id}"
+        job_name = f"{vm_name}-{disk_id}"
+
+        patch.status["captureProgress"] = f"Snapshotting {vm_name}/{disk_id}"
+        logger.info(f"Capture {name}: snapshotting PVC {pvc_name}")
+
+        snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
+        try:
+            custom_api.create_namespaced_custom_object(
+                group="snapshot.storage.k8s.io", version="v1",
+                namespace=namespace, plural="volumesnapshots",
+                body=snapshot,
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
+        # Poll until snapshot is ready (max 5 min)
+        for _ in range(60):
             try:
-                custom_api.create_namespaced_custom_object(
-                    group="snapshot.storage.k8s.io",
-                    version="v1",
+                vs = custom_api.get_namespaced_custom_object(
+                    group="snapshot.storage.k8s.io", version="v1",
+                    namespace=namespace, plural="volumesnapshots",
+                    name=snap_name,
+                )
+                if vs.get("status", {}).get("readyToUse"):
+                    break
+            except Exception:
+                pass
+            time.sleep(5)
+
+        temp_pvc = build_temp_pvc_from_snapshot(
+            temp_pvc_name, namespace, snap_name, size_gb
+        )
+        try:
+            core_api.create_namespaced_persistent_volume_claim(
+                namespace=namespace, body=temp_pvc
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
+        export_job = build_export_job(
+            job_name, namespace, temp_pvc_name, s3_key, s3_config,
+        )
+        try:
+            batch_api.create_namespaced_job(
+                namespace=namespace, body=export_job
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
+        export_jobs.append({
+            "jobName": f"export-{job_name}",
+            "snapName": snap_name,
+            "tempPvcName": temp_pvc_name,
+            "diskId": disk_info["diskId"],
+            "vmId": disk_info.get("vmId", ""),
+            "s3Key": s3_key,
+            "format": disk_info.get("format", "qcow2"),
+            "virtualSizeBytes": size_gb * 1073741824,
+        })
+
+    # Poll export Jobs until all complete (max 30 min)
+    patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
+    for attempt in range(180):
+        all_done = True
+        for ej in export_jobs:
+            try:
+                job = batch_api.read_namespaced_job(
+                    name=ej["jobName"], namespace=namespace,
+                )
+                if job.status.succeeded and job.status.succeeded >= 1:
+                    continue
+                if job.status.failed and job.status.failed >= 3:
+                    logger.error(f"Export job {ej['jobName']} failed")
+                    patch.status["phase"] = "CaptureError"
+                    patch.status["captureError"] = f"Export job {ej['jobName']} failed"
+                    return
+                all_done = False
+            except Exception:
+                all_done = False
+        if all_done:
+            break
+        time.sleep(10)
+
+    # Read Job pod logs to get actual file sizes
+    for ej in export_jobs:
+        try:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=f"job-name={ej['jobName']}",
+            )
+            if pods.items:
+                logs = core_api.read_namespaced_pod_log(
+                    name=pods.items[0].metadata.name,
                     namespace=namespace,
-                    plural="volumesnapshots",
-                    body=snapshot,
                 )
-            except client.exceptions.ApiException as e:
-                if e.status != 409:
-                    raise
+                for line in logs.splitlines():
+                    if line.startswith("DISK_SIZE_BYTES="):
+                        ej["sizeBytes"] = int(line.split("=")[1])
+        except Exception:
+            pass
 
-            for _ in range(60):
-                try:
-                    vs = custom_api.get_namespaced_custom_object(
-                        group="snapshot.storage.k8s.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="volumesnapshots",
-                        name=snap_name,
-                    )
-                    if vs.get("status", {}).get("readyToUse"):
-                        break
-                except Exception:
-                    pass
-                time.sleep(5)
+        captured_disks.append({
+            "diskId": ej["diskId"],
+            "vmId": ej["vmId"],
+            "s3Key": ej["s3Key"],
+            "format": ej["format"],
+            "sizeBytes": ej.get("sizeBytes", 0),
+            "virtualSizeBytes": ej["virtualSizeBytes"],
+        })
 
-            temp_pvc_name = f"export-{vm_name}-{disk_id}"
-            temp_pvc = build_temp_pvc_from_snapshot(
-                temp_pvc_name, namespace, snap_name, size_gb
-            )
-            try:
-                core_api.create_namespaced_persistent_volume_claim(
-                    namespace=namespace, body=temp_pvc
-                )
-            except client.exceptions.ApiException as e:
-                if e.status != 409:
-                    raise
-
-            export_job = build_export_job(
-                f"{vm_name}-{disk_id}",
-                namespace,
-                snap_name,
-                s3_path,
-                s3_config,
-                size_gb,
-            )
-            export_job["spec"]["template"]["spec"]["volumes"][0][
-                "persistentVolumeClaim"
-            ]["claimName"] = temp_pvc_name
-            try:
-                batch_api.create_namespaced_job(
-                    namespace=namespace, body=export_job
-                )
-            except client.exceptions.ApiException as e:
-                if e.status != 409:
-                    raise
-
+    patch.status["capturedDisks"] = captured_disks
     patch.status["phase"] = "CaptureComplete"
-    logger.info(f"Pattern capture initiated for {name}")
+    patch.status["captureProgress"] = "Done"
+    logger.info(f"Pattern capture complete for {name}: {len(captured_disks)} disk(s)")
+
+    # Cleanup temp PVCs and snapshots
+    for ej in export_jobs:
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=ej["tempPvcName"], namespace=namespace,
+            )
+        except Exception:
+            pass
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="snapshot.storage.k8s.io", version="v1",
+                namespace=namespace, plural="volumesnapshots",
+                name=ej["snapName"],
+            )
+        except Exception:
+            pass
+        try:
+            batch_api.delete_namespaced_job(
+                name=ej["jobName"], namespace=namespace,
+                propagation_policy="Background",
+            )
+        except Exception:
+            pass
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkaprojects")
@@ -135,7 +231,12 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"TroshkaProject {name} created with action={action}")
 
     if action == "capture":
-        await _handle_capture(spec, namespace, name, body, patch)
+        capture_config = {
+            "patternId": spec.get("patternId", name),
+            "s3Config": spec.get("s3Config", {}),
+            "disks": spec.get("captureDisks", []),
+        }
+        await _handle_capture(capture_config, namespace, name, patch)
         return
 
     if action not in ("deploy",):
@@ -705,3 +806,24 @@ async def project_delete(spec, meta, namespace, name, **_):
         logger.warning(f"Could not clean SCC for {namespace}: {e}")
 
     logger.info(f"TroshkaProject {name} cleanup complete")
+
+
+@kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkaprojects")
+async def project_update(spec, status, meta, namespace, name, body, patch, diff, **_):
+    annotations = meta.get("annotations", {}) or {}
+    capture_json = annotations.get(CAPTURE_ANNOTATION)
+    if not capture_json:
+        return
+
+    phase = status.get("phase", "")
+    if phase == "Capturing":
+        return
+
+    logger.info(f"Capture annotation detected on {name}, starting capture")
+    try:
+        capture_config = json.loads(capture_json)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"Invalid capture annotation JSON on {name}: {e}")
+        return
+
+    await _handle_capture(capture_config, namespace, name, patch)
