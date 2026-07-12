@@ -432,11 +432,20 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Setup flow**: Create provider in admin UI → auto-creates virtual host → background thread deploys operator + CRDs → "Install Operator" button for repair/retry
 - **Virtual host**: one Host record per provider with `host_type="kubevirt-cluster"` — represents cluster capacity, no SSH/agent
 - **Networking**: OVN layer2 secondary networks (NADs) + dnsmasq Pod (DHCP/DNS) + gateway Pod (NAT) per project
-- **BMC**: sushy emulator Pod with custom KubeVirt driver (Redfish only, no IPMI)
-- **VNC console**: proxy Pod relaying noVNC to KubeVirt VNC subresource API, exposed via OCP Route
+- **NAD config**: must include `netAttachDefName: "namespace/name"` — OVN-K rejects pods without it
+- **SCC**: custom `troshka-network-pods` SCC for NET_ADMIN/NET_RAW, `troshka-network` SA created per project namespace and patched into SCC
+- **BMC**: sushy emulator Pod with custom KubeVirt driver (Redfish only, no IPMI), `troshka-bmc` SA created per project namespace
+- **VNC console**: `vnc-proxy-{project}` Pod per project, relays noVNC WebSocket to KubeVirt VNC subresource API (`subresources.kubevirt.io/v1/.../vnc`)
+- **VNC Route**: OCP edge-terminated Route with `haproxy.router.openshift.io/timeout: 3600s`, auto-generated hostname stored in TroshkaProject CR `status.consoleRoute`
+- **VNC RBAC**: `troshka-vnc` SA per project namespace with Role granting `get` on `kubevirt.io` VMIs and `subresources.kubevirt.io` VMIs/vnc
+- **VNC proxy image**: reads SA token from `/var/run/secrets/kubernetes.io/serviceaccount/token`, K8S_HOST from env vars
 - **Patterns**: fully portable across providers — same topology JSONB, same S3 disk images (qcow2), CDI import → golden PVC → Ceph RBD clone
-- **Pattern capture**: VolumeSnapshot → export Job (qemu-img convert + S3 upload)
-- **Not supported**: clock backdating (no `virsh domtime` equivalent in KubeVirt)
+- **Golden PVC sizing**: reads qcow2 header (bytes 24-31) via S3 Range request for virtual size, headroom `max(size+10, size*1.2)`
+- **Pattern capture**: VolumeSnapshot → export Job (qemu-img convert + S3 upload) — untested
+- **UEFI SecureBoot**: must explicitly set `secureBoot: false` for plain UEFI — KubeVirt defaults to `true`, which requires SMM
+- **Boot order**: `bootOrder` is a sibling of `disk:` on the disk entry, NOT nested inside `disk.disk`
+- **VM state polling**: WS poller reads `vmStates` from TroshkaProject CR, maps by VM node UUID (not domain name), normalizes `Running`→`running`
+- **Not supported**: clock backdating (no `virsh domtime` equivalent in KubeVirt), gateway NAT pod (TODO)
 
 ### GCP Provider Setup
 - Provider type `gcp` — creates nested-virt RHEL VMs on Google Compute Engine
