@@ -342,6 +342,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     )
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
 
+    kv_vm_name = kv_vm["metadata"]["name"]
     try:
         custom_api.create_namespaced_custom_object(
             group="kubevirt.io",
@@ -350,9 +351,33 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             plural="virtualmachines",
             body=kv_vm,
         )
-        logger.info(f"Created KubeVirt VM {kv_vm['metadata']['name']}")
+        logger.info(f"Created KubeVirt VM {kv_vm_name}")
     except client.exceptions.ApiException as e:
-        if e.status != 409:
+        if e.status == 409:
+            logger.info(f"KubeVirt VM {kv_vm_name} exists (stale), waiting for deletion")
+            for _ in range(30):
+                try:
+                    custom_api.get_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachines",
+                        name=kv_vm_name,
+                    )
+                    time.sleep(2)
+                except client.exceptions.ApiException as ge:
+                    if ge.status == 404:
+                        break
+                    raise
+            custom_api.create_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                body=kv_vm,
+            )
+            logger.info(f"Created KubeVirt VM {kv_vm_name} (after stale cleanup)")
+        else:
             raise
 
     if spec.get("bmcEnabled"):
