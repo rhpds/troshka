@@ -2043,7 +2043,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         cr_name,
     )
 
-    for attempt in range(360):
+    for attempt in range(1440):
         if _project_deleted(project_id):
             return
         try:
@@ -2114,15 +2114,24 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 if dv_phase == "Succeeded":
                     line = f"{friendly}: done"
                 elif dv_phase == "ImportInProgress":
-                    pct = dv_progress if dv_progress != "N/A" else "starting"
-                    if pct not in ("starting", "N/A"):
-                        try:
-                            pct_float = float(pct.rstrip("%"))
-                            if pct_float >= 99.0:
-                                pct = f"{pct} (finalizing)"
-                        except ValueError:
-                            pass
-                    line = f"{friendly}: downloading {pct}"
+                    conditions = dv.get("status", {}).get("conditions", [])
+                    running_reason = ""
+                    running_msg = ""
+                    for cond in conditions:
+                        if cond.get("type") == "Running":
+                            running_reason = cond.get("reason", "")
+                            running_msg = cond.get("message", "")
+                            break
+                    if running_reason == "Completed":
+                        line = f"{friendly}: writing to storage"
+                    elif running_reason == "Error":
+                        line = f"{friendly}: error — {running_msg[:40]}"
+                    elif dv_progress and dv_progress != "N/A":
+                        line = f"{friendly}: downloading {dv_progress}"
+                    elif running_reason == "TransferRunning":
+                        line = f"{friendly}: downloading starting"
+                    else:
+                        line = f"{friendly}: starting"
                 elif dv_phase in ("CloneInProgress", "CloneScheduled"):
                     line = f"{friendly}: cloning"
                 elif dv_phase in ("ImportScheduled", "Pending"):
@@ -2236,7 +2245,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         time.sleep(5)
 
     project.state = "error"
-    project.deploy_error = "Deploy timed out waiting for operator (30 min)"
+    project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
     db.commit()
     _deploy_progress.pop(project_id, None)
     notify_project(
