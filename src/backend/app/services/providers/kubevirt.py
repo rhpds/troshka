@@ -651,7 +651,30 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
-        # Force-delete VMIs first to avoid graceful shutdown wait
+        # Delete VM CRs first — this stops KubeVirt from recreating VMIs
+        try:
+            vms = custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+            )
+            for vm in vms.get("items", []):
+                try:
+                    custom_api.delete_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachines",
+                        name=vm["metadata"]["name"],
+                        grace_period_seconds=0,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Now force-delete VMIs (no graceful ACPI shutdown)
         try:
             vmis = custom_api.list_namespaced_custom_object(
                 group="kubevirt.io",
