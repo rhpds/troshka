@@ -31,9 +31,10 @@ def _get_kubevirt_vnc_url(vm_name):
     )
 
 
-async def _proxy(ws_client, path):
+async def _proxy(ws_client):
+    path = ws_client.request.path if hasattr(ws_client, "request") else "/"
     parts = path.strip("/").split("/")
-    if len(parts) < 1:
+    if not parts or not parts[0]:
         await ws_client.close(1008, "Missing VM name in path")
         return
 
