@@ -99,7 +99,7 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
             "initContainers": [
                 {
                     "name": "setup-ip",
-                    "image": DNSMASQ_IMAGE,
+                    "image": GATEWAY_IMAGE,
                     "command": ["sh", "-c", setup_cmd],
                     "securityContext": {
                         "capabilities": {"add": ["NET_ADMIN"]}
