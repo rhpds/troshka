@@ -1007,8 +1007,9 @@ def kubevirt_exec_console(
     # Use websocket to connect to the console subresource
     # The kubernetes client doesn't have a native console stream helper,
     # so we use the raw API path with the websocket protocol.
-    import websocket
     import ssl
+
+    import websocket
 
     creds = provider.get_credentials()
     api_url = creds["api_url"]
