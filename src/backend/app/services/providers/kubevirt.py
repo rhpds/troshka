@@ -643,7 +643,8 @@ class KubeVirtDriver(ProviderDriver):
                 plural="troshkaprojects",
                 name=f"project-{project_id[:8]}",
             )
-            return cr.get("status", {})
+            s = cr.get("status", {})
+            return s if isinstance(s, dict) else {}
         except Exception:
             return {}
 
