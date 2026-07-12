@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
 nft add table inet nat
 nft add chain inet nat postrouting '{ type nat hook postrouting priority 100 ; }'
 nft add rule inet nat postrouting oifname "eth0" masquerade
