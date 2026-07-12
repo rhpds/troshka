@@ -197,8 +197,17 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         golden_name = _ensure_golden_pvc(
             custom_api, core_api, cdrom_s3, 10, s3_config
         )
+        cdrom_size = 10
+        try:
+            golden_pvc = core_api.read_namespaced_persistent_volume_claim(
+                name=golden_name, namespace=CACHE_NAMESPACE
+            )
+            golden_storage = golden_pvc.spec.resources.requests.get("storage", "10Gi")
+            cdrom_size = max(cdrom_size, int(golden_storage.rstrip("Gi")))
+        except Exception:
+            pass
         clone_dv = build_clone_datavolume(
-            cdrom_pvc, namespace, golden_name, CACHE_NAMESPACE, 10
+            cdrom_pvc, namespace, golden_name, CACHE_NAMESPACE, cdrom_size
         )
         clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
         try:
