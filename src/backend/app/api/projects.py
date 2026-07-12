@@ -1078,7 +1078,11 @@ def _get_project_and_host(
             status_code=409, detail=f"Project is {project.state}, VMs not accessible"
         )
     host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.private_key or not host.ip_address:
+    if not host:
+        raise HTTPException(status_code=503, detail="Host not available")
+    if host.host_type != "kubevirt-cluster" and (
+        not host.private_key or not host.ip_address
+    ):
         raise HTTPException(status_code=503, detail="Host not available")
     if check_disk:
         from app.services.troshkad_client import check_disk_usage
