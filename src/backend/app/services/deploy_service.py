@@ -1982,6 +1982,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 fmt = data.get("format", "qcow2")
                 s3_path = f"library/{data['libraryItemId']}.{fmt}"
                 data["presignedUrl"] = _presign(s3_path)
+                data["resolvedS3Path"] = s3_path
 
     _update_deploy_progress(project_id, "networks", "creating operator resources")
     notify_project(
@@ -2109,6 +2110,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     line = f"{friendly}: downloading {pct}"
                 elif dv_phase in ("CloneInProgress", "CloneScheduled"):
                     line = f"{friendly}: cloning"
+                elif dv_phase in ("ImportScheduled", "Pending"):
+                    line = f"{friendly}: scheduled"
                 elif dv_phase:
                     line = f"{friendly}: {dv_phase.lower()}"
                 else:
@@ -2122,9 +2125,21 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 label = line.split(":")[0].strip()
                 status = line.split(":", 1)[1].strip() if ":" in line else ""
                 prev = best_status.get(label, "")
-                if "downloading" in status or "done" in status or "cloning" in status:
-                    best_status[label] = status
-                elif not prev:
+                rank = {
+                    "done": 5,
+                    "downloading": 4,
+                    "cloning": 3,
+                    "scheduled": 2,
+                    "waiting": 1,
+                }
+
+                def _rank(s):
+                    for k, v in rank.items():
+                        if k in s:
+                            return v
+                    return 0
+
+                if _rank(status) >= _rank(prev):
                     best_status[label] = status
 
             for node in topology.get("nodes", []):
