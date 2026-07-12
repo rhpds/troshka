@@ -355,6 +355,17 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     if spec.get("bmcEnabled"):
         from helpers.bmc import build_bmc_pod
 
+        try:
+            core_api.create_namespaced_service_account(
+                namespace=namespace,
+                body=client.V1ServiceAccount(
+                    metadata=client.V1ObjectMeta(name="troshka-bmc"),
+                ),
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
         bmc_nad = None
         try:
             nets = custom_api.list_namespaced_custom_object(
