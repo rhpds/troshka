@@ -1979,8 +1979,16 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 data["presignedUrl"] = _presign(s3_path)
                 data["resolvedS3Path"] = s3_path
             elif data.get("source") == "library" and data.get("libraryItemId"):
-                fmt = data.get("format", "qcow2")
-                s3_path = f"library/{data['libraryItemId']}.{fmt}"
+                from app.models.library import LibraryItem
+
+                lib_item = (
+                    db.query(LibraryItem).filter_by(id=data["libraryItemId"]).first()
+                )
+                if lib_item and lib_item.s3_key:
+                    s3_path = lib_item.s3_key
+                else:
+                    fmt = data.get("format", "qcow2")
+                    s3_path = f"library/{data['libraryItemId']}.{fmt}"
                 data["presignedUrl"] = _presign(s3_path)
                 data["resolvedS3Path"] = s3_path
 
