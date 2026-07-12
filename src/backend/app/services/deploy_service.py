@@ -5,6 +5,7 @@ Translates canvas topology into libvirt VMs and VXLAN networks,
 then sends structured commands to the troshkad agent on the host.
 """
 
+import copy
 import datetime
 import ipaddress
 import logging
@@ -2279,7 +2280,12 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
         if phase == "Running":
             project.state = "active"
-            project.deployed_topology = topology
+            clean_topo = copy.deepcopy(topology)
+            for node in clean_topo.get("nodes", []):
+                ndata = node.get("data", {})
+                ndata.pop("resolvedS3Path", None)
+                ndata.pop("presignedUrl", None)
+            project.deployed_topology = clean_topo
             project.deploy_error = None
             db.commit()
             _deploy_progress.pop(project_id, None)
