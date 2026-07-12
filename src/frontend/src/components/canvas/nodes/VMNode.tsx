@@ -51,9 +51,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const waitForShutdown = async (maxWaitMs: number): Promise<boolean> => {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 3000));
       const state = await pollVmStatus();
-      if (state === "shut off") return true;
+      if (state === "shut off" || state === "stopped") return true;
     }
     return false;
   };
@@ -66,7 +66,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       const result = await resp.json();
       if (action === "stop") {
         if (result.success) {
-          const off = await waitForShutdown(10000);
+          updateNodeData(id, { status: "stopping" });
+          const off = await waitForShutdown(60000);
           if (off) {
             updateNodeData(id, { status: "stopped" });
           } else {

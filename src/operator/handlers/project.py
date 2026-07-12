@@ -508,10 +508,12 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
 async def project_status_check(spec, status, namespace, name, patch, **_):
     phase = status.get("phase", "")
-    if phase != "Deploying":
+    if phase not in ("Deploying", "Running"):
         return
 
     custom_api = client.CustomObjectsApi()
+
+    # Get TroshkaVM CRs for VM ID mapping
     vms = custom_api.list_namespaced_custom_object(
         group=CRD_GROUP,
         version=CRD_VERSION,
@@ -522,30 +524,62 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
     if not vm_items:
         return
 
+    # Get actual KubeVirt VMI states (live truth)
+    try:
+        vmis = custom_api.list_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+        )
+        vmi_states = {}
+        for vmi in vmis.get("items", []):
+            vmi_name = vmi["metadata"]["name"]
+            vmi_phase = vmi.get("status", {}).get("phase", "")
+            vmi_states[vmi_name] = vmi_phase
+    except Exception:
+        vmi_states = {}
+
     vm_states = {}
     ready_count = 0
     for vm in vm_items:
-        vm_name = vm.get("spec", {}).get("name", vm["metadata"]["name"])
-        state = vm.get("status", {}).get("state", "")
-        vm_states[vm.get("spec", {}).get("vmId", vm["metadata"]["name"])] = state or "creating"
+        vm_id = vm.get("spec", {}).get("vmId", vm["metadata"]["name"])
+        kv_name = vm.get("status", {}).get("kubevirtVmName", "")
+
+        # Use live VMI state if available, fall back to TroshkaVM CR state
+        if kv_name and kv_name in vmi_states:
+            state = vmi_states[kv_name]
+        else:
+            state = vm.get("status", {}).get("state", "")
+            if not state:
+                state = "creating"
+            # No VMI means VM is stopped (defined but not running)
+            if kv_name and kv_name not in vmi_states and state == "Running":
+                state = "Stopped"
+
+        vm_states[vm_id] = state
         if state in ("Running", "Stopped"):
             ready_count += 1
 
-    patch.status["vmStates"] = vm_states
-    patch.status["deployProgress"] = {
-        "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
-        "stage": "Waiting for VMs",
-        "detail": f"{ready_count}/{len(vm_items)} VMs ready",
-    }
+    old_states = status.get("vmStates", {})
+    if vm_states != old_states:
+        patch.status["vmStates"] = vm_states
 
-    if ready_count == len(vm_items):
-        patch.status["phase"] = "Running"
+    if phase == "Deploying":
         patch.status["deployProgress"] = {
-            "percent": 100,
-            "stage": "Done",
-            "detail": "",
+            "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
+            "stage": "Waiting for VMs",
+            "detail": f"{ready_count}/{len(vm_items)} VMs ready",
         }
-        logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
+
+        if ready_count == len(vm_items):
+            patch.status["phase"] = "Running"
+            patch.status["deployProgress"] = {
+                "percent": 100,
+                "stage": "Done",
+                "detail": "",
+            }
+            logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
