@@ -6359,6 +6359,7 @@ _SKIP_DRAIN = {
     "host/disk-usage",
     "gc/discover",
     "vm/ssh-exec",
+    "vm/guest-exec",
     "containers/states",
 }
 
@@ -7898,6 +7899,91 @@ def _handle_vm_ssh_exec(job, params):
 
 
 COMMAND_HANDLERS["vm/ssh-exec"] = _handle_vm_ssh_exec
+
+
+def _handle_vm_guest_exec(job, params):
+    """Execute a command on a VM via qemu-guest-agent."""
+    domain = _validate_domain_name(params["domain_name"])
+    command = params.get("command", "")
+    timeout_secs = min(params.get("timeout", 600), 3600)
+
+    if not command:
+        raise RuntimeError("No command specified")
+
+    # Check guest agent is available (10s timeout to avoid blocking on frozen VMs)
+    try:
+        check = subprocess.run(
+            [
+                "virsh", "qemu-agent-command", domain,
+                '{"execute":"guest-info"}',
+                "--timeout", "10",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if check.returncode != 0:
+            raise RuntimeError(
+                f"Guest agent not available on {domain}: {check.stderr.strip()}"
+            )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Guest agent not responding on {domain}")
+
+    # Execute command via guest-exec
+    import json as _json
+    exec_cmd = _json.dumps({
+        "execute": "guest-exec",
+        "arguments": {
+            "path": "/bin/sh",
+            "arg": ["-c", command],
+            "capture-output": True,
+        },
+    })
+    result = subprocess.run(
+        ["virsh", "qemu-agent-command", domain, exec_cmd, "--timeout", "10"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"guest-exec failed: {result.stderr.strip()}")
+
+    resp = _json.loads(result.stdout)
+    pid = resp.get("return", {}).get("pid")
+    if pid is None:
+        raise RuntimeError(f"No PID in guest-exec response: {result.stdout}")
+
+    # Poll for completion
+    import base64
+    status_cmd = _json.dumps({
+        "execute": "guest-exec-status",
+        "arguments": {"pid": pid},
+    })
+    deadline = time.time() + timeout_secs
+    while time.time() < deadline:
+        if job.get("_cancelled"):
+            raise RuntimeError("Job cancelled")
+        sr = subprocess.run(
+            ["virsh", "qemu-agent-command", domain, status_cmd, "--timeout", "10"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if sr.returncode != 0:
+            raise RuntimeError(f"guest-exec-status failed: {sr.stderr.strip()}")
+        status = _json.loads(sr.stdout).get("return", {})
+        if status.get("exited"):
+            stdout = ""
+            stderr = ""
+            if status.get("out-data"):
+                stdout = base64.b64decode(status["out-data"]).decode("utf-8", errors="replace")
+            if status.get("err-data"):
+                stderr = base64.b64decode(status["err-data"]).decode("utf-8", errors="replace")
+            return {
+                "output": stdout,
+                "error": stderr,
+                "exit_code": status.get("exitcode", -1),
+            }
+        time.sleep(0.5)
+
+    raise RuntimeError(f"guest-exec timed out after {timeout_secs}s (pid={pid})")
+
+
+COMMAND_HANDLERS["vm/guest-exec"] = _handle_vm_guest_exec
 
 
 # ── Console exec (VNC send-key + screenshot + OCR) ──
