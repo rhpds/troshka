@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-sysctl -w net.ipv4.ip_forward=1
+echo 1 > /proc/sys/net/ipv4/ip_forward
 
 nft add table inet nat
 nft add chain inet nat postrouting '{ type nat hook postrouting priority 100 ; }'
