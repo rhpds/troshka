@@ -651,7 +651,7 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
-        # Delete VM CRs first — this stops KubeVirt from recreating VMIs
+        # Delete VM CRs first — stops KubeVirt from recreating VMIs
         try:
             vms = custom_api.list_namespaced_custom_object(
                 group="kubevirt.io",
@@ -674,7 +674,7 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-        # Now force-delete VMIs (no graceful ACPI shutdown)
+        # Force-delete VMIs and virt-launcher pods
         try:
             vmis = custom_api.list_namespaced_custom_object(
                 group="kubevirt.io",
@@ -696,6 +696,37 @@ class KubeVirtDriver(ProviderDriver):
                     pass
         except Exception:
             pass
+
+        # Force-delete virt-launcher pods directly
+        try:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector="kubevirt.io=virt-launcher",
+            )
+            for pod in pods.items:
+                try:
+                    core_api.delete_namespaced_pod(
+                        name=pod.metadata.name,
+                        namespace=namespace,
+                        grace_period_seconds=0,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Wait for virt-launcher pods to be gone before namespace delete
+        for _ in range(15):
+            try:
+                pods = core_api.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector="kubevirt.io=virt-launcher",
+                )
+                if not pods.items:
+                    break
+            except Exception:
+                break
+            time.sleep(1)
 
         try:
             custom_api.delete_namespaced_custom_object(
