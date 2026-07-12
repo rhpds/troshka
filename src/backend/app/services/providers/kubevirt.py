@@ -650,6 +650,30 @@ class KubeVirtDriver(ProviderDriver):
     def destroy_project(self, provider, project_id):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
+
+        # Force-delete VMIs first to avoid graceful shutdown wait
+        try:
+            vmis = custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            )
+            for vmi in vmis.get("items", []):
+                try:
+                    custom_api.delete_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachineinstances",
+                        name=vmi["metadata"]["name"],
+                        grace_period_seconds=0,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         try:
             custom_api.delete_namespaced_custom_object(
                 group=CRD_GROUP,
