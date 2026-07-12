@@ -357,6 +357,117 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "detail": f"{i + 1}/{len(vms)} VMs",
         }
 
+    # Create VNC console proxy (pod + service + route)
+    from helpers.vnc import build_vnc_proxy_pod, build_vnc_service, build_vnc_route
+
+    core_api = client.CoreV1Api()
+
+    try:
+        core_api.create_namespaced_service_account(
+            namespace=namespace,
+            body=client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(name="troshka-vnc"),
+            ),
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    # Grant troshka-vnc SA access to KubeVirt VNC subresource
+    rbac_api = client.RbacAuthorizationV1Api()
+    try:
+        rbac_api.create_namespaced_role(
+            namespace=namespace,
+            body=client.V1Role(
+                metadata=client.V1ObjectMeta(name="troshka-vnc-access"),
+                rules=[
+                    client.V1PolicyRule(
+                        api_groups=["subresources.kubevirt.io"],
+                        resources=["virtualmachineinstances/vnc"],
+                        verbs=["get"],
+                    ),
+                ],
+            ),
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    try:
+        rbac_api.create_namespaced_role_binding(
+            namespace=namespace,
+            body=client.V1RoleBinding(
+                metadata=client.V1ObjectMeta(name="troshka-vnc-access"),
+                subjects=[
+                    client.V1Subject(
+                        kind="ServiceAccount",
+                        name="troshka-vnc",
+                        namespace=namespace,
+                    ),
+                ],
+                role_ref=client.V1RoleRef(
+                    api_group="rbac.authorization.k8s.io",
+                    kind="Role",
+                    name="troshka-vnc-access",
+                ),
+            ),
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    vnc_pod = build_vnc_proxy_pod(name, namespace, owner_body=body)
+    try:
+        core_api.create_namespaced_pod(namespace=namespace, body=vnc_pod)
+        logger.info(f"Created VNC proxy pod for {name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    vnc_svc = build_vnc_service(name, namespace, owner_body=body)
+    try:
+        core_api.create_namespaced_service(namespace=namespace, body=vnc_svc)
+        logger.info(f"Created VNC proxy service for {name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    vnc_route = build_vnc_route(name, namespace, owner_body=body)
+    try:
+        custom_api.create_namespaced_custom_object(
+            group="route.openshift.io",
+            version="v1",
+            namespace=namespace,
+            plural="routes",
+            body=vnc_route,
+        )
+        logger.info(f"Created VNC proxy route for {name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+
+    # Read back the route to get the assigned hostname
+    try:
+        route = custom_api.get_namespaced_custom_object(
+            group="route.openshift.io",
+            version="v1",
+            namespace=namespace,
+            plural="routes",
+            name=f"vnc-proxy-{name}",
+        )
+        console_host = route.get("spec", {}).get("host", "")
+        if not console_host:
+            console_host = (
+                route.get("status", {})
+                .get("ingress", [{}])[0]
+                .get("host", "")
+            )
+        if console_host:
+            patch.status["consoleRoute"] = console_host
+            logger.info(f"Console route: {console_host}")
+    except Exception as e:
+        logger.warning(f"Could not read console route hostname: {e}")
+
     patch.status["phase"] = "Deploying"
     patch.status["deployProgress"] = {
         "percent": 90,
@@ -484,6 +595,30 @@ async def project_delete(spec, meta, namespace, name, **_):
                     logger.warning(f"Failed to delete NAD {nad_name}: {e}")
     except Exception as e:
         logger.warning(f"Failed to list NADs in {namespace}: {e}")
+
+    try:
+        routes = custom_api.list_namespaced_custom_object(
+            group="route.openshift.io",
+            version="v1",
+            namespace=namespace,
+            plural="routes",
+        )
+        for rt in routes.get("items", []):
+            rt_name = rt["metadata"]["name"]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="route.openshift.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="routes",
+                    name=rt_name,
+                )
+                logger.info(f"Deleted Route {rt_name}")
+            except client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete Route {rt_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to list Routes in {namespace}: {e}")
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
     try:

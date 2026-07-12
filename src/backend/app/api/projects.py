@@ -1513,19 +1513,24 @@ def get_vm_console(
 ):
     project, host = _get_project_and_host(project_id, user, db)
 
-    # KubeVirt native: VNC via proxy pod + KubeVirt subresource API
+    # KubeVirt native: VNC via proxy pod + OCP Route
     if host.host_type == "kubevirt-cluster":
         kv_vm_name = f"troshka-vm-{vm_id[:8]}"
         from app.models.provider import Provider
+        from app.services.providers import get_provider_driver
 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
-        namespace = _kubevirt_project_ns(provider, project_id) if provider else ""
-        console_domain = provider.console_base_domain if provider else ""
-        if not console_domain:
-            return {"error": "Console domain not configured"}
+        if not provider:
+            return {"error": "Provider not found"}
+        driver = get_provider_driver(provider)
+        cr_status = driver.get_project_status(provider, project_id)
+        console_route = (
+            cr_status.get("consoleRoute", "") if isinstance(cr_status, dict) else ""
+        )
+        if not console_route:
+            return {"error": "Console not ready — VNC proxy route not yet available"}
         return {
-            "ws_url": f"wss://vnc-{namespace}.{console_domain}/{kv_vm_name}",
-            "kubevirt": True,
+            "ws_url": f"wss://{console_route}/{kv_vm_name}",
         }
 
     dom = _domain_name(project_id, vm_id)
