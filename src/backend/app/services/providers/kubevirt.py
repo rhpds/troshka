@@ -971,10 +971,8 @@ def kubevirt_exec_ssh(
         stdin=False,
         tty=False,
         _preload_content=True,
-        _request_timeout=30,
+        _request_timeout=timeout + 10,
     )
-    # k8s_stream with _preload_content=True returns combined output as a string.
-    # We can't reliably separate stdout/stderr this way, but it's sufficient.
     return {
         "output": resp,
         "error": "",
