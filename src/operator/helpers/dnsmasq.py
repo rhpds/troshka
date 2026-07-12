@@ -47,6 +47,11 @@ def generate_dnsmasq_config(network_spec):
     if gateway and _IPV4_RE.match(gateway):
         lines.append(f"dhcp-option=3,{gateway}")
 
+    if network_spec.get("dnsForwarders") and cidr:
+        dns_ip = cidr.split("/")[0].split(".")
+        dns_ip[3] = "2"
+        lines.append(f"dhcp-option=6,{'.'.join(dns_ip)}")
+
     for lease in network_spec.get("staticLeases", []):
         mac = lease.get("mac", "")
         ip = lease.get("ip", "")
