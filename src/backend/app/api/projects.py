@@ -1729,7 +1729,8 @@ def vm_exec(
         username: SSH/console user (default: cloud-user)
         password: VM password (auto-resolved from topology if omitted)
         timeout: Command timeout in seconds (default: 600, max: 3600)
-        method: "auto" (tries ssh → serial → console), "ssh", "serial", or "console"
+        method: "auto" (tries guest-agent → ssh → console → serial),
+                "guest-agent", "ssh", "serial", or "console"
     """
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
@@ -1770,7 +1771,7 @@ def vm_exec(
         root_password = vm_node.get("data", {}).get("ciRootPassword", "")
 
     if method == "auto":
-        methods = ["ssh", "console-text", "console", "serial"]
+        methods = ["guest-agent", "ssh", "console", "serial"]
         force_tty = False
     else:
         methods = [method]
@@ -1778,7 +1779,30 @@ def vm_exec(
 
     for m in methods:
         try:
-            if m == "ssh":
+            if m == "guest-agent":
+                job_id = start_job(
+                    host,
+                    "/vm/guest-exec",
+                    {
+                        "domain_name": dom,
+                        "command": command,
+                        "timeout": timeout,
+                    },
+                )
+                job = wait_for_job(host, job_id, timeout=timeout + 30)
+                if job["status"] == "completed":
+                    result = job.get("result", {})
+                    return {
+                        "output": result.get("output", ""),
+                        "error": result.get("error", ""),
+                        "exit_code": result.get("exit_code", 0),
+                        "method": "guest-agent",
+                    }
+                errors.append(
+                    f"guest-agent: {job.get('result', {}).get('error', 'failed')}"
+                )
+
+            elif m == "ssh":
                 if not vm_ip or not (password or private_key):
                     errors.append("ssh: no VM IP or credentials")
                     continue
