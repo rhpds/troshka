@@ -2160,7 +2160,14 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     elif running_reason == "Error":
                         line = f"{friendly}: error — {running_msg[:40]}"
                     elif dv_progress and dv_progress != "N/A":
-                        line = f"{friendly}: downloading {dv_progress}"
+                        try:
+                            pct = float(dv_progress.rstrip("%"))
+                            if pct >= 99.0:
+                                line = f"{friendly}: writing to storage — please wait"
+                            else:
+                                line = f"{friendly}: downloading {dv_progress}"
+                        except ValueError:
+                            line = f"{friendly}: downloading {dv_progress}"
                     elif running_reason == "TransferRunning":
                         line = f"{friendly}: downloading starting"
                     else:
