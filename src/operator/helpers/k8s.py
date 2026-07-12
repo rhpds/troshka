@@ -180,7 +180,7 @@ def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
                     "image": GATEWAY_IMAGE,
                     "securityContext": {
                         "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
-                        "privileged": False,
+                        "privileged": True,
                     },
                 }
             ],
