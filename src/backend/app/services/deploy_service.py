@@ -2115,11 +2115,30 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     line = f"{friendly}: done"
                 elif dv_phase == "ImportInProgress":
                     pct = dv_progress if dv_progress != "N/A" else "starting"
+                    if pct not in ("starting", "N/A"):
+                        try:
+                            pct_float = float(pct.rstrip("%"))
+                            if pct_float >= 99.0:
+                                pct = f"{pct} (finalizing)"
+                        except ValueError:
+                            pass
                     line = f"{friendly}: downloading {pct}"
                 elif dv_phase in ("CloneInProgress", "CloneScheduled"):
                     line = f"{friendly}: cloning"
                 elif dv_phase in ("ImportScheduled", "Pending"):
                     line = f"{friendly}: scheduled"
+                elif dv_phase == "Failed":
+                    conditions = dv.get("status", {}).get("conditions", [])
+                    err = next(
+                        (
+                            c.get("message", "")
+                            for c in conditions
+                            if c.get("type") == "Running" and c.get("message")
+                        ),
+                        "",
+                    )
+                    short_err = err[:40] if err else "failed"
+                    line = f"{friendly}: error — {short_err}"
                 elif dv_phase:
                     line = f"{friendly}: {dv_phase.lower()}"
                 else:
