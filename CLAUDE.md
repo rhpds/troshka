@@ -167,7 +167,13 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### Exec API
 - `POST /projects/{id}/vms/{vm_id}/exec` — execute commands on VMs
-- `method` parameter: `serial` (always works, no network), `ssh` (requires network + credentials), `auto` (tries SSH first, falls back to serial)
+- `method` parameter: `guest-agent` (structured, no creds), `ssh` (requires network + credentials), `console` (OCR/pexpect), `serial` (PTY pexpect), `auto` (tries all in order)
+- **Auto priority**: guest-agent → SSH → console → serial
+- **Guest-agent exec**: `virsh qemu-agent-command` with `guest-exec` + poll `guest-exec-status`. Returns structured stdout/stderr/exit_code. No network, no credentials needed. Requires `qemu-guest-agent` with exec enabled.
+- **Cloud-init**: automatically unblocks `guest-exec` in `/etc/sysconfig/qemu-ga` (handles both RHEL blocklist and allowlist formats). Controlled by `Project.guest_exec_enabled` (default true), toggle in Palette UI.
+- **KubeVirt native exec**: guest-agent via virt-launcher pod exec (`_pod_exec_raw` helper for raw JSON), SSH via dnsmasq pod exec, console via WebSocket to KubeVirt console subresource. KubeVirt auto order omits serial (same as console).
+- **Virt-launcher pod exec**: requires custom `troshka-virt-exec` SCC (in `infra/ocpvirt-rbac.yaml`) — standard RBAC `pods/exec` is not enough on OpenShift
+- **k8s_stream gotcha**: `_preload_content=True` returns Python repr, not raw JSON — use `_preload_content=False` with manual read loop for JSON responses
 - SSH key auth preferred over password when `ssh_key_id` is provided
 - `from-template` API accepts `ssh_pub_key` directly for agnosticv key injection
 
