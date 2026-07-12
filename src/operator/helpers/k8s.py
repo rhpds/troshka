@@ -171,13 +171,15 @@ def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
         },
         "spec": {
             "serviceAccountName": "troshka-network",
+            "securityContext": {
+                "sysctls": [{"name": "net.ipv4.ip_forward", "value": "1"}],
+            },
             "containers": [
                 {
                     "name": "gateway",
                     "image": GATEWAY_IMAGE,
                     "securityContext": {
                         "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
-                        "privileged": True,
                     },
                 }
             ],
