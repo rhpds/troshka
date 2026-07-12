@@ -2083,6 +2083,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             return
         try:
             status = driver.get_project_status(provider, project_id)
+            if not isinstance(status, dict):
+                status = {}
         except Exception:
             status = {}
 
