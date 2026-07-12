@@ -2123,13 +2123,18 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 if node.get("type") == "storageNode":
                     sid = ndata2.get("id", node.get("id", ""))[:8]
                     label = ndata2.get("label", ndata2.get("name", ""))
+                    fmt = ndata2.get("format", "qcow2")
                     for edge in topology.get("edges", []):
                         if edge.get("source") == ndata2.get("id", node.get("id", "")):
                             vm_id = edge.get("target", "")[:8]
                             clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
+                            if fmt == "iso":
+                                clone_name_map[f"vm-{vm_id}-cdrom"] = label
                         elif edge.get("target") == ndata2.get("id", node.get("id", "")):
                             vm_id = edge.get("source", "")[:8]
                             clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
+                            if fmt == "iso":
+                                clone_name_map[f"vm-{vm_id}-cdrom"] = label
 
             cache_lines = []
             clone_lines = []
