@@ -81,11 +81,25 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             raise
 
     dnsmasq_pod = build_dnsmasq_pod(body, dnsmasq_conf)
+    pod_name = f"dnsmasq-{name}"
     try:
         api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
         logger.info(f"Created dnsmasq pod for {name}")
     except client.exceptions.ApiException as e:
-        if e.status != 409:
+        if e.status == 409:
+            import time
+            logger.info(f"Dnsmasq pod {pod_name} exists (stale), waiting for deletion")
+            for _ in range(30):
+                try:
+                    api.read_namespaced_pod(name=pod_name, namespace=namespace)
+                    time.sleep(2)
+                except client.exceptions.ApiException as ge:
+                    if ge.status == 404:
+                        break
+                    raise
+            api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
+            logger.info(f"Created dnsmasq pod {pod_name} (after stale cleanup)")
+        else:
             raise
 
     patch.status["ready"] = True
