@@ -2012,6 +2012,25 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 data["presignedUrl"] = _presign(s3_path)
                 data["resolvedS3Path"] = s3_path
 
+    # Generate per-deploy SSH key pair for exec pod → VM access
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+
+    exec_key = Ed25519PrivateKey.generate()
+    exec_privkey_pem = exec_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    ).decode()
+    exec_pubkey = (
+        exec_key.public_key()
+        .public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        )
+        .decode()
+    )
+
     # Regenerate cloud-init userdata so deploy-time settings (guest-exec, etc.) take effect
     from app.services.cloud_init import generate_userdata
 
@@ -2023,6 +2042,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             continue
         if not project.guest_exec_enabled:
             data["guestExecEnabled"] = False
+        ssh_keys = data.get("ciSshKeys", [])
+        if exec_pubkey not in ssh_keys:
+            ssh_keys.append(exec_pubkey)
+            data["ciSshKeys"] = ssh_keys
         data["ciUserData"] = generate_userdata(data)
 
     _update_deploy_progress(project_id, "networks", "creating operator resources")
@@ -2063,7 +2086,13 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         _time.sleep(3)
 
     try:
-        cr_name = driver.deploy_project(provider, project_id, topology, s3_config)
+        cr_name = driver.deploy_project(
+            provider,
+            project_id,
+            topology,
+            s3_config,
+            exec_ssh_key=exec_privkey_pem,
+        )
     except Exception as e:
         if "AlreadyExists" in str(e):
             cr_name = f"project-{project_id[:8]}"
@@ -3612,7 +3641,9 @@ def maybe_start_ocp_health_monitor(project_id: str):
         ):
             return
         host = db.query(Host).filter_by(id=project.host_id).first()
-        if not host or host.agent_status != "connected":
+        if not host:
+            return
+        if host.host_type != "kubevirt-cluster" and host.agent_status != "connected":
             return
         topo = project.deployed_topology or project.topology or {}
         if not _is_ocp_topology(topo):
@@ -3640,6 +3671,88 @@ def _exec_on_bastion(
     command: str,
     timeout: int = 15,
 ):
+    if host.host_type == "kubevirt-cluster":
+        return _exec_on_bastion_kubevirt(
+            host, project_id, bastion_ip, password, command, timeout
+        )
+    return _exec_on_bastion_troshkad(
+        host, project_id, bastion_ip, password, command, timeout
+    )
+
+
+def _exec_on_bastion_kubevirt(host, project_id, bastion_ip, password, command, timeout):
+    import re as _re
+
+    try:
+        from app.models.provider import Provider
+        from app.core.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        finally:
+            db.close()
+        if not provider:
+            return None
+
+        from app.services.providers.kubevirt import (
+            _find_exec_pod,
+            _get_k8s_clients,
+            _project_ns,
+        )
+        from kubernetes.stream import stream as k8s_stream
+
+        _, core_v1, _ = _get_k8s_clients(provider)
+        namespace = _project_ns(provider, project_id)
+        exec_pod = _find_exec_pod(core_v1, namespace, project_id)
+        if not exec_pod:
+            return None
+
+        ssh_cmd = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            f"ConnectTimeout={min(timeout, 10)}",
+            "-i",
+            "/root/.ssh/id_ed25519",
+            f"cloud-user@{bastion_ip}",
+            command,
+        ]
+        resp = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            exec_pod.metadata.name,
+            namespace,
+            command=ssh_cmd,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=timeout + 10,
+        )
+        output = resp or ""
+        if output:
+            output = _re.sub(r"\x1b\[[0-9;]*m", "", output)
+            lines = [
+                l
+                for l in output.split("\n")
+                if l.strip()
+                and not l.strip().startswith("OpenShift Console:")
+                and not l.strip().startswith("Username:")
+                and not l.strip().startswith("Password:")
+            ]
+            output = "\n".join(lines)
+        return output or None
+    except Exception:
+        return None
+
+
+def _exec_on_bastion_troshkad(host, project_id, bastion_ip, password, command, timeout):
     import re as _re
 
     try:
@@ -3794,18 +3907,20 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     )
 
     # Phase 1: Wait for bastion SSH — but skip if bastion VM is stopped
-    from app.services.troshkad_client import get_vm_state as _get_vm_st
+    if host.host_type != "kubevirt-cluster":
+        from app.services.troshkad_client import get_vm_state as _get_vm_st
 
-    bastion_dom = _vm_domain_name(project_id, bastion["id"])
-    try:
-        vm_info = _get_vm_st(host, bastion_dom, timeout=5)
-        if vm_info.get("state") in ("shut_off", "shutoff"):
-            _push(
-                "waiting", "bastion is powered off — start it to enable OCP monitoring"
-            )
-            return
-    except Exception:
-        pass
+        bastion_dom = _vm_domain_name(project_id, bastion["id"])
+        try:
+            vm_info = _get_vm_st(host, bastion_dom, timeout=5)
+            if vm_info.get("state") in ("shut_off", "shutoff"):
+                _push(
+                    "waiting",
+                    "bastion is powered off — start it to enable OCP monitoring",
+                )
+                return
+        except Exception:
+            pass
 
     _push("ssh", "waiting for bastion")
     while _t.time() < deadline:

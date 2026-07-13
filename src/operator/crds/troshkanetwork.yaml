@@ -48,6 +48,15 @@ spec:
                       type: string
                     isoS3Path:
                       type: string
+                dnsRecords:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      ip:
+                        type: string
                 dnsForwarders:
                   type: array
                   items:

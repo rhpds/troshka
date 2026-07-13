@@ -637,6 +637,8 @@ class KubeVirtDriver(ProviderDriver):
             project_cr["spec"]["commonPassword"] = kwargs["common_password"]
         if kwargs.get("registry_credentials"):
             project_cr["spec"]["registryCredentials"] = kwargs["registry_credentials"]
+        if kwargs.get("exec_ssh_key"):
+            project_cr["spec"]["execSshKey"] = kwargs["exec_ssh_key"]
 
         custom_api.create_namespaced_custom_object(
             group=CRD_GROUP,
@@ -914,23 +916,32 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
     raise RuntimeError(f"guest-exec timed out after {timeout}s (pid={pid})")
 
 
+def _find_exec_pod(core_v1, namespace, project_id):
+    """Find the exec pod for a project, falling back to dnsmasq pod."""
+    project_name = f"project-{project_id[:8]}"
+    pods = core_v1.list_namespaced_pod(
+        namespace, label_selector=f"app=troshka-exec,troshka-project={project_name}"
+    )
+    for p in pods.items:
+        if p.status.phase == "Running":
+            return p
+    pods = core_v1.list_namespaced_pod(namespace, label_selector="app=troshka-dnsmasq")
+    for p in pods.items:
+        if p.status.phase == "Running":
+            return p
+    return None
+
+
 def kubevirt_exec_ssh(
     provider, project_id, vm_id, vm_ip, username, password, command, timeout=600
 ):
-    """Execute command via SSH from the dnsmasq pod (on the OVN network)."""
+    """Execute command via SSH from the exec pod (or dnsmasq pod fallback)."""
     _, core_v1, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
 
-    pods = core_v1.list_namespaced_pod(
-        namespace, label_selector=f"app=dnsmasq,troshka-project={project_id[:8]}"
-    )
-    dnsmasq_pod = None
-    for p in pods.items:
-        if p.status.phase == "Running":
-            dnsmasq_pod = p
-            break
-    if not dnsmasq_pod:
-        raise RuntimeError("No running dnsmasq pod found")
+    exec_pod = _find_exec_pod(core_v1, namespace, project_id)
+    if not exec_pod:
+        raise RuntimeError("No running exec pod found")
 
     if not vm_ip:
         raise RuntimeError("No VM IP for SSH exec")
@@ -959,7 +970,7 @@ def kubevirt_exec_ssh(
     ]
     resp = k8s_stream(
         core_v1.connect_get_namespaced_pod_exec,
-        dnsmasq_pod.metadata.name,
+        exec_pod.metadata.name,
         namespace,
         command=ssh_cmd,
         stderr=True,

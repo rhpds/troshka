@@ -131,6 +131,89 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
     }
 
 
+def build_exec_pod(project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_secret=None):
+    """Build an exec pod for SSH/command execution into project VMs.
+
+    Uses .3 on the subnet (dnsmasq is .2, gateway is .1).
+    """
+    namespace = project_cr["metadata"]["namespace"]
+    name = project_cr["metadata"]["name"]
+    project_id = project_cr["spec"].get("projectId", namespace)[:8]
+
+    exec_ip = ""
+    prefix = "24"
+    if cidr:
+        parts = cidr.split("/")
+        prefix = parts[1] if len(parts) > 1 else "24"
+        octets = parts[0].split(".")
+        octets[3] = "3"
+        exec_ip = ".".join(octets)
+
+    setup_cmd = "true"
+    if exec_ip and _IPV4_RE.match(exec_ip) and _PREFIX_RE.match(prefix):
+        setup_cmd = f"ip addr add {exec_ip}/{prefix} dev net1 && ip link set net1 up"
+
+    volumes = []
+    volume_mounts = []
+    if ssh_key_secret:
+        volumes.append({
+            "name": "ssh-key",
+            "secret": {
+                "secretName": ssh_key_secret,
+                "defaultMode": 0o400,
+            },
+        })
+        volume_mounts.append({
+            "name": "ssh-key",
+            "mountPath": "/root/.ssh",
+            "readOnly": True,
+        })
+
+    container = {
+        "name": "exec",
+        "image": DNSMASQ_IMAGE,
+        "command": ["sleep", "infinity"],
+    }
+    if volume_mounts:
+        container["volumeMounts"] = volume_mounts
+
+    pod_name = f"exec-{project_id}"
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(project_cr)],
+            "labels": {
+                "app": "troshka-exec",
+                "troshka-project": name,
+            },
+            "annotations": {
+                "k8s.v1.cni.cncf.io/networks": cluster_nad_name,
+            },
+        },
+        "spec": {
+            "serviceAccountName": "troshka-network",
+            "initContainers": [
+                {
+                    "name": "setup-ip",
+                    "image": GATEWAY_IMAGE,
+                    "command": ["sh", "-c", setup_cmd],
+                    "securityContext": {
+                        "capabilities": {"add": ["NET_ADMIN"]}
+                    },
+                }
+            ],
+            "containers": [container],
+            "restartPolicy": "Always",
+        },
+    }
+    if volumes:
+        pod["spec"]["volumes"] = volumes
+    return pod
+
+
 def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
     """Build a single gateway pod for the project, attached to all networks.
 

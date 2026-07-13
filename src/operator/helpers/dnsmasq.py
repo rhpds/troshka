@@ -62,6 +62,15 @@ def generate_dnsmasq_config(network_spec):
             else:
                 lines.append(f"dhcp-host={mac},{ip}")
 
+    for rec in network_spec.get("dnsRecords", []):
+        name = rec.get("name", "")
+        ip = rec.get("ip", "")
+        if name and ip and _IPV4_RE.match(ip):
+            if name.startswith("."):
+                lines.append(f"address=/{name}/{ip}")
+            else:
+                lines.append(f"address=/{name}/{ip}")
+
     pxe = network_spec.get("pxeConfig", {})
     if pxe.get("enabled"):
         lines.append("enable-tftp")

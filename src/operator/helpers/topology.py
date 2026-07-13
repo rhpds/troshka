@@ -56,6 +56,7 @@ def extract_networks(topology):
                 "dnsForwarders": dns_forwarders,
                 "externalAccess": external_access,
                 "pxeConfig": data.get("pxeConfig", {}),
+                "dnsRecords": data.get("dnsRecords", []),
                 "staticLeases": [],
             }
         )

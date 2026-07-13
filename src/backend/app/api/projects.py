@@ -3100,6 +3100,8 @@ def redeploy_project(
         project.host_id = old_host_id
     project.vni_map = None
     project.deploy_error = None
+    project.ocp_status = None
+    project.ocp_install_elapsed = None
     db.commit()
 
     # Now deploy again

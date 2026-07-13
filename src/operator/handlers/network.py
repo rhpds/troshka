@@ -109,6 +109,57 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"Network {name} ready")
 
 
+@kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkanetworks", field="spec")
+async def network_update(spec, meta, namespace, name, body, patch, **_):
+    """Reconcile dnsmasq config when network spec changes (e.g. DNS records added)."""
+    logger.info(f"Updating network {name} in {namespace}")
+    api = client.CoreV1Api()
+
+    dnsmasq_conf = generate_dnsmasq_config(spec)
+    cm_name = f"dnsmasq-{name}"
+    try:
+        api.patch_namespaced_config_map(
+            name=cm_name,
+            namespace=namespace,
+            body={"data": {"dnsmasq.conf": dnsmasq_conf}},
+        )
+        logger.info(f"Updated ConfigMap {cm_name}")
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            api.create_namespaced_config_map(
+                namespace=namespace,
+                body=client.V1ConfigMap(
+                    metadata=client.V1ObjectMeta(name=cm_name, namespace=namespace),
+                    data={"dnsmasq.conf": dnsmasq_conf},
+                ),
+            )
+        else:
+            raise
+
+    pod_name = f"dnsmasq-{name}"
+    try:
+        api.delete_namespaced_pod(name=pod_name, namespace=namespace)
+        logger.info(f"Deleted dnsmasq pod {pod_name} for restart")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+
+    import time
+
+    for _ in range(30):
+        try:
+            api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            time.sleep(2)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                break
+            raise
+
+    dnsmasq_pod = build_dnsmasq_pod(body, dnsmasq_conf)
+    api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
+    logger.info(f"Recreated dnsmasq pod {pod_name} with updated config")
+
+
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkanetworks")
 async def network_delete(spec, meta, namespace, name, **_):
     logger.info(f"Deleting network {name} in {namespace} — cleaning up resources")

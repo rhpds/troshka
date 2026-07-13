@@ -3,7 +3,7 @@ import kopf
 import logging
 import time
 from kubernetes import client
-from helpers.k8s import CRD_GROUP, CRD_VERSION, owner_ref, build_gateway_pod
+from helpers.k8s import CRD_GROUP, CRD_VERSION, owner_ref, build_exec_pod, build_gateway_pod
 from helpers.topology import (
     extract_networks,
     extract_vms,
@@ -276,6 +276,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "dnsForwarders": net.get("dnsForwarders", []),
             "externalAccess": net.get("externalAccess", False),
             "staticLeases": static_leases.get(net["id"], []),
+            "dnsRecords": net.get("dnsRecords", []),
         }
         if net.get("pxeConfig"):
             net_spec["pxeConfig"] = net["pxeConfig"]
@@ -329,6 +330,59 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         try:
             core_api.create_namespaced_pod(namespace=namespace, body=gw_pod)
             logger.info(f"Created gateway pod for {name}")
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
+    # Create SSH key Secret + exec pod attached to the first standard network
+    cluster_nad = None
+    cluster_cidr = "10.0.0.0/24"
+    for net in networks:
+        if net.get("networkType", "standard") != "bmc":
+            cluster_nad = f"net-{net['id'][:8]}-nad"
+            cluster_cidr = net.get("cidr", "10.0.0.0/24")
+            break
+    if cluster_nad:
+        exec_ssh_key = spec.get("execSshKey", "")
+        if exec_ssh_key:
+            import base64 as _b64
+
+            secret_body = client.V1Secret(
+                metadata=client.V1ObjectMeta(
+                    name="exec-ssh-key",
+                    namespace=namespace,
+                    owner_references=[
+                        client.V1OwnerReference(
+                            api_version=f"{CRD_GROUP}/{CRD_VERSION}",
+                            kind="TroshkaProject",
+                            name=name,
+                            uid=meta["uid"],
+                            controller=True,
+                        )
+                    ],
+                ),
+                data={
+                    "id_ed25519": _b64.b64encode(
+                        exec_ssh_key.encode()
+                    ).decode(),
+                },
+            )
+            try:
+                core_api.create_namespaced_secret(
+                    namespace=namespace, body=secret_body
+                )
+                logger.info(f"Created exec SSH key secret for {name}")
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+
+        exec_pod = build_exec_pod(
+            body, cluster_nad, cidr=cluster_cidr,
+            ssh_key_secret="exec-ssh-key" if exec_ssh_key else None,  # pragma: allowlist secret
+        )
+        try:
+            core_api.create_namespaced_pod(namespace=namespace, body=exec_pod)
+            logger.info(f"Created exec pod for {name}")
         except client.exceptions.ApiException as e:
             if e.status != 409:
                 raise
