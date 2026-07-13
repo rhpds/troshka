@@ -39,6 +39,8 @@ spec:
                       type: string
                 commonPassword:
                   type: string
+                execSshKey:
+                  type: string
                 action:
                   type: string
                   enum: [deploy, destroy, capture]

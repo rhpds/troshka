@@ -639,6 +639,10 @@ class KubeVirtDriver(ProviderDriver):
             project_cr["spec"]["registryCredentials"] = kwargs["registry_credentials"]
         if kwargs.get("exec_ssh_key"):
             project_cr["spec"]["execSshKey"] = kwargs["exec_ssh_key"]
+            logger.info(
+                "deploy_project: execSshKey set, length=%d",
+                len(kwargs["exec_ssh_key"]),
+            )
 
         custom_api.create_namespaced_custom_object(
             group=CRD_GROUP,

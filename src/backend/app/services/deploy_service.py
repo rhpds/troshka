@@ -2016,6 +2016,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
 
+    logger.info("Deploy %s: generating exec SSH key pair", project_id[:8])
     exec_key = Ed25519PrivateKey.generate()
     exec_privkey_pem = exec_key.private_bytes(
         serialization.Encoding.PEM,
@@ -2085,6 +2086,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             pass
         _time.sleep(3)
 
+    logger.info(
+        "Deploy %s: creating CR with exec_ssh_key=%s",
+        project_id[:8],
+        bool(exec_privkey_pem),
+    )
     try:
         cr_name = driver.deploy_project(
             provider,
@@ -2339,6 +2345,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             project.deployed_topology = clean_topo
             project.topology = clean_topo
             project.deploy_error = None
+            if _is_ocp_topology(topology):
+                project.ocp_status = "monitoring"
             db.commit()
             _deploy_progress.pop(project_id, None)
             notify_project(project_id, {"type": "project-state", "state": "active"})
