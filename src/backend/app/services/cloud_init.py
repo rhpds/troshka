@@ -128,12 +128,22 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append("runcmd:")
     if root_hash or cloud_user_hash:
         lines.append(
-            "  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
+            "  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl reset-failed sshd 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
         )
     if vm_data.get("guestExecEnabled", True):
         lines.append(
             "  - python3 -c \"import re,pathlib;f=pathlib.Path('/etc/sysconfig/qemu-ga');t=f.read_text() if f.exists() else '';t2=re.sub(r'(--allow-rpcs=[^\\\"]*)',r'\\\\1,guest-exec,guest-exec-status',t) if 'allow-rpcs' in t else re.sub(r'guest-exec-status,|guest-exec,|,guest-exec-status|,guest-exec','',t);f.write_text(t2)\" 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
         )
+    if all_keys:
+        parts = ["mkdir -p /home/cloud-user/.ssh"]
+        for key in all_keys:
+            parts.append(
+                f"grep -qF '{key}' /home/cloud-user/.ssh/authorized_keys 2>/dev/null || echo '{key}' >> /home/cloud-user/.ssh/authorized_keys"
+            )
+        parts.append("chmod 700 /home/cloud-user/.ssh")
+        parts.append("chmod 600 /home/cloud-user/.ssh/authorized_keys")
+        parts.append("chown -R cloud-user:cloud-user /home/cloud-user/.ssh")
+        lines.append(f"  - {' && '.join(parts)}")
     lines.append(
         "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"
     )
