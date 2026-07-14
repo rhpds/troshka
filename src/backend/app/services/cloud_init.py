@@ -111,7 +111,7 @@ def generate_userdata(vm_data: dict) -> str:
     # config that must apply on pattern redeploys where runcmd is skipped
     lines.append("bootcmd:")
     lines.append(
-        "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload"
+        "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload 2>/dev/null || true"
     )
     # Inject exec SSH key: remove stale troshka-exec keys, add current one
     exec_key = next((k for k in all_keys if "troshka-exec" in k), None)
@@ -120,7 +120,7 @@ def generate_userdata(vm_data: dict) -> str:
             f"  - mkdir -p /home/cloud-user/.ssh && sed -i '/troshka-exec/d' /home/cloud-user/.ssh/authorized_keys 2>/dev/null; echo '{exec_key}' >> /home/cloud-user/.ssh/authorized_keys && chmod 700 /home/cloud-user/.ssh && chmod 600 /home/cloud-user/.ssh/authorized_keys && chown -R cloud-user:cloud-user /home/cloud-user/.ssh"
         )
     lines.append(
-        "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf && systemctl reset-failed sshd 2>/dev/null && systemctl restart sshd 2>/dev/null || true"
+        "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf"
     )
 
     # Custom user-data — split into top-level sections and runcmd items

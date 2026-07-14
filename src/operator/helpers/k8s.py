@@ -171,7 +171,7 @@ def build_exec_pod(project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_sec
 
     container = {
         "name": "exec",
-        "image": DNSMASQ_IMAGE,
+        "image": TOOLS_IMAGE,
         "command": ["sleep", "infinity"],
     }
     if volume_mounts:
