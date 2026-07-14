@@ -311,7 +311,7 @@ def build_recert_job(
         volume_mounts.append({"name": "bastion-disk", "mountPath": "/bastion"})
         bastion_cmds = (
             'echo "Mounting bastion disk..."\n'
-            "qemu-nbd --connect /dev/nbd1 /bastion/disk.img\n"
+            "qemu-nbd --connect /dev/nbd1 --format=raw /bastion/disk.img\n"
             "sleep 1; partprobe /dev/nbd1 2>/dev/null || true; sleep 1\n"
             "BPART=/dev/nbd1p3; [ -e /dev/nbd1p3 ] || BPART=/dev/nbd1p1\n"
             "mkdir -p /mnt/bastion; mount -o nouuid $BPART /mnt/bastion\n"
@@ -332,7 +332,7 @@ def build_recert_job(
         "#!/bin/bash\nset -e\n"
         "modprobe nbd max_part=8 2>/dev/null || true\n"
         'echo "Connecting RHCOS disk..."\n'
-        "qemu-nbd --connect /dev/nbd0 /rhcos/disk.img\n"
+        "qemu-nbd --connect /dev/nbd0 --format=raw /rhcos/disk.img\n"
         "sleep 1; partprobe /dev/nbd0 2>/dev/null || true; sleep 1\n"
         "[ -e /dev/nbd0p4 ] || { echo 'ERROR: not RHCOS';"
         " qemu-nbd --disconnect /dev/nbd0; exit 1; }\n"
