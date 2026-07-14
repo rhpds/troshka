@@ -361,15 +361,22 @@ def build_recert_job(
         'ETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\n'
         'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
         'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
+        "# Use etcd from the RHCOS disk if available (matches cluster version)\n"
+        "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
+        "DISK_ETCD=$(find $DEPLOY_ROOT/usr -name etcd -type f 2>/dev/null | head -1)\n"
+        "if [ -n \"$DISK_ETCD\" ] && [ -x \"$DISK_ETCD\" ]; then\n"
+        "  ETCD_BIN=$DISK_ETCD; ETCDCTL_BIN=$(dirname $DISK_ETCD)/etcdctl\n"
+        "  echo \"Using disk etcd: $($ETCD_BIN --version 2>&1 | head -1)\"\n"
+        "else echo \"Using bundled etcd: $(etcd --version 2>&1 | head -1)\"; fi\n"
         'echo "Starting etcd..."\n'
-        "etcd --data-dir=$VAR_ETCD --name=recert-temp "
+        "$ETCD_BIN --data-dir=$VAR_ETCD --name=recert-temp "
         "--listen-client-urls=http://127.0.0.1:2479 "
         "--advertise-client-urls=http://127.0.0.1:2479 "
         "--listen-peer-urls=http://127.0.0.1:2489 "
         "--force-new-cluster &\n"
         "ETCD_PID=$!\n"
         "for i in $(seq 1 30); do"
-        " etcdctl --endpoints=http://127.0.0.1:2479 endpoint health"
+        " $ETCDCTL_BIN --endpoints=http://127.0.0.1:2479 endpoint health"
         " 2>/dev/null | grep -q healthy && break; sleep 1; done\n"
         'echo "Running recert..."\n'
         "recert --etcd-endpoint=http://127.0.0.1:2479 "
