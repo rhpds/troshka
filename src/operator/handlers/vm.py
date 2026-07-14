@@ -252,77 +252,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         except Exception as e:
             logger.warning(f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}")
 
-    # Run recert on RHCOS pattern VMs (SNO cert regeneration before boot)
-    is_pattern = any(d.get("patternImage") for d in spec.get("disks", []))
-    vm_os = spec.get("os", "")
-    if not vm_os:
-        vm_os = "rhcos" if spec.get("name", "").startswith("cp-") else ""
-    if vm_os == "rhcos" and is_pattern and spec.get("disks"):
-        root_disk_id = spec["disks"][0].get("id", "")
-        rhcos_pvc = disk_pvcs.get(root_disk_id)
-        if rhcos_pvc:
-            # Update project status so UI shows recert progress
-            project_name = meta.get("labels", {}).get("troshka-project", "")
-            if project_name:
-                try:
-                    custom_api.patch_namespaced_custom_object_status(
-                        group=CRD_GROUP, version=CRD_VERSION,
-                        namespace=namespace, plural="troshkaprojects",
-                        name=project_name,
-                        body={"status": {"deployProgress": {
-                            "stage": "Regenerating certificates",
-                            "detail": f"recert on {spec.get('name', name)}",
-                            "percent": 35,
-                        }}},
-                    )
-                except Exception:
-                    pass
-
-            recert_job = build_recert_job(name, namespace, rhcos_pvc)
-            recert_job["metadata"]["ownerReferences"] = [owner_ref(body)]
-            batch_api = client.BatchV1Api()
-            recert_job_name = f"recert-{name}"
-            try:
-                batch_api.delete_namespaced_job(
-                    name=recert_job_name, namespace=namespace,
-                    propagation_policy="Foreground",
-                )
-                for _ in range(15):
-                    try:
-                        batch_api.read_namespaced_job(
-                            name=recert_job_name, namespace=namespace
-                        )
-                        time.sleep(2)
-                    except Exception:
-                        break
-            except Exception:
-                pass
-            try:
-                batch_api.create_namespaced_job(
-                    namespace=namespace, body=recert_job
-                )
-                logger.info(f"Created recert job for {name}")
-                for _ in range(120):
-                    try:
-                        job_status = batch_api.read_namespaced_job(
-                            name=recert_job_name, namespace=namespace
-                        )
-                        if job_status.status.succeeded:
-                            logger.info(f"Recert completed for {name}")
-                            break
-                        if job_status.status.failed:
-                            logger.warning(f"Recert failed for {name}")
-                            break
-                    except client.exceptions.ApiException as je:
-                        if je.status == 404:
-                            logger.info(f"Recert job {recert_job_name} gone (completed/cleaned)")
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(5)
-            except client.exceptions.ApiException as e:
-                if e.status != 409:
-                    logger.warning(f"Recert job create failed for {name}: {e}")
+    # Recert is handled by the project handler before VMs are created
 
     cloudinit_secret_name = None
     ci_secret = build_cloudinit_secret(body)
