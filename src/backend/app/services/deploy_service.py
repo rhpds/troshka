@@ -2085,18 +2085,50 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         except Exception:
             pass
 
-        # Wait for operator to fully clean up old VMs/VMIs before creating new CR
-        # — prevents virt-handler ghost record collisions on rapid redeploys
+        # Wait for old CR and resources to be fully gone before creating new CR
         from app.services.providers.kubevirt import (
             _get_k8s_clients as _kc,
             _project_ns as _pns,
         )
 
-        _, _cv1, _ = _kc(provider)
+        _ca, _cv1, _ac = _kc(provider)
         _ns = _pns(provider, project_id)
-        for _ in range(30):
+        cr_name = f"project-{project_id[:8]}"
+
+        # Delete any stale Jobs
+        try:
+            from kubernetes import client as _klient
+
+            _batch = _klient.BatchV1Api(_ac)
+            for job in _batch.list_namespaced_job(_ns).items:
+                try:
+                    _batch.delete_namespaced_job(
+                        name=job.metadata.name,
+                        namespace=_ns,
+                        propagation_policy="Background",
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Wait for CR + VMIs + pods to be fully gone
+        for attempt in range(45):
             try:
-                _vmis = custom_api.list_namespaced_custom_object(
+                cr_gone = True
+                try:
+                    _ca.get_namespaced_custom_object(
+                        group="troshka.redhat.com",
+                        version="v1alpha1",
+                        namespace=_ns,
+                        plural="troshkaprojects",
+                        name=cr_name,
+                    )
+                    cr_gone = False
+                except Exception:
+                    pass
+
+                _vmis = _ca.list_namespaced_custom_object(
                     group="kubevirt.io",
                     version="v1",
                     namespace=_ns,
@@ -2105,14 +2137,19 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 _pods = _cv1.list_namespaced_pod(
                     _ns, label_selector="kubevirt.io=virt-launcher"
                 )
-                if not _vmis.get("items", []) and not _pods.items:
+                if cr_gone and not _vmis.get("items", []) and not _pods.items:
+                    logger.info(
+                        "Deploy %s: old resources cleaned up after %ds",
+                        project_id[:8],
+                        attempt * 2,
+                    )
                     break
             except Exception:
                 break
             _time.sleep(2)
         else:
             logger.warning(
-                "Deploy %s: old VMIs still present after 60s, proceeding anyway",
+                "Deploy %s: old resources still present after 90s, proceeding",
                 project_id[:8],
             )
 

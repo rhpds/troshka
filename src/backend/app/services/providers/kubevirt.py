@@ -742,16 +742,54 @@ class KubeVirtDriver(ProviderDriver):
                 break
             time.sleep(2)
 
+        # Delete all Jobs (recert, guestfish, export)
+        try:
+            from kubernetes import client as _kc
+
+            batch_api = _kc.BatchV1Api(_kc.ApiClient(_kc.Configuration()))
+            # Reuse the same api_client
+            _, _, api_client = _get_k8s_clients(provider)
+            batch_api = _kc.BatchV1Api(api_client)
+            jobs = batch_api.list_namespaced_job(namespace=namespace)
+            for job in jobs.items:
+                try:
+                    batch_api.delete_namespaced_job(
+                        name=job.metadata.name,
+                        namespace=namespace,
+                        propagation_policy="Background",
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Delete TroshkaProject CR
+        cr_name = f"project-{project_id[:8]}"
         try:
             custom_api.delete_namespaced_custom_object(
                 group=CRD_GROUP,
                 version=CRD_VERSION,
                 namespace=namespace,
                 plural="troshkaprojects",
-                name=f"project-{project_id[:8]}",
+                name=cr_name,
             )
         except Exception:
             pass
+
+        # Wait for TroshkaProject CR to be fully deleted (finalizers may take time)
+        for _ in range(30):
+            try:
+                custom_api.get_namespaced_custom_object(
+                    group=CRD_GROUP,
+                    version=CRD_VERSION,
+                    namespace=namespace,
+                    plural="troshkaprojects",
+                    name=cr_name,
+                )
+                time.sleep(2)
+            except Exception:
+                break
+
         try:
             core_api.delete_namespace(name=namespace)
         except Exception:
