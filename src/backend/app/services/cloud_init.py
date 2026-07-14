@@ -107,15 +107,20 @@ def generate_userdata(vm_data: dict) -> str:
 
     # Prevent cloud-init from regenerating SSH host keys on pattern deploys
     lines.append("ssh_deletekeys: false")
-    # bootcmd runs on every boot (not just first boot)
+    # bootcmd runs on EVERY boot regardless of instance-id — use it for
+    # config that must apply on pattern redeploys where runcmd is skipped
     lines.append("bootcmd:")
-    # Clean stale cloud-init instance cache so cloud-init re-runs all modules
-    # (pattern disks have a baked instance-id that prevents re-run)
-    lines.append("  - rm -rf /var/lib/cloud/instance /var/lib/cloud/data/instance-id")
-    # Raise sshd restart limit — cloud-init restarts sshd multiple times
-    # during boot which hits systemd's default StartLimitBurst=5
     lines.append(
         "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload"
+    )
+    # Inject exec SSH key: remove stale troshka-exec keys, add current one
+    exec_key = next((k for k in all_keys if "troshka-exec" in k), None)
+    if exec_key:
+        lines.append(
+            f"  - mkdir -p /home/cloud-user/.ssh && sed -i '/troshka-exec/d' /home/cloud-user/.ssh/authorized_keys 2>/dev/null; echo '{exec_key}' >> /home/cloud-user/.ssh/authorized_keys && chmod 700 /home/cloud-user/.ssh && chmod 600 /home/cloud-user/.ssh/authorized_keys && chown -R cloud-user:cloud-user /home/cloud-user/.ssh"
+        )
+    lines.append(
+        "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf && systemctl reset-failed sshd 2>/dev/null && systemctl restart sshd 2>/dev/null || true"
     )
 
     # Custom user-data — split into top-level sections and runcmd items
@@ -137,20 +142,11 @@ def generate_userdata(vm_data: dict) -> str:
             elif stripped and not stripped.startswith("#cloud-config"):
                 lines.append(line)
 
-    # runcmd — merged from base + custom
+    # runcmd — runs on first boot only (skipped on pattern redeploys where instance-id matches)
     lines.append("runcmd:")
-    if root_hash or cloud_user_hash:
-        lines.append(
-            "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf; systemctl reset-failed sshd 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
-        )
     if vm_data.get("guestExecEnabled", True):
         lines.append(
             "  - python3 -c \"import re,pathlib;f=pathlib.Path('/etc/sysconfig/qemu-ga');t=f.read_text() if f.exists() else '';t2=re.sub(r'(--allow-rpcs=[^\\\"]*)',r'\\\\1,guest-exec,guest-exec-status',t) if 'allow-rpcs' in t else re.sub(r'guest-exec-status,|guest-exec,|,guest-exec-status|,guest-exec','',t);f.write_text(t2)\" 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
-        )
-    if all_keys:
-        key_lines = "\\n".join(all_keys)
-        lines.append(
-            f"  - mkdir -p /home/cloud-user/.ssh && printf '{key_lines}\\n' > /home/cloud-user/.ssh/authorized_keys && chmod 700 /home/cloud-user/.ssh && chmod 600 /home/cloud-user/.ssh/authorized_keys && chown -R cloud-user:cloud-user /home/cloud-user/.ssh"
         )
     lines.append(
         "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"

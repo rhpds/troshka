@@ -81,7 +81,7 @@ def extract_vms(topology):
                 "disks": data.get("disks", []),
                 "nics": data.get("nics", []),
                 "cloudInit": {
-                    "userData": data.get("ciUserData", ""),
+                    "userData": data.get("ciGeneratedUserData") or data.get("ciUserData", ""),
                     "networkConfig": data.get("ciNetworkConfig", ""),
                 },
                 "bmcEnabled": data.get("bmcEnabled", False),

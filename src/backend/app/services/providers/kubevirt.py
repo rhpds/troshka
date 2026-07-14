@@ -721,18 +721,26 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-        # Wait for virt-launcher pods to be gone before namespace delete
-        for _ in range(15):
+        # Wait for virt-launcher pods and VMIs to be fully gone — ghost records
+        # in virt-handler linger until the VMI deletion is processed, causing
+        # "can not add ghost record with differing UID" on rapid redeploys
+        for _ in range(30):
             try:
                 pods = core_api.list_namespaced_pod(
                     namespace=namespace,
                     label_selector="kubevirt.io=virt-launcher",
                 )
-                if not pods.items:
+                vmis = custom_api.list_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                )
+                if not pods.items and not vmis.get("items", []):
                     break
             except Exception:
                 break
-            time.sleep(1)
+            time.sleep(2)
 
         try:
             custom_api.delete_namespaced_custom_object(

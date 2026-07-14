@@ -2030,6 +2030,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             serialization.PublicFormat.OpenSSH,
         )
         .decode()
+        + " troshka-exec"
     )
 
     # Regenerate cloud-init userdata so deploy-time settings (guest-exec, etc.) take effect
@@ -2043,11 +2044,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             continue
         if not project.guest_exec_enabled:
             data["guestExecEnabled"] = False
-        ssh_keys = data.get("ciSshKeys", [])
-        if exec_pubkey not in ssh_keys:
-            ssh_keys.append(exec_pubkey)
-            data["ciSshKeys"] = ssh_keys
-        data["ciUserData"] = generate_userdata(data)
+        ssh_keys = [k for k in data.get("ciSshKeys", []) if "troshka-exec" not in k]
+        ssh_keys.append(exec_pubkey)
+        data["ciSshKeys"] = ssh_keys
+        data["ciGeneratedUserData"] = generate_userdata(data)
 
     _update_deploy_progress(project_id, "networks", "creating operator resources")
     notify_project(
@@ -2084,7 +2084,37 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             )
         except Exception:
             pass
-        _time.sleep(3)
+
+        # Wait for operator to fully clean up old VMs/VMIs before creating new CR
+        # — prevents virt-handler ghost record collisions on rapid redeploys
+        from app.services.providers.kubevirt import (
+            _get_k8s_clients as _kc,
+            _project_ns as _pns,
+        )
+
+        _, _cv1, _ = _kc(provider)
+        _ns = _pns(provider, project_id)
+        for _ in range(30):
+            try:
+                _vmis = custom_api.list_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=_ns,
+                    plural="virtualmachineinstances",
+                )
+                _pods = _cv1.list_namespaced_pod(
+                    _ns, label_selector="kubevirt.io=virt-launcher"
+                )
+                if not _vmis.get("items", []) and not _pods.items:
+                    break
+            except Exception:
+                break
+            _time.sleep(2)
+        else:
+            logger.warning(
+                "Deploy %s: old VMIs still present after 60s, proceeding anyway",
+                project_id[:8],
+            )
 
     logger.info(
         "Deploy %s: creating CR with exec_ssh_key=%s",
@@ -2342,6 +2372,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 ndata = node.get("data", {})
                 ndata.pop("resolvedS3Path", None)
                 ndata.pop("presignedUrl", None)
+                ndata.pop("ciGeneratedUserData", None)
             project.deployed_topology = clean_topo
             project.topology = clean_topo
             project.deploy_error = None

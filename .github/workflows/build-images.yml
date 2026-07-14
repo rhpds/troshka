@@ -12,7 +12,30 @@ on:
       - 'deploy/containerfiles/**'
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      operator: ${{ steps.filter.outputs.operator }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'src/backend/**'
+              - 'deploy/containerfiles/Containerfile.backend'
+            frontend:
+              - 'src/frontend/**'
+              - 'deploy/containerfiles/Containerfile.frontend'
+            operator:
+              - 'src/operator/**'
+
   build-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +75,8 @@ jobs:
           fi
 
   build-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +116,8 @@ jobs:
           fi
 
   build-operator:
+    needs: changes
+    if: needs.changes.outputs.operator == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
