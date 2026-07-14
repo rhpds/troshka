@@ -31,5 +31,6 @@ RUN curl -sL https://github.com/etcd-io/etcd/releases/download/v3.5.21/etcd-v3.5
 
 # recert for OCP certificate regeneration
 COPY --from=quay.io/edge-infrastructure/recert:latest /usr/bin/recert /usr/local/bin/recert
+RUN recert --help > /dev/null 2>&1 && etcd --version > /dev/null 2>&1 && echo "binaries verified"
 
 CMD ["sleep", "infinity"]
