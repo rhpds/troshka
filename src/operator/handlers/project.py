@@ -705,6 +705,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
     # Run recert on RHCOS pattern disks BEFORE VMs start
     # Wait for PVC clones to finish, then run recert with both disks unmounted
+    logger.info(f"Recert check: {len(vms)} VMs, os values: {[v.get('os','?') for v in vms]}")
     rhcos_vm = next((v for v in vms if v.get("os") == "rhcos"), None)
     is_pattern = rhcos_vm and any(
         d.get("patternImage") for d in vm_disks_map.get(rhcos_vm["id"], [])
