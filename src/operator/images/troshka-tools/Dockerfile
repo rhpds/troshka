@@ -10,6 +10,8 @@ RUN dnf install -y \
     awscli \
     openssh-clients \
     sshpass \
+    libvirt-client \
+    nmap-ncat \
     && dnf clean all
 
 RUN curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
