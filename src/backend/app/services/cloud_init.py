@@ -137,7 +137,7 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append("runcmd:")
     if root_hash or cloud_user_hash:
         lines.append(
-            "  - sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/50-cloud-init.conf 2>/dev/null; systemctl reset-failed sshd 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
+            "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf; systemctl reset-failed sshd 2>/dev/null; systemctl restart sshd 2>/dev/null || true"
         )
     if vm_data.get("guestExecEnabled", True):
         lines.append(
