@@ -15,23 +15,19 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      backend: ${{ steps.filter.outputs.backend }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-      operator: ${{ steps.filter.outputs.operator }}
+      backend: ${{ steps.check.outputs.backend }}
+      frontend: ${{ steps.check.outputs.frontend }}
+      operator: ${{ steps.check.outputs.operator }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            backend:
-              - 'src/backend/**'
-              - 'deploy/containerfiles/Containerfile.backend'
-            frontend:
-              - 'src/frontend/**'
-              - 'deploy/containerfiles/Containerfile.frontend'
-            operator:
-              - 'src/operator/**'
+          fetch-depth: 2
+      - id: check
+        run: |
+          DIFF=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          echo "backend=$(echo "$DIFF" | grep -qE '^src/backend/|^deploy/containerfiles/Containerfile\.backend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(echo "$DIFF" | grep -qE '^src/frontend/|^deploy/containerfiles/Containerfile\.frontend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "operator=$(echo "$DIFF" | grep -q '^src/operator/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
   build-backend:
     needs: changes
