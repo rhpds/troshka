@@ -311,10 +311,12 @@ def build_recert_job(
         volume_mounts.append({"name": "bastion-disk", "mountPath": "/bastion"})
         bastion_cmds = (
             'echo "Mounting bastion disk..."\n'
-            "qemu-nbd --connect /dev/nbd1 --format=raw /bastion/disk.img\n"
-            "sleep 1; partprobe /dev/nbd1 2>/dev/null || true; sleep 1\n"
-            "BPART=/dev/nbd1p3; [ -e /dev/nbd1p3 ] || BPART=/dev/nbd1p1\n"
-            "mkdir -p /mnt/bastion; mount -o nouuid $BPART /mnt/bastion\n"
+            "BLOOP=$(losetup -f --show /bastion/disk.img)\n"
+            "BLOOP_BASE=$(basename $BLOOP)\n"
+            "kpartx -av $BLOOP\n"
+            "sleep 1\n"
+            "BPART=/dev/mapper/${BLOOP_BASE}p3; [ -e $BPART ] || BPART=/dev/mapper/${BLOOP_BASE}p1\n"
+            "mkdir -p /mnt/bastion; mount $BPART /mnt/bastion 2>/dev/null || mount -o nouuid $BPART /mnt/bastion\n"
             'KC_SRC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
             'if [ -f "$KC_SRC" ]; then\n'
             '  KC_DST="/mnt/bastion/home/cloud-user/ocp-install/auth/kubeconfig"\n'
@@ -325,26 +327,28 @@ def build_recert_job(
         )
         bastion_cleanup = (
             "umount /mnt/bastion 2>/dev/null || true\n"
-            "qemu-nbd --disconnect /dev/nbd1 2>/dev/null || true\n"
+            "kpartx -dv $BLOOP 2>/dev/null || true\n"
+            "losetup -d $BLOOP 2>/dev/null || true\n"
         )
 
     script = (
         "#!/bin/bash\nset -e\n"
-        "modprobe nbd max_part=8 2>/dev/null || true\n"
         'echo "Connecting RHCOS disk..."\n'
-        "qemu-nbd --connect /dev/nbd0 --format=raw /rhcos/disk.img\n"
-        "sleep 1; partprobe /dev/nbd0 2>/dev/null || true; sleep 1\n"
+        "LOOP=$(losetup -f --show /rhcos/disk.img)\n"
+        "LOOP_BASE=$(basename $LOOP)\n"
+        "kpartx -av $LOOP\n"
+        "sleep 1\n"
         "RHCOS_PART=''\n"
         "mkdir -p /mnt/rhcos\n"
-        "for p in /dev/nbd0p4 /dev/nbd0p3 /dev/nbd0p2 /dev/nbd0p1; do\n"
+        "for p in /dev/mapper/${LOOP_BASE}p4 /dev/mapper/${LOOP_BASE}p3 /dev/mapper/${LOOP_BASE}p2 /dev/mapper/${LOOP_BASE}p1; do\n"
         "  [ -e $p ] || continue\n"
-        "  echo \"Trying $p...\"; mount $p /mnt/rhcos 2>&1 || mount -o nouuid $p /mnt/rhcos 2>&1 || { echo \"  mount failed\"; continue; }\n"
+        "  mount $p /mnt/rhcos 2>/dev/null || mount -o nouuid $p /mnt/rhcos 2>/dev/null || continue\n"
         "  if [ -d /mnt/rhcos/ostree/deploy/rhcos ]; then\n"
         "    RHCOS_PART=$p; break\n"
         "  fi; umount /mnt/rhcos\n"
         "done\n"
         "[ -n \"$RHCOS_PART\" ] || { echo 'ERROR: no RHCOS partition found';"
-        " fdisk -l /dev/nbd0 2>&1; qemu-nbd --disconnect /dev/nbd0; exit 1; }\n"
+        " fdisk -l $LOOP 2>&1; kpartx -dv $LOOP; losetup -d $LOOP; exit 1; }\n"
         "echo \"Found RHCOS on $RHCOS_PART\"\n"
         "DEPLOY_DIR=/mnt/rhcos/ostree/deploy/rhcos/deploy\n"
         "DEPLOY_HASH=$(ls $DEPLOY_DIR | grep -v .origin | head -1)\n"
@@ -380,7 +384,7 @@ def build_recert_job(
         + bastion_cmds
         + "kill $ETCD_PID 2>/dev/null; wait $ETCD_PID 2>/dev/null || true\n"
         + bastion_cleanup
-        + "umount /mnt/rhcos; qemu-nbd --disconnect /dev/nbd0\n"
+        + "umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP\n"
         + 'echo "Recert job complete"\n'
     )
 
