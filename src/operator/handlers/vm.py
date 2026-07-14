@@ -281,11 +281,20 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             recert_job = build_recert_job(name, namespace, rhcos_pvc)
             recert_job["metadata"]["ownerReferences"] = [owner_ref(body)]
             batch_api = client.BatchV1Api()
+            recert_job_name = f"recert-{name}"
             try:
                 batch_api.delete_namespaced_job(
-                    name=f"recert-{name}", namespace=namespace,
-                    propagation_policy="Background",
+                    name=recert_job_name, namespace=namespace,
+                    propagation_policy="Foreground",
                 )
+                for _ in range(15):
+                    try:
+                        batch_api.read_namespaced_job(
+                            name=recert_job_name, namespace=namespace
+                        )
+                        time.sleep(2)
+                    except Exception:
+                        break
             except Exception:
                 pass
             try:
