@@ -105,10 +105,14 @@ def generate_userdata(vm_data: dict) -> str:
         for pkg in all_packages:
             lines.append(f"  - {pkg}")
 
-    # Prevent cloud-init from regenerating SSH host keys on pattern deploys —
-    # the baked keys are fine, and regenerating causes a rapid sshd restart
-    # loop that hits systemd's StartLimitBurst
+    # Prevent cloud-init from regenerating SSH host keys on pattern deploys
     lines.append("ssh_deletekeys: false")
+    # Raise sshd restart limit — cloud-init restarts sshd multiple times
+    # during boot which hits systemd's default StartLimitBurst=5
+    lines.append("bootcmd:")
+    lines.append(
+        "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload"
+    )
 
     # Custom user-data — split into top-level sections and runcmd items
     custom = vm_data.get("ciUserData", "").strip()
