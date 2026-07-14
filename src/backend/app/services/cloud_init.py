@@ -105,6 +105,11 @@ def generate_userdata(vm_data: dict) -> str:
         for pkg in all_packages:
             lines.append(f"  - {pkg}")
 
+    # Prevent cloud-init from regenerating SSH host keys on pattern deploys —
+    # the baked keys are fine, and regenerating causes a rapid sshd restart
+    # loop that hits systemd's StartLimitBurst
+    lines.append("ssh_deletekeys: false")
+
     # Custom user-data — split into top-level sections and runcmd items
     custom = vm_data.get("ciUserData", "").strip()
     custom_runcmd_lines = []
@@ -135,15 +140,10 @@ def generate_userdata(vm_data: dict) -> str:
             "  - python3 -c \"import re,pathlib;f=pathlib.Path('/etc/sysconfig/qemu-ga');t=f.read_text() if f.exists() else '';t2=re.sub(r'(--allow-rpcs=[^\\\"]*)',r'\\\\1,guest-exec,guest-exec-status',t) if 'allow-rpcs' in t else re.sub(r'guest-exec-status,|guest-exec,|,guest-exec-status|,guest-exec','',t);f.write_text(t2)\" 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
         )
     if all_keys:
-        parts = ["mkdir -p /home/cloud-user/.ssh"]
-        for key in all_keys:
-            parts.append(
-                f"grep -qF '{key}' /home/cloud-user/.ssh/authorized_keys 2>/dev/null || echo '{key}' >> /home/cloud-user/.ssh/authorized_keys"
-            )
-        parts.append("chmod 700 /home/cloud-user/.ssh")
-        parts.append("chmod 600 /home/cloud-user/.ssh/authorized_keys")
-        parts.append("chown -R cloud-user:cloud-user /home/cloud-user/.ssh")
-        lines.append(f"  - {' && '.join(parts)}")
+        key_lines = "\\n".join(all_keys)
+        lines.append(
+            f"  - mkdir -p /home/cloud-user/.ssh && printf '{key_lines}\\n' > /home/cloud-user/.ssh/authorized_keys && chmod 700 /home/cloud-user/.ssh && chmod 600 /home/cloud-user/.ssh/authorized_keys && chown -R cloud-user:cloud-user /home/cloud-user/.ssh"
+        )
     lines.append(
         "  - for d in /dev/sr0 /dev/sr1; do blkid $d 2>/dev/null | grep -q cidata && eject $d 2>/dev/null; done || true"
     )
