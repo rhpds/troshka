@@ -361,13 +361,22 @@ def build_recert_job(
         'ETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\n'
         'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
         'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
-        "# Use etcd from the RHCOS disk if available (matches cluster version)\n"
+        "# Determine exact etcd version from the OCP static pod manifest\n"
+        "ETCD_IMAGE=$(grep 'image:.*etcd' $DEPLOY_ROOT/etc/kubernetes/manifests/etcd-pod.yaml 2>/dev/null | head -1 | awk '{print $2}')\n"
+        "if [ -z \"$ETCD_IMAGE\" ]; then\n"
+        "  echo 'ERROR: cannot determine etcd version from disk — refusing to use mismatched version'\n"
+        "  umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP; exit 1\n"
+        "fi\n"
+        "ETCD_TAG=$(echo $ETCD_IMAGE | grep -oP ':\\K[^@]+')\n"
+        "echo \"OCP etcd image: $ETCD_IMAGE (tag: $ETCD_TAG)\"\n"
+        "# Verify bundled etcd matches\n"
+        "BUNDLED_VER=$(etcd --version 2>&1 | head -1 | awk '{print $NF}')\n"
+        "if [ \"$BUNDLED_VER\" != \"$ETCD_TAG\" ] && [ \"v$BUNDLED_VER\" != \"$ETCD_TAG\" ]; then\n"
+        "  echo \"ERROR: bundled etcd $BUNDLED_VER does not match OCP etcd $ETCD_TAG — refusing to run\"\n"
+        "  umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP; exit 1\n"
+        "fi\n"
+        "echo \"Using etcd $BUNDLED_VER (matches OCP)\"\n"
         "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
-        "DISK_ETCD=$(find $DEPLOY_ROOT/usr -name etcd -type f 2>/dev/null | head -1)\n"
-        "if [ -n \"$DISK_ETCD\" ] && [ -x \"$DISK_ETCD\" ]; then\n"
-        "  ETCD_BIN=$DISK_ETCD; ETCDCTL_BIN=$(dirname $DISK_ETCD)/etcdctl\n"
-        "  echo \"Using disk etcd: $($ETCD_BIN --version 2>&1 | head -1)\"\n"
-        "else echo \"Using bundled etcd: $(etcd --version 2>&1 | head -1)\"; fi\n"
         'echo "Starting etcd..."\n'
         "$ETCD_BIN --data-dir=$VAR_ETCD --name=recert-temp "
         "--listen-client-urls=http://127.0.0.1:2479 "
