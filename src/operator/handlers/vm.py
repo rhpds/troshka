@@ -9,6 +9,7 @@ from helpers.kubevirt import (
     build_datavolume_from_s3,
     build_blank_pvc,
     build_clone_datavolume,
+    build_recert_job,
     CACHE_NAMESPACE,
 )
 
@@ -250,6 +251,41 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             disk_pvcs["cdrom"] = cdrom_pvc
         except Exception as e:
             logger.warning(f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}")
+
+    # Run recert on RHCOS pattern VMs (SNO cert regeneration before boot)
+    is_pattern = any(d.get("patternImage") for d in spec.get("disks", []))
+    vm_os = spec.get("os", "")
+    if not vm_os:
+        vm_os = "rhcos" if spec.get("name", "").startswith("cp-") else ""
+    if vm_os == "rhcos" and is_pattern and spec.get("disks"):
+        root_disk_id = spec["disks"][0].get("id", "")[:8]
+        rhcos_pvc = disk_pvcs.get(root_disk_id)
+        if rhcos_pvc:
+            recert_job = build_recert_job(name, namespace, rhcos_pvc)
+            recert_job["metadata"]["ownerReferences"] = [owner_ref(body)]
+            batch_api = client.BatchV1Api()
+            try:
+                batch_api.create_namespaced_job(
+                    namespace=namespace, body=recert_job
+                )
+                logger.info(f"Created recert job for {name}")
+                for _ in range(120):
+                    try:
+                        job_status = batch_api.read_namespaced_job(
+                            name=f"recert-{name}", namespace=namespace
+                        )
+                        if job_status.status.succeeded:
+                            logger.info(f"Recert completed for {name}")
+                            break
+                        if job_status.status.failed:
+                            logger.warning(f"Recert failed for {name}")
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(5)
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    logger.warning(f"Recert job create failed for {name}: {e}")
 
     cloudinit_secret_name = None
     ci_secret = build_cloudinit_secret(body)

@@ -255,6 +255,38 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
+    # Create recert SA for privileged Jobs (cert regeneration on RHCOS disks)
+    try:
+        core_api.create_namespaced_service_account(
+            namespace=namespace,
+            body=client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(name="troshka-recert"),
+            ),
+        )
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+    try:
+        scc = custom_api.get_cluster_custom_object(
+            group="security.openshift.io",
+            version="v1",
+            plural="securitycontextconstraints",
+            name="troshka-privileged-jobs",
+        )
+        sa_ref = f"system:serviceaccount:{namespace}:troshka-recert"
+        users = scc.get("users", []) or []
+        if sa_ref not in users:
+            users.append(sa_ref)
+            custom_api.patch_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-privileged-jobs",
+                body={"users": users},
+            )
+    except Exception as e:
+        logger.warning(f"Could not patch SCC for recert SA in {namespace}: {e}")
+
     networks = extract_networks(topology)
     static_leases = build_static_leases(topology)
 
@@ -510,6 +542,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 "firmware": vm.get("firmware", "bios"),
                 "machineType": vm.get("machineType", "q35"),
                 "smbiosUuid": vm.get("smbiosUuid", ""),
+                "os": vm.get("os", ""),
                 "powerOnAtDeploy": vm.get("powerOnAtDeploy", True),
                 "disks": disk_specs,
                 "nics": nic_specs,

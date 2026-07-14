@@ -77,6 +77,7 @@ def extract_vms(topology):
                 "firmware": data.get("firmware", "bios"),
                 "machineType": data.get("machineType", "q35"),
                 "smbiosUuid": data.get("domainUuid", ""),
+                "os": data.get("os", ""),
                 "powerOnAtDeploy": data.get("powerOnAtDeploy", True),
                 "disks": data.get("disks", []),
                 "nics": data.get("nics", []),

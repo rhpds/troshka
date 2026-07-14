@@ -275,3 +275,136 @@ def build_clone_datavolume(
             },
         },
     }
+
+
+def build_recert_job(
+    name,
+    namespace,
+    rhcos_pvc,
+    bastion_pvc=None,
+    extend_expiration=True,
+    kubeadmin_password_hash=None,
+):
+    """Build a Job that runs recert on a cloned RHCOS PVC before VM boot."""
+    from helpers.k8s import TOOLS_IMAGE
+
+    recert_flags = "--extend-expiration" if extend_expiration else "--force-expire"
+    password_args = ""
+    if kubeadmin_password_hash:
+        password_args = f'--kubeadmin-password-hash "{kubeadmin_password_hash}"'
+
+    bastion_cmds = ""
+    bastion_cleanup = ""
+    volumes = [
+        {"name": "rhcos-disk", "persistentVolumeClaim": {"claimName": rhcos_pvc}},
+        {"name": "output", "emptyDir": {}},
+    ]
+    volume_mounts = [
+        {"name": "rhcos-disk", "mountPath": "/rhcos"},
+        {"name": "output", "mountPath": "/output"},
+    ]
+
+    if bastion_pvc:
+        volumes.append(
+            {"name": "bastion-disk", "persistentVolumeClaim": {"claimName": bastion_pvc}}
+        )
+        volume_mounts.append({"name": "bastion-disk", "mountPath": "/bastion"})
+        bastion_cmds = (
+            'echo "Mounting bastion disk..."\n'
+            "qemu-nbd --connect /dev/nbd1 /bastion/disk.img\n"
+            "sleep 1; partprobe /dev/nbd1 2>/dev/null || true; sleep 1\n"
+            "BPART=/dev/nbd1p3; [ -e /dev/nbd1p3 ] || BPART=/dev/nbd1p1\n"
+            "mkdir -p /mnt/bastion; mount -o nouuid $BPART /mnt/bastion\n"
+            'KC_SRC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
+            'if [ -f "$KC_SRC" ]; then\n'
+            '  KC_DST="/mnt/bastion/home/cloud-user/ocp-install/auth/kubeconfig"\n'
+            '  mkdir -p "$(dirname $KC_DST)"; cp "$KC_SRC" "$KC_DST"\n'
+            "  rm -f /mnt/bastion/etc/pki/ca-trust/source/anchors/ocp-ingress.pem\n"
+            '  echo "Bastion kubeconfig updated"\n'
+            "fi\n"
+        )
+        bastion_cleanup = (
+            "umount /mnt/bastion 2>/dev/null || true\n"
+            "qemu-nbd --disconnect /dev/nbd1 2>/dev/null || true\n"
+        )
+
+    script = (
+        "#!/bin/bash\nset -e\n"
+        "modprobe nbd max_part=8 2>/dev/null || true\n"
+        'echo "Connecting RHCOS disk..."\n'
+        "qemu-nbd --connect /dev/nbd0 /rhcos/disk.img\n"
+        "sleep 1; partprobe /dev/nbd0 2>/dev/null || true; sleep 1\n"
+        "[ -e /dev/nbd0p4 ] || { echo 'ERROR: not RHCOS';"
+        " qemu-nbd --disconnect /dev/nbd0; exit 1; }\n"
+        "mkdir -p /mnt/rhcos; mount -o nouuid /dev/nbd0p4 /mnt/rhcos\n"
+        "DEPLOY_DIR=/mnt/rhcos/ostree/deploy/rhcos/deploy\n"
+        "DEPLOY_HASH=$(ls $DEPLOY_DIR | grep -v .origin | head -1)\n"
+        '[ -n "$DEPLOY_HASH" ] || { echo "ERROR: no OSTree deploy";'
+        " umount /mnt/rhcos; qemu-nbd --disconnect /dev/nbd0; exit 1; }\n"
+        'echo "OSTree: ${DEPLOY_HASH:0:12}"\n'
+        'DEPLOY_ROOT="$DEPLOY_DIR/$DEPLOY_HASH"\n'
+        'VAR_ROOT="/mnt/rhcos/ostree/deploy/rhcos/var"\n'
+        'ETC_K8S="$DEPLOY_ROOT/etc/kubernetes"\n'
+        'ETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\n'
+        'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
+        'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
+        'echo "Starting etcd..."\n'
+        "etcd --data-dir=$VAR_ETCD --name=recert-temp "
+        "--listen-client-urls=http://127.0.0.1:2479 "
+        "--advertise-client-urls=http://127.0.0.1:2479 "
+        "--listen-peer-urls=http://127.0.0.1:2489 "
+        "--force-new-cluster &\n"
+        "ETCD_PID=$!\n"
+        "for i in $(seq 1 30); do"
+        " etcdctl --endpoints=http://127.0.0.1:2479 endpoint health"
+        " 2>/dev/null | grep -q healthy && break; sleep 1; done\n"
+        'echo "Running recert..."\n'
+        "recert --etcd-endpoint=http://127.0.0.1:2479 "
+        "--crypto-dir $ETC_K8S --crypto-dir $ETC_MCD --crypto-dir $VAR_KUBELET "
+        "--cluster-customization-dir $ETC_K8S "
+        "--cluster-customization-dir $VAR_KUBELET "
+        f"{recert_flags} {password_args}\n"
+        'echo "Recert done"\n'
+        'KC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/'
+        'node-kubeconfigs/lb-ext.kubeconfig"\n'
+        '[ -f "$KC" ] && cp "$KC" /output/kubeconfig\n'
+        + bastion_cmds
+        + "kill $ETCD_PID 2>/dev/null; wait $ETCD_PID 2>/dev/null || true\n"
+        + bastion_cleanup
+        + "umount /mnt/rhcos; qemu-nbd --disconnect /dev/nbd0\n"
+        + 'echo "Recert job complete"\n'
+    )
+
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": f"recert-{name}",
+            "namespace": namespace,
+            "labels": {"troshka-role": "recert"},
+        },
+        "spec": {
+            "backoffLimit": 0,
+            "activeDeadlineSeconds": 600,
+            "template": {
+                "spec": {
+                    "serviceAccountName": "troshka-recert",
+                    "containers": [
+                        {
+                            "name": "recert",
+                            "image": TOOLS_IMAGE,
+                            "command": ["bash", "-c", script],
+                            "volumeMounts": volume_mounts,
+                            "securityContext": {"privileged": True},
+                            "resources": {
+                                "requests": {"cpu": "1", "memory": "2Gi"},
+                                "limits": {"cpu": "4", "memory": "4Gi"},
+                            },
+                        }
+                    ],
+                    "volumes": volumes,
+                    "restartPolicy": "Never",
+                },
+            },
+        },
+    }

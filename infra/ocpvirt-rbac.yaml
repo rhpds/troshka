@@ -156,3 +156,36 @@ volumes:
   - "*"
 users:
   - system:serviceaccount:troshka:troshka
+---
+# Privileged SCC for recert Jobs — needs qemu-nbd device access, mount (SYS_ADMIN),
+# and SELinux RunAsAny to access disk content. Used by troshka-recert SA per project namespace.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: troshka-privileged-jobs
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: true
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: true
+allowedCapabilities:
+  - SYS_ADMIN
+  - NET_ADMIN
+fsGroup:
+  type: RunAsAny
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
+  - emptyDir
+  - persistentVolumeClaim
+  - projected
+  - secret
+  - downwardAPI
+users: []
