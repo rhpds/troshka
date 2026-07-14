@@ -4425,6 +4425,19 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             _push("operators", "waiting for API server")
         _t.sleep(10)
 
+    # Restart ingress router to pick up fresh certs after pattern deploy
+    if _is_pattern_deploy(topology):
+        _push("console", "restarting ingress router")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc delete pod -n openshift-ingress -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default --force --grace-period=0 2>/dev/null || true",
+            timeout=15,
+        )
+        _t.sleep(10)
+
     # Phase 5: Wait for console (continue approving CSRs — serving certs
     # often arrive late and block the console route)
     _push("console", "waiting for OpenShift console")
