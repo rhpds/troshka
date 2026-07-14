@@ -164,7 +164,17 @@ def build_cloudinit_secret(vm_cr):
     name = vm_cr["metadata"]["name"]
     namespace = vm_cr["metadata"]["namespace"]
 
-    data = {}
+    import json
+    import uuid
+
+    metadata = json.dumps({
+        "instance-id": f"{name}-{uuid.uuid4().hex[:8]}",
+        "local-hostname": spec.get("name", name),
+    })
+
+    data = {
+        "metadata": base64.b64encode(metadata.encode()).decode(),
+    }
     if ci.get("userData"):
         data["userdata"] = base64.b64encode(
             ci["userData"].encode()
