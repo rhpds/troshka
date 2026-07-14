@@ -703,9 +703,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     except Exception as e:
         logger.warning(f"Could not read console route hostname: {e}")
 
-    # Run recert on RHCOS pattern disks BEFORE VMs start
-    # Wait for PVC clones to finish, then run recert with both disks unmounted
-    logger.info(f"Recert check: {len(vms)} VMs, os values: {[v.get('os','?') for v in vms]}")
+    # Store recert config in CR status for the timer to pick up
     rhcos_vm = next((v for v in vms if v.get("os") == "rhcos"), None)
     is_pattern = rhcos_vm and any(
         d.get("patternImage") for d in vm_disks_map.get(rhcos_vm["id"], [])
@@ -713,92 +711,13 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     if rhcos_vm and is_pattern:
         rhcos_disks = vm_disks_map.get(rhcos_vm["id"], [])
         rhcos_pvc = f"vm-{rhcos_vm['id'][:8]}-disk-{rhcos_disks[0].get('id', '')[:8]}" if rhcos_disks else None
-
         if rhcos_pvc:
-            # Wait for RHCOS PVC to be ready
-            patch.status["deployProgress"] = {
-                "percent": 70,
-                "stage": "Preparing disks",
-                "detail": "waiting for disk clones",
+            patch.status["recertConfig"] = {
+                "rhcosPvc": rhcos_pvc,
+                "bastionPvc": bastion_boot_pvc or "",
+                "vmName": rhcos_vm.get("name", "cp-0"),
             }
-            for _ in range(120):
-                try:
-                    pvc = core_api.read_namespaced_persistent_volume_claim(
-                        name=rhcos_pvc, namespace=namespace
-                    )
-                    if pvc.status.phase == "Bound":
-                        break
-                except Exception:
-                    pass
-                import time as _t
-                _t.sleep(5)
-
-            # Also wait for bastion PVC
-            if bastion_boot_pvc:
-                for _ in range(60):
-                    try:
-                        pvc = core_api.read_namespaced_persistent_volume_claim(
-                            name=bastion_boot_pvc, namespace=namespace
-                        )
-                        if pvc.status.phase == "Bound":
-                            break
-                    except Exception:
-                        pass
-                    _t.sleep(5)
-
-            patch.status["deployProgress"] = {
-                "percent": 75,
-                "stage": "Regenerating certificates",
-                "detail": f"recert on {rhcos_vm.get('name', 'cp-0')}",
-            }
-
-            from helpers.kubevirt import build_recert_job
-
-            recert_job = build_recert_job(
-                f"vm-{rhcos_vm['id'][:8]}", namespace, rhcos_pvc,
-                bastion_pvc=bastion_boot_pvc,
-            )
-            recert_job["metadata"]["ownerReferences"] = [owner_ref(body)]
-
-            from kubernetes import client as _kc
-            batch_api = _kc.BatchV1Api()
-            recert_job_name = recert_job["metadata"]["name"]
-
-            try:
-                batch_api.delete_namespaced_job(
-                    name=recert_job_name, namespace=namespace,
-                    propagation_policy="Foreground",
-                )
-                for _ in range(15):
-                    try:
-                        batch_api.read_namespaced_job(name=recert_job_name, namespace=namespace)
-                        _t.sleep(2)
-                    except Exception:
-                        break
-            except Exception:
-                pass
-
-            try:
-                batch_api.create_namespaced_job(namespace=namespace, body=recert_job)
-                logger.info(f"Created recert job {recert_job_name}")
-                for _ in range(120):
-                    try:
-                        js = batch_api.read_namespaced_job(name=recert_job_name, namespace=namespace)
-                        if js.status.succeeded:
-                            logger.info(f"Recert completed for {recert_job_name}")
-                            break
-                        if js.status.failed:
-                            logger.warning(f"Recert failed for {recert_job_name}")
-                            break
-                    except _kc.exceptions.ApiException as je:
-                        if je.status == 404:
-                            logger.info(f"Recert job {recert_job_name} gone (completed)")
-                            break
-                    except Exception:
-                        pass
-                    _t.sleep(5)
-            except Exception as e:
-                logger.warning(f"Recert job creation failed: {e}")
+            logger.info(f"Recert pending for {rhcos_pvc} (bastion: {bastion_boot_pvc})")
 
     patch.status["phase"] = "Deploying"
     patch.status["deployProgress"] = {
@@ -870,6 +789,100 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
         patch.status["vmStates"] = vm_states
 
     if phase == "Deploying":
+        # Run recert if pending and PVCs are ready
+        recert_cfg = status.get("recertConfig")
+        if recert_cfg and not status.get("recertDone"):
+            rhcos_pvc = recert_cfg.get("rhcosPvc", "")
+            bastion_pvc_name = recert_cfg.get("bastionPvc", "")
+            core_api = client.CoreV1Api()
+
+            # Check if PVCs are bound
+            pvcs_ready = True
+            for pvc_name in [rhcos_pvc, bastion_pvc_name]:
+                if not pvc_name:
+                    continue
+                try:
+                    pvc = core_api.read_namespaced_persistent_volume_claim(
+                        name=pvc_name, namespace=namespace
+                    )
+                    if pvc.status.phase != "Bound":
+                        pvcs_ready = False
+                except Exception:
+                    pvcs_ready = False
+
+            if pvcs_ready and rhcos_pvc:
+                patch.status["deployProgress"] = {
+                    "percent": 75,
+                    "stage": "Regenerating certificates",
+                    "detail": f"recert on {recert_cfg.get('vmName', 'cp-0')}",
+                }
+
+                import time as _t
+                from helpers.kubevirt import build_recert_job
+                from kubernetes import client as _kc
+
+                recert_job = build_recert_job(
+                    f"vm-{rhcos_pvc.split('-disk-')[0].split('-', 1)[1]}",
+                    namespace, rhcos_pvc,
+                    bastion_pvc=bastion_pvc_name or None,
+                )
+                batch_api = _kc.BatchV1Api()
+                recert_job_name = recert_job["metadata"]["name"]
+
+                try:
+                    batch_api.delete_namespaced_job(
+                        name=recert_job_name, namespace=namespace,
+                        propagation_policy="Foreground",
+                    )
+                    for _ in range(15):
+                        try:
+                            batch_api.read_namespaced_job(
+                                name=recert_job_name, namespace=namespace
+                            )
+                            _t.sleep(2)
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+
+                try:
+                    batch_api.create_namespaced_job(
+                        namespace=namespace, body=recert_job
+                    )
+                    logger.info(f"Created recert job {recert_job_name}")
+                    for _ in range(120):
+                        try:
+                            js = batch_api.read_namespaced_job(
+                                name=recert_job_name, namespace=namespace
+                            )
+                            if js.status.succeeded:
+                                logger.info(f"Recert completed for {recert_job_name}")
+                                patch.status["recertDone"] = True
+                                break
+                            if js.status.failed:
+                                logger.warning(f"Recert failed for {recert_job_name}")
+                                patch.status["recertDone"] = True
+                                break
+                        except _kc.exceptions.ApiException as je:
+                            if je.status == 404:
+                                patch.status["recertDone"] = True
+                                break
+                        except Exception:
+                            pass
+                        _t.sleep(5)
+                except Exception as e:
+                    logger.warning(f"Recert job creation failed: {e}")
+                    patch.status["recertDone"] = True
+                return
+
+            if not pvcs_ready:
+                patch.status["deployProgress"] = {
+                    "percent": 70,
+                    "stage": "Preparing disks",
+                    "detail": "waiting for disk clones",
+                }
+                return
+
         patch.status["deployProgress"] = {
             "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
             "stage": "Waiting for VMs",
