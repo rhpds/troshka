@@ -4341,6 +4341,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
     _push("nodes", "waiting for nodes to be Ready")
     api_seen = False
+    nodes_ready = False
     last_csr_check = 0
     while _t.time() < deadline:
         result = _exec_on_bastion(
@@ -4365,6 +4366,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             if items:
                 _push("nodes", f"{ready_count}/{len(cp_names)} ready", items)
                 if ready_count >= len(cp_names):
+                    nodes_ready = True
                     break
         else:
             _push("nodes", "waiting for API server")
@@ -4379,6 +4381,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
     # Phase 4: Wait for cluster operators (continue CSR approval)
     _push("operators", "waiting for cluster operators")
+    operators_ready = False
     last_csr_check_ops = 0
     while _t.time() < deadline:
         if _t.time() - last_csr_check_ops >= 30:
@@ -4416,6 +4419,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             if total > 0:
                 _push("operators", f"{available_count}/{total} available", items)
                 if available_count >= total:
+                    operators_ready = True
                     break
         else:
             _push("operators", "waiting for API server")
@@ -4424,6 +4428,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     # Phase 5: Wait for console (continue approving CSRs — serving certs
     # often arrive late and block the console route)
     _push("console", "waiting for OpenShift console")
+    console_ready = False
     last_csr_check_console = 0
     while _t.time() < deadline:
         if _t.time() - last_csr_check_console >= 30:
@@ -4446,6 +4451,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             http_code = lines[-1].strip() if len(lines) > 1 else ""
             if co_available and http_code == "200":
                 _push("console", "console ready")
+                console_ready = True
                 break
             elif co_available:
                 _push("console", "operator ready, waiting for route")
@@ -4499,7 +4505,29 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             )
 
     elapsed_secs = int(_t.time() - start)
-    _push("ready", "cluster ready")
+
+    not_ready = []
+    if not nodes_ready:
+        not_ready.append("nodes")
+    if not operators_ready:
+        not_ready.append("operators")
+    if not console_ready:
+        not_ready.append("console")
+
+    if not_ready:
+        detail = f"timed out waiting for: {', '.join(not_ready)}"
+        _push("warning", detail)
+        final_status = "warning"
+        logger.warning(
+            "OCP health monitor %s: %s (%s)", project_id[:8], detail, _elapsed()
+        )
+    else:
+        _push("ready", "cluster ready")
+        final_status = "ready"
+        logger.info(
+            "OCP health monitor complete for %s (%s)", project_id[:8], _elapsed()
+        )
+
     try:
         from app.core.database import SessionLocal
         from app.models.project import Project
@@ -4507,13 +4535,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         db = SessionLocal()
         p = db.query(Project).filter_by(id=project_id).first()
         if p:
-            p.ocp_status = "ready"
+            p.ocp_status = final_status
             p.ocp_install_elapsed = elapsed_secs
             db.commit()
         db.close()
     except Exception:
         pass
-    logger.info("OCP health monitor complete for %s (%s)", project_id[:8], _elapsed())
 
 
 def stop_project_async(project_id: str):
