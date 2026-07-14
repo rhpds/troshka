@@ -261,6 +261,23 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         root_disk_id = spec["disks"][0].get("id", "")
         rhcos_pvc = disk_pvcs.get(root_disk_id)
         if rhcos_pvc:
+            # Update project status so UI shows recert progress
+            project_name = meta.get("labels", {}).get("troshka-project", "")
+            if project_name:
+                try:
+                    custom_api.patch_namespaced_custom_object_status(
+                        group=CRD_GROUP, version=CRD_VERSION,
+                        namespace=namespace, plural="troshkaprojects",
+                        name=project_name,
+                        body={"status": {"deployProgress": {
+                            "stage": "Regenerating certificates",
+                            "detail": f"recert on {spec.get('name', name)}",
+                            "percent": 35,
+                        }}},
+                    )
+                except Exception:
+                    pass
+
             recert_job = build_recert_job(name, namespace, rhcos_pvc)
             recert_job["metadata"]["ownerReferences"] = [owner_ref(body)]
             batch_api = client.BatchV1Api()
