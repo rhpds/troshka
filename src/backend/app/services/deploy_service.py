@@ -41,6 +41,7 @@ DEPLOY_STEPS = [
 
 _active_health_monitors: set = set()
 _deploy_progress: dict[str, dict] = {}
+_deploy_cancelled: set = set()
 
 
 def validate_topology_names(topology: dict) -> list[str]:
@@ -2194,6 +2195,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     for attempt in range(1440):
         if _time.time() > deploy_deadline:
             break
+        if project_id in _deploy_cancelled:
+            logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
+            _deploy_cancelled.discard(project_id)
+            return
         if _project_deleted(project_id):
             return
         try:
@@ -2456,6 +2461,9 @@ def deploy_project_async(
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
+
+    # Clear cancellation flag for this deploy
+    _deploy_cancelled.discard(project_id)
 
     s = SessionLocal()
     try:

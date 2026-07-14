@@ -3094,6 +3094,11 @@ def redeploy_project(
 
         sync_host_capacity(db, old_host)
 
+    # Cancel any in-flight deploy thread for this project
+    from app.services.deploy_service import _deploy_cancelled
+
+    _deploy_cancelled.add(project.id)
+
     # Reset for fresh deploy — redeploy on the same host
     project.state = "deploying"
     if not project.host_id and old_host_id:
