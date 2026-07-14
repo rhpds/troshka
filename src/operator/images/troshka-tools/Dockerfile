@@ -12,6 +12,7 @@ RUN dnf install -y \
     sshpass \
     libvirt-client \
     nmap-ncat \
+    openssl \
     && dnf clean all
 
 RUN dnf install -y \
