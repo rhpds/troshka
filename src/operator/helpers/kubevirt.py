@@ -406,6 +406,7 @@ def build_recert_job(
                         {
                             "name": "recert",
                             "image": TOOLS_IMAGE,
+                            "imagePullPolicy": "Always",
                             "command": ["bash", "-c", script],
                             "volumeMounts": volume_mounts,
                             "securityContext": {"privileged": True},
