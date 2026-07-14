@@ -10,6 +10,7 @@ on:
       - 'src/troshkad/**'
       - 'src/operator/**'
       - 'deploy/containerfiles/**'
+      - '.github/workflows/build-images.yml'
 
 jobs:
   changes:
