@@ -138,7 +138,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             "labels": {"app": "troshka", "troshka-vm": name},
         },
         "spec": {
-            "running": spec.get("powerOnAtDeploy", True),
+            "running": False,
             "template": {
                 "metadata": {
                     "labels": {"app": "troshka", "troshka-vm": name},

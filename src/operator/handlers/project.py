@@ -789,14 +789,13 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
         patch.status["vmStates"] = vm_states
 
     if phase == "Deploying":
-        # Run recert if pending and PVCs are ready
+        # Phase 1: Recert (if needed) — runs while VMs are defined but stopped
         recert_cfg = status.get("recertConfig")
         if recert_cfg and not status.get("recertDone"):
             rhcos_pvc = recert_cfg.get("rhcosPvc", "")
             bastion_pvc_name = recert_cfg.get("bastionPvc", "")
             core_api = client.CoreV1Api()
 
-            # Check if PVCs are bound
             pvcs_ready = True
             for pvc_name in [rhcos_pvc, bastion_pvc_name]:
                 if not pvc_name:
@@ -810,79 +809,94 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                 except Exception:
                     pvcs_ready = False
 
-            if pvcs_ready and rhcos_pvc:
-                patch.status["deployProgress"] = {
-                    "percent": 75,
-                    "stage": "Regenerating certificates",
-                    "detail": f"recert on {recert_cfg.get('vmName', 'cp-0')}",
-                }
-
-                import time as _t
-                from helpers.kubevirt import build_recert_job
-                from kubernetes import client as _kc
-
-                recert_job = build_recert_job(
-                    f"vm-{rhcos_pvc.split('-disk-')[0].split('-', 1)[1]}",
-                    namespace, rhcos_pvc,
-                    bastion_pvc=bastion_pvc_name or None,
-                )
-                batch_api = _kc.BatchV1Api()
-                recert_job_name = recert_job["metadata"]["name"]
-
-                try:
-                    batch_api.delete_namespaced_job(
-                        name=recert_job_name, namespace=namespace,
-                        propagation_policy="Foreground",
-                    )
-                    for _ in range(15):
-                        try:
-                            batch_api.read_namespaced_job(
-                                name=recert_job_name, namespace=namespace
-                            )
-                            _t.sleep(2)
-                        except Exception:
-                            break
-                except Exception:
-                    pass
-
-                try:
-                    batch_api.create_namespaced_job(
-                        namespace=namespace, body=recert_job
-                    )
-                    logger.info(f"Created recert job {recert_job_name}")
-                    for _ in range(120):
-                        try:
-                            js = batch_api.read_namespaced_job(
-                                name=recert_job_name, namespace=namespace
-                            )
-                            if js.status.succeeded:
-                                logger.info(f"Recert completed for {recert_job_name}")
-                                patch.status["recertDone"] = True
-                                break
-                            if js.status.failed:
-                                logger.warning(f"Recert failed for {recert_job_name}")
-                                patch.status["recertDone"] = True
-                                break
-                        except _kc.exceptions.ApiException as je:
-                            if je.status == 404:
-                                patch.status["recertDone"] = True
-                                break
-                        except Exception:
-                            pass
-                        _t.sleep(5)
-                except Exception as e:
-                    logger.warning(f"Recert job creation failed: {e}")
-                    patch.status["recertDone"] = True
-                return
-
             if not pvcs_ready:
                 patch.status["deployProgress"] = {
-                    "percent": 70,
-                    "stage": "Preparing disks",
+                    "percent": 60, "stage": "Preparing disks",
                     "detail": "waiting for disk clones",
                 }
                 return
 
+            # Check if recert Job already exists
+            from kubernetes import client as _kc
+            batch_api = _kc.BatchV1Api()
+            vm_part = rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
+            recert_job_name = f"recert-{vm_part}"
+
+            try:
+                js = batch_api.read_namespaced_job(
+                    name=recert_job_name, namespace=namespace
+                )
+                if js.status.succeeded:
+                    logger.info(f"Recert completed: {recert_job_name}")
+                    patch.status["recertDone"] = True
+                elif js.status.failed:
+                    logger.warning(f"Recert failed: {recert_job_name}")
+                    patch.status["recertDone"] = True
+                else:
+                    patch.status["deployProgress"] = {
+                        "percent": 75, "stage": "Regenerating certificates",
+                        "detail": f"recert on {recert_cfg.get('vmName', 'cp-0')}",
+                    }
+                return
+            except _kc.exceptions.ApiException as e:
+                if e.status != 404:
+                    return
+            except Exception:
+                return
+
+            # Job doesn't exist — create it
+            patch.status["deployProgress"] = {
+                "percent": 70, "stage": "Regenerating certificates",
+                "detail": f"starting recert on {recert_cfg.get('vmName', 'cp-0')}",
+            }
+            from helpers.kubevirt import build_recert_job
+
+            recert_job = build_recert_job(
+                vm_part, namespace, rhcos_pvc,
+                bastion_pvc=bastion_pvc_name or None,
+            )
+            try:
+                batch_api.create_namespaced_job(
+                    namespace=namespace, body=recert_job
+                )
+                logger.info(f"Created recert job {recert_job_name}")
+            except Exception as e:
+                logger.warning(f"Recert job creation failed: {e}")
+                patch.status["recertDone"] = True
+            return
+
+        # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
+        if not status.get("vmsStarted"):
+            started = 0
+            for vm in vm_items:
+                kv_name = vm.get("status", {}).get("kubevirtVmName", "")
+                if not kv_name:
+                    continue
+                power_on = vm.get("spec", {}).get("powerOnAtDeploy", True)
+                if not power_on:
+                    started += 1
+                    continue
+                try:
+                    custom_api.patch_namespaced_custom_object(
+                        group="kubevirt.io", version="v1",
+                        namespace=namespace, plural="virtualmachines",
+                        name=kv_name,
+                        body={"spec": {"running": True}},
+                    )
+                    started += 1
+                except Exception:
+                    pass
+            if started == len(vm_items):
+                patch.status["vmsStarted"] = True
+                logger.info(f"TroshkaProject {name}: started {started} VMs")
+            else:
+                patch.status["deployProgress"] = {
+                    "percent": 80, "stage": "Starting VMs",
+                    "detail": f"{started}/{len(vm_items)} started",
+                }
+                return
+
+        # Phase 3: Wait for all VMs to be running
         patch.status["deployProgress"] = {
             "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
             "stage": "Waiting for VMs",
@@ -892,9 +906,7 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
         if ready_count == len(vm_items):
             patch.status["phase"] = "Running"
             patch.status["deployProgress"] = {
-                "percent": 100,
-                "stage": "Done",
-                "detail": "",
+                "percent": 100, "stage": "Done", "detail": "",
             }
             logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
 
