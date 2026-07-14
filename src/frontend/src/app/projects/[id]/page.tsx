@@ -162,6 +162,10 @@ export default function ProjectCanvasPage() {
     const wasTransitional = ["reconfiguring", "deploying", "starting"].includes(prevStateRef.current);
     setProjectState(ws.projectState);
     setDeployError(ws.deployError || null);
+    if (ws.projectState === "deploying") {
+      setOcpStatus(null);
+      setOcpInstallElapsed(null);
+    }
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
       useCanvasStore.getState().loadProject(projectId);
