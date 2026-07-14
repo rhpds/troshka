@@ -373,7 +373,14 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 )
                 logger.info(f"Created exec SSH key secret for {name}")
             except client.exceptions.ApiException as e:
-                if e.status != 409:
+                if e.status == 409:
+                    core_api.replace_namespaced_secret(
+                        name="exec-ssh-key",
+                        namespace=namespace,
+                        body=secret_body,
+                    )
+                    logger.info(f"Replaced exec SSH key secret for {name}")
+                else:
                     raise
 
         exec_pod = build_exec_pod(
