@@ -338,7 +338,7 @@ def build_recert_job(
         "mkdir -p /mnt/rhcos\n"
         "for p in /dev/nbd0p4 /dev/nbd0p3 /dev/nbd0p2 /dev/nbd0p1; do\n"
         "  [ -e $p ] || continue\n"
-        "  mount $p /mnt/rhcos 2>/dev/null || mount -o nouuid $p /mnt/rhcos 2>/dev/null || continue\n"
+        "  echo \"Trying $p...\"; mount $p /mnt/rhcos 2>&1 || mount -o nouuid $p /mnt/rhcos 2>&1 || { echo \"  mount failed\"; continue; }\n"
         "  if [ -d /mnt/rhcos/ostree/deploy/rhcos ]; then\n"
         "    RHCOS_PART=$p; break\n"
         "  fi; umount /mnt/rhcos\n"
