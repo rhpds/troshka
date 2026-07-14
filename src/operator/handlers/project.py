@@ -505,8 +505,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
     patch.status["deployProgress"] = {
         "percent": 40,
-        "stage": "Creating VMs",
-        "detail": f"0/{len(vms)} VMs",
+        "stage": "Preparing disks",
+        "detail": f"cloning {len(vms)} VMs",
     }
 
     for i, vm in enumerate(vms):
