@@ -305,13 +305,17 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 for _ in range(120):
                     try:
                         job_status = batch_api.read_namespaced_job(
-                            name=f"recert-{name}", namespace=namespace
+                            name=recert_job_name, namespace=namespace
                         )
                         if job_status.status.succeeded:
                             logger.info(f"Recert completed for {name}")
                             break
                         if job_status.status.failed:
                             logger.warning(f"Recert failed for {name}")
+                            break
+                    except client.exceptions.ApiException as je:
+                        if je.status == 404:
+                            logger.info(f"Recert job {recert_job_name} gone (completed/cleaned)")
                             break
                     except Exception:
                         pass
