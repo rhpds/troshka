@@ -30,6 +30,9 @@ RUN curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/op
 COPY --from=quay.io/edge-infrastructure/recert:latest /usr/local/bin/recert /usr/local/bin/recert
 RUN recert --help > /dev/null 2>&1 && echo "recert binary verified"
 
-# etcd is NOT baked in — downloaded at runtime to match the exact OCP version
+# etcd for recert — must match OCP's etcd major.minor version
+# OCP 4.22 uses etcd 3.6.0, same as troshkad's ETCD_IMAGE
+COPY --from=gcr.io/etcd-development/etcd:v3.6.0 /usr/local/bin/etcd /usr/local/bin/etcd
+COPY --from=gcr.io/etcd-development/etcd:v3.6.0 /usr/local/bin/etcdctl /usr/local/bin/etcdctl
 
 CMD ["sleep", "infinity"]

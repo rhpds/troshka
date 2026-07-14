@@ -361,25 +361,8 @@ def build_recert_job(
         'ETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\n'
         'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
         'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
-        "# Determine exact etcd version from the OCP static pod manifest\n"
-        "ETCD_IMAGE=$(grep 'image:.*etcd' $DEPLOY_ROOT/etc/kubernetes/manifests/etcd-pod.yaml 2>/dev/null | head -1 | awk '{print $2}')\n"
-        "if [ -z \"$ETCD_IMAGE\" ]; then\n"
-        "  echo 'ERROR: cannot determine etcd version from disk'\n"
-        "  umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP; exit 1\n"
-        "fi\n"
-        "ETCD_TAG=$(echo $ETCD_IMAGE | sed 's/.*://' | sed 's/@.*//')\n"
-        "echo \"OCP etcd image: $ETCD_IMAGE (tag: $ETCD_TAG)\"\n"
-        "# Download exact matching etcd version\n"
-        "echo \"Downloading etcd $ETCD_TAG...\"\n"
-        "curl -sfL https://gcr.io/v2/etcd-development/etcd/manifests/$ETCD_TAG > /dev/null 2>&1 || "
-        "{ echo \"ERROR: etcd $ETCD_TAG not found at gcr.io\"; "
-        "umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP; exit 1; }\n"
-        "ETCD_DIR=/tmp/etcd-$ETCD_TAG\n"
-        "mkdir -p $ETCD_DIR\n"
-        "curl -sfL https://storage.googleapis.com/etcd/${ETCD_TAG}/etcd-${ETCD_TAG}-linux-amd64.tar.gz "
-        "| tar xzf - -C $ETCD_DIR --strip-components=1 etcd-${ETCD_TAG}-linux-amd64/etcd etcd-${ETCD_TAG}-linux-amd64/etcdctl\n"
-        "ETCD_BIN=$ETCD_DIR/etcd; ETCDCTL_BIN=$ETCD_DIR/etcdctl\n"
-        "echo \"Using etcd $($ETCD_BIN --version 2>&1 | head -1)\"\n"
+        "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
+        "echo \"Using etcd $(etcd --version 2>&1 | head -1)\"\n"
         'echo "Starting etcd..."\n'
         "$ETCD_BIN --data-dir=$VAR_ETCD --name=recert-temp "
         "--listen-client-urls=http://127.0.0.1:2479 "
