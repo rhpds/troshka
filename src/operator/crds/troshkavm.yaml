@@ -34,6 +34,8 @@ spec:
                   default: q35
                 smbiosUuid:
                   type: string
+                os:
+                  type: string
                 powerOnAtDeploy:
                   type: boolean
                   default: true
