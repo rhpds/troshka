@@ -17,7 +17,7 @@ spec:
       containers:
         - name: operator
           image: quay.io/redhat-gpte/troshka-operator:latest
-          command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces", "--peering=standalone"]
+          command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces", "--standalone"]
           resources:
             requests:
               cpu: 200m
