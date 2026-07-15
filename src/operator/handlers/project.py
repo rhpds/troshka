@@ -61,8 +61,12 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
         )
         if not pods:
             return
-        logs = core_api.read_namespaced_pod_log(
-            name=pods[0].metadata.name, namespace=namespace
+        logs = str(
+            core_api.read_namespaced_pod_log(
+                name=pods[0].metadata.name,
+                namespace=namespace,
+                tail_lines=20,
+            )
         )
         m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs)
         if not m:
