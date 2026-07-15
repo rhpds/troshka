@@ -67,7 +67,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
             tail_lines=100,
         )
         logs_str = logs if isinstance(logs, str) else str(logs or "")
-        m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs_str)
+        m = re.search(r"KUBECONFIG_B64_BEGIN\s+(\S+)\s+KUBECONFIG_B64_END", logs_str)
         if not m:
             logger.warning(
                 f"No kubeconfig found in recert job logs "
