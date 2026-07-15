@@ -2386,27 +2386,6 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             detail = last.get("detail", "")
         percent = progress.get("percent", 0) if progress else 0
 
-        if not detail and not dv_lines:
-            continue
-
-        new_progress = {
-            "step": step,
-            "detail": detail,
-            "percent": percent,
-        }
-        if new_progress == last:
-            continue
-        _deploy_progress[project_id] = new_progress
-        notify_project(
-            project_id,
-            {
-                "type": "deploy-progress",
-                "step": step,
-                "detail": detail,
-                "percent": percent,
-            },
-        )
-
         if phase == "Running":
             project.state = "active"
             clean_topo = copy.deepcopy(topology)
@@ -2437,6 +2416,27 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 {"type": "project-state", "state": "error", "deploy_error": error_msg},
             )
             return
+
+        if not detail and not dv_lines:
+            continue
+
+        new_progress = {
+            "step": step,
+            "detail": detail,
+            "percent": percent,
+        }
+        if new_progress == last:
+            continue
+        _deploy_progress[project_id] = new_progress
+        notify_project(
+            project_id,
+            {
+                "type": "deploy-progress",
+                "step": step,
+                "detail": detail,
+                "percent": percent,
+            },
+        )
 
         time.sleep(5)
 

@@ -30,27 +30,28 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
         if e.status != 409:
             raise
 
-    try:
-        scc = custom_api.get_cluster_custom_object(
-            group="security.openshift.io",
-            version="v1",
-            plural="securitycontextconstraints",
-            name="troshka-network-pods",
-        )
-        sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-        users = scc.get("users", []) or []
-        if sa_ref not in users:
-            users.append(sa_ref)
-            custom_api.patch_cluster_custom_object(
+    sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
+    for scc_name in ("troshka-network-pods", "troshka-gateway"):
+        try:
+            scc = custom_api.get_cluster_custom_object(
                 group="security.openshift.io",
                 version="v1",
                 plural="securitycontextconstraints",
-                name="troshka-network-pods",
-                body={"users": users},
+                name=scc_name,
             )
-            logger.info(f"Added {sa_ref} to troshka-network-pods SCC")
-    except Exception as e:
-        logger.warning(f"Could not patch SCC for {namespace}: {e}")
+            users = scc.get("users", []) or []
+            if sa_ref not in users:
+                users.append(sa_ref)
+                custom_api.patch_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name=scc_name,
+                    body={"users": users},
+                )
+                logger.info(f"Added {sa_ref} to {scc_name} SCC")
+        except Exception as e:
+            logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
 
     nad = build_nad(body)
     try:
@@ -88,6 +89,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     except client.exceptions.ApiException as e:
         if e.status == 409:
             import time
+
             logger.info(f"Dnsmasq pod {pod_name} exists (stale), waiting for deletion")
             for _ in range(30):
                 try:
@@ -167,26 +169,27 @@ async def network_delete(spec, meta, namespace, name, **_):
     custom_api = client.CustomObjectsApi()
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    try:
-        scc = custom_api.get_cluster_custom_object(
-            group="security.openshift.io",
-            version="v1",
-            plural="securitycontextconstraints",
-            name="troshka-network-pods",
-        )
-        users = scc.get("users", []) or []
-        if sa_ref in users:
-            users.remove(sa_ref)
-            custom_api.patch_cluster_custom_object(
+    for scc_name in ("troshka-network-pods", "troshka-gateway"):
+        try:
+            scc = custom_api.get_cluster_custom_object(
                 group="security.openshift.io",
                 version="v1",
                 plural="securitycontextconstraints",
-                name="troshka-network-pods",
-                body={"users": users},
+                name=scc_name,
             )
-            logger.info(f"Removed {sa_ref} from troshka-network-pods SCC")
-    except Exception as e:
-        logger.warning(f"Could not clean SCC for {namespace}: {e}")
+            users = scc.get("users", []) or []
+            if sa_ref in users:
+                users.remove(sa_ref)
+                custom_api.patch_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name=scc_name,
+                    body={"users": users},
+                )
+                logger.info(f"Removed {sa_ref} from {scc_name} SCC")
+        except Exception as e:
+            logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
 
     nad_name = f"{name}-nad"
     try:

@@ -1214,29 +1214,30 @@ async def project_delete(spec, meta, namespace, name, **_):
         logger.warning(f"Failed to list Routes in {namespace}: {e}")
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    try:
-        scc = cast(
-            dict[str, Any],
-            custom_api.get_cluster_custom_object(
-                group="security.openshift.io",
-                version="v1",
-                plural="securitycontextconstraints",
-                name="troshka-network-pods",
-            ),
-        )
-        users = scc.get("users", []) or []
-        if sa_ref in users:
-            users.remove(sa_ref)
-            custom_api.patch_cluster_custom_object(
-                group="security.openshift.io",
-                version="v1",
-                plural="securitycontextconstraints",
-                name="troshka-network-pods",
-                body={"users": users},
+    for scc_name in ("troshka-network-pods", "troshka-gateway"):
+        try:
+            scc = cast(
+                dict[str, Any],
+                custom_api.get_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name=scc_name,
+                ),
             )
-            logger.info(f"Removed {sa_ref} from SCC")
-    except Exception as e:
-        logger.warning(f"Could not clean SCC for {namespace}: {e}")
+            users = scc.get("users", []) or []
+            if sa_ref in users:
+                users.remove(sa_ref)
+                custom_api.patch_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name=scc_name,
+                    body={"users": users},
+                )
+                logger.info(f"Removed {sa_ref} from {scc_name} SCC")
+        except Exception as e:
+            logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
 
     logger.info(f"TroshkaProject {name} cleanup complete")
 
