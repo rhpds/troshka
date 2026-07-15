@@ -1,4 +1,5 @@
 import logging
+import os
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, event
@@ -54,4 +55,28 @@ def get_db() -> Generator[Session, None, None]:
 def init_db():
     import app.models  # noqa: F401
 
+    _run_migrations()
     Base.metadata.create_all(bind=engine)
+
+
+def _run_migrations():
+    try:
+        from alembic import command
+        from alembic.config import Config
+
+        alembic_dir = os.path.join(os.path.dirname(__file__), "..", "..")
+        alembic_cfg = Config(os.path.join(alembic_dir, "alembic.ini"))
+        alembic_cfg.set_main_option(
+            "script_location", os.path.join(alembic_dir, "alembic")
+        )
+        alembic_cfg.set_main_option("sqlalchemy.url", config.database.url)
+        command.upgrade(alembic_cfg, "head")
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+            force=True,
+        )
+        _log.info("Database migrations applied successfully")
+    except Exception as exc:
+        _log.warning("Alembic migration skipped: %s", exc)
