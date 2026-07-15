@@ -3809,17 +3809,15 @@ def _exec_on_bastion(
     command: str,
     timeout: int = 15,
 ):
-    # Try direct oc for oc/kubectl commands (bastion-optional)
-    if command.strip().startswith(("oc ", "kubectl ")):
+    # Try direct oc for oc/kubectl commands (bastion-optional).
+    # Skip for kubevirt — the exec pod's mounted kubeconfig goes stale
+    # after recert; the bastion SSH path always has the live kubeconfig.
+    if (
+        command.strip().startswith(("oc ", "kubectl "))
+        and host.host_type != "kubevirt-cluster"
+    ):
         try:
-            result = _exec_oc(host, project_id, command, timeout)
-            if (
-                result
-                and "refused" not in result.lower()
-                and "error" not in result.lower()
-                and "forbidden" not in result.lower()
-            ):
-                return result
+            return _exec_oc(host, project_id, command, timeout)
         except Exception:
             pass
 
