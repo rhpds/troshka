@@ -1783,6 +1783,7 @@ def vm_exec(
         from app.services.providers.kubevirt import (
             kubevirt_exec_guest_agent,
             kubevirt_exec_ssh,
+            kubevirt_exec_vnc,
             kubevirt_exec_console,
         )
 
@@ -1790,10 +1791,10 @@ def vm_exec(
         if not provider:
             raise HTTPException(status_code=503, detail="Provider not found")
 
-        # KubeVirt auto order: guest-agent → ssh → console (no serial — same as console)
+        # KubeVirt auto order: guest-agent → ssh → vnc → console
         kv_methods = methods
         if method == "auto":
-            kv_methods = ["guest-agent", "ssh", "console"]
+            kv_methods = ["guest-agent", "ssh", "vnc", "console"]
 
         for m in kv_methods:
             try:
@@ -1812,6 +1813,20 @@ def vm_exec(
                         vm_ip,
                         username,
                         password,
+                        command,
+                        timeout,
+                    )
+                elif m == "vnc":
+                    vnc_pass = root_password or password
+                    if not vnc_pass:
+                        errors.append("vnc: no password available")
+                        continue
+                    return kubevirt_exec_vnc(
+                        provider,
+                        project_id,
+                        vm_id,
+                        "root" if root_password else username,
+                        vnc_pass,
                         command,
                         timeout,
                     )

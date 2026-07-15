@@ -21,6 +21,7 @@ RUN dnf install -y \
     e2fsprogs \
     xfsprogs \
     util-linux \
+    tesseract \
     && dnf clean all
 
 RUN curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \

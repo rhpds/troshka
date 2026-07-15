@@ -73,6 +73,7 @@ def _ensure_s3_secret(provider, namespace, s3_config):
 
 def _deploy_operator(provider):
     from kubernetes import client
+    from kubernetes.client.exceptions import ApiException
 
     custom_api, core_api, api_client = _get_k8s_clients(provider)
     apps_api = client.AppsV1Api(api_client)
@@ -95,7 +96,7 @@ def _deploy_operator(provider):
         try:
             ext_api.create_custom_resource_definition(body=crd_body)
             logger.info(f"Created CRD {crd_body['metadata']['name']}")
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status == 409:
                 ext_api.patch_custom_resource_definition(
                     name=crd_body["metadata"]["name"], body=crd_body
@@ -141,7 +142,7 @@ def _deploy_operator(provider):
                     rbac_api.read_cluster_role_binding(name=name)
                 logger.info(f"{kind} {name} already exists, skipping")
                 continue
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status == 404:
                     pass
                 else:
@@ -159,7 +160,7 @@ def _deploy_operator(provider):
             elif kind == "Deployment":
                 apps_api.create_namespaced_deployment(namespace=ns, body=body)
             logger.info(f"Created {kind} {name}")
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status == 409:
                 if kind == "Deployment":
                     apps_api.patch_namespaced_deployment(
@@ -186,7 +187,7 @@ class KubeVirtDriver(ProviderDriver):
         total_ram_mb = 0
         try:
             nodes = core_api.list_node()
-            for node in nodes.items:
+            for node in getattr(nodes, "items", []):
                 labels = node.metadata.labels or {}
                 taints = node.spec.taints or []
 
@@ -217,12 +218,12 @@ class KubeVirtDriver(ProviderDriver):
                 namespace="openshift-storage",
                 label_selector="app=rook-ceph-tools",
             )
-            if toolbox_pods.items:
+            if toolbox_getattr(pods, "items", []):
                 from kubernetes.stream import stream as k8s_stream
 
                 resp = k8s_stream(
                     core_api.connect_get_namespaced_pod_exec,
-                    toolbox_pods.items[0].metadata.name,
+                    toolbox_getattr(pods, "items", [])[0].metadata.name,
                     "openshift-storage",
                     command=["ceph", "df", "-f", "json"],
                     stderr=True,
@@ -389,7 +390,7 @@ class KubeVirtDriver(ProviderDriver):
             svcs = core_api.list_namespaced_service(
                 namespace=namespace, label_selector="app=troshka-vnc"
             )
-            for svc in svcs.items:
+            for svc in getattr(svcs, "items", []):
                 core_api.delete_namespaced_service(
                     name=svc.metadata.name, namespace=namespace
                 )
@@ -559,7 +560,7 @@ class KubeVirtDriver(ProviderDriver):
         label = f"troshka-project={project_id[:8]}"
         try:
             svcs = core_api.list_namespaced_service(namespace=ns, label_selector=label)
-            for svc in svcs.items:
+            for svc in getattr(svcs, "items", []):
                 core_api.delete_namespaced_service(name=svc.metadata.name, namespace=ns)
         except Exception:
             pass
@@ -709,7 +710,7 @@ class KubeVirtDriver(ProviderDriver):
                 namespace=namespace,
                 label_selector="kubevirt.io=virt-launcher",
             )
-            for pod in pods.items:
+            for pod in getattr(pods, "items", []):
                 try:
                     core_api.delete_namespaced_pod(
                         name=pod.metadata.name,
@@ -736,7 +737,7 @@ class KubeVirtDriver(ProviderDriver):
                     namespace=namespace,
                     plural="virtualmachineinstances",
                 )
-                if not pods.items and not vmis.get("items", []):
+                if not getattr(pods, "items", []) and not vmis.get("items", []):
                     break
             except Exception:
                 break
@@ -751,7 +752,7 @@ class KubeVirtDriver(ProviderDriver):
             _, _, api_client = _get_k8s_clients(provider)
             batch_api = _kc.BatchV1Api(api_client)
             jobs = batch_api.list_namespaced_job(namespace=namespace)
-            for job in jobs.items:
+            for job in getattr(jobs, "items", []):
                 try:
                     batch_api.delete_namespaced_job(
                         name=job.metadata.name,
@@ -825,11 +826,15 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
     namespace = _project_ns(provider, project_id)
     vm_name = f"troshka-vm-{vm_id[:8]}"
 
-    pods = core_v1.list_namespaced_pod(
-        namespace, label_selector=f"vm.kubevirt.io/name={vm_name}"
+    pod_list: list = getattr(
+        core_v1.list_namespaced_pod(
+            namespace, label_selector=f"vm.kubevirt.io/name={vm_name}"
+        ),
+        "items",
+        [],
     )
     launcher = None
-    for p in pods.items:
+    for p in pod_list:
         if p.metadata.name.startswith("virt-launcher-") and p.status.phase == "Running":
             launcher = p
             break
@@ -969,14 +974,23 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
 def _find_exec_pod(core_v1, namespace, project_id):
     """Find the exec pod for a project, falling back to dnsmasq pod."""
     project_name = f"project-{project_id[:8]}"
-    pods = core_v1.list_namespaced_pod(
-        namespace, label_selector=f"app=troshka-exec,troshka-project={project_name}"
+    exec_pods: list = getattr(
+        core_v1.list_namespaced_pod(
+            namespace,
+            label_selector=f"app=troshka-exec,troshka-project={project_name}",
+        ),
+        "items",
+        [],
     )
-    for p in pods.items:
+    for p in exec_pods:
         if p.status.phase == "Running":
             return p
-    pods = core_v1.list_namespaced_pod(namespace, label_selector="app=troshka-dnsmasq")
-    for p in pods.items:
+    dns_pods: list = getattr(
+        core_v1.list_namespaced_pod(namespace, label_selector="app=troshka-dnsmasq"),
+        "items",
+        [],
+    )
+    for p in dns_pods:
         if p.status.phase == "Running":
             return p
     return None
@@ -1035,6 +1049,244 @@ def kubevirt_exec_ssh(
         "error": "",
         "exit_code": 0,
         "method": "ssh",
+    }
+
+
+_CHAR_TO_KEYS = {}
+for _c in "abcdefghijklmnopqrstuvwxyz":
+    _CHAR_TO_KEYS[_c] = [f"KEY_{_c.upper()}"]
+    _CHAR_TO_KEYS[_c.upper()] = ["KEY_LEFTSHIFT", f"KEY_{_c.upper()}"]
+for _c in "1234567890":
+    _CHAR_TO_KEYS[_c] = [f"KEY_{_c}"]
+_CHAR_TO_KEYS.update(
+    {
+        "!": ["KEY_LEFTSHIFT", "KEY_1"],
+        "@": ["KEY_LEFTSHIFT", "KEY_2"],
+        "#": ["KEY_LEFTSHIFT", "KEY_3"],
+        "$": ["KEY_LEFTSHIFT", "KEY_4"],
+        "%": ["KEY_LEFTSHIFT", "KEY_5"],
+        "^": ["KEY_LEFTSHIFT", "KEY_6"],
+        "&": ["KEY_LEFTSHIFT", "KEY_7"],
+        "*": ["KEY_LEFTSHIFT", "KEY_8"],
+        "(": ["KEY_LEFTSHIFT", "KEY_9"],
+        ")": ["KEY_LEFTSHIFT", "KEY_0"],
+        " ": ["KEY_SPACE"],
+        "\n": ["KEY_ENTER"],
+        "\t": ["KEY_TAB"],
+        "-": ["KEY_MINUS"],
+        "=": ["KEY_EQUAL"],
+        "[": ["KEY_LEFTBRACE"],
+        "]": ["KEY_RIGHTBRACE"],
+        "\\": ["KEY_BACKSLASH"],
+        ";": ["KEY_SEMICOLON"],
+        "'": ["KEY_APOSTROPHE"],
+        "`": ["KEY_GRAVE"],
+        ",": ["KEY_COMMA"],
+        ".": ["KEY_DOT"],
+        "/": ["KEY_SLASH"],
+        "_": ["KEY_LEFTSHIFT", "KEY_MINUS"],
+        "+": ["KEY_LEFTSHIFT", "KEY_EQUAL"],
+        "{": ["KEY_LEFTSHIFT", "KEY_LEFTBRACE"],
+        "}": ["KEY_LEFTSHIFT", "KEY_RIGHTBRACE"],
+        "|": ["KEY_LEFTSHIFT", "KEY_BACKSLASH"],
+        ":": ["KEY_LEFTSHIFT", "KEY_SEMICOLON"],
+        '"': ["KEY_LEFTSHIFT", "KEY_APOSTROPHE"],
+        "~": ["KEY_LEFTSHIFT", "KEY_GRAVE"],
+        "<": ["KEY_LEFTSHIFT", "KEY_COMMA"],
+        ">": ["KEY_LEFTSHIFT", "KEY_DOT"],
+        "?": ["KEY_LEFTSHIFT", "KEY_SLASH"],
+    }
+)
+
+
+def kubevirt_exec_vnc(
+    provider, project_id, vm_id, username, password, command, timeout=600
+):
+    """Execute command via VNC console: virsh send-key + screenshot + OCR.
+
+    Screenshot taken in virt-launcher pod, OCR runs in the exec/tools pod
+    (which has tesseract installed).
+    """
+    import re
+    import time
+
+    if not password:
+        raise RuntimeError("Password required for VNC console exec")
+
+    _, core_v1, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    all_pods: list = getattr(core_v1.list_namespaced_pod(namespace), "items", [])
+    launcher = None
+    exec_pod = None
+    for p in all_pods:
+        if not p.status or p.status.phase != "Running":
+            continue
+        if p.metadata.name.startswith("virt-launcher-") and vm_name in p.metadata.name:
+            launcher = p
+        if p.metadata.name.startswith("exec-"):
+            exec_pod = p
+    if not launcher:
+        raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
+    if not exec_pod:
+        raise RuntimeError("No running exec pod for VNC OCR")
+
+    from kubernetes.stream import stream as k8s_stream
+
+    def _launcher_exec(cmd, req_timeout=15):
+        ws = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            launcher.metadata.name,
+            namespace,
+            container="compute",
+            command=cmd,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=req_timeout,
+        )
+        return ws.strip() if isinstance(ws, str) else ""
+
+    def _tools_exec(cmd, req_timeout=15):
+        ws = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            exec_pod.metadata.name,
+            namespace,
+            container="exec",
+            command=cmd,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=req_timeout,
+        )
+        return ws.strip() if isinstance(ws, str) else ""
+
+    resp = _launcher_exec(["virsh", "-c", "qemu:///session", "list", "--name"])
+    domain = resp.split("\n")[0].strip()
+    if not domain:
+        raise RuntimeError("No libvirt domain found in virt-launcher pod")
+
+    def _send_keys(*keys):
+        _launcher_exec(
+            ["virsh", "-c", "qemu:///session", "send-key", domain] + list(keys)
+        )
+
+    def _send_text(text):
+        for ch in text:
+            keys = _CHAR_TO_KEYS.get(ch)
+            if keys:
+                _send_keys(*keys)
+
+    def _screenshot_ocr():
+        img_path = "/tmp/troshka-screen.ppm"
+        _launcher_exec(
+            ["virsh", "-c", "qemu:///session", "screenshot", domain, img_path]
+        )
+        b64 = _launcher_exec(["base64", "-w0", img_path], req_timeout=10)
+        _launcher_exec(["rm", "-f", img_path])
+        if not b64:
+            return ""
+        # Write base64 to file in tools pod then decode + OCR
+        # (avoids shell arg length limits on large PPM screenshots)
+        _tools_exec(
+            ["bash", "-c", f"cat > /tmp/screen.b64 << 'ENDOFB64'\n{b64}\nENDOFB64"],
+            req_timeout=10,
+        )
+        result = _tools_exec(
+            [
+                "bash",
+                "-c",
+                "base64 -d /tmp/screen.b64 | tesseract stdin stdout 2>/dev/null;"
+                " rm -f /tmp/screen.b64",
+            ],
+            req_timeout=15,
+        )
+        return result
+
+    def _detect_state(ocr_text):
+        text = ocr_text.strip()
+        if not text or len(text) < 3:
+            return "unknown"
+        last_lines = "\n".join(text.split("\n")[-5:])
+        if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+            return "login"
+        if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
+            return "password"
+        if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
+            return "shell"
+        return "unknown"
+
+    # Switch to TTY3 to avoid graphical desktop
+    _send_keys("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
+    time.sleep(2)
+
+    # Login loop
+    logged_in = False
+    for attempt in range(4):
+        ocr = _screenshot_ocr()
+        state = _detect_state(ocr)
+
+        if state == "shell":
+            logged_in = True
+            break
+        if state == "unknown":
+            _send_keys("KEY_ENTER")
+            time.sleep(1)
+            continue
+        if state == "login":
+            _send_text(username + "\n")
+            time.sleep(2)
+            continue
+        if state == "password":
+            _send_text(password + "\n")
+            time.sleep(3)
+            continue
+
+    if not logged_in:
+        return {
+            "output": "",
+            "error": "Could not reach shell prompt via VNC console",
+            "exit_code": None,
+            "method": "vnc",
+        }
+
+    # Clear screen and send command with markers
+    _send_text("clear\n")
+    time.sleep(0.5)
+    wrapped = f"echo TROSHKA_BEGIN; {command} 2>&1; echo TROSHKA_EXIT $?"
+    _send_text(wrapped + "\n")
+
+    # Poll for output markers
+    ocr = ""
+    deadline = time.time() + min(timeout, 60)
+    while time.time() < deadline:
+        time.sleep(2)
+        ocr = _screenshot_ocr()
+        if "TROSHKA_EXIT" in ocr:
+            break
+
+    # Extract output between markers
+    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", ocr, re.DOTALL)
+    if m:
+        output = m.group(1).strip()
+        exit_code = int(m.group(2)) if m.group(2) else None
+    else:
+        output = ocr.strip()
+        exit_code = None
+
+    # Switch back to TTY1
+    _send_keys("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F1")
+
+    return {
+        "output": output,
+        "error": "",
+        "exit_code": exit_code,
+        "method": "vnc",
     }
 
 
