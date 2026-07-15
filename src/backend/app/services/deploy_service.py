@@ -4041,7 +4041,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     break
 
     console_url = f"https://console-openshift-console.apps.{dns_domain}"
-    deadline = _t.time() + 900
+    deadline = _t.time() + 1800
     logger.info(
         "OCP health monitor started for %s (bastion=%s, domain=%s)",
         project_id[:8],
@@ -4078,6 +4078,9 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         else:
             _push("timeout", "bastion SSH not available")
             return
+        logger.info(
+            "OCP monitor %s: bastion SSH ready (%s)", project_id[:8], _elapsed()
+        )
     else:
         _push("oc", "waiting for OCP API")
         while _t.time() < deadline:
@@ -4479,6 +4482,8 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 break
             _t.sleep(5)
 
+    logger.info("OCP monitor %s: nodes reachable (%s)", project_id[:8], _elapsed())
+
     # Force kube-apiserver rollout to pick up current kubelet serving CA.
     # After pattern restore or extended downtime, the API server may not
     # trust the kubelet's serving cert — this triggers a redeploy.
@@ -4494,6 +4499,9 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     logger.info("Triggered kube-apiserver rollout for %s", project_id[:8])
 
     # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
+    logger.info(
+        "OCP monitor %s: waiting for nodes Ready (%s)", project_id[:8], _elapsed()
+    )
     _push("nodes", "waiting for nodes to be Ready")
     api_seen = False
     nodes_ready = False
@@ -4535,6 +4543,11 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         _t.sleep(5)
 
     # Phase 4: Wait for cluster operators (continue CSR approval)
+    logger.info(
+        "OCP monitor %s: nodes ready, waiting for operators (%s)",
+        project_id[:8],
+        _elapsed(),
+    )
     _push("operators", "waiting for cluster operators")
     operators_ready = False
     last_csr_check_ops = 0
@@ -4595,6 +4608,11 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
     # Phase 5: Wait for console (continue approving CSRs — serving certs
     # often arrive late and block the console route)
+    logger.info(
+        "OCP monitor %s: operators ready, waiting for console (%s)",
+        project_id[:8],
+        _elapsed(),
+    )
     _push("console", "waiting for OpenShift console")
     console_ready = False
     last_csr_check_console = 0
