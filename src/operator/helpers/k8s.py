@@ -198,6 +198,8 @@ def build_exec_pod(
         "volumeMounts": volume_mounts,
     }
 
+    dns_ip = exec_ip.rsplit(".", 1)[0] + ".2" if exec_ip else ""
+
     pod_name = f"exec-{project_id}"
     pod = {
         "apiVersion": "v1",
@@ -215,6 +217,10 @@ def build_exec_pod(
             },
         },
         "spec": {
+            "dnsPolicy": "None",
+            "dnsConfig": {
+                "nameservers": [dns_ip] if dns_ip else ["8.8.8.8"],
+            },
             "serviceAccountName": "troshka-network",
             "initContainers": [
                 {

@@ -84,44 +84,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
             )
             return
         kc_data = m.group(1).strip()
-        # Decode, replace hostname with IP (exec pod can't resolve project DNS),
-        # then re-encode
-        kc_text = _b64.b64decode(kc_data).decode("utf-8")
-        # Extract API IP from static leases in the project topology
-        api_ip = ""
-        try:
-            from kubernetes import client as _kc2
-
-            custom = _kc2.CustomObjectsApi()
-            proj_cr = cast(
-                dict[str, Any],
-                custom.get_namespaced_custom_object(
-                    group=CRD_GROUP,
-                    version=CRD_VERSION,
-                    namespace=namespace,
-                    plural="troshkaprojects",
-                    name=project_name,
-                ),
-            )
-            for node in proj_cr.get("spec", {}).get("topology", {}).get("nodes", []):
-                node_data = node.get("data", {})
-                if node_data.get("os") == "rhcos":
-                    for nic in node_data.get("nics", []):
-                        if nic.get("ip"):
-                            api_ip = nic["ip"]
-                            break
-        except Exception:
-            pass
-        if api_ip:
-            import re as _re2
-
-            kc_text = _re2.sub(
-                r"(server:\s+https?://)([^:]+)(:\d+)",
-                rf"\g<1>{api_ip}\3",
-                kc_text,
-            )
-            logger.info(f"Patched kubeconfig server to {api_ip}")
-        kc_data = _b64.b64encode(kc_text.encode("utf-8")).decode("ascii")
+        _b64.b64decode(kc_data)
 
         secret_name = "ocp-kubeconfig"  # pragma: allowlist secret
         secret_body = {
