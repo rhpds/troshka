@@ -1230,7 +1230,9 @@ def _handle_vm_config(job, params):
                 if boot_child is not None:
                     order = int(boot_child.get("order", 999))
                     if dev_elem.tag == "disk":
-                        dev_type = "cdrom" if dev_elem.get("device") == "cdrom" else "hd"
+                        dev_type = (
+                            "cdrom" if dev_elem.get("device") == "cdrom" else "hd"
+                        )
                     elif dev_elem.tag == "interface":
                         dev_type = "network"
                     else:
@@ -2130,11 +2132,10 @@ def _handle_vm_recert(job, params):
 
                     import glob as _glob
 
-                    for pattern in (
-                        "cert9.db",
-                        "key4.db",
-                        "logins.json",
-                    ):
+                    ff_patterns = ["cert9.db", "key4.db"]
+                    if common_password:
+                        ff_patterns.append("logins.json")
+                    for pattern in ff_patterns:
                         for db_file in _glob.glob(
                             os.path.join(
                                 bastion_mount,
@@ -7914,11 +7915,16 @@ def _handle_vm_guest_exec(job, params):
     try:
         check = subprocess.run(
             [
-                "virsh", "qemu-agent-command", domain,
+                "virsh",
+                "qemu-agent-command",
+                domain,
                 '{"execute":"guest-info"}',
-                "--timeout", "10",
+                "--timeout",
+                "10",
             ],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if check.returncode != 0:
             raise RuntimeError(
@@ -7942,17 +7948,21 @@ def _handle_vm_guest_exec(job, params):
         pass
 
     # Execute command via guest-exec
-    exec_cmd = _json.dumps({
-        "execute": "guest-exec",
-        "arguments": {
-            "path": "/bin/sh",
-            "arg": ["-c", command],
-            "capture-output": True,
-        },
-    })
+    exec_cmd = _json.dumps(
+        {
+            "execute": "guest-exec",
+            "arguments": {
+                "path": "/bin/sh",
+                "arg": ["-c", command],
+                "capture-output": True,
+            },
+        }
+    )
     result = subprocess.run(
         ["virsh", "qemu-agent-command", domain, exec_cmd, "--timeout", "10"],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
     if result.returncode != 0:
         raise RuntimeError(f"guest-exec failed: {result.stderr.strip()}")
@@ -7964,17 +7974,22 @@ def _handle_vm_guest_exec(job, params):
 
     # Poll for completion
     import base64
-    status_cmd = _json.dumps({
-        "execute": "guest-exec-status",
-        "arguments": {"pid": pid},
-    })
+
+    status_cmd = _json.dumps(
+        {
+            "execute": "guest-exec-status",
+            "arguments": {"pid": pid},
+        }
+    )
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
         if job.get("_cancelled"):
             raise RuntimeError("Job cancelled")
         sr = subprocess.run(
             ["virsh", "qemu-agent-command", domain, status_cmd, "--timeout", "10"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if sr.returncode != 0:
             raise RuntimeError(f"guest-exec-status failed: {sr.stderr.strip()}")
@@ -7983,9 +7998,13 @@ def _handle_vm_guest_exec(job, params):
             stdout = ""
             stderr = ""
             if status.get("out-data"):
-                stdout = base64.b64decode(status["out-data"]).decode("utf-8", errors="replace")
+                stdout = base64.b64decode(status["out-data"]).decode(
+                    "utf-8", errors="replace"
+                )
             if status.get("err-data"):
-                stderr = base64.b64decode(status["err-data"]).decode("utf-8", errors="replace")
+                stderr = base64.b64decode(status["err-data"]).decode(
+                    "utf-8", errors="replace"
+                )
             return {
                 "output": stdout,
                 "error": stderr,

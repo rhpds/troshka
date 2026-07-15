@@ -4116,7 +4116,9 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                         db.commit()
                     db.close()
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Failed to update ocp_status for %s", project_id[:8]
+                    )
                 logger.warning(
                     "OCP install failed for %s (%s)",
                     project_id[:8],
@@ -4332,7 +4334,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     db.commit()
                 db.close()
             except Exception:
-                pass
+                logger.exception("Failed to update ocp_status for %s", project_id[:8])
             logger.warning(
                 "OCP install timed out for %s (%s)",
                 project_id[:8],
@@ -4353,7 +4355,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 db.commit()
             db.close()
         except Exception:
-            pass
+            logger.exception("Failed to update ocp_status for %s", project_id[:8])
         logger.info(
             "OCP health monitor (install) complete for %s (%s)",
             project_id[:8],
@@ -4629,7 +4631,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             db.commit()
         db.close()
     except Exception:
-        pass
+        logger.exception("Failed to update ocp_status for %s", project_id[:8])
 
 
 def stop_project_async(project_id: str):
