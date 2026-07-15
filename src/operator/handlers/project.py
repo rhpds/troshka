@@ -67,6 +67,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
             tail_lines=100,
         )
         logs_str = logs if isinstance(logs, str) else str(logs or "")
+        logs_str = logs_str.replace("\\n", "\n")
         m = re.search(r"KUBECONFIG_B64_BEGIN\s+(\S+)\s+KUBECONFIG_B64_END", logs_str)
         if not m:
             idx = logs_str.find("KUBECONFIG_B64_BEGIN")
