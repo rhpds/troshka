@@ -71,12 +71,6 @@ def _run_migrations():
         )
         alembic_cfg.set_main_option("sqlalchemy.url", config.database.url)
         command.upgrade(alembic_cfg, "head")
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
-            force=True,
-        )
         _log.info("Database migrations applied successfully")
     except Exception as exc:
         _log.warning("Alembic migration skipped: %s", exc)
