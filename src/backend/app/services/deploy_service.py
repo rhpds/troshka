@@ -4515,7 +4515,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             "oc get nodes --no-headers 2>/dev/null",
             timeout=10,
         )
-        if result:
+        if (
+            result
+            and "connection" not in result.lower()
+            and "refused" not in result.lower()
+            and "error" not in result.lower()
+        ):
             api_seen = True
             items = []
             ready_count = 0
@@ -4566,7 +4571,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             "oc get co --no-headers 2>/dev/null",
             timeout=15,
         )
-        if result:
+        if (
+            result
+            and "connection" not in result.lower()
+            and "refused" not in result.lower()
+            and "error" not in result.lower()
+        ):
             items = []
             available_count = 0
             total = 0
