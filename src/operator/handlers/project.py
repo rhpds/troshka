@@ -2,8 +2,16 @@ import json
 import kopf
 import logging
 import time
+from typing import Any, cast
 from kubernetes import client
-from helpers.k8s import CRD_GROUP, CRD_VERSION, owner_ref, build_exec_pod, build_gateway_pod
+from kubernetes.client.exceptions import ApiException
+from helpers.k8s import (
+    CRD_GROUP,
+    CRD_VERSION,
+    owner_ref,
+    build_exec_pod,
+    build_gateway_pod,
+)
 from helpers.topology import (
     extract_networks,
     extract_vms,
@@ -13,6 +21,30 @@ from helpers.topology import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_pod_gone(core_api, namespace, pod_name, timeout=30):
+    """Force-delete a pod and wait for it to be fully gone."""
+    try:
+        core_api.delete_namespaced_pod(
+            name=pod_name,
+            namespace=namespace,
+            body=client.V1DeleteOptions(grace_period_seconds=0),
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return
+        raise
+
+    for _ in range(timeout):
+        try:
+            core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            time.sleep(1)
+        except ApiException as e:
+            if e.status == 404:
+                return
+            raise
+
 
 CAPTURE_ANNOTATION = "troshka.redhat.com/capture-request"
 
@@ -37,9 +69,14 @@ async def _handle_capture(capture_config, namespace, name, patch):
     batch_api = client.BatchV1Api()
 
     # Stop all KubeVirt VMs
-    vms = custom_api.list_namespaced_custom_object(
-        group=CRD_GROUP, version=CRD_VERSION,
-        namespace=namespace, plural="troshkavms",
+    vms = cast(
+        dict[str, Any],
+        custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkavms",
+        ),
     )
     kv_names = []
     for vm_item in vms.get("items", []):
@@ -49,9 +86,12 @@ async def _handle_capture(capture_config, namespace, name, patch):
         kv_names.append(kv_name)
         try:
             custom_api.patch_namespaced_custom_object(
-                group="kubevirt.io", version="v1",
-                namespace=namespace, plural="virtualmachines",
-                name=kv_name, body={"spec": {"running": False}},
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
             )
         except Exception as e:
             logger.warning(f"Failed to stop VM {kv_name}: {e}")
@@ -59,9 +99,14 @@ async def _handle_capture(capture_config, namespace, name, patch):
     # Wait for all VMIs to be gone (max 120s)
     for attempt in range(40):
         try:
-            vmis = custom_api.list_namespaced_custom_object(
-                group="kubevirt.io", version="v1",
-                namespace=namespace, plural="virtualmachineinstances",
+            vmis = cast(
+                dict[str, Any],
+                custom_api.list_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                ),
             )
             if not vmis.get("items"):
                 break
@@ -90,21 +135,28 @@ async def _handle_capture(capture_config, namespace, name, patch):
         snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
         try:
             custom_api.create_namespaced_custom_object(
-                group="snapshot.storage.k8s.io", version="v1",
-                namespace=namespace, plural="volumesnapshots",
+                group="snapshot.storage.k8s.io",
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
                 body=snapshot,
             )
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status != 409:
                 raise
 
         # Poll until snapshot is ready (max 5 min)
         for _ in range(60):
             try:
-                vs = custom_api.get_namespaced_custom_object(
-                    group="snapshot.storage.k8s.io", version="v1",
-                    namespace=namespace, plural="volumesnapshots",
-                    name=snap_name,
+                vs = cast(
+                    dict[str, Any],
+                    custom_api.get_namespaced_custom_object(
+                        group="snapshot.storage.k8s.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="volumesnapshots",
+                        name=snap_name,
+                    ),
                 )
                 if vs.get("status", {}).get("readyToUse"):
                     break
@@ -119,31 +171,35 @@ async def _handle_capture(capture_config, namespace, name, patch):
             core_api.create_namespaced_persistent_volume_claim(
                 namespace=namespace, body=temp_pvc
             )
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status != 409:
                 raise
 
         export_job = build_export_job(
-            job_name, namespace, temp_pvc_name, s3_key, s3_config,
+            job_name,
+            namespace,
+            temp_pvc_name,
+            s3_key,
+            s3_config,
         )
         try:
-            batch_api.create_namespaced_job(
-                namespace=namespace, body=export_job
-            )
-        except client.exceptions.ApiException as e:
+            batch_api.create_namespaced_job(namespace=namespace, body=export_job)
+        except ApiException as e:
             if e.status != 409:
                 raise
 
-        export_jobs.append({
-            "jobName": f"export-{job_name}",
-            "snapName": snap_name,
-            "tempPvcName": temp_pvc_name,
-            "diskId": disk_info["diskId"],
-            "vmId": disk_info.get("vmId", ""),
-            "s3Key": s3_key,
-            "format": disk_info.get("format", "qcow2"),
-            "virtualSizeBytes": size_gb * 1073741824,
-        })
+        export_jobs.append(
+            {
+                "jobName": f"export-{job_name}",
+                "snapName": snap_name,
+                "tempPvcName": temp_pvc_name,
+                "diskId": disk_info["diskId"],
+                "vmId": disk_info.get("vmId", ""),
+                "s3Key": s3_key,
+                "format": disk_info.get("format", "qcow2"),
+                "virtualSizeBytes": size_gb * 1073741824,
+            }
+        )
 
     # Poll export Jobs until all complete (max 30 min)
     patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
@@ -152,7 +208,8 @@ async def _handle_capture(capture_config, namespace, name, patch):
         for ej in export_jobs:
             try:
                 job = batch_api.read_namespaced_job(
-                    name=ej["jobName"], namespace=namespace,
+                    name=ej["jobName"],
+                    namespace=namespace,
                 )
                 if job.status.succeeded and job.status.succeeded >= 1:
                     continue
@@ -186,14 +243,16 @@ async def _handle_capture(capture_config, namespace, name, patch):
         except Exception:
             pass
 
-        captured_disks.append({
-            "diskId": ej["diskId"],
-            "vmId": ej["vmId"],
-            "s3Key": ej["s3Key"],
-            "format": ej["format"],
-            "sizeBytes": ej.get("sizeBytes", 0),
-            "virtualSizeBytes": ej["virtualSizeBytes"],
-        })
+        captured_disks.append(
+            {
+                "diskId": ej["diskId"],
+                "vmId": ej["vmId"],
+                "s3Key": ej["s3Key"],
+                "format": ej["format"],
+                "sizeBytes": ej.get("sizeBytes", 0),
+                "virtualSizeBytes": ej["virtualSizeBytes"],
+            }
+        )
 
     patch.status["capturedDisks"] = captured_disks
     patch.status["phase"] = "CaptureComplete"
@@ -204,21 +263,25 @@ async def _handle_capture(capture_config, namespace, name, patch):
     for ej in export_jobs:
         try:
             core_api.delete_namespaced_persistent_volume_claim(
-                name=ej["tempPvcName"], namespace=namespace,
+                name=ej["tempPvcName"],
+                namespace=namespace,
             )
         except Exception:
             pass
         try:
             custom_api.delete_namespaced_custom_object(
-                group="snapshot.storage.k8s.io", version="v1",
-                namespace=namespace, plural="volumesnapshots",
+                group="snapshot.storage.k8s.io",
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
                 name=ej["snapName"],
             )
         except Exception:
             pass
         try:
             batch_api.delete_namespaced_job(
-                name=ej["jobName"], namespace=namespace,
+                name=ej["jobName"],
+                namespace=namespace,
                 propagation_policy="Background",
             )
         except Exception:
@@ -263,15 +326,18 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 metadata=client.V1ObjectMeta(name="troshka-recert"),
             ),
         )
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
     try:
-        scc = custom_api.get_cluster_custom_object(
-            group="security.openshift.io",
-            version="v1",
-            plural="securitycontextconstraints",
-            name="troshka-privileged-jobs",
+        scc = cast(
+            dict[str, Any],
+            custom_api.get_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-privileged-jobs",
+            ),
         )
         sa_ref = f"system:serviceaccount:{namespace}:troshka-recert"
         users = scc.get("users", []) or []
@@ -334,7 +400,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 body=net_cr,
             )
             logger.info(f"Created TroshkaNetwork {net_name}")
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status != 409:
                 raise
 
@@ -358,13 +424,10 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 }
 
     if gateway_nads:
+        _ensure_pod_gone(core_api, namespace, f"gateway-{namespace}")
         gw_pod = build_gateway_pod(body, gateway_nads, gateway_ips)
-        try:
-            core_api.create_namespaced_pod(namespace=namespace, body=gw_pod)
-            logger.info(f"Created gateway pod for {name}")
-        except client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
+        core_api.create_namespaced_pod(namespace=namespace, body=gw_pod)
+        logger.info(f"Created gateway pod for {name}")
 
     # Create SSH key Secret + exec pod attached to the first standard network
     cluster_nad = None
@@ -394,17 +457,13 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     ],
                 ),
                 data={
-                    "id_ed25519": _b64.b64encode(
-                        exec_ssh_key.encode()
-                    ).decode(),
+                    "id_ed25519": _b64.b64encode(exec_ssh_key.encode()).decode(),
                 },
             )
             try:
-                core_api.create_namespaced_secret(
-                    namespace=namespace, body=secret_body
-                )
+                core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
                 logger.info(f"Created exec SSH key secret for {name}")
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status == 409:
                     core_api.replace_namespaced_secret(
                         name="exec-ssh-key",
@@ -415,16 +474,18 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 else:
                     raise
 
+        exec_project_id = spec.get("projectId", namespace)[:8]
+        _ensure_pod_gone(core_api, namespace, f"exec-{exec_project_id}")
         exec_pod = build_exec_pod(
-            body, cluster_nad, cidr=cluster_cidr,
-            ssh_key_secret="exec-ssh-key" if exec_ssh_key else None,  # pragma: allowlist secret
+            body,
+            cluster_nad,
+            cidr=cluster_cidr,
+            ssh_key_secret=(
+                "exec-ssh-key" if exec_ssh_key else None
+            ),  # pragma: allowlist secret
         )
-        try:
-            core_api.create_namespaced_pod(namespace=namespace, body=exec_pod)
-            logger.info(f"Created exec pod for {name}")
-        except client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
+        core_api.create_namespaced_pod(namespace=namespace, body=exec_pod)
+        logger.info(f"Created exec pod for {name}")
 
     vms = extract_vms(topology)
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
@@ -453,7 +514,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     )
                 )
             )
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status != 409:
                 raise
 
@@ -481,13 +542,17 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     name=pvc_name, namespace=CACHE_NAMESPACE
                 )
                 continue
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     raise
 
             size_gb = disk.get("sizeGb", 20)
             dv = build_datavolume_from_s3(
-                pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config,
+                pvc_name,
+                CACHE_NAMESPACE,
+                s3_path,
+                size_gb,
+                s3_config,
                 presigned_url=presigned_url,
             )
             try:
@@ -499,7 +564,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     body=dv,
                 )
                 logger.info(f"Pre-created golden PVC {pvc_name} for parallel download")
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 409:
                     raise
 
@@ -515,7 +580,9 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         if vm.get("name") == "bastion" and vm.get("os") != "rhcos":
             bastion_disks = vm_disks_map.get(vm["id"], [])
             if bastion_disks:
-                bastion_boot_pvc = f"vm-{vm['id'][:8]}-disk-{bastion_disks[0].get('id', '')[:8]}"
+                bastion_boot_pvc = (
+                    f"vm-{vm['id'][:8]}-disk-{bastion_disks[0].get('id', '')[:8]}"
+                )
 
     for i, vm in enumerate(vms):
         vm_name = f"vm-{vm['id'][:8]}"
@@ -576,7 +643,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 body=vm_cr,
             )
             logger.info(f"Created TroshkaVM {vm_name}")
-        except client.exceptions.ApiException as e:
+        except ApiException as e:
             if e.status != 409:
                 raise
 
@@ -587,7 +654,11 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         }
 
     # Create VNC console proxy (pod + service + route)
-    from helpers.vnc import build_vnc_proxy_deployment, build_vnc_service, build_vnc_route
+    from helpers.vnc import (
+        build_vnc_proxy_deployment,
+        build_vnc_service,
+        build_vnc_route,
+    )
 
     core_api = client.CoreV1Api()
 
@@ -598,7 +669,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 metadata=client.V1ObjectMeta(name="troshka-vnc"),
             ),
         )
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
@@ -623,7 +694,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     }
     try:
         rbac_api.create_namespaced_role(namespace=namespace, body=role_body)
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
@@ -646,7 +717,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     }
     try:
         rbac_api.create_namespaced_role_binding(namespace=namespace, body=rb_body)
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
@@ -655,7 +726,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     try:
         apps_api.create_namespaced_deployment(namespace=namespace, body=vnc_dep)
         logger.info(f"Created VNC proxy deployment for {name}")
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
@@ -663,7 +734,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     try:
         core_api.create_namespaced_service(namespace=namespace, body=vnc_svc)
         logger.info(f"Created VNC proxy service for {name}")
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
@@ -677,25 +748,26 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             body=vnc_route,
         )
         logger.info(f"Created VNC proxy route for {name}")
-    except client.exceptions.ApiException as e:
+    except ApiException as e:
         if e.status != 409:
             raise
 
     # Read back the route to get the assigned hostname
     try:
-        route = custom_api.get_namespaced_custom_object(
-            group="route.openshift.io",
-            version="v1",
-            namespace=namespace,
-            plural="routes",
-            name=f"vnc-proxy-{name}",
+        route = cast(
+            dict[str, Any],
+            custom_api.get_namespaced_custom_object(
+                group="route.openshift.io",
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                name=f"vnc-proxy-{name}",
+            ),
         )
         console_host = route.get("spec", {}).get("host", "")
         if not console_host:
             console_host = (
-                route.get("status", {})
-                .get("ingress", [{}])[0]
-                .get("host", "")
+                route.get("status", {}).get("ingress", [{}])[0].get("host", "")
             )
         if console_host:
             patch.status["consoleRoute"] = console_host
@@ -710,7 +782,11 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     )
     if rhcos_vm and is_pattern:
         rhcos_disks = vm_disks_map.get(rhcos_vm["id"], [])
-        rhcos_pvc = f"vm-{rhcos_vm['id'][:8]}-disk-{rhcos_disks[0].get('id', '')[:8]}" if rhcos_disks else None
+        rhcos_pvc = (
+            f"vm-{rhcos_vm['id'][:8]}-disk-{rhcos_disks[0].get('id', '')[:8]}"
+            if rhcos_disks
+            else None
+        )
         if rhcos_pvc:
             patch.status["recertConfig"] = {
                 "rhcosPvc": rhcos_pvc,
@@ -737,11 +813,14 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
     custom_api = client.CustomObjectsApi()
 
     # Get TroshkaVM CRs for VM ID mapping
-    vms = custom_api.list_namespaced_custom_object(
-        group=CRD_GROUP,
-        version=CRD_VERSION,
-        namespace=namespace,
-        plural="troshkavms",
+    vms = cast(
+        dict[str, Any],
+        custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkavms",
+        ),
     )
     vm_items = vms.get("items", [])
     if not vm_items:
@@ -749,11 +828,14 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
     # Get actual KubeVirt VMI states (live truth)
     try:
-        vmis = custom_api.list_namespaced_custom_object(
-            group="kubevirt.io",
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachineinstances",
+        vmis = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            ),
         )
         vmi_states = {}
         for vmi in vmis.get("items", []):
@@ -811,13 +893,15 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
             if not pvcs_ready:
                 patch.status["deployProgress"] = {
-                    "percent": 60, "stage": "Preparing disks",
+                    "percent": 60,
+                    "stage": "Preparing disks",
                     "detail": "waiting for disk clones",
                 }
                 return
 
             # Check if recert Job already exists
             from kubernetes import client as _kc
+
             batch_api = _kc.BatchV1Api()
             vm_part = rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
             recert_job_name = f"recert-{vm_part}"
@@ -834,7 +918,8 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                     patch.status["recertDone"] = True
                 else:
                     patch.status["deployProgress"] = {
-                        "percent": 75, "stage": "Regenerating certificates",
+                        "percent": 75,
+                        "stage": "Regenerating certificates",
                         "detail": f"recert on {recert_cfg.get('vmName', 'cp-0')}",
                     }
                 return
@@ -846,19 +931,20 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
             # Job doesn't exist — create it
             patch.status["deployProgress"] = {
-                "percent": 70, "stage": "Regenerating certificates",
+                "percent": 70,
+                "stage": "Regenerating certificates",
                 "detail": f"starting recert on {recert_cfg.get('vmName', 'cp-0')}",
             }
             from helpers.kubevirt import build_recert_job
 
             recert_job = build_recert_job(
-                vm_part, namespace, rhcos_pvc,
+                vm_part,
+                namespace,
+                rhcos_pvc,
                 bastion_pvc=bastion_pvc_name or None,
             )
             try:
-                batch_api.create_namespaced_job(
-                    namespace=namespace, body=recert_job
-                )
+                batch_api.create_namespaced_job(namespace=namespace, body=recert_job)
                 logger.info(f"Created recert job {recert_job_name}")
             except Exception as e:
                 logger.warning(f"Recert job creation failed: {e}")
@@ -878,8 +964,10 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                     continue
                 try:
                     custom_api.patch_namespaced_custom_object(
-                        group="kubevirt.io", version="v1",
-                        namespace=namespace, plural="virtualmachines",
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachines",
                         name=kv_name,
                         body={"spec": {"running": True}},
                     )
@@ -891,7 +979,8 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                 logger.info(f"TroshkaProject {name}: started {started} VMs")
             else:
                 patch.status["deployProgress"] = {
-                    "percent": 80, "stage": "Starting VMs",
+                    "percent": 80,
+                    "stage": "Starting VMs",
                     "detail": f"{started}/{len(vm_items)} started",
                 }
                 return
@@ -906,24 +995,31 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
         if ready_count == len(vm_items):
             patch.status["phase"] = "Running"
             patch.status["deployProgress"] = {
-                "percent": 100, "stage": "Done", "detail": "",
+                "percent": 100,
+                "stage": "Done",
+                "detail": "",
             }
             logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_delete(spec, meta, namespace, name, **_):
-    logger.info(f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}")
+    logger.info(
+        f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}"
+    )
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
     # Force-delete VMIs first (immediate, no graceful shutdown wait)
     try:
-        vmis = custom_api.list_namespaced_custom_object(
-            group="kubevirt.io",
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachineinstances",
+        vmis = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            ),
         )
         for vmi in vmis.get("items", []):
             try:
@@ -935,17 +1031,20 @@ async def project_delete(spec, meta, namespace, name, **_):
                     name=vmi["metadata"]["name"],
                     grace_period_seconds=0,
                 )
-            except client.exceptions.ApiException:
+            except ApiException:
                 pass
     except Exception:
         pass
 
     try:
-        kv_vms = custom_api.list_namespaced_custom_object(
-            group="kubevirt.io",
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
+        kv_vms = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+            ),
         )
         for vm in kv_vms.get("items", []):
             vm_name = vm["metadata"]["name"]
@@ -958,18 +1057,21 @@ async def project_delete(spec, meta, namespace, name, **_):
                     name=vm_name,
                 )
                 logger.info(f"Deleted KubeVirt VM {vm_name}")
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     logger.warning(f"Failed to delete KubeVirt VM {vm_name}: {e}")
     except Exception as e:
         logger.warning(f"Failed to list KubeVirt VMs in {namespace}: {e}")
 
     try:
-        dvs = custom_api.list_namespaced_custom_object(
-            group="cdi.kubevirt.io",
-            version="v1beta1",
-            namespace=namespace,
-            plural="datavolumes",
+        dvs = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="cdi.kubevirt.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural="datavolumes",
+            ),
         )
         for dv in dvs.get("items", []):
             dv_name = dv["metadata"]["name"]
@@ -981,18 +1083,21 @@ async def project_delete(spec, meta, namespace, name, **_):
                     plural="datavolumes",
                     name=dv_name,
                 )
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     logger.warning(f"Failed to delete DataVolume {dv_name}: {e}")
     except Exception as e:
         logger.warning(f"Failed to list DataVolumes in {namespace}: {e}")
 
     try:
-        nads = custom_api.list_namespaced_custom_object(
-            group="k8s.cni.cncf.io",
-            version="v1",
-            namespace=namespace,
-            plural="network-attachment-definitions",
+        nads = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="k8s.cni.cncf.io",
+                version="v1",
+                namespace=namespace,
+                plural="network-attachment-definitions",
+            ),
         )
         for nad in nads.get("items", []):
             nad_name = nad["metadata"]["name"]
@@ -1004,18 +1109,21 @@ async def project_delete(spec, meta, namespace, name, **_):
                     plural="network-attachment-definitions",
                     name=nad_name,
                 )
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     logger.warning(f"Failed to delete NAD {nad_name}: {e}")
     except Exception as e:
         logger.warning(f"Failed to list NADs in {namespace}: {e}")
 
     try:
-        routes = custom_api.list_namespaced_custom_object(
-            group="route.openshift.io",
-            version="v1",
-            namespace=namespace,
-            plural="routes",
+        routes = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="route.openshift.io",
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+            ),
         )
         for rt in routes.get("items", []):
             rt_name = rt["metadata"]["name"]
@@ -1028,7 +1136,7 @@ async def project_delete(spec, meta, namespace, name, **_):
                     name=rt_name,
                 )
                 logger.info(f"Deleted Route {rt_name}")
-            except client.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     logger.warning(f"Failed to delete Route {rt_name}: {e}")
     except Exception as e:
@@ -1036,11 +1144,14 @@ async def project_delete(spec, meta, namespace, name, **_):
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
     try:
-        scc = custom_api.get_cluster_custom_object(
-            group="security.openshift.io",
-            version="v1",
-            plural="securitycontextconstraints",
-            name="troshka-network-pods",
+        scc = cast(
+            dict[str, Any],
+            custom_api.get_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-network-pods",
+            ),
         )
         users = scc.get("users", []) or []
         if sa_ref in users:
