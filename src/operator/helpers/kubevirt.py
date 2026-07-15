@@ -29,9 +29,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
     if firmware_type == "uefi":
         domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": False}}
     elif firmware_type == "uefi-secure":
-        domain.setdefault("firmware", {})["bootloader"] = {
-            "efi": {"secureBoot": True}
-        }
+        domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": True}}
         domain.setdefault("features", {})["smm"] = {"enabled": True}
 
     volumes = []
@@ -167,22 +165,20 @@ def build_cloudinit_secret(vm_cr):
     import json
     import uuid
 
-    metadata = json.dumps({
-        "instance-id": f"{name}-{uuid.uuid4().hex[:8]}",
-        "local-hostname": spec.get("name", name),
-    })
+    metadata = json.dumps(
+        {
+            "instance-id": f"{name}-{uuid.uuid4().hex[:8]}",
+            "local-hostname": spec.get("name", name),
+        }
+    )
 
     data = {
         "metadata": base64.b64encode(metadata.encode()).decode(),
     }
     if ci.get("userData"):
-        data["userdata"] = base64.b64encode(
-            ci["userData"].encode()
-        ).decode()
+        data["userdata"] = base64.b64encode(ci["userData"].encode()).decode()
     if ci.get("networkConfig"):
-        data["networkdata"] = base64.b64encode(
-            ci["networkConfig"].encode()
-        ).decode()
+        data["networkdata"] = base64.b64encode(ci["networkConfig"].encode()).decode()
 
     return {
         "apiVersion": "v1",
@@ -223,7 +219,9 @@ def build_datavolume_from_s3(
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
                 "resources": {
-                    "requests": {"storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"}
+                    "requests": {
+                        "storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"
+                    }
                 },
                 "storageClassName": STORAGE_CLASS,
             },
@@ -241,17 +239,13 @@ def build_blank_pvc(name, namespace, size_gb):
         },
         "spec": {
             "accessModes": ["ReadWriteOnce"],
-            "resources": {
-                "requests": {"storage": f"{size_gb}Gi"}
-            },
+            "resources": {"requests": {"storage": f"{size_gb}Gi"}},
             "storageClassName": STORAGE_CLASS,
         },
     }
 
 
-def build_clone_datavolume(
-    name, namespace, source_pvc, source_namespace, size_gb
-):
+def build_clone_datavolume(name, namespace, source_pvc, source_namespace, size_gb):
     return {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",
@@ -269,7 +263,9 @@ def build_clone_datavolume(
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
                 "resources": {
-                    "requests": {"storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"}
+                    "requests": {
+                        "storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"
+                    }
                 },
                 "storageClassName": STORAGE_CLASS,
             },
@@ -306,7 +302,10 @@ def build_recert_job(
 
     if bastion_pvc:
         volumes.append(
-            {"name": "bastion-disk", "persistentVolumeClaim": {"claimName": bastion_pvc}}
+            {
+                "name": "bastion-disk",
+                "persistentVolumeClaim": {"claimName": bastion_pvc},
+            }
         )
         volume_mounts.append({"name": "bastion-disk", "mountPath": "/bastion"})
         bastion_cmds = (
@@ -349,7 +348,7 @@ def build_recert_job(
         "done\n"
         "[ -n \"$RHCOS_PART\" ] || { echo 'ERROR: no RHCOS partition found';"
         " fdisk -l $LOOP 2>&1; kpartx -dv $LOOP; losetup -d $LOOP; exit 1; }\n"
-        "echo \"Found RHCOS on $RHCOS_PART\"\n"
+        'echo "Found RHCOS on $RHCOS_PART"\n'
         "DEPLOY_DIR=/mnt/rhcos/ostree/deploy/rhcos/deploy\n"
         "DEPLOY_HASH=$(ls $DEPLOY_DIR | grep -v .origin | head -1)\n"
         '[ -n "$DEPLOY_HASH" ] || { echo "ERROR: no OSTree deploy";'
@@ -367,7 +366,7 @@ def build_recert_job(
         "mount --bind $ETC_MCD /etc/machine-config-daemon\n"
         "mount --bind $VAR_KUBELET /var/lib/kubelet\n"
         "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
-        "echo \"Using etcd $(etcd --version 2>&1 | head -1)\"\n"
+        'echo "Using etcd $(etcd --version 2>&1 | head -1)"\n'
         'echo "Starting etcd..."\n'
         "$ETCD_BIN --data-dir=$VAR_ETCD --name=recert-temp "
         "--listen-client-urls=http://127.0.0.1:2479 "
@@ -385,6 +384,21 @@ def build_recert_job(
         "--cluster-customization-dir /var/lib/kubelet "
         f"{recert_flags} {password_args}\n"
         'echo "Recert done"\n'
+        "# Relax kube-apiserver liveness probe to survive boot storm\n"
+        "# (cert-regeneration sidecar causes brief TLS disruptions that kill apiserver\n"
+        "#  before OVN can sync — increasing failureThreshold from 3 to 8 gives 80s)\n"
+        'APIMAN="/etc/kubernetes/manifests/kube-apiserver-pod.yaml"\n'
+        'if [ -f "$APIMAN" ]; then\n'
+        '  python3 -c "\n'
+        "import json, sys\n"
+        "with open(sys.argv[1]) as f: pod = json.load(f)\n"
+        "for c in pod.get('spec',{}).get('containers',[]):\n"
+        "  for probe in ('livenessProbe','startupProbe'):\n"
+        "    if probe in c:\n"
+        "      c[probe]['failureThreshold'] = 8\n"
+        "with open(sys.argv[1],'w') as f: json.dump(pod, f)\n"
+        '" "$APIMAN" && echo \'Relaxed apiserver liveness probe\'\n'
+        "fi\n"
         'KC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/'
         'node-kubeconfigs/lb-ext.kubeconfig"\n'
         '[ -f "$KC" ] && cp "$KC" /output/kubeconfig\n'
