@@ -65,7 +65,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
             core_api.read_namespaced_pod_log(
                 name=pods[0].metadata.name,
                 namespace=namespace,
-                tail_lines=20,
+                tail_lines=100,
             )
         )
         m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs)
