@@ -59,4 +59,4 @@ rules:
   - apiGroups: ["security.openshift.io"]
     resources: ["securitycontextconstraints"]
     verbs: ["get", "patch"]
-    resourceNames: ["troshka-network-pods", "troshka-privileged-jobs"]
+    resourceNames: ["troshka-network-pods", "troshka-privileged-jobs", "troshka-gateway"]
