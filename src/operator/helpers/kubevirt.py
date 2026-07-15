@@ -316,7 +316,7 @@ def build_recert_job(
             "sleep 1\n"
             "BPART=/dev/mapper/${BLOOP_BASE}p3; [ -e $BPART ] || BPART=/dev/mapper/${BLOOP_BASE}p1\n"
             "mkdir -p /mnt/bastion; mount $BPART /mnt/bastion 2>/dev/null || mount -o nouuid $BPART /mnt/bastion\n"
-            'KC_SRC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
+            'KC_SRC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
             'if [ -f "$KC_SRC" ]; then\n'
             '  KC_DST="/mnt/bastion/home/cloud-user/ocp-install/auth/kubeconfig"\n'
             '  mkdir -p "$(dirname $KC_DST)"; cp "$KC_SRC" "$KC_DST"\n'
@@ -399,7 +399,7 @@ def build_recert_job(
         "with open(sys.argv[1],'w') as f: json.dump(pod, f)\n"
         '" "$APIMAN" && echo \'Relaxed apiserver liveness probe\'\n'
         "fi\n"
-        'KC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/'
+        'KC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/'
         'node-kubeconfigs/lb-ext.kubeconfig"\n'
         '[ -f "$KC" ] && cp "$KC" /output/kubeconfig\n'
         '[ -f "$KC" ] && echo "KUBECONFIG_B64_BEGIN" && base64 -w0 "$KC" && echo && echo "KUBECONFIG_B64_END"\n'
