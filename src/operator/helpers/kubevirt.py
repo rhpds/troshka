@@ -362,9 +362,10 @@ def build_recert_job(
         'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
         'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
         "# Bind-mount so recert sees standard paths (same as troshkad podman -v)\n"
+        "mkdir -p /etc/kubernetes /etc/machine-config-daemon /var/lib/kubelet\n"
         "mount --bind $ETC_K8S /etc/kubernetes\n"
         "mount --bind $ETC_MCD /etc/machine-config-daemon\n"
-        "mkdir -p /var/lib/kubelet && mount --bind $VAR_KUBELET /var/lib/kubelet\n"
+        "mount --bind $VAR_KUBELET /var/lib/kubelet\n"
         "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
         "echo \"Using etcd $(etcd --version 2>&1 | head -1)\"\n"
         'echo "Starting etcd..."\n'
