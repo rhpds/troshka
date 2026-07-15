@@ -4509,7 +4509,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             project_id,
             bastion_ip,
             password,
-            "oc delete pod -n openshift-ingress -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default --force --grace-period=0 2>/dev/null || true",
+            "oc rollout restart deployment/router-default -n openshift-ingress 2>/dev/null || true",
             timeout=15,
         )
         _t.sleep(10)
