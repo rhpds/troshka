@@ -72,8 +72,8 @@ def extract_vms(topology):
             vm = {
                 "id": data.get("id", node.get("id", "")),
                 "name": data.get("label", ""),
-                "cpus": data.get("cpus", 2),
-                "memory": data.get("memory", 4096),
+                "cpus": data.get("cpus") or data.get("vcpus", 2),
+                "memory": data.get("memory") or data.get("ram", 4) * 1024,
                 "firmware": data.get("firmware", "bios"),
                 "machineType": data.get("machineType", "q35"),
                 "smbiosUuid": data.get("domainUuid", ""),
@@ -159,11 +159,17 @@ def resolve_nic_networks(topology):
         target = edge.get("target", "")
         target_handle = edge.get("targetHandle", "")
 
-        if node_types.get(source) == "networkNode" and node_types.get(target) == "vmNode":
+        if (
+            node_types.get(source) == "networkNode"
+            and node_types.get(target) == "vmNode"
+        ):
             nic_id = _extract_nic_id(target_handle)
             if nic_id:
                 nic_to_network[nic_id] = f"net-{source[:8]}"
-        elif node_types.get(target) == "networkNode" and node_types.get(source) == "vmNode":
+        elif (
+            node_types.get(target) == "networkNode"
+            and node_types.get(source) == "vmNode"
+        ):
             source_handle = edge.get("sourceHandle", "")
             nic_id = _extract_nic_id(source_handle)
             if nic_id:
@@ -195,10 +201,16 @@ def resolve_vm_disks(topology):
 
         storage_id = None
         vm_id = None
-        if source_info.get("type") == "storageNode" and target_info.get("type") == "vmNode":
+        if (
+            source_info.get("type") == "storageNode"
+            and target_info.get("type") == "vmNode"
+        ):
             storage_id = source
             vm_id = target
-        elif target_info.get("type") == "storageNode" and source_info.get("type") == "vmNode":
+        elif (
+            target_info.get("type") == "storageNode"
+            and source_info.get("type") == "vmNode"
+        ):
             storage_id = target
             vm_id = source
 
