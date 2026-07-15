@@ -391,6 +391,7 @@ def build_recert_job(
         + bastion_cmds
         + "kill $ETCD_PID 2>/dev/null; wait $ETCD_PID 2>/dev/null || true\n"
         + bastion_cleanup
+        + "umount /etc/kubernetes /etc/machine-config-daemon /var/lib/kubelet 2>/dev/null\n"
         + "umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP\n"
         + 'echo "Recert job complete"\n'
     )
