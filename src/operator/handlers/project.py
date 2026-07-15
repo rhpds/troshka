@@ -46,6 +46,54 @@ def _ensure_pod_gone(core_api, namespace, pod_name, timeout=30):
             raise
 
 
+def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
+    """Read kubeconfig from recert Job logs and create a Secret for the exec pod."""
+    import base64 as _b64
+    import re
+
+    try:
+        pods = getattr(
+            core_api.list_namespaced_pod(
+                namespace, label_selector=f"job-name={job_name}"
+            ),
+            "items",
+            [],
+        )
+        if not pods:
+            return
+        logs = core_api.read_namespaced_pod_log(
+            name=pods[0].metadata.name, namespace=namespace
+        )
+        m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs)
+        if not m:
+            logger.warning("No kubeconfig found in recert job logs")
+            return
+        kc_data = m.group(1).strip()
+        # Validate it's real base64
+        _b64.b64decode(kc_data)
+
+        secret_name = "ocp-kubeconfig"  # pragma: allowlist secret
+        secret_body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": secret_name, "namespace": namespace},
+            "data": {"config": kc_data},
+        }
+        try:
+            core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
+            logger.info(f"Created kubeconfig Secret for {project_name}")
+        except ApiException as e:
+            if e.status == 409:
+                core_api.replace_namespaced_secret(
+                    name=secret_name, namespace=namespace, body=secret_body
+                )
+                logger.info(f"Replaced kubeconfig Secret for {project_name}")
+            else:
+                raise
+    except Exception as e:
+        logger.warning(f"Failed to extract kubeconfig from recert logs: {e}")
+
+
 CAPTURE_ANNOTATION = "troshka.redhat.com/capture-request"
 
 
@@ -211,9 +259,9 @@ async def _handle_capture(capture_config, namespace, name, patch):
                     name=ej["jobName"],
                     namespace=namespace,
                 )
-                if job.status.succeeded and job.status.succeeded >= 1:
+                if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
                     continue
-                if job.status.failed and job.status.failed >= 3:
+                if job.status.failed and job.status.failed >= 3:  # type: ignore[union-attr]
                     logger.error(f"Export job {ej['jobName']} failed")
                     patch.status["phase"] = "CaptureError"
                     patch.status["captureError"] = f"Export job {ej['jobName']} failed"
@@ -228,14 +276,20 @@ async def _handle_capture(capture_config, namespace, name, patch):
     # Read Job pod logs to get actual file sizes
     for ej in export_jobs:
         try:
-            pods = core_api.list_namespaced_pod(
-                namespace=namespace,
-                label_selector=f"job-name={ej['jobName']}",
-            )
-            if pods.items:
-                logs = core_api.read_namespaced_pod_log(
-                    name=pods.items[0].metadata.name,
+            pod_items: list = getattr(
+                core_api.list_namespaced_pod(
                     namespace=namespace,
+                    label_selector=f"job-name={ej['jobName']}",
+                ),
+                "items",
+                [],
+            )
+            if pod_items:
+                logs = str(
+                    core_api.read_namespaced_pod_log(
+                        name=pod_items[0].metadata.name,
+                        namespace=namespace,
+                    )
                 )
                 for line in logs.splitlines():
                     if line.startswith("DISK_SIZE_BYTES="):
@@ -886,7 +940,7 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                     pvc = core_api.read_namespaced_persistent_volume_claim(
                         name=pvc_name, namespace=namespace
                     )
-                    if pvc.status.phase != "Bound":
+                    if pvc.status.phase != "Bound":  # type: ignore[union-attr]
                         pvcs_ready = False
                 except Exception:
                     pvcs_ready = False
@@ -910,10 +964,13 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                 js = batch_api.read_namespaced_job(
                     name=recert_job_name, namespace=namespace
                 )
-                if js.status.succeeded:
+                if js.status.succeeded:  # type: ignore[union-attr]
                     logger.info(f"Recert completed: {recert_job_name}")
+                    _extract_kubeconfig_secret(
+                        core_api, namespace, recert_job_name, name
+                    )
                     patch.status["recertDone"] = True
-                elif js.status.failed:
+                elif js.status.failed:  # type: ignore[union-attr]
                     logger.warning(f"Recert failed: {recert_job_name}")
                     patch.status["recertDone"] = True
                 else:
@@ -923,7 +980,7 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                         "detail": f"recert on {recert_cfg.get('vmName', 'cp-0')}",
                     }
                 return
-            except _kc.exceptions.ApiException as e:
+            except ApiException as e:
                 if e.status != 404:
                     return
             except Exception:

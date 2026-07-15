@@ -402,6 +402,7 @@ def build_recert_job(
         'KC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/'
         'node-kubeconfigs/lb-ext.kubeconfig"\n'
         '[ -f "$KC" ] && cp "$KC" /output/kubeconfig\n'
+        '[ -f "$KC" ] && echo "KUBECONFIG_B64_BEGIN" && base64 -w0 "$KC" && echo && echo "KUBECONFIG_B64_END"\n'
         + bastion_cmds
         + "kill $ETCD_PID 2>/dev/null; wait $ETCD_PID 2>/dev/null || true\n"
         + bastion_cleanup

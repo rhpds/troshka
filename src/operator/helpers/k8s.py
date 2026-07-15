@@ -78,7 +78,12 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
     dnsmasq_ip, prefix = _dnsmasq_ip_from_cidr(cidr)
 
     setup_cmd = "true"
-    if dnsmasq_ip and prefix and _IPV4_RE.match(dnsmasq_ip) and _PREFIX_RE.match(prefix):
+    if (
+        dnsmasq_ip
+        and prefix
+        and _IPV4_RE.match(dnsmasq_ip)
+        and _PREFIX_RE.match(prefix)
+    ):
         setup_cmd = f"ip addr add {dnsmasq_ip}/{prefix} dev net1 && ip link set net1 up"
 
     return {
@@ -98,9 +103,7 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
                     "name": "setup-ip",
                     "image": GATEWAY_IMAGE,
                     "command": ["sh", "-c", setup_cmd],
-                    "securityContext": {
-                        "capabilities": {"add": ["NET_ADMIN"]}
-                    },
+                    "securityContext": {"capabilities": {"add": ["NET_ADMIN"]}},
                 }
             ],
             "containers": [
@@ -115,9 +118,7 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
                     "securityContext": {
                         "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]}
                     },
-                    "volumeMounts": [
-                        {"name": "config", "mountPath": "/etc/dnsmasq"}
-                    ],
+                    "volumeMounts": [{"name": "config", "mountPath": "/etc/dnsmasq"}],
                 }
             ],
             "volumes": [
@@ -131,7 +132,9 @@ def build_dnsmasq_pod(network_cr, dnsmasq_config):
     }
 
 
-def build_exec_pod(project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_secret=None):
+def build_exec_pod(
+    project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_secret=None
+):
     """Build an exec pod for SSH/command execution into project VMs.
 
     Uses .3 on the subnet (dnsmasq is .2, gateway is .1).
@@ -153,29 +156,47 @@ def build_exec_pod(project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_sec
     if exec_ip and _IPV4_RE.match(exec_ip) and _PREFIX_RE.match(prefix):
         setup_cmd = f"ip addr add {exec_ip}/{prefix} dev net1 && ip link set net1 up"
 
-    volumes = []
-    volume_mounts = []
-    if ssh_key_secret:
-        volumes.append({
-            "name": "ssh-key",
+    volumes = [
+        {
+            "name": "kubeconfig",
             "secret": {
-                "secretName": ssh_key_secret,
+                "secretName": "ocp-kubeconfig",  # pragma: allowlist secret
                 "defaultMode": 0o400,
+                "optional": True,
             },
-        })
-        volume_mounts.append({
-            "name": "ssh-key",
-            "mountPath": "/root/.ssh",
+        },
+    ]
+    volume_mounts = [
+        {
+            "name": "kubeconfig",
+            "mountPath": "/root/.kube",
             "readOnly": True,
-        })
+        },
+    ]
+    if ssh_key_secret:
+        volumes.append(
+            {
+                "name": "ssh-key",
+                "secret": {
+                    "secretName": ssh_key_secret,
+                    "defaultMode": 0o400,
+                },
+            }
+        )
+        volume_mounts.append(
+            {
+                "name": "ssh-key",
+                "mountPath": "/root/.ssh",
+                "readOnly": True,
+            }
+        )
 
     container = {
         "name": "exec",
         "image": TOOLS_IMAGE,
         "command": ["sleep", "infinity"],
+        "volumeMounts": volume_mounts,
     }
-    if volume_mounts:
-        container["volumeMounts"] = volume_mounts
 
     pod_name = f"exec-{project_id}"
     pod = {
@@ -200,9 +221,7 @@ def build_exec_pod(project_cr, cluster_nad_name, cidr="10.0.0.0/24", ssh_key_sec
                     "name": "setup-ip",
                     "image": GATEWAY_IMAGE,
                     "command": ["sh", "-c", setup_cmd],
-                    "securityContext": {
-                        "capabilities": {"add": ["NET_ADMIN"]}
-                    },
+                    "securityContext": {"capabilities": {"add": ["NET_ADMIN"]}},
                 }
             ],
             "containers": [container],
@@ -244,9 +263,7 @@ def build_gateway_pod(project_cr, all_network_nads, gateway_ips=None):
                 "app": f"troshka-gateway-{project_id}",
                 "troshka-role": "gateway",
             },
-            "annotations": {
-                "k8s.v1.cni.cncf.io/networks": net_annotation
-            },
+            "annotations": {"k8s.v1.cni.cncf.io/networks": net_annotation},
         },
         "spec": {
             "serviceAccountName": "troshka-network",
