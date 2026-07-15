@@ -11,6 +11,8 @@ allowHostIPC: false
 allowedCapabilities:
   - NET_ADMIN
   - NET_RAW
+allowedUnsafeSysctls:
+  - net.ipv4.ip_forward
 defaultAddCapabilities: []
 requiredDropCapabilities:
   - KILL
@@ -27,10 +29,99 @@ supplementalGroups:
   type: RunAsAny
 volumes:
   - configMap
+  - downwardAPI
   - emptyDir
   - persistentVolumeClaim
   - projected
   - secret
+users: []
+groups: []
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: troshka-gateway
+allowPrivilegedContainer: true
+allowPrivilegeEscalation: true
+allowHostNetwork: false
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostPID: false
+allowHostIPC: false
+allowedCapabilities:
+  - NET_ADMIN
+  - NET_RAW
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
+  - emptyDir
+  - projected
+  - secret
+users: []
+groups: []
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: troshka-privileged-jobs
+allowPrivilegedContainer: true
+allowPrivilegeEscalation: true
+allowHostNetwork: false
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostPID: false
+allowHostIPC: false
+allowedCapabilities:
+  - SYS_ADMIN
+  - NET_ADMIN
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
   - downwardAPI
+  - emptyDir
+  - persistentVolumeClaim
+  - projected
+  - secret
+users: []
+groups: []
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: troshka-virt-exec
+allowPrivilegedContainer: false
+allowPrivilegeEscalation: true
+allowHostNetwork: false
+allowHostPorts: false
+allowHostDirVolumePlugin: false
+allowHostPID: false
+allowHostIPC: false
+allowedCapabilities:
+  - SYS_NICE
+  - NET_BIND_SERVICE
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - "*"
 users: []
 groups: []
