@@ -3812,7 +3812,14 @@ def _exec_on_bastion(
     # Try direct oc for oc/kubectl commands (bastion-optional)
     if command.strip().startswith(("oc ", "kubectl ")):
         try:
-            return _exec_oc(host, project_id, command, timeout)
+            result = _exec_oc(host, project_id, command, timeout)
+            if (
+                result
+                and "refused" not in result.lower()
+                and "error" not in result.lower()
+                and "forbidden" not in result.lower()
+            ):
+                return result
         except Exception:
             pass
 
