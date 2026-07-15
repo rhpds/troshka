@@ -465,6 +465,14 @@ fi
 /opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli websockets
 echo "BMC venv ready at /opt/troshka/venv"
 
+# Install oc CLI for direct OCP access (bastion-optional)
+if ! command -v oc &>/dev/null; then
+    echo "Installing oc CLI..."
+    curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \\
+        | tar xzf - -C /usr/local/bin oc kubectl
+    echo "oc $(oc version --client 2>/dev/null | head -1) installed"
+fi
+
 # Output credentials for backend to capture (tab-separated to avoid colon ambiguity)
 CERT_FP=$(openssl x509 -in /opt/troshka/tls/server.crt -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//')
 TOKEN=$(python3 -c "import json; print(json.load(open('/opt/troshka/troshkad.conf'))['token'])")

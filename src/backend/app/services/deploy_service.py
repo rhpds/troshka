@@ -3570,7 +3570,11 @@ def _clean_kubelet_certs(
                 vm_name,
             )
             try:
-                recert_params = {"disk": disk, "extend_expiration": True}
+                recert_params = {
+                    "disk": disk,
+                    "extend_expiration": True,
+                    "project_id": project_id,
+                }
                 if bastion_disk_path:
                     recert_params["bastion_disk"] = bastion_disk_path
                 if common_password:
@@ -3686,17 +3690,11 @@ def _clean_kubelet_certs(
 
 def _is_ocp_topology(topology: dict) -> bool:
     nodes = topology.get("nodes", [])
-    has_bastion = any(
-        n.get("data", {}).get("label") == "bastion"
-        for n in nodes
-        if n.get("type") == "vmNode"
-    )
-    has_rhcos = any(
+    return any(
         n.get("data", {}).get("os") == "rhcos"
         for n in nodes
         if n.get("type") == "vmNode"
     )
-    return has_bastion and has_rhcos
 
 
 def _is_pattern_deploy(topology: dict) -> bool:
@@ -3747,6 +3745,62 @@ def maybe_start_ocp_health_monitor(project_id: str):
         db.close()
 
 
+def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
+    """Run an oc command directly — no bastion needed."""
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+        from app.core.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+            if not provider:
+                raise RuntimeError("Provider not found")
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            _, core_v1, _ = _get_k8s_clients(provider)
+            namespace = _project_ns(provider, project_id)
+            from app.services.providers.kubevirt import _find_exec_pod
+
+            exec_pod = _find_exec_pod(core_v1, namespace, project_id)
+            if not exec_pod:
+                raise RuntimeError("No exec pod found")
+            from kubernetes.stream import stream as k8s_stream
+
+            result = k8s_stream(
+                core_v1.connect_get_namespaced_pod_exec,
+                exec_pod.metadata.name,
+                namespace,
+                container="exec",
+                command=["oc", "--kubeconfig=/root/.kube/config"] + command.split(),
+                stderr=True,
+                stdout=True,
+                stdin=False,
+                tty=False,
+                _preload_content=True,
+                _request_timeout=timeout + 5,
+            )
+            return result.strip() if isinstance(result, str) else ""
+        finally:
+            db.close()
+    else:
+        from app.services.troshkad_client import start_job, wait_for_job
+
+        job_id = start_job(
+            host,
+            "/oc-exec",
+            {
+                "project_id": project_id,
+                "command": command,
+                "timeout": timeout,
+            },
+        )
+        job = wait_for_job(host, job_id, timeout=timeout + 15)
+        if job.get("status") == "completed":
+            return job.get("result", {}).get("output", "")
+        raise RuntimeError(job.get("result", {}).get("error", "oc-exec failed"))
+
+
 def _exec_on_bastion(
     host,
     project_id: str,
@@ -3755,6 +3809,13 @@ def _exec_on_bastion(
     command: str,
     timeout: int = 15,
 ):
+    # Try direct oc for oc/kubectl commands (bastion-optional)
+    if command.strip().startswith(("oc ", "kubectl ")):
+        try:
+            return _exec_oc(host, project_id, command, timeout)
+        except Exception:
+            pass
+
     if host.host_type == "kubevirt-cluster":
         return _exec_on_bastion_kubevirt(
             host, project_id, bastion_ip, password, command, timeout
@@ -3953,17 +4014,15 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         ),
         None,
     )
-    if not bastion:
-        return
 
     bastion_ip = ""
-    for nic in bastion.get("data", {}).get("nics", []):
-        if nic.get("ip"):
-            bastion_ip = nic["ip"]
-            break
-    if not bastion_ip:
-        bastion_ip = "10.0.0.50"
-    password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+    password = ""
+    if bastion:
+        for nic in bastion.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                bastion_ip = nic["ip"]
+                break
+        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
 
     cp_nodes = [
         n
@@ -3990,38 +4049,55 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         dns_domain,
     )
 
-    # Phase 1: Wait for bastion SSH — but skip if bastion VM is stopped
-    if host.host_type != "kubevirt-cluster":
-        from app.services.troshkad_client import get_vm_state as _get_vm_st
+    # Phase 1: Wait for OCP access (bastion SSH or direct oc)
+    if bastion:
+        if host.host_type != "kubevirt-cluster":
+            from app.services.troshkad_client import get_vm_state as _get_vm_st
 
-        bastion_dom = _vm_domain_name(project_id, bastion["id"])
-        try:
-            vm_info = _get_vm_st(host, bastion_dom, timeout=5)
-            if vm_info.get("state") in ("shut_off", "shutoff"):
-                _push(
-                    "waiting",
-                    "bastion is powered off — start it to enable OCP monitoring",
-                )
-                return
-        except Exception:
-            pass
+            bastion_dom = _vm_domain_name(project_id, bastion["id"])
+            try:
+                vm_info = _get_vm_st(host, bastion_dom, timeout=5)
+                if vm_info.get("state") in ("shut_off", "shutoff"):
+                    _push(
+                        "waiting",
+                        "bastion is powered off — start it to enable OCP monitoring",
+                    )
+                    return
+            except Exception:
+                pass
 
-    _push("ssh", "waiting for bastion")
-    while _t.time() < deadline:
-        result = _exec_on_bastion(
-            host, project_id, bastion_ip, password, "echo ok", timeout=5
-        )
-        if result and "ok" in result:
-            break
         _push("ssh", "waiting for bastion")
-        _t.sleep(5)
+        while _t.time() < deadline:
+            result = _exec_on_bastion(
+                host, project_id, bastion_ip, password, "echo ok", timeout=5
+            )
+            if result and "ok" in result:
+                break
+            _push("ssh", "waiting for bastion")
+            _t.sleep(5)
+        else:
+            _push("timeout", "bastion SSH not available")
+            return
     else:
-        _push("timeout", "bastion SSH not available")
-        return
+        _push("oc", "waiting for OCP API")
+        while _t.time() < deadline:
+            try:
+                result = _exec_oc(
+                    host, project_id, "get nodes --no-headers", timeout=10
+                )
+                if result and "Ready" in result:
+                    break
+            except Exception:
+                pass
+            _push("oc", "waiting for OCP API")
+            _t.sleep(10)
+        else:
+            _push("timeout", "OCP API not reachable")
+            return
 
     # Detect mode: pattern deploy (cluster pre-installed) vs fresh install (install-ocp.sh running)
     is_pattern = _is_pattern_deploy(topology)
-    if not is_pattern:
+    if not is_pattern and bastion:
         # Pre-install phase: detect oc-mirror / registry setup before install log exists
         _push("installing", "preparing environment")
         pre_install_deadline = _t.time() + 5400
@@ -4367,40 +4443,41 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     # Also approve CSRs early — bootstrap CSRs arrive while nodes are still
     # booting, and approving them immediately lets the node proceed to
     # requesting its serving cert sooner (otherwise there's a multi-minute gap)
-    _push("nodes", "pinging control plane nodes")
-    last_csr_check_ping = 0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check_ping >= 15:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check_ping = _t.time()
+    if bastion:
+        _push("nodes", "pinging control plane nodes")
+        last_csr_check_ping = 0
+        while _t.time() < deadline:
+            if _t.time() - last_csr_check_ping >= 15:
+                approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+                if approved:
+                    _push("certs", f"approved {approved} certificate(s)")
+                last_csr_check_ping = _t.time()
 
-        items = []
-        all_up = True
-        for name in cp_names:
-            ip_suffix = 10 + cp_names.index(name)
-            result = _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down",
-                timeout=10,
+            items = []
+            all_up = True
+            for name in cp_names:
+                ip_suffix = 10 + cp_names.index(name)
+                result = _exec_on_bastion(
+                    host,
+                    project_id,
+                    bastion_ip,
+                    password,
+                    f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down",
+                    timeout=10,
+                )
+                if result and "up" in result:
+                    items.append(f"{name}: reachable")
+                else:
+                    items.append(f"{name}: waiting")
+                    all_up = False
+            _push(
+                "nodes",
+                f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable",
+                items,
             )
-            if result and "up" in result:
-                items.append(f"{name}: reachable")
-            else:
-                items.append(f"{name}: waiting")
-                all_up = False
-        _push(
-            "nodes",
-            f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable",
-            items,
-        )
-        if all_up:
-            break
-        _t.sleep(5)
+            if all_up:
+                break
+            _t.sleep(5)
 
     # Force kube-apiserver rollout to pick up current kubelet serving CA.
     # After pattern restore or extended downtime, the API server may not
@@ -4580,7 +4657,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             for n in topology.get("nodes", [])
             if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
         )
-        if used_recert or rhcos_count == 1:
+        if bastion and (used_recert or rhcos_count == 1):
             _push("certs", "refreshing bastion certificates")
             _exec_on_bastion(
                 host,

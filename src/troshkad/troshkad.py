@@ -2070,6 +2070,26 @@ def _handle_vm_recert(job, params):
         _run_cmd(job, recert_cmd, timeout=300)
         _job_log(job, "Recert completed successfully")
 
+        # Save kubeconfig for direct oc access (bastion-optional)
+        project_id = params.get("project_id", "")
+        kubeconfig_src = os.path.join(
+            etc_k8s,
+            "static-pod-resources/kube-apiserver-certs/secrets/"
+            "node-kubeconfigs/lb-ext.kubeconfig",
+        )
+        if project_id and os.path.isfile(kubeconfig_src) and not force_expire:
+            kc_dest = os.path.join(
+                _config.get("vm_dir", "/var/lib/troshka/vms"),
+                project_id,
+                "kubeconfig",
+            )
+            os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
+            with open(kubeconfig_src) as f:
+                kc_content = f.read()
+            with open(kc_dest, "w") as f:
+                f.write(kc_content)
+            _job_log(job, f"Saved kubeconfig to {kc_dest}")
+
         if bastion_disk and not force_expire:
             kubeconfig_src = os.path.join(
                 etc_k8s,
@@ -2132,9 +2152,7 @@ def _handle_vm_recert(job, params):
 
                     import glob as _glob
 
-                    ff_patterns = ["cert9.db", "key4.db"]
-                    if common_password:
-                        ff_patterns.append("logins.json")
+                    ff_patterns = ["cert9.db", "key4.db", "logins.json"]
                     for pattern in ff_patterns:
                         for db_file in _glob.glob(
                             os.path.join(
@@ -2144,7 +2162,7 @@ def _handle_vm_recert(job, params):
                         ):
                             os.unlink(db_file)
 
-                    if common_password and os.path.exists(
+                    if os.path.exists(
                         os.path.join(
                             bastion_mount,
                             "home/cloud-user/ocp-autologin.py",
@@ -2259,6 +2277,43 @@ def _handle_vm_recert(job, params):
 
 
 COMMAND_HANDLERS["vms/recert"] = _handle_vm_recert
+
+
+def _handle_oc_exec(job, params):
+    """Run an oc command inside the project's network namespace."""
+    project_id = _validate_project_id(params["project_id"])
+    command = params.get("command", "")
+    cmd_timeout = min(int(params.get("timeout", 30)), 300)
+    if not command:
+        raise RuntimeError("No command provided")
+
+    ns = f"troshka-{project_id[:8]}"
+    kc_path = os.path.join(
+        _config.get("vm_dir", "/var/lib/troshka/vms"),
+        project_id,
+        "kubeconfig",
+    )
+    if not os.path.isfile(kc_path):
+        raise RuntimeError(f"No kubeconfig for project {project_id[:8]}")
+
+    import shlex
+
+    full_cmd = [
+        "ip", "netns", "exec", ns,
+        "/usr/local/bin/oc", f"--kubeconfig={kc_path}",
+    ] + shlex.split(command)
+
+    result = subprocess.run(
+        full_cmd, capture_output=True, text=True, timeout=cmd_timeout,
+    )
+    return {
+        "output": result.stdout,
+        "error": result.stderr,
+        "exit_code": result.returncode,
+    }
+
+
+COMMAND_HANDLERS["oc-exec"] = _handle_oc_exec
 
 
 def _cleanup_stale_recert():
