@@ -61,16 +61,19 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
         )
         if not pods:
             return
-        logs = str(
-            core_api.read_namespaced_pod_log(
-                name=pods[0].metadata.name,
-                namespace=namespace,
-                tail_lines=100,
-            )
+        logs = core_api.read_namespaced_pod_log(
+            name=pods[0].metadata.name,
+            namespace=namespace,
+            tail_lines=100,
         )
-        m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs)
+        logs_str = logs if isinstance(logs, str) else str(logs or "")
+        m = re.search(r"KUBECONFIG_B64_BEGIN\n(.+)\nKUBECONFIG_B64_END", logs_str)
         if not m:
-            logger.warning("No kubeconfig found in recert job logs")
+            logger.warning(
+                f"No kubeconfig found in recert job logs "
+                f"(type={type(logs).__name__}, len={len(logs_str)}, "
+                f"has_marker={'KUBECONFIG_B64' in logs_str})"
+            )
             return
         kc_data = m.group(1).strip()
         # Validate it's real base64
