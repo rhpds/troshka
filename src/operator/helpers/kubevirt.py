@@ -361,6 +361,10 @@ def build_recert_job(
         'ETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\n'
         'VAR_KUBELET="$VAR_ROOT/lib/kubelet"\n'
         'VAR_ETCD="$VAR_ROOT/lib/etcd"\n'
+        "# Bind-mount so recert sees standard paths (same as troshkad podman -v)\n"
+        "mount --bind $ETC_K8S /etc/kubernetes\n"
+        "mount --bind $ETC_MCD /etc/machine-config-daemon\n"
+        "mkdir -p /var/lib/kubelet && mount --bind $VAR_KUBELET /var/lib/kubelet\n"
         "ETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\n"
         "echo \"Using etcd $(etcd --version 2>&1 | head -1)\"\n"
         'echo "Starting etcd..."\n'
@@ -375,9 +379,9 @@ def build_recert_job(
         " 2>/dev/null | grep -q healthy && break; sleep 1; done\n"
         'echo "Running recert..."\n'
         "recert --etcd-endpoint=http://127.0.0.1:2479 "
-        "--crypto-dir $ETC_K8S --crypto-dir $ETC_MCD --crypto-dir $VAR_KUBELET "
-        "--cluster-customization-dir $ETC_K8S "
-        "--cluster-customization-dir $VAR_KUBELET "
+        "--crypto-dir /etc/kubernetes --crypto-dir /etc/machine-config-daemon --crypto-dir /var/lib/kubelet "
+        "--cluster-customization-dir /etc/kubernetes "
+        "--cluster-customization-dir /var/lib/kubelet "
         f"{recert_flags} {password_args}\n"
         'echo "Recert done"\n'
         'KC="$ETC_K8S/static-pod-resources/kube-apiserver-certs/secrets/'
