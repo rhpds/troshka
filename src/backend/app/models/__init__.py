@@ -17,6 +17,7 @@ from app.models.project import Project, ProjectShare
 from app.models.provider import Provider
 from app.models.registry_credential import RegistryCredential
 from app.models.storage_pool import SharedCacheEntry, StoragePool
+from app.models.system_config import SystemConfig
 from app.models.user import User
 from app.models.vm import VM, BootPrereq, VMInterface
 
@@ -48,4 +49,5 @@ __all__ = [
     "DnsProvider",
     "ProjectPortalToken",
     "RegistryCredential",
+    "SystemConfig",
 ]

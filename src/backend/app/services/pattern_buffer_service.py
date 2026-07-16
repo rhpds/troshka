@@ -197,6 +197,8 @@ def _provision_pattern_buffer(pool_id: str):
             )
             ca_pem = pool.ca_cert
 
+        from app.services.agent_ca_service import get_agent_ca_cert
+
         deploy_result = deploy_agent(
             host_ip=ssh_host,
             private_key=result["private_key"],
@@ -213,6 +215,7 @@ def _provision_pattern_buffer(pool_id: str):
             ssh_user=ssh_user,
             data_disk_device=data_disk,
             vncd_no_tls=provider.type == "ocpvirt",
+            agent_ca_cert=get_agent_ca_cert(),
         )
 
         creds = deploy_result.get("troshkad_credentials", {})

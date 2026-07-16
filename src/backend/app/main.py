@@ -37,6 +37,11 @@ async def lifespan(app):
     from app.services.ws_pubsub import set_event_loop, start_state_poller
 
     set_event_loop(asyncio.get_running_loop())
+
+    from app.services.agent_ca_service import ensure_agent_ca
+
+    ensure_agent_ca()
+
     start_health_poller()
     start_project_timer()
     start_state_poller()
@@ -295,6 +300,8 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
             nfs_server = parts[0]
             nfs_path = parts[1] if len(parts) > 1 else "/"
 
+        from app.services.agent_ca_service import get_agent_ca_cert
+
         deploy_agent(
             ssh_host,
             host.private_key or "",
@@ -309,6 +316,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
             nfs_server=nfs_server,
             nfs_path=nfs_path,
             nfs_port=pool.nfs_port or 0,
+            agent_ca_cert=get_agent_ca_cert(),
         )
         logger.info("PB retry: agent installed on %s", host_id[:8])
     except Exception:
@@ -333,6 +341,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.core.rate_limit import RateLimitMiddleware  # noqa: E402
+
+app.add_middleware(RateLimitMiddleware)
+
 from app.api import api_keys as api_key_routes  # noqa: E402
 from app.api import auth as auth_routes  # noqa: E402
 from app.api import disks as disk_routes  # noqa: E402
@@ -348,6 +360,7 @@ from app.api import providers as provider_routes  # noqa: E402
 from app.api import registry_credential_routes as registry_cred_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
 from app.api import templates as template_routes  # noqa: E402
+from app.api import users as user_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
 
@@ -368,6 +381,7 @@ app.include_router(dns_provider_routes.router, prefix="/api/v1")
 app.include_router(portal_routes.router, prefix="/api/v1")
 app.include_router(template_routes.router, prefix="/api/v1")
 app.include_router(registry_cred_routes.router, prefix="/api/v1")
+app.include_router(user_routes.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

@@ -99,6 +99,17 @@ def _upsert_sso_user(email: str, display_name: str | None, db: Session):
         db.commit()
         db.refresh(user)
         logger.info("Created SSO user %s with role %s", email, user.role)
+    else:
+        changed = False
+        if user.auth_source == "invited":
+            user.auth_source = "sso"
+            changed = True
+        if display_name and not user.display_name:
+            user.display_name = display_name
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(user)
     return user
 
 
@@ -142,12 +153,19 @@ def _get_user_from_api_key(request: Request, db: Session):
     return api_key.user
 
 
-def _enforce_allowed_users(identity: str):
-    if _allowed_users and identity.lower() not in _allowed_users:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied for user {identity}",
-        )
+def _enforce_allowed_users(identity: str, db: Session):
+    if not _allowed_users:
+        return
+    if identity.lower() in _allowed_users:
+        return
+    from app.models.user import User
+
+    if db.query(User).filter_by(email=identity.lower()).first():
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"Access denied for user {identity}",
+    )
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
@@ -162,13 +180,13 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
                 user_info.get("user"),
                 db,
             )
-            _enforce_allowed_users(user_info["email"])
+            _enforce_allowed_users(user_info["email"], db)
             return user
 
     # Try API key (trk_ prefix)
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
-        _enforce_allowed_users(api_key_user.email)
+        _enforce_allowed_users(api_key_user.email, db)
         return api_key_user
 
     # Try JWT token (works in both dev and SSO mode)
@@ -178,7 +196,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         if email:
             user = db.query(User).filter_by(email=email).first()
             if user:
-                _enforce_allowed_users(email)
+                _enforce_allowed_users(email, db)
                 return user
 
     # Dev mode: auto-authenticate as the default admin user

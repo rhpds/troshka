@@ -41,6 +41,7 @@ def _get_pool(host):
     """Get or create a urllib3 connection pool for a host.
 
     Uses cert fingerprint pinning for security (same principle as SSH known_hosts).
+    Presents mTLS client cert when available.
     Pools are cached per host IP address to enable connection reuse.
     """
     fingerprint = getattr(host, "agent_cert_fingerprint", None)
@@ -54,8 +55,8 @@ def _get_pool(host):
     key = f"{host.ip_address}:{fp_clean}"
     pool = _pools.get(key)
     if pool is None:
-        pool = urllib3.HTTPSConnectionPool(
-            host.ip_address,
+        pool_kwargs = dict(
+            host=host.ip_address,
             port=TROSHKAD_PORT,
             maxsize=4,
             cert_reqs="CERT_NONE",
@@ -63,6 +64,16 @@ def _get_pool(host):
             retries=False,
             timeout=urllib3.Timeout(connect=10, read=DEFAULT_TIMEOUT),
         )
+        try:
+            from app.services.agent_ca_service import get_client_cert_paths
+
+            cert_path, key_path = get_client_cert_paths()
+            if cert_path and key_path:
+                pool_kwargs["cert_file"] = cert_path
+                pool_kwargs["key_file"] = key_path
+        except Exception:
+            pass
+        pool = urllib3.HTTPSConnectionPool(**pool_kwargs)
         _pools[key] = pool
     return pool
 

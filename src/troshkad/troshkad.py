@@ -28,6 +28,19 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     request_queue_size = 16
 
+    def get_request(self):
+        # Set a timeout on the raw socket BEFORE TLS handshake so a
+        # stalled handshake doesn't block the accept loop forever.
+        conn, addr = self.socket.accept()
+        conn.settimeout(10)
+        return conn, addr
+
+    def verify_request(self, request, client_address):
+        # Reject banned IPs before spawning a handler thread.
+        if _is_banned(client_address[0]):
+            return False
+        return True
+
 
 VERSION = "dev"  # stamped by backend at push time; self-hashes if unstamped
 
@@ -95,6 +108,187 @@ _vm_state_cache_lock = threading.Lock()
 _vm_events = []
 _vm_events_lock = threading.Lock()
 _libvirt_events_available = False
+
+# ── Rate limiting / auto-ban ──
+
+_BAN_WINDOW = 60  # seconds to track failures
+_BAN_THRESHOLD = 10  # failures within window to trigger ban
+_BAN_DURATION = 300  # seconds to ban an IP
+_PERMABAN_THRESHOLD = 3  # temp bans within window to trigger permaban
+_PERMABAN_WINDOW = 3600  # seconds to track temp bans
+
+_fail_tracker = {}  # ip -> [timestamp, ...]
+_banned_ips = {}  # ip -> ban_expiry_timestamp
+_permabanned_ips = set()  # permanently banned (until process restart)
+_ban_history = {}  # ip -> [ban_timestamp, ...]
+_rate_limit_lock = threading.Lock()
+
+
+def _record_auth_failure(ip):
+    now = time.monotonic()
+    with _rate_limit_lock:
+        if ip in _permabanned_ips:
+            return
+        times = _fail_tracker.get(ip, [])
+        cutoff = now - _BAN_WINDOW
+        times = [t for t in times if t > cutoff]
+        times.append(now)
+        _fail_tracker[ip] = times
+        if len(times) >= _BAN_THRESHOLD:
+            _banned_ips[ip] = now + _BAN_DURATION
+            del _fail_tracker[ip]
+            history = _ban_history.get(ip, [])
+            history_cutoff = now - _PERMABAN_WINDOW
+            history = [t for t in history if t > history_cutoff]
+            history.append(now)
+            _ban_history[ip] = history
+            if len(history) >= _PERMABAN_THRESHOLD:
+                _permabanned_ips.add(ip)
+                _banned_ips.pop(ip, None)
+                _ban_history.pop(ip, None)
+                logger.warning("Permanently banned IP %s (%d temp bans in %ds)",
+                               ip, len(history), _PERMABAN_WINDOW)
+            else:
+                logger.warning("Banned IP %s for %ds (%d failures in %ds, strike %d/%d)",
+                               ip, _BAN_DURATION, len(times), _BAN_WINDOW,
+                               len(history), _PERMABAN_THRESHOLD)
+
+
+def _is_banned(ip):
+    with _rate_limit_lock:
+        if ip in _permabanned_ips:
+            return True
+        expiry = _banned_ips.get(ip)
+        if expiry is None:
+            return False
+        if time.monotonic() > expiry:
+            del _banned_ips[ip]
+            return False
+        return True
+
+
+def _cleanup_rate_limit():
+    """Periodic sweep to remove expired entries."""
+    now = time.monotonic()
+    with _rate_limit_lock:
+        cutoff = now - _BAN_WINDOW
+        stale = [ip for ip, times in _fail_tracker.items()
+                 if not times or times[-1] < cutoff]
+        for ip in stale:
+            del _fail_tracker[ip]
+        expired = [ip for ip, exp in _banned_ips.items() if now > exp]
+        for ip in expired:
+            del _banned_ips[ip]
+        history_cutoff = now - _PERMABAN_WINDOW
+        stale_history = [ip for ip, times in _ban_history.items()
+                         if not times or times[-1] < history_cutoff]
+        for ip in stale_history:
+            del _ban_history[ip]
+
+
+# ── NFS health tracking ──
+
+_nfs_healthy = True
+_nfs_last_check = 0.0
+_nfs_stale_since = 0.0
+
+
+def _check_nfs_health():
+    """Probe NFS mount with a timeout. Returns True if healthy."""
+    global _nfs_healthy, _nfs_last_check, _nfs_stale_since
+    mode = _config.get("storage_mode", "local")
+    if mode != "shared":
+        _nfs_healthy = True
+        return True
+
+    shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+    if not os.path.ismount(shared):
+        if _nfs_healthy:
+            logger.warning("NFS mount %s not mounted", shared)
+            _nfs_stale_since = time.time()
+        _nfs_healthy = False
+        _nfs_last_check = time.time()
+        return False
+
+    result = [None]
+    def _probe():
+        try:
+            os.statvfs(shared)
+            result[0] = True
+        except OSError:
+            result[0] = False
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    if t.is_alive() or not result[0]:
+        if _nfs_healthy:
+            logger.warning("NFS mount %s is stale (probe timed out or failed)", shared)
+            _nfs_stale_since = time.time()
+        _nfs_healthy = False
+        _nfs_last_check = time.time()
+        return False
+
+    if not _nfs_healthy:
+        logger.info("NFS mount %s recovered", shared)
+    _nfs_healthy = True
+    _nfs_stale_since = 0.0
+    _nfs_last_check = time.time()
+    return True
+
+
+def _try_nfs_recovery():
+    """Attempt to recover a stale NFS mount via lazy unmount + remount."""
+    shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+    logger.warning("Attempting NFS recovery on %s", shared)
+
+    # Read fstab to get mount source and options
+    nfs_src = nfs_opts = ""
+    try:
+        with open("/etc/fstab") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == shared:
+                    nfs_src = parts[0]
+                    nfs_opts = parts[3]
+                    break
+    except OSError:
+        logger.error("NFS recovery: cannot read /etc/fstab")
+        return False
+
+    if not nfs_src:
+        logger.error("NFS recovery: no fstab entry for %s", shared)
+        return False
+
+    # Lazy unmount (doesn't block even with open handles)
+    try:
+        subprocess.run(["umount", "-l", shared], capture_output=True, timeout=10)
+    except Exception as e:
+        logger.warning("NFS recovery: umount -l failed: %s", e)
+
+    time.sleep(2)
+
+    # Remount
+    try:
+        result = subprocess.run(
+            ["mount", "-t", "nfs", "-o", nfs_opts, nfs_src, shared],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            logger.info("NFS recovery: remounted %s successfully", shared)
+            return True
+        else:
+            logger.error("NFS recovery: mount failed: %s", result.stderr.strip())
+            return False
+    except subprocess.TimeoutExpired:
+        logger.error("NFS recovery: mount timed out")
+        return False
+    except Exception as e:
+        logger.error("NFS recovery: mount error: %s", e)
+        return False
 
 
 # ── Config ──
@@ -217,7 +411,11 @@ def _get_capacity():
     except Exception:
         pass
     try:
-        stat = shutil.disk_usage("/var/lib/troshka")
+        # Use local mount for capacity to avoid blocking on stale NFS
+        storage_root = "/var/lib/troshka"
+        if _config.get("storage_mode") == "shared":
+            storage_root = _config.get("local_mount", "/var/lib/troshka/local")
+        stat = shutil.disk_usage(storage_root)
         capacity["storage_total_gb"] = stat.total // (1024**3)
         capacity["storage_used_gb"] = stat.used // (1024**3)
     except Exception:
@@ -340,6 +538,9 @@ def _get_partitions():
                 if fstype in _PSEUDO_FSTYPES:
                     continue
                 if device in seen_devices:
+                    continue
+                # Skip NFS mounts when NFS is stale to avoid D-state
+                if fstype.startswith("nfs") and not _nfs_healthy:
                     continue
                 seen_devices.add(device)
                 try:
@@ -520,7 +721,12 @@ class TroshkadHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _handle(self, method):
+        ip = self.client_address[0]
+        if _is_banned(ip):
+            self._send_json(403, {"error": "banned"})
+            return
         if not self._check_auth():
+            _record_auth_failure(ip)
             self._send_json(401, {"error": "unauthorized"})
             return
         path = self.path.split("?")[0]
@@ -554,22 +760,25 @@ class TroshkadHandler(BaseHTTPRequestHandler):
 
 @route("GET", "/health")
 def handle_health(handler, params):
-    handler._send_json(
-        200,
-        {
-            "status": "draining" if _draining else "ok",
-            "version": VERSION,
-            "host_id": _config.get("host_id", ""),
-            "uptime_seconds": int(time.time() - _start_time),
-            "running_jobs": _running_job_count(),
-            "capacity": _get_capacity(),
-            "partitions": _get_partitions(),
-            "features": {
-                "batch_vm_states": True,
-                "libvirt_events": _libvirt_events_available,
-            },
+    status = "draining" if _draining else "ok"
+    if not _nfs_healthy and _config.get("storage_mode") == "shared":
+        status = "nfs_stale"
+    resp = {
+        "status": status,
+        "version": VERSION,
+        "host_id": _config.get("host_id", ""),
+        "uptime_seconds": int(time.time() - _start_time),
+        "running_jobs": _running_job_count(),
+        "capacity": _get_capacity(),
+        "partitions": _get_partitions(),
+        "features": {
+            "batch_vm_states": True,
+            "libvirt_events": _libvirt_events_available,
         },
-    )
+    }
+    if not _nfs_healthy and _nfs_stale_since:
+        resp["nfs_stale_seconds"] = int(time.time() - _nfs_stale_since)
+    handler._send_json(200, resp)
 
 
 @route("GET", "/jobs/{job_id}")
@@ -6648,6 +6857,11 @@ def create_server(config):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(config["tls_cert"], config["tls_key"])
+    client_ca = config.get("client_ca", "")
+    if client_ca and os.path.isfile(client_ca):
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.load_verify_locations(client_ca)
+        logger.info("mTLS enabled — requiring client certs signed by %s", client_ca)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     return server
 
@@ -6988,6 +7202,23 @@ def _watchdog_loop():
                 )
             except Exception as e:
                 logger.warning("watchdog: %s check error: %s", service_name, e)
+
+        _cleanup_rate_limit()
+
+        # NFS health check + auto-recovery
+        if _config.get("storage_mode") == "shared":
+            try:
+                healthy = _check_nfs_health()
+                if not healthy and _nfs_stale_since:
+                    stale_secs = int(time.time() - _nfs_stale_since)
+                    if stale_secs >= 60:
+                        logger.warning(
+                            "watchdog: NFS stale for %ds, attempting recovery", stale_secs
+                        )
+                        if _try_nfs_recovery():
+                            _check_nfs_health()
+            except Exception as e:
+                logger.warning("watchdog: NFS check error: %s", e)
 
         time.sleep(30)
 

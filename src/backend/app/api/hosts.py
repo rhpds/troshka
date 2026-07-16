@@ -445,6 +445,8 @@ def add_host(
                         _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""
                     )
                     _ca_cert = _pool.ca_cert
+            from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
+
             result = deploy_agent(
                 ssh_host or h.ip_address,
                 h.private_key,
@@ -461,6 +463,7 @@ def add_host(
                 console_domain=h.console_domain or "",
                 vncd_no_tls=provider_type == "ocpvirt",
                 data_disk_device=_data_disk,
+                agent_ca_cert=_get_aca(),
             )
             h.agent_status = "connected" if result["success"] else "install_failed"
 
@@ -550,6 +553,7 @@ def install_agent(
         from app.services.agent_deployer import (
             deploy_agent,
             get_provider_data_disk,
+            get_provider_ssh_port,
             get_provider_ssh_user,
             wait_for_ssh,
         )
@@ -570,18 +574,31 @@ def install_agent(
                     _provider_type = _prov.type
 
             _ssh_user = get_provider_ssh_user(_provider_type)
+            _ssh_port = get_provider_ssh_port(_provider_type)
             _data_disk = get_provider_data_disk(_provider_type)
 
-            ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user)
+            logger.info(
+                "Install agent %s: waiting for SSH (%s@%s:%d)",
+                h_id[:8],
+                _ssh_user,
+                h_ip,
+                _ssh_port,
+            )
+            ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user, port=_ssh_port)
             if not ssh_ok:
+                logger.warning(
+                    "Install agent %s: SSH not available after timeout", h_id[:8]
+                )
                 h.agent_status = "disconnected"
                 s.commit()
                 return
+            logger.info("Install agent %s: SSH ready, starting install", h_id[:8])
             h.agent_status = "installing"
             s.commit()
 
             _install_kwargs = {
                 "ssh_user": _ssh_user,
+                "ssh_port": _ssh_port,
                 "data_disk_device": _data_disk,
                 "vncd_no_tls": _provider_type == "ocpvirt",
             }
@@ -621,6 +638,9 @@ def install_agent(
                         _install_kwargs["ca_cert"] = _pool.ca_cert
                         _install_kwargs["host_cert"] = _hc
                         _install_kwargs["host_key"] = _hk
+            from app.services.agent_ca_service import get_agent_ca_cert
+
+            _install_kwargs["agent_ca_cert"] = get_agent_ca_cert()
             result = deploy_agent(
                 host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs
             )
@@ -938,6 +958,7 @@ def poweron_host(
         from app.services.agent_deployer import (
             deploy_agent,
             get_provider_data_disk,
+            get_provider_ssh_port,
             get_provider_ssh_user,
             wait_for_ssh,
         )
@@ -1032,10 +1053,15 @@ def poweron_host(
                     _provider_type = _prov2.type
 
             _ssh_user2 = get_provider_ssh_user(_provider_type)
+            _ssh_port2 = get_provider_ssh_port(_provider_type)
             _data_disk2 = get_provider_data_disk(_provider_type)
 
             if not wait_for_ssh(
-                h.ip_address, h.private_key, ssh_user=_ssh_user2, timeout=300
+                h.ip_address,
+                h.private_key,
+                ssh_user=_ssh_user2,
+                port=_ssh_port2,
+                timeout=300,
             ):
                 h.agent_status = "disconnected"
                 s.commit()
@@ -1046,6 +1072,7 @@ def poweron_host(
 
             _kwargs = {
                 "ssh_user": _ssh_user2,
+                "ssh_port": _ssh_port2,
                 "data_disk_device": _data_disk2,
                 "vncd_no_tls": _provider_type == "ocpvirt",
             }
@@ -1083,6 +1110,9 @@ def poweron_host(
                         _kwargs["ca_cert"] = _pool.ca_cert
                         _kwargs["host_cert"] = _hc
                         _kwargs["host_key"] = _hk
+            from app.services.agent_ca_service import get_agent_ca_cert as _get_aca3
+
+            _kwargs["agent_ca_cert"] = _get_aca3()
             result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)
             h.agent_status = "connected" if result["success"] else "disconnected"
 

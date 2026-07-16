@@ -228,8 +228,11 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 ### Troshkad (Host Agent Daemon)
 - Single-file Python daemon at `src/troshkad/troshkad.py` — stdlib only, no pip
 - Backend client: `src/backend/app/services/troshkad_client.py` — urllib3 connection pooling with cert fingerprint pinning
-- HTTPS on port 31337, bearer token auth
+- HTTPS on port 31337, mTLS + bearer token auth (two-layer authentication)
 - All host operations go through troshkad — SSH only for initial install
+- **mTLS**: Global CA (`agent_ca_cert` in `system_config` table) signs a backend client cert. Troshkad requires client certs signed by this CA — unauthenticated connections (scanners, probes) are rejected at TLS handshake before any HTTP processing. CA + client cert generated on first backend startup via `agent_ca_service.py`. CA cert deployed to hosts during agent install at `/opt/troshka/tls/ca.crt`, referenced by `client_ca` in `troshkad.conf`. Backward-compatible: hosts without the CA cert file run without mTLS (token-only auth). Requires **Install Agent** (not Update Agent) to enable on a host.
+- **Rate limiting**: Per-IP auto-ban — 10 auth failures in 60s → 5-min ban, 3 temp bans in 1 hour → permaban (until process restart). Banned IPs rejected in `verify_request()` before spawning handler threads. TLS handshake timeout (10s) in `get_request()` prevents stuck handshakes from blocking the accept loop. Backend has matching middleware (`core/rate_limit.py`).
+- **NFS resilience**: NFS mounts use `soft,timeo=50,retrans=3` (fail with EIO instead of D-state). Watchdog probes NFS mount health with 5s timeout thread, auto-recovers via lazy unmount + remount after 60s stale. `/health` reports `nfs_stale` status. `_get_capacity` and `_get_partitions` skip NFS paths when stale.
 - **troshka-vncd**: separate daemon (`src/troshka-vncd/troshka-vncd.py`) for VNC console relay — port 443, `websockets` library, systemd-managed
 - vncd updates pushed via `/admin/update-vncd` endpoint on troshkad, also handled by `update-agent.sh`
 - **Qemu hook** (`/etc/libvirt/hooks/qemu`): lives ONLY in agent install script (`agent_deployer.py`), must NOT call `virsh` (deadlocks virtqemud), parses XML from stdin

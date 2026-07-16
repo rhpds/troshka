@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +245,13 @@ else
     echo "troshkad: TLS certificate already exists"
 fi
 
+# Deploy mTLS CA cert (for verifying backend client connections)
+if [ -n "{agent_ca_cert_b64}" ]; then
+    echo "{agent_ca_cert_b64}" | base64 -d > /opt/troshka/tls/ca.crt
+    chmod 644 /opt/troshka/tls/ca.crt
+    echo "troshkad: mTLS CA certificate installed"
+fi
+
 # Configure libvirt TLS for live migration (shared storage pools)
 if [ "{storage_mode}" = "shared" ]; then
     mkdir -p /etc/pki/CA /etc/pki/libvirt/private
@@ -276,19 +284,29 @@ fi
 
 # Ensure NFS mount for shared storage (idempotent — safe to run on every install/reinstall)
 if [ "{storage_mode}" = "shared" ] && [ -n "{nfs_server}" ]; then
-    mkdir -p /var/lib/troshka/shared /var/lib/troshka/local /var/lib/troshka/seeds
+    # Create local dirs first (never on NFS)
+    mkdir -p /var/lib/troshka/local /var/lib/troshka/seeds
     NFS_SRC="{nfs_server}:{nfs_path}"
     NFS_DST="/var/lib/troshka/shared"
     NFS_PORT="{nfs_port}"
-    NFS_OPTS="nfsvers=4.1,nconnect=16,hard,_netdev"
+    NFS_OPTS="nfsvers=4.1,nconnect=16,soft,timeo=50,retrans=3,_netdev"
     if [ -n "$NFS_PORT" ] && [ "$NFS_PORT" != "0" ]; then
         NFS_OPTS="port=$NFS_PORT,$NFS_OPTS"
     fi
+    if mountpoint -q "$NFS_DST" 2>/dev/null; then
+        # Check if existing mount is stale (stat with timeout)
+        if ! timeout 5 stat "$NFS_DST" &>/dev/null; then
+            echo "troshkad: NFS mount at $NFS_DST is stale, lazy unmounting..."
+            umount -l "$NFS_DST" 2>/dev/null || true
+            sleep 2
+        else
+            echo "troshkad: NFS already mounted at $NFS_DST"
+        fi
+    fi
     if ! mountpoint -q "$NFS_DST" 2>/dev/null; then
+        mkdir -p "$NFS_DST"
         echo "troshkad: mounting NFS $NFS_SRC -> $NFS_DST (opts: $NFS_OPTS)"
         mount -t nfs -o "$NFS_OPTS" "$NFS_SRC" "$NFS_DST"
-    else
-        echo "troshkad: NFS already mounted at $NFS_DST"
     fi
     grep -q "$NFS_DST" /etc/fstab || echo "$NFS_SRC $NFS_DST nfs4 $NFS_OPTS 0 0" >> /etc/fstab
     setsebool -P virt_use_nfs 1 2>/dev/null || true
@@ -338,16 +356,18 @@ json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 " "$TROSHKAD_TOKEN"
         chmod 600 /opt/troshka/troshkad.conf
     }
-    # Update storage_mode in existing config
+    # Update storage_mode and client_ca in existing config
     python3 -c "
-import json
+import json, os
 conf = json.load(open('/opt/troshka/troshkad.conf'))
 conf['storage_mode'] = '{storage_mode}'
 conf['shared_mount'] = '/var/lib/troshka/shared'
 conf['local_mount'] = '/var/lib/troshka/local'
+if os.path.isfile('/opt/troshka/tls/ca.crt'):
+    conf['client_ca'] = '/opt/troshka/tls/ca.crt'
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 "
-    echo "troshkad: config already exists, storage_mode updated"
+    echo "troshkad: config already exists, updated"
 fi
 
 # Write systemd unit
@@ -495,8 +515,6 @@ def wait_for_ssh(
     ssh_user: str = "ec2-user",
 ) -> bool:
     """Wait for SSH to become available on the host."""
-    import time
-
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
         kf.write(private_key)
         key_path = kf.name
@@ -504,7 +522,9 @@ def wait_for_ssh(
 
     try:
         start = time.time()
+        attempt = 0
         while time.time() - start < timeout:
+            attempt += 1
             cmd = [
                 "ssh",
                 "-o",
@@ -531,11 +551,31 @@ def wait_for_ssh(
             )
             if result.returncode == 0 and "ssh-ready" in result.stdout:
                 logger.info(
-                    "SSH ready on %s after %ds", host_ip, int(time.time() - start)
+                    "SSH ready on %s after %ds (%d attempts)",
+                    host_ip,
+                    int(time.time() - start),
+                    attempt,
                 )
                 return True
+            elapsed = int(time.time() - start)
+            err = (
+                result.stderr.strip().split("\n")[-1]
+                if result.stderr.strip()
+                else f"exit {result.returncode}"
+            )
+            if attempt % 6 == 1:
+                logger.info(
+                    "Waiting for SSH on %s:%d (%ds elapsed, attempt %d: %s)",
+                    host_ip,
+                    port,
+                    elapsed,
+                    attempt,
+                    err,
+                )
             time.sleep(5)
-        logger.warning("SSH timeout on %s after %ds", host_ip, timeout)
+        logger.warning(
+            "SSH timeout on %s after %ds (%d attempts)", host_ip, timeout, attempt
+        )
         return False
     finally:
         os.unlink(key_path)
@@ -563,6 +603,12 @@ if [ ! -f /opt/troshka/tls/server.crt ]; then
     chmod 600 /opt/troshka/tls/server.key
 fi
 
+# Deploy mTLS CA cert (for verifying backend client connections)
+if [ -n "{agent_ca_cert_b64}" ]; then
+    echo "{agent_ca_cert_b64}" | base64 -d > /opt/troshka/tls/ca.crt
+    chmod 644 /opt/troshka/tls/ca.crt
+fi
+
 if [ ! -f /opt/troshka/troshkad.conf ]; then
     TROSHKAD_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(32))")
     python3 -c "
@@ -577,6 +623,15 @@ json.dump({
 }, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 " "$TROSHKAD_TOKEN"
 fi
+
+# Update client_ca in config if CA cert was deployed
+python3 -c "
+import json, os
+conf = json.load(open('/opt/troshka/troshkad.conf'))
+if os.path.isfile('/opt/troshka/tls/ca.crt'):
+    conf['client_ca'] = '/opt/troshka/tls/ca.crt'
+json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
+"
 
 echo "host_id: {host_id}" > /etc/troshka-agent/host-id
 
@@ -630,6 +685,7 @@ def deploy_agent(
     ssh_port: int = 22,
     ssh_user: str = "ec2-user",
     data_disk_device: str = "sdf",
+    agent_ca_cert: str = "",
 ) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
@@ -669,6 +725,10 @@ def deploy_agent(
         .replace("{vncd_no_tls}", "1" if vncd_no_tls else "")
         .replace("{ssh_user}", ssh_user)
         .replace("{data_disk_device}", data_disk_device)
+        .replace(
+            "{agent_ca_cert_b64}",
+            base64.b64encode(agent_ca_cert.encode()).decode() if agent_ca_cert else "",
+        )
     )
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
@@ -692,7 +752,10 @@ def deploy_agent(
         ssh_port_opts = ["-p", str(ssh_port)] if ssh_port != 22 else []
         scp_port_opts = ["-P", str(ssh_port)] if ssh_port != 22 else []
 
-        logger.info("Deploying agent to %s", host_ip)
+        logger.info(
+            "Deploying agent to %s (user=%s, port=%d)", host_ip, ssh_user, ssh_port
+        )
+        deploy_start = time.time()
 
         # SCP troshkad.py to host
         troshkad_path = os.path.join(
@@ -834,21 +897,39 @@ def deploy_agent(
             )
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
-        result = subprocess.run(
-            [
-                "ssh",
-                *ssh_opts,
-                *ssh_port_opts,
-                f"{ssh_user}@{host_ip}",
-                "sudo",
-                "bash",
-                "-s",
-            ],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        logger.info("Running install script on %s", host_ip)
+        try:
+            result = subprocess.run(
+                [
+                    "ssh",
+                    *ssh_opts,
+                    *ssh_port_opts,
+                    f"{ssh_user}@{host_ip}",
+                    "sudo",
+                    "bash",
+                    "-s",
+                ],
+                input=script,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as te:
+            stdout = te.stdout if isinstance(te.stdout, str) else ""
+            stderr = te.stderr if isinstance(te.stderr, str) else ""
+            partial = stdout + stderr
+            last_lines = "\n".join(partial.strip().splitlines()[-15:])
+            logger.error(
+                "Install script timed out on %s after 300s. Last output:\n%s",
+                host_ip,
+                last_lines,
+            )
+            return {
+                "success": False,
+                "exit_code": -1,
+                "output": partial,
+                "troshkad_credentials": {},
+            }
 
         output = result.stdout + result.stderr
         success = result.returncode == 0
@@ -862,12 +943,17 @@ def deploy_agent(
             elif line.startswith("TROSHKAD_FINGERPRINT="):
                 troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
 
+        elapsed = int(time.time() - deploy_start)
         logger.info(
-            "Agent deploy %s on %s (exit %d)",
+            "Agent deploy %s on %s (exit %d, %ds)",
             "succeeded" if success else "failed",
             host_ip,
             result.returncode,
+            elapsed,
         )
+        if not success:
+            last_lines = "\n".join(output.strip().splitlines()[-10:])
+            logger.warning("Agent deploy output (last 10 lines):\n%s", last_lines)
 
         return {
             "success": success,
