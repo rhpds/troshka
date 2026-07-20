@@ -127,10 +127,19 @@ def test_sync_capacity_zero_when_no_projects():
 
 @patch("app.core.database.SessionLocal")
 @patch("app.services.gc_service.repair_networks")
+@patch("app.services.troshkad_client.get_all_vm_states")
+@patch("app.services.troshkad_client.start_job")
+@patch("app.services.troshkad_client.wait_for_job")
 @patch("app.services.deploy_service._setup_bmc_via_troshkad")
 @patch("app.services.deploy_service._extract_bmc_config")
 def test_recover_host_services_restores_networks_and_bmc(
-    mock_bmc_config, mock_bmc_setup, mock_repair, mock_session_cls
+    mock_bmc_config,
+    mock_bmc_setup,
+    mock_wait,
+    mock_start,
+    mock_vm_states,
+    mock_repair,
+    mock_session_cls,
 ):
     host = MagicMock()
     host.id = "host-1234"
@@ -148,6 +157,9 @@ def test_recover_host_services_restores_networks_and_bmc(
     mock_session_cls.return_value = mock_db
 
     mock_repair.return_value = {"repaired": 1}
+    mock_vm_states.return_value = {"troshka-proj-567-abcd1234": "running"}
+    mock_start.return_value = "job-123"
+    mock_wait.return_value = {"result": {"reconnected": 1}}
     mock_bmc_config.return_value = {"bmc_network": {}, "vms": []}
     mock_bmc_setup.return_value = True
 
@@ -170,10 +182,19 @@ def test_recover_dedup_prevents_concurrent(mock_repair, mock_session_cls):
 
 @patch("app.core.database.SessionLocal")
 @patch("app.services.gc_service.repair_networks")
+@patch("app.services.troshkad_client.get_all_vm_states")
+@patch("app.services.troshkad_client.start_job")
+@patch("app.services.troshkad_client.wait_for_job")
 @patch("app.services.deploy_service._setup_bmc_via_troshkad")
 @patch("app.services.deploy_service._extract_bmc_config")
 def test_recover_bmc_failure_does_not_block_others(
-    mock_bmc_config, mock_bmc_setup, mock_repair, mock_session_cls
+    mock_bmc_config,
+    mock_bmc_setup,
+    mock_wait,
+    mock_start,
+    mock_vm_states,
+    mock_repair,
+    mock_session_cls,
 ):
     host = MagicMock()
     host.id = "host-fail"
@@ -195,6 +216,7 @@ def test_recover_bmc_failure_does_not_block_others(
     mock_session_cls.return_value = mock_db
 
     mock_repair.return_value = {"repaired": 2}
+    mock_vm_states.return_value = {}
     mock_bmc_config.return_value = {"bmc_network": {}, "vms": []}
     mock_bmc_setup.side_effect = [Exception("boom"), True]
 

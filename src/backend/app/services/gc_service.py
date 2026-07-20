@@ -306,6 +306,7 @@ def recover_host_services(host_id: str):
         _extract_bmc_config,
         _setup_bmc_via_troshkad,
     )
+    from app.services.troshkad_client import get_all_vm_states, start_job, wait_for_job
 
     db = SessionLocal()
     try:
@@ -335,6 +336,32 @@ def recover_host_services(host_id: str):
 
         net_result = repair_networks(db, host)
         log.info("Host %s network repair: %s", host_id[:8], net_result)
+
+        # Reconnect running VMs' TAPs to restored namespace bridges
+        from app.services.troshkad_client import get_all_vm_states
+
+        vm_states = get_all_vm_states(host) or {}
+        for p in projects:
+            ns_prefix = f"troshka-{p.id[:8]}-"
+            running_domains = [
+                d
+                for d, s in vm_states.items()
+                if s == "running" and d.startswith(ns_prefix)
+            ]
+            if not running_domains:
+                continue
+            try:
+                tap_job = start_job(
+                    host,
+                    "/networks/reconnect-taps",
+                    {"project_id": p.id, "domains": running_domains},
+                )
+                tap_result = wait_for_job(host, tap_job, timeout=30)
+                rc = tap_result.get("result", {}).get("reconnected", 0)
+                if rc:
+                    log.info("Reconnected %d TAPs for project %s", rc, p.id[:8])
+            except Exception:
+                log.warning("TAP reconnect failed for project %s (non-fatal)", p.id[:8])
 
         bmc_restored = 0
         for p in projects:

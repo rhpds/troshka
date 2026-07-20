@@ -146,12 +146,22 @@ def _record_auth_failure(ip):
                 _permabanned_ips.add(ip)
                 _banned_ips.pop(ip, None)
                 _ban_history.pop(ip, None)
-                logger.warning("Permanently banned IP %s (%d temp bans in %ds)",
-                               ip, len(history), _PERMABAN_WINDOW)
+                logger.warning(
+                    "Permanently banned IP %s (%d temp bans in %ds)",
+                    ip,
+                    len(history),
+                    _PERMABAN_WINDOW,
+                )
             else:
-                logger.warning("Banned IP %s for %ds (%d failures in %ds, strike %d/%d)",
-                               ip, _BAN_DURATION, len(times), _BAN_WINDOW,
-                               len(history), _PERMABAN_THRESHOLD)
+                logger.warning(
+                    "Banned IP %s for %ds (%d failures in %ds, strike %d/%d)",
+                    ip,
+                    _BAN_DURATION,
+                    len(times),
+                    _BAN_WINDOW,
+                    len(history),
+                    _PERMABAN_THRESHOLD,
+                )
 
 
 def _is_banned(ip):
@@ -172,16 +182,20 @@ def _cleanup_rate_limit():
     now = time.monotonic()
     with _rate_limit_lock:
         cutoff = now - _BAN_WINDOW
-        stale = [ip for ip, times in _fail_tracker.items()
-                 if not times or times[-1] < cutoff]
+        stale = [
+            ip for ip, times in _fail_tracker.items() if not times or times[-1] < cutoff
+        ]
         for ip in stale:
             del _fail_tracker[ip]
         expired = [ip for ip, exp in _banned_ips.items() if now > exp]
         for ip in expired:
             del _banned_ips[ip]
         history_cutoff = now - _PERMABAN_WINDOW
-        stale_history = [ip for ip, times in _ban_history.items()
-                         if not times or times[-1] < history_cutoff]
+        stale_history = [
+            ip
+            for ip, times in _ban_history.items()
+            if not times or times[-1] < history_cutoff
+        ]
         for ip in stale_history:
             del _ban_history[ip]
 
@@ -211,6 +225,7 @@ def _check_nfs_health():
         return False
 
     result = [None]
+
     def _probe():
         try:
             os.statvfs(shared)
@@ -275,7 +290,9 @@ def _try_nfs_recovery():
     try:
         result = subprocess.run(
             ["mount", "-t", "nfs", "-o", nfs_opts, nfs_src, shared],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             logger.info("NFS recovery: remounted %s successfully", shared)
@@ -2508,12 +2525,19 @@ def _handle_oc_exec(job, params):
     import shlex
 
     full_cmd = [
-        "ip", "netns", "exec", ns,
-        "/usr/local/bin/oc", f"--kubeconfig={kc_path}",
+        "ip",
+        "netns",
+        "exec",
+        ns,
+        "/usr/local/bin/oc",
+        f"--kubeconfig={kc_path}",
     ] + shlex.split(command)
 
     result = subprocess.run(
-        full_cmd, capture_output=True, text=True, timeout=cmd_timeout,
+        full_cmd,
+        capture_output=True,
+        text=True,
+        timeout=cmd_timeout,
     )
     return {
         "output": result.stdout,
@@ -3150,6 +3174,89 @@ def _handle_list_bridges(job, params):
 
 
 COMMAND_HANDLERS["networks/list-bridges"] = _handle_list_bridges
+
+
+def _handle_reconnect_taps(job, params):
+    """Move stale TAPs from host-namespace dummy bridges into project namespace.
+
+    After a host restart, VMs start with TAPs on dummy bridges in the host
+    namespace.  Once recover_host_services() rebuilds the real namespace
+    bridges, this handler moves each running VM's TAPs into the namespace —
+    same operation the qemu hook does on VM start.
+
+    Params:
+        project_id: str
+        domains: list of domain names to check
+    """
+    project_id = _validate_project_id(params["project_id"])
+    domains = params.get("domains", [])
+    ns = f"troshka-{project_id[:8]}"
+
+    ns_check = subprocess.run(
+        ["ip", "netns", "list"], capture_output=True, text=True, timeout=5
+    )
+    if ns not in ns_check.stdout:
+        return {"reconnected": 0, "error": "namespace not found"}
+
+    reconnected = 0
+    for domain in domains:
+        try:
+            result = subprocess.run(
+                ["virsh", "dumpxml", domain],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                continue
+            xml = result.stdout
+            import re
+
+            bridges = re.findall(r"source bridge='([^']+)'", xml)
+            taps = re.findall(r"target dev='((?:vnet|tap)[^']+)'", xml)
+            for i, tap in enumerate(taps):
+                if i >= len(bridges):
+                    break
+                bridge = bridges[i]
+                tap_check = subprocess.run(
+                    ["ip", "link", "show", tap],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if tap_check.returncode != 0:
+                    continue
+                _run_cmd(job, ["ip", "link", "set", tap, "netns", ns])
+                _run_cmd(
+                    job,
+                    [
+                        "ip",
+                        "netns",
+                        "exec",
+                        ns,
+                        "ip",
+                        "link",
+                        "set",
+                        tap,
+                        "master",
+                        bridge,
+                    ],
+                )
+                _run_cmd(
+                    job,
+                    ["ip", "netns", "exec", ns, "ip", "link", "set", tap, "up"],
+                )
+                reconnected += 1
+                logger.info(
+                    "Reconnected TAP %s -> %s/%s for %s", tap, ns, bridge, domain
+                )
+        except Exception as e:
+            logger.warning("Failed to reconnect TAPs for %s: %s", domain, e)
+
+    return {"reconnected": reconnected}
+
+
+COMMAND_HANDLERS["networks/reconnect-taps"] = _handle_reconnect_taps
 
 
 def _handle_network_full_setup(job, params):
@@ -7213,7 +7320,8 @@ def _watchdog_loop():
                     stale_secs = int(time.time() - _nfs_stale_since)
                     if stale_secs >= 60:
                         logger.warning(
-                            "watchdog: NFS stale for %ds, attempting recovery", stale_secs
+                            "watchdog: NFS stale for %ds, attempting recovery",
+                            stale_secs,
                         )
                         if _try_nfs_recovery():
                             _check_nfs_health()
