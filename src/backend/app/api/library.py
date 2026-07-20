@@ -86,13 +86,16 @@ def list_items(
     central_lib = db.query(Library).filter_by(type="central").first()
     central_lib_id = central_lib.id if central_lib else None
 
-    query = db.query(LibraryItem).filter(
-        or_(
-            LibraryItem.library_id == lib.id,
-            LibraryItem.id.in_(shared_ids) if shared_ids else False,
-            LibraryItem.library_id == central_lib_id if central_lib_id else False,
+    if user.role == "admin":
+        query = db.query(LibraryItem)
+    else:
+        query = db.query(LibraryItem).filter(
+            or_(
+                LibraryItem.library_id == lib.id,
+                LibraryItem.id.in_(shared_ids) if shared_ids else False,
+                LibraryItem.library_id == central_lib_id if central_lib_id else False,
+            )
         )
-    )
 
     if type:
         query = query.filter(LibraryItem.type == type)

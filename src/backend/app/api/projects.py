@@ -145,7 +145,10 @@ def list_projects(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Project).filter(Project.owner_id == user.id)
+    if user.role == "admin":
+        query = db.query(Project)
+    else:
+        query = db.query(Project).filter(Project.owner_id == user.id)
     if guid is not None:
         query = query.filter(Project.guid == guid)
     projects = query.offset(skip).limit(limit).all()
