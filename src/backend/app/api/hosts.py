@@ -18,6 +18,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
 
+def _detach_install_iso(host, db_session):
+    """Remove install ISO from an ocpvirt host and disable local yum repos.
+
+    Unmounts the ISO inside the guest, removes the repo files that point at it,
+    then patches the KubeVirt VM spec to remove the cdrom volume (takes effect
+    on next restart). This unblocks live migration.
+    """
+    try:
+        from app.services.troshkad_client import start_job
+
+        start_job(
+            host,
+            "/dispatch",
+            {
+                "command": (
+                    "umount /mnt/iso 2>/dev/null;"
+                    " rm -f /etc/yum.repos.d/local-baseos.repo"
+                    " /etc/yum.repos.d/local-appstream.repo"
+                ),
+            },
+        )
+    except Exception:
+        logger.debug("ISO unmount/repo cleanup skipped for %s", host.id[:8])
+
+    try:
+        prov = db_session.query(Provider).get(host.provider_id)
+        if prov:
+            from app.services.providers import get_provider_driver
+
+            drv = get_provider_driver(prov)
+            if hasattr(drv, "detach_iso"):
+                drv.detach_iso(prov, host.instance_id)
+                logger.info("Detached install ISO from host %s", host.id[:8])
+    except Exception:
+        logger.warning("Failed to detach ISO from host %s (non-fatal)", host.id[:8])
+
+
 class ProvisionRequest(BaseModel):
     provider_id: str
     instance_type: str | None = None
@@ -474,6 +511,10 @@ def add_host(
                 h.agent_cert_fingerprint = creds["fingerprint"]
                 logger.info("Stored troshkad credentials for host %s", h.id[:8])
 
+            # Detach install ISO from ocpvirt hosts (unblocks live migration)
+            if result["success"] and provider_type == "ocpvirt" and h.instance_id:
+                _detach_install_iso(h, s)
+
             # Create console DNS/Route record
             if h.instance_id and h.ip_address:
                 prov_obj = s.query(Provider).get(h.provider_id)
@@ -716,6 +757,10 @@ def install_agent(
                     logger.warning(
                         "Could not verify agent version after install: %s", _ve
                     )
+
+            # Detach install ISO from ocpvirt hosts (unblocks live migration)
+            if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
+                _detach_install_iso(h, s)
 
             s.commit()
         except Exception:

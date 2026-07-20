@@ -959,6 +959,54 @@ class OCPVirtDriver(ProviderDriver):
             body={"spec": {"running": False}},
         )
 
+    def detach_iso(self, provider, instance_id):
+        """Remove the install ISO cdrom from the VM spec.
+
+        Takes effect on next VM restart — the running VM is not affected.
+        This unblocks live migration (ISO PVC is RWO/Filesystem which
+        prevents KubeVirt live migration on Ceph RBD).
+        """
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, _ = _get_k8s_clients(creds)
+
+        vm = custom_api.get_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=instance_id,
+        )
+
+        spec = vm.get("spec", {}).get("template", {}).get("spec", {})
+        disks = spec.get("domain", {}).get("devices", {}).get("disks", [])
+        volumes = spec.get("volumes", [])
+
+        new_disks = [d for d in disks if d.get("name") != "installiso"]
+        new_volumes = [v for v in volumes if v.get("name") != "installiso"]
+
+        if len(new_disks) == len(disks):
+            return
+
+        patch = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {"devices": {"disks": new_disks}},
+                        "volumes": new_volumes,
+                    }
+                }
+            }
+        }
+        custom_api.patch_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=instance_id,
+            body=patch,
+        )
+
     def allocate_eip(self, provider, host, eip_id):
         from kubernetes import client
 
