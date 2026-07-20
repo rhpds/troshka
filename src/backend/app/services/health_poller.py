@@ -246,6 +246,14 @@ def _poll_hosts():
                             host.id[:8],
                             health.get("version"),
                         )
+                        from app.services.gc_service import recover_host_services
+
+                        threading.Thread(
+                            target=recover_host_services,
+                            args=(host.id,),
+                            daemon=True,
+                            name=f"recover-{host.id[:8]}",
+                        ).start()
                 else:
                     hosts_failed += 1
                     if host.agent_status == "connected" and host.last_health_at:

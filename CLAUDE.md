@@ -340,6 +340,7 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Evaluates partition thresholds, stores `storage_warnings` JSONB on Host model
 - Frontend shows warning badges on hosts admin page when partitions exceed thresholds
 - Re-signs host TLS certs hourly, checks CA expiry (renews at 90 days)
+- Auto-recovery: when a host reconnects (disconnected → connected), `recover_host_services()` in `gc_service.py` restores networking (namespaces, VXLAN, bridges, dnsmasq, nftables) and BMC (sushy, vbmc) for all active projects via background thread. Deduplicates by host ID.
 
 ### Storage Auto-Extend
 - Auto-extend for EBS volumes and FSx file systems when usage exceeds threshold

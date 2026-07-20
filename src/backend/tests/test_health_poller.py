@@ -72,9 +72,12 @@ class TestPollHosts(unittest.TestCase):
 
         self.assertEqual(host.agent_status, "disconnected")
 
+    @patch("app.services.gc_service.recover_host_services")
     @patch("app.core.database.SessionLocal")
     @patch("app.services.troshkad_client.check_health")
-    def test_reconnects_disconnected_host(self, mock_check, mock_session_cls):
+    def test_reconnects_disconnected_host(
+        self, mock_check, mock_session_cls, mock_recover
+    ):
         from app.services.health_poller import _poll_hosts
 
         host = MagicMock()
@@ -91,6 +94,31 @@ class TestPollHosts(unittest.TestCase):
         _poll_hosts()
 
         self.assertEqual(host.agent_status, "connected")
+        mock_recover.assert_called_once_with("test-host-uuid-1234")
+
+    @patch("app.services.gc_service.recover_host_services")
+    @patch("app.core.database.SessionLocal")
+    @patch("app.services.troshkad_client.check_health")
+    def test_no_recovery_when_already_connected(
+        self, mock_check, mock_session_cls, mock_recover
+    ):
+        from app.services.health_poller import _poll_hosts
+
+        host = MagicMock()
+        host.id = "test-host-uuid-1234"
+        host.agent_status = "connected"
+        host.last_health_at = datetime.now(UTC)
+        host.agent_token = "token123"
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.all.return_value = [host]
+        mock_session_cls.return_value = mock_db
+
+        mock_check.return_value = {"status": "ok", "version": "1.0", "capacity": {}}
+
+        _poll_hosts()
+
+        mock_recover.assert_not_called()
 
     @patch("app.core.database.SessionLocal")
     @patch("app.services.troshkad_client.check_health")

@@ -1,10 +1,16 @@
+from unittest.mock import MagicMock, patch
+
 from app.core.auth import hash_password
 from app.core.database import get_db
 from app.main import app
 from app.models.host import Host
 from app.models.project import Project
 from app.models.user import User
-from app.services.gc_service import sync_host_capacity
+from app.services.gc_service import (
+    _recovering_hosts,
+    recover_host_services,
+    sync_host_capacity,
+)
 from tests.conftest import TestSession, get_test_db
 
 app.dependency_overrides[get_db] = get_test_db
@@ -117,3 +123,83 @@ def test_sync_capacity_zero_when_no_projects():
     db.delete(host)
     db.commit()
     db.close()
+
+
+@patch("app.core.database.SessionLocal")
+@patch("app.services.gc_service.repair_networks")
+@patch("app.services.deploy_service._setup_bmc_via_troshkad")
+@patch("app.services.deploy_service._extract_bmc_config")
+def test_recover_host_services_restores_networks_and_bmc(
+    mock_bmc_config, mock_bmc_setup, mock_repair, mock_session_cls
+):
+    host = MagicMock()
+    host.id = "host-1234"
+    host.agent_status = "connected"
+
+    project = MagicMock()
+    project.id = "proj-5678"
+    project.state = "active"
+    project.deployed_topology = {"nodes": []}
+    project.topology = {"nodes": []}
+
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = host
+    mock_db.query.return_value.filter.return_value.all.return_value = [project]
+    mock_session_cls.return_value = mock_db
+
+    mock_repair.return_value = {"repaired": 1}
+    mock_bmc_config.return_value = {"bmc_network": {}, "vms": []}
+    mock_bmc_setup.return_value = True
+
+    _recovering_hosts.discard("host-1234")
+    recover_host_services("host-1234")
+
+    mock_repair.assert_called_once()
+    mock_bmc_setup.assert_called_once()
+    assert "host-1234" not in _recovering_hosts
+
+
+@patch("app.core.database.SessionLocal")
+@patch("app.services.gc_service.repair_networks")
+def test_recover_dedup_prevents_concurrent(mock_repair, mock_session_cls):
+    _recovering_hosts.add("host-dup")
+    recover_host_services("host-dup")
+    mock_repair.assert_not_called()
+    _recovering_hosts.discard("host-dup")
+
+
+@patch("app.core.database.SessionLocal")
+@patch("app.services.gc_service.repair_networks")
+@patch("app.services.deploy_service._setup_bmc_via_troshkad")
+@patch("app.services.deploy_service._extract_bmc_config")
+def test_recover_bmc_failure_does_not_block_others(
+    mock_bmc_config, mock_bmc_setup, mock_repair, mock_session_cls
+):
+    host = MagicMock()
+    host.id = "host-fail"
+    host.agent_status = "connected"
+
+    p1 = MagicMock()
+    p1.id = "proj-a"
+    p1.state = "active"
+    p1.deployed_topology = {"nodes": []}
+
+    p2 = MagicMock()
+    p2.id = "proj-b"
+    p2.state = "active"
+    p2.deployed_topology = {"nodes": []}
+
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = host
+    mock_db.query.return_value.filter.return_value.all.return_value = [p1, p2]
+    mock_session_cls.return_value = mock_db
+
+    mock_repair.return_value = {"repaired": 2}
+    mock_bmc_config.return_value = {"bmc_network": {}, "vms": []}
+    mock_bmc_setup.side_effect = [Exception("boom"), True]
+
+    _recovering_hosts.discard("host-fail")
+    recover_host_services("host-fail")
+
+    assert mock_bmc_setup.call_count == 2
+    assert "host-fail" not in _recovering_hosts

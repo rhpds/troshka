@@ -284,6 +284,84 @@ def repair_networks(db: Session, host) -> dict:
     return {"repaired": repaired}
 
 
+_recovering_hosts: set[str] = set()
+
+
+def recover_host_services(host_id: str):
+    """Restore networking and BMC for all active projects after a host restart.
+
+    Triggered by the health poller when a host transitions from disconnected to
+    connected.  Runs in a background thread.  Safe to call concurrently — a
+    per-host guard prevents duplicate recovery.
+    """
+    if host_id in _recovering_hosts:
+        log.debug("Recovery already running for host %s, skipping", host_id[:8])
+        return
+    _recovering_hosts.add(host_id)
+
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+    from app.services.deploy_service import (
+        _extract_bmc_config,
+        _setup_bmc_via_troshkad,
+    )
+
+    db = SessionLocal()
+    try:
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host or host.agent_status != "connected":
+            return
+
+        projects = (
+            db.query(Project)
+            .filter(
+                Project.host_id == host_id,
+                Project.state.in_(["active", "stopped"]),
+            )
+            .all()
+        )
+        if not projects:
+            return
+
+        busy = any(p.state in ("deploying", "reconfiguring") for p in projects)
+        if busy:
+            log.info("Host %s has busy projects, deferring recovery", host_id[:8])
+            return
+
+        log.info(
+            "Host %s reconnected — recovering %d project(s)", host_id[:8], len(projects)
+        )
+
+        net_result = repair_networks(db, host)
+        log.info("Host %s network repair: %s", host_id[:8], net_result)
+
+        bmc_restored = 0
+        for p in projects:
+            topo = p.deployed_topology or p.topology or {}
+            bmc_config = _extract_bmc_config(topo, p.id)
+            if not bmc_config:
+                continue
+            try:
+                _setup_bmc_via_troshkad(host, p.id, bmc_config)
+                bmc_restored += 1
+                log.info("Restored BMC for project %s", p.id[:8])
+            except Exception:
+                log.warning("BMC restore failed for project %s (non-fatal)", p.id[:8])
+
+        log.info(
+            "Host %s recovery complete: %d networks, %d BMC projects",
+            host_id[:8],
+            net_result.get("repaired", 0),
+            bmc_restored,
+        )
+    except Exception:
+        log.exception("Host %s recovery failed", host_id[:8])
+    finally:
+        db.close()
+        _recovering_hosts.discard(host_id)
+
+
 def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
     """Delete S3 objects that have no matching DB record (patterns, snapshots, library items)."""
     from app.models.library import LibraryItem
