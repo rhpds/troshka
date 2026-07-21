@@ -2059,23 +2059,30 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                         )
                 if lib_item and lib_item.s3_key:
                     s3_path = lib_item.s3_key
+                    use_central = getattr(lib_item, "source", "") == "central"
                 else:
                     fmt = data.get("format", "qcow2")
                     s3_path = f"library/{data['libraryItemId']}.{fmt}"
-                use_central = False
-                if central_s3_client:
-                    try:
-                        s3_client.head_object(Bucket=bucket, Key=s3_path)
-                    except Exception:
+                    use_central = False
+                    if central_s3_client:
                         try:
-                            central_s3_client.head_object(
-                                Bucket=central_bucket, Key=s3_path
-                            )
-                            use_central = True
+                            s3_client.head_object(Bucket=bucket, Key=s3_path)
                         except Exception:
-                            pass
+                            try:
+                                central_s3_client.head_object(
+                                    Bucket=central_bucket, Key=s3_path
+                                )
+                                use_central = True
+                            except Exception:
+                                pass
                 data["resolvedS3Path"] = s3_path
                 data["centralSource"] = use_central
+                logger.info(
+                    "Deploy: disk %s s3=%s central=%s",
+                    data.get("label", "?"),
+                    s3_path[:40],
+                    use_central,
+                )
 
     # Generate per-deploy SSH key pair for exec pod → VM access
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
