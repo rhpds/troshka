@@ -2017,6 +2017,12 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                             pass
                 data["resolvedS3Path"] = s3_path
                 data["centralSource"] = use_central
+                logger.info(
+                    "Deploy: disk %s s3=%s central=%s",
+                    label,
+                    s3_path[:40],
+                    use_central,
+                )
                 real_size = _qcow2_virtual_size_gb(s3_path, use_central)
                 if real_size and real_size > (data.get("size", 0) or 0):
                     data["size"] = real_size
@@ -2193,6 +2199,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         bool(exec_privkey_pem),
     )
     try:
+        logger.info(
+            "Deploy %s: central_s3=%s",
+            project_id[:8],
+            bool(central_s3_config),
+        )
         cr_name = driver.deploy_project(
             provider,
             project_id,
