@@ -41,6 +41,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const router = useRouter();
   const [isDark, setIsDark] = useState(true);
   const [user, setUser] = useState<UserInfo | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("troshka-theme");
@@ -64,7 +65,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         return r.json();
       })
       .then((data) => { if (data) setUser(data); })
-      .catch(() => setUser(null));
+      .catch(() => setUser(null))
+      .finally(() => setAuthChecked(true));
   }, []);
 
   useEffect(() => {
@@ -346,7 +348,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               Backend is unreachable — the server may be restarting
             </div>
           )}
-          {(user as any)?.denied ? (
+          {!authChecked && !isConsolePage ? null : isDenied ? (
             <div style={{
               display: "flex",
               justifyContent: "center",
