@@ -14,7 +14,6 @@ spec:
           properties:
             spec:
               type: object
-              x-kubernetes-preserve-unknown-fields: true
               required: [projectId, topology, s3Config]
               properties:
                 projectId:
@@ -32,6 +31,25 @@ spec:
                     region:
                       type: string
                     credentialsSecret:
+                      type: string
+                    accessKeyId:
+                      type: string
+                    secretKey:
+                      type: string
+                centralS3Config:
+                  type: object
+                  properties:
+                    bucket:
+                      type: string
+                    endpoint:
+                      type: string
+                    region:
+                      type: string
+                    credentialsSecret:
+                      type: string
+                    accessKeyId:
+                      type: string
+                    secretKey:
                       type: string
                 registryCredentials:
                   type: object
