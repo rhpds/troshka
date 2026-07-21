@@ -228,9 +228,8 @@ def resolve_vm_disks(topology):
             cdrom = {
                 "libraryIsoId": sd.get("libraryItemId", ""),
                 "s3Path": resolved or f"library/{sd.get('libraryItemId', '')}.iso",
+                "central": sd.get("centralSource", False),
             }
-            if presigned_url:
-                cdrom["presignedUrl"] = presigned_url
             vm_cdroms[vm_id] = cdrom
             continue
 
