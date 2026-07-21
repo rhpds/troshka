@@ -28,8 +28,12 @@ def _get_k8s_client():
 
         k8s_config.load_incluster_config()
         _k8s_client = client.CustomObjectsApi()
+        logger.info("Kubernetes client initialized for group resolution")
         return _k8s_client
     except Exception:
+        logger.debug(
+            "Kubernetes client not available — group resolution disabled", exc_info=True
+        )
         return None
 
 
@@ -57,17 +61,22 @@ def _fetch_openshift_groups() -> list[dict]:
         return _groups_cache
 
 
-def _get_user_groups(username: str) -> set[str]:
+def _get_user_groups(username: str, email: str | None = None) -> set[str]:
     groups = _fetch_openshift_groups()
+    identities = {username}
+    if email:
+        identities.add(email)
     return {
-        g["metadata"]["name"].lower() for g in groups if username in g.get("users", [])
+        g["metadata"]["name"].lower()
+        for g in groups
+        if identities & set(g.get("users", []))
     }
 
 
-def _role_for_groups(username: str) -> str | None:
+def _role_for_groups(username: str, email: str | None = None) -> str | None:
     if not username:
         return None
-    user_groups = _get_user_groups(username)
+    user_groups = _get_user_groups(username, email)
     if not user_groups:
         return None
     if _admin_groups and user_groups & _admin_groups:
@@ -110,7 +119,7 @@ def _resolve_role(email: str, ocp_username: str | None) -> str:
     if email_lower in _operator_users:
         return "operator"
     if ocp_username:
-        group_role = _role_for_groups(ocp_username)
+        group_role = _role_for_groups(ocp_username, email)
         if group_role:
             return group_role
     return "user"
@@ -245,7 +254,7 @@ def _get_user_from_api_key(request: Request, db: Session):
 def _enforce_access(email: str, ocp_username: str | None = None):
     """Check if user is allowed via group membership or email allowlist."""
     if _allowed_groups and ocp_username:
-        user_groups = _get_user_groups(ocp_username)
+        user_groups = _get_user_groups(ocp_username, email)
         all_configured_groups = _allowed_groups | _admin_groups | _operator_groups
         if user_groups & all_configured_groups:
             return
