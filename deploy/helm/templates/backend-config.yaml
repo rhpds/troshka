@@ -10,8 +10,11 @@ metadata:
 data:
   config.yaml: |
     app:
+      name: troshka
       port: 8200
       host: "0.0.0.0"
+      log_level: info
+      root_path: ""
       external_url: "https://{{ .Values.route.host }}"
     auth:
       oauth_enabled: {{ .Values.auth.oauthEnabled }}

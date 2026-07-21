@@ -8,7 +8,7 @@ metadata:
     {{- include "troshka.labels" . | nindent 4 }}
     app.kubernetes.io/component: migration
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "5"
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
@@ -19,11 +19,49 @@ spec:
         app.kubernetes.io/name: troshka-migrate
     spec:
       restartPolicy: Never
+      {{- if .Values.postgres.deploy }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ include "troshka.backendImage" . }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until bash -c 'echo > /dev/tcp/troshka-postgres/5432' 2>/dev/null; do
+                sleep 2
+              done
+              echo "PostgreSQL is ready"
+      {{- end }}
       containers:
         - name: migrate
           image: {{ include "troshka.backendImage" . }}
-          command: ["python3", "-m", "alembic", "upgrade", "head"]
-          workingDir: /opt/app-root/src
+          command: ["bash", "-c"]
+          args:
+            - |
+              cd /opt/app-root/src
+              python3 -c "
+              from app.core.database import engine, Base
+              from app.models import *
+              from sqlalchemy import inspect, text
+
+              insp = inspect(engine)
+              has_tables = insp.has_table('users')
+              has_alembic = insp.has_table('alembic_version')
+
+              if not has_tables:
+                  print('Fresh database — creating all tables and stamping head')
+                  Base.metadata.create_all(bind=engine)
+                  import subprocess
+                  subprocess.run(['python3', '-m', 'alembic', 'stamp', 'head'], check=True)
+              elif has_tables and not has_alembic:
+                  print('Tables exist but no alembic version — stamping head')
+                  import subprocess
+                  subprocess.run(['python3', '-m', 'alembic', 'stamp', 'head'], check=True)
+              else:
+                  print('Existing database with alembic — running upgrade')
+                  import subprocess
+                  subprocess.run(['python3', '-m', 'alembic', 'upgrade', 'head'], check=True)
+              "
           env:
             - name: TROSHKA_DATABASE__URL
               valueFrom:
