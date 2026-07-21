@@ -3219,7 +3219,7 @@ def delete_project(
             logger.warning("Failed to release EIP %s on delete", eip.public_ip)
 
     # Capture all data needed for cleanup BEFORE deleting the DB row
-    if project.host_id and project.state in ("active", "stopped", "error"):
+    if project.host_id and project.state not in ("draft",):
         import copy
         import threading
 
