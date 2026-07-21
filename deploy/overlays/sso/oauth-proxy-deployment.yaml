@@ -38,7 +38,7 @@ spec:
             - --openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
             - --pass-user-headers=true
             - --pass-access-token=false
-            - --skip-auth-regex=^/api/v1/health
+            - --skip-auth-regex=^/api/v1/
           volumeMounts:
             - name: tls
               mountPath: /etc/tls/private
@@ -53,10 +53,10 @@ spec:
       volumes:
         - name: tls
           secret:
-            secretName: troshka-oauth-tls
+            secretName: troshka-oauth-tls  # pragma: allowlist secret
         - name: oauth-secrets
           secret:
-            secretName: troshka-oauth-proxy
+            secretName: troshka-oauth-proxy  # pragma: allowlist secret
 ---
 apiVersion: v1
 kind: Service
