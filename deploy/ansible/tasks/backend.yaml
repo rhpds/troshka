@@ -16,6 +16,7 @@
             external_url: "https://{{ _troshka_route_host }}"
           auth:
             oauth_enabled: {{ troshka_oauth_enabled | bool | lower }}
+            jwt_algorithm: "HS256"
             admin_users: "{{ troshka_admin_users }}"
             operator_users: "{{ troshka_operator_users }}"
           {% if troshka_deploy_s4 | bool %}
