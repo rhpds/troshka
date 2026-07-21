@@ -264,7 +264,7 @@ def create_provider(
         except Exception as e:
             logger.warning("Central library auto-sync failed: %s", e)
 
-    if body.type == "kubevirt":
+    if body.type == "ocpvirt":
         import threading
         import uuid as _uuid
 
@@ -293,7 +293,7 @@ def create_provider(
         _provider_id = provider.id
         _host_id = host_id
 
-        def _provision_kubevirt_host():
+        def _provision_ocpvirt_host():
             from app.core.database import SessionLocal
             from app.models.host import Host as HostModel
             from app.models.provider import Provider as ProvModel
@@ -323,12 +323,12 @@ def create_provider(
                 h.agent_token = prov.get_credentials().get("token", "")
                 s.commit()
                 logger.info(
-                    "KubeVirt host %s provisioned for provider %s",
+                    "OCP Virt host %s provisioned for provider %s",
                     _host_id[:8],
                     _provider_id[:8],
                 )
             except Exception:
-                logger.exception("Failed to provision kubevirt host %s", _host_id[:8])
+                logger.exception("Failed to provision ocpvirt host %s", _host_id[:8])
                 h = s.query(HostModel).filter_by(id=_host_id).first()
                 if h:
                     h.state = "error"
@@ -337,7 +337,33 @@ def create_provider(
             finally:
                 s.close()
 
-        threading.Thread(target=_provision_kubevirt_host, daemon=True).start()
+        threading.Thread(target=_provision_ocpvirt_host, daemon=True).start()
+
+    if body.type == "kubevirt":
+        import threading
+
+        _provider_id = provider.id
+
+        def _install_kubevirt_operator():
+            from app.core.database import SessionLocal
+            from app.models.provider import Provider as ProvModel
+            from app.services.providers.kubevirt import _deploy_operator
+
+            s = SessionLocal()
+            try:
+                prov = s.get(ProvModel, _provider_id)
+                if not prov:
+                    return
+                _deploy_operator(prov)
+                logger.info(
+                    "Operator installed for kubevirt provider %s", _provider_id[:8]
+                )
+            except Exception:
+                logger.exception("Failed to install operator for %s", _provider_id[:8])
+            finally:
+                s.close()
+
+        threading.Thread(target=_install_kubevirt_operator, daemon=True).start()
 
     return ProviderResponse(
         id=provider.id,
