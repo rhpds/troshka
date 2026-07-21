@@ -1410,6 +1410,11 @@ def remove_host(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
+    if host.host_type == "kubevirt-cluster":
+        db.delete(host)
+        db.commit()
+        return {"status": "deleted"}
+
     from app.models.project import Project
 
     running = (
