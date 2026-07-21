@@ -2317,11 +2317,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 dv_progress = dv.get("status", {}).get("progress", "N/A")
                 raw_name = dv["metadata"]["name"]
                 ns = dv["metadata"]["namespace"]
-                friendly = (
-                    golden_name_map.get(raw_name)
-                    or clone_name_map.get(raw_name)
-                    or raw_name
-                )
+                friendly = golden_name_map.get(raw_name) or clone_name_map.get(raw_name)
+                if not friendly:
+                    continue
                 friendly = friendly[:24]
                 if dv_phase == "Succeeded":
                     line = f"{friendly}: done"
