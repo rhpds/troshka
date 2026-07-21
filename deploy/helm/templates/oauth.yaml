@@ -1,4 +1,17 @@
 {{- if and .Values.deploy .Values.auth.oauthEnabled }}
+{{- $existingOAuth := (lookup "v1" "Secret" (include "troshka.namespace" .) "troshka-oauth-proxy") }}
+{{- $clientSecret := "" }}
+{{- $cookieSecret := "" }}
+{{- if $existingOAuth }}
+  {{- $clientSecret = index $existingOAuth.data "client-secret" | default "" | b64dec }}
+  {{- $cookieSecret = index $existingOAuth.data "cookie-secret" | default "" | b64dec }}
+{{- end }}
+{{- if not $clientSecret }}
+  {{- $clientSecret = randAlphaNum 25 }}
+{{- end }}
+{{- if not $cookieSecret }}
+  {{- $cookieSecret = randAlphaNum 32 }}
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -18,12 +31,10 @@ metadata:
   namespace: {{ include "troshka.namespace" . }}
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/resource-policy: keep
 type: Opaque
 stringData:
-  client-secret: {{ randAlphaNum 25 | quote }}
-  cookie-secret: {{ randAlphaNum 32 | quote }}
+  client-secret: {{ $clientSecret | quote }}
+  cookie-secret: {{ $cookieSecret | quote }}
 ---
 apiVersion: oauth.openshift.io/v1
 kind: OAuthClient
@@ -31,7 +42,7 @@ metadata:
   name: troshka
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
-secret: {{ randAlphaNum 25 | quote }}
+secret: {{ $clientSecret | quote }}
 redirectURIs:
   - "https://{{ .Values.route.host }}/oauth/callback"
 grantMethod: auto
