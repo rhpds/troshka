@@ -30,6 +30,15 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _is_internal_ip(ip: str) -> bool:
+    return (
+        ip.startswith("10.")
+        or ip.startswith("172.")
+        or ip.startswith("127.")
+        or ip == "unknown"
+    )
+
+
 def record_auth_failure(ip: str):
     now = time.monotonic()
     with _lock:
@@ -111,6 +120,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = _get_client_ip(request)
+        if _is_internal_ip(ip):
+            return await call_next(request)
         if is_banned(ip):
             return JSONResponse(status_code=403, content={"detail": "banned"})
 
