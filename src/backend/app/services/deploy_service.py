@@ -2467,26 +2467,23 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             )
             return
 
-        if not detail and not dv_lines:
-            continue
-
-        new_progress = {
-            "step": step,
-            "detail": detail,
-            "percent": percent,
-        }
-        if new_progress == last:
-            continue
-        _deploy_progress[project_id] = new_progress
-        notify_project(
-            project_id,
-            {
-                "type": "deploy-progress",
+        if detail or dv_lines:
+            new_progress = {
                 "step": step,
                 "detail": detail,
                 "percent": percent,
-            },
-        )
+            }
+            if new_progress != last:
+                _deploy_progress[project_id] = new_progress
+                notify_project(
+                    project_id,
+                    {
+                        "type": "deploy-progress",
+                        "step": step,
+                        "detail": detail,
+                        "percent": percent,
+                    },
+                )
 
         time.sleep(5)
 
