@@ -218,12 +218,12 @@ class KubeVirtDriver(ProviderDriver):
                 namespace="openshift-storage",
                 label_selector="app=rook-ceph-tools",
             )
-            if toolbox_getattr(pods, "items", []):
+            if getattr(toolbox_pods, "items", []):
                 from kubernetes.stream import stream as k8s_stream
 
                 resp = k8s_stream(
                     core_api.connect_get_namespaced_pod_exec,
-                    toolbox_getattr(pods, "items", [])[0].metadata.name,
+                    getattr(toolbox_pods, "items", [])[0].metadata.name,
                     "openshift-storage",
                     command=["ceph", "df", "-f", "json"],
                     stderr=True,
@@ -404,7 +404,7 @@ class KubeVirtDriver(ProviderDriver):
                 plural="routes",
                 label_selector="app=troshka-vnc",
             )
-            for route in routes.get("items", []):
+            for route in dict(routes).get("items", []):  # type: ignore[call-overload]
                 custom_api.delete_namespaced_custom_object(
                     group="route.openshift.io",
                     version="v1",
@@ -442,7 +442,7 @@ class KubeVirtDriver(ProviderDriver):
 
         for _ in range(60):
             svc = core_api.read_namespaced_service(name=svc_name, namespace=namespace)
-            ingress = svc.status.load_balancer.ingress
+            ingress = svc.status.load_balancer.ingress  # type: ignore[union-attr]
             if ingress and ingress[0].ip:
                 return {"public_ip": ingress[0].ip, "allocation_id": svc_name}
             time.sleep(2)
@@ -542,7 +542,7 @@ class KubeVirtDriver(ProviderDriver):
                 plural="routes",
                 body=route_body,
             )
-            hostname = result.get("spec", {}).get("host", "")
+            hostname = dict(result).get("spec", {}).get("host", "")  # type: ignore[call-overload]
         except Exception as e:
             if "AlreadyExists" not in str(e):
                 raise
@@ -572,7 +572,7 @@ class KubeVirtDriver(ProviderDriver):
                 plural="routes",
                 label_selector=label,
             )
-            for route in routes.get("items", []):
+            for route in dict(routes).get("items", []):  # type: ignore[call-overload]
                 custom_api.delete_namespaced_custom_object(
                     group="route.openshift.io",
                     version="v1",
@@ -666,7 +666,7 @@ class KubeVirtDriver(ProviderDriver):
                 namespace=namespace,
                 plural="virtualmachines",
             )
-            for vm in vms.get("items", []):
+            for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
                 try:
                     custom_api.delete_namespaced_custom_object(
                         group="kubevirt.io",
@@ -689,7 +689,7 @@ class KubeVirtDriver(ProviderDriver):
                 namespace=namespace,
                 plural="virtualmachineinstances",
             )
-            for vmi in vmis.get("items", []):
+            for vmi in dict(vmis).get("items", []):  # type: ignore[call-overload]
                 try:
                     custom_api.delete_namespaced_custom_object(
                         group="kubevirt.io",
@@ -737,7 +737,7 @@ class KubeVirtDriver(ProviderDriver):
                     namespace=namespace,
                     plural="virtualmachineinstances",
                 )
-                if not getattr(pods, "items", []) and not vmis.get("items", []):
+                if not getattr(pods, "items", []) and not dict(vmis).get("items", []):  # type: ignore[call-overload]
                     break
             except Exception:
                 break
@@ -807,7 +807,7 @@ class KubeVirtDriver(ProviderDriver):
                 plural="troshkaprojects",
                 name=f"project-{project_id[:8]}",
             )
-            s = cr.get("status", {})
+            s = dict(cr).get("status", {})  # type: ignore[call-overload]
             return s if isinstance(s, dict) else {}
         except Exception:
             return {}

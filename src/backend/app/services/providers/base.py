@@ -100,3 +100,17 @@ class ProviderDriver:
         """Delete all Route-based access resources for a project.
         Only implemented by providers with native ingress (OCP Virt)."""
         pass
+
+    def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
+        """Deploy a project via provider-native orchestration (e.g. KubeVirt CR).
+        Returns a resource name string."""
+        raise NotImplementedError
+
+    def get_project_status(self, provider, project_id):
+        """Get provider-native project status (e.g. TroshkaProject CR status).
+        Returns a dict with phase and progress info."""
+        raise NotImplementedError
+
+    def destroy_project(self, provider, project_id):
+        """Destroy a provider-native project (e.g. delete TroshkaProject CR)."""
+        raise NotImplementedError

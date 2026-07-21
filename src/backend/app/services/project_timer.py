@@ -85,6 +85,8 @@ def _check_project_timers(_dry_run=False):
             result["auto_stop_warned"].append(p.id)
             if _dry_run:
                 continue
+            if not p.auto_stop_expires_at:
+                continue
             remaining = (p.auto_stop_expires_at - now).total_seconds() / 60
             p.auto_stop_warned = True
             s.commit()
@@ -112,6 +114,8 @@ def _check_project_timers(_dry_run=False):
         for p in warn_delete:
             result["auto_delete_warned"].append(p.id)
             if _dry_run:
+                continue
+            if not p.lifetime_expires_at:
                 continue
             remaining = (p.lifetime_expires_at - now).total_seconds() / 60
             p.auto_delete_warned = True

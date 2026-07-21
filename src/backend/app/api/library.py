@@ -74,6 +74,7 @@ def list_items(
 ):
     """List library items: user's own + shared with them."""
     from sqlalchemy import or_
+    from sqlalchemy.sql import false as sa_false
 
     lib = _ensure_user_library(user, db)
 
@@ -92,8 +93,12 @@ def list_items(
         query = db.query(LibraryItem).filter(
             or_(
                 LibraryItem.library_id == lib.id,
-                LibraryItem.id.in_(shared_ids) if shared_ids else False,
-                LibraryItem.library_id == central_lib_id if central_lib_id else False,
+                LibraryItem.id.in_(shared_ids) if shared_ids else sa_false(),
+                (
+                    LibraryItem.library_id == central_lib_id
+                    if central_lib_id
+                    else sa_false()
+                ),
             )
         )
 
@@ -561,7 +566,7 @@ def import_from_url(
 
             bucket = _bucket()
 
-            disk = check_disk_usage(host)
+            disk = check_disk_usage(host) or {}
             if disk.get("used_pct", 100) >= 90:
                 free_gb = disk.get("free_bytes", 0) / (1024**3)
                 logger.error(

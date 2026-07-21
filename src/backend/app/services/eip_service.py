@@ -173,7 +173,8 @@ def allocate_transit_ports(
     for other in db.query(ElasticIp).filter(
         ElasticIp.host_id == host.id, ElasticIp.port_map.isnot(None)
     ):
-        used.update(other.port_map.values())
+        if other.port_map:
+            used.update(other.port_map.values())
 
     port_map = {}
     next_port = TRANSIT_PORT_START

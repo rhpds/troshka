@@ -145,6 +145,8 @@ def sync_central_patterns(
         return {"error": "No s3_readonly provider configured"}
     if not client:
         client = s3_storage._get_readonly_s3_client()
+    if not client:
+        return {"error": "Could not create S3 client for readonly provider"}
 
     bucket = cfg["bucket"]
     provider_id = cfg["provider_id"]

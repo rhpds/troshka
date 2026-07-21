@@ -5,9 +5,12 @@ manages VNet/NSG networking, Azure DNS, public IPs, and Azure Files NFS.
 Self-contained with helper functions (same pattern as GCP driver).
 """
 
+from __future__ import annotations
+
 import base64
 import logging
 import time
+from typing import cast
 
 from app.services.providers.base import ProviderDriver
 
@@ -238,7 +241,7 @@ class AzureDriver(ProviderDriver):
     ):
         creds_dict = provider.get_credentials()
         rg = provider.azure_resource_group
-        location = provider.azure_location or provider.default_region
+        location = str(provider.azure_location or provider.default_region)
 
         instance_type = instance_type or AZURE_DEFAULT_INSTANCE_TYPE
         vcpus, ram_mb = _parse_instance_type(instance_type)
@@ -269,15 +272,23 @@ class AzureDriver(ProviderDriver):
         compute_client = _get_compute_client(creds_dict)
 
         # --- Create public IP ---
+        from azure.mgmt.network.models import PublicIPAddress
+
         poller = network_client.public_ip_addresses.begin_create_or_update(
             rg,
             ip_name,
-            {
-                "location": location,
-                "sku": {"name": "Standard"},
-                "public_ip_allocation_method": "Static",
-                "tags": {"managed-by": "troshka", "troshka-host-id": host_id[:12]},
-            },
+            cast(
+                PublicIPAddress,
+                {
+                    "location": location,
+                    "sku": {"name": "Standard"},
+                    "public_ip_allocation_method": "Static",
+                    "tags": {
+                        "managed-by": "troshka",
+                        "troshka-host-id": host_id[:12],
+                    },
+                },
+            ),
         )
         public_ip_resource = poller.result()
         logger.info("Created public IP %s (%s)", ip_name, public_ip_resource.ip_address)
@@ -298,8 +309,10 @@ class AzureDriver(ProviderDriver):
         if provider.azure_nsg_id:
             nic_params["network_security_group"] = {"id": provider.azure_nsg_id}
 
+        from azure.mgmt.network.models import NetworkInterface
+
         poller = network_client.network_interfaces.begin_create_or_update(
-            rg, nic_name, nic_params
+            rg, nic_name, cast(NetworkInterface, nic_params)
         )
         nic = poller.result()
         logger.info("Created NIC %s", nic_name)
@@ -362,6 +375,7 @@ class AzureDriver(ProviderDriver):
             SshPublicKey,
             StorageProfile,
             VirtualMachine,
+            VirtualMachineProperties,
         )
 
         if "id" in image_ref:
@@ -374,9 +388,11 @@ class AzureDriver(ProviderDriver):
                 version=image_ref["version"],
             )
 
-        vm_obj = VirtualMachine(
-            location=location,
-            tags={"managed-by": "troshka", "troshka-host-id": host_id[:12]},
+        vm_tags: dict[str, str] = {
+            "managed-by": "troshka",
+            "troshka-host-id": host_id[:12],
+        }
+        vm_props = VirtualMachineProperties(
             hardware_profile=HardwareProfile(vm_size=instance_type),
             storage_profile=StorageProfile(
                 image_reference=image_reference,
@@ -419,8 +435,18 @@ class AzureDriver(ProviderDriver):
                 ),
             ),
             network_profile=NetworkProfile(
-                network_interfaces=[NetworkInterfaceReference(id=nic.id, primary=True)]
+                network_interfaces=[
+                    cast(
+                        NetworkInterfaceReference,
+                        {"id": nic.id, "primary": True},
+                    )
+                ]
             ),
+        )
+        vm_obj = VirtualMachine(
+            location=location,
+            tags=vm_tags,
+            properties=vm_props,
         )
 
         if plan_info:
@@ -466,7 +492,7 @@ class AzureDriver(ProviderDriver):
             if power_state == "running":
                 # Get IPs from the NIC
                 nic_info = network_client.network_interfaces.get(rg, nic_name)
-                for ip_config in nic_info.ip_configurations:
+                for ip_config in nic_info.ip_configurations or []:
                     if ip_config.private_ip_address:
                         private_ip = ip_config.private_ip_address
                     if ip_config.public_ip_address:
@@ -580,18 +606,22 @@ class AzureDriver(ProviderDriver):
         if vm.network_profile and vm.network_profile.network_interfaces:
             nic_ref = vm.network_profile.network_interfaces[0]
             # Extract NIC name from the resource ID
-            nic_name = nic_ref.id.rsplit("/", 1)[-1]
-            try:
-                nic_info = network_client.network_interfaces.get(rg, nic_name)
-                for ip_config in nic_info.ip_configurations:
-                    if ip_config.private_ip_address:
-                        private_ip = ip_config.private_ip_address
-                    if ip_config.public_ip_address:
-                        pip_name = ip_config.public_ip_address.id.rsplit("/", 1)[-1]
-                        pip = network_client.public_ip_addresses.get(rg, pip_name)
-                        public_ip = pip.ip_address
-            except Exception:
-                logger.debug("Could not retrieve NIC info for %s", instance_id)
+            if nic_ref.id:
+                nic_name = nic_ref.id.rsplit("/", 1)[-1]
+                try:
+                    nic_info = network_client.network_interfaces.get(rg, nic_name)
+                    for ip_config in nic_info.ip_configurations or []:
+                        if ip_config.private_ip_address:
+                            private_ip = ip_config.private_ip_address
+                        if (
+                            ip_config.public_ip_address
+                            and ip_config.public_ip_address.id
+                        ):
+                            pip_name = ip_config.public_ip_address.id.rsplit("/", 1)[-1]
+                            pip = network_client.public_ip_addresses.get(rg, pip_name)
+                            public_ip = pip.ip_address
+                except Exception:
+                    logger.debug("Could not retrieve NIC info for %s", instance_id)
 
         return {
             "instance_id": instance_id,
@@ -720,10 +750,12 @@ class AzureDriver(ProviderDriver):
         dns_client = _get_dns_client(creds_dict)
 
         # Create or update a DNS zone
+        from azure.mgmt.dns.models import Zone
+
         zone = dns_client.zones.create_or_update(
             rg,
             base_domain,
-            {"location": "global", "zone_type": "Public"},
+            cast(Zone, {"location": "global", "zone_type": "Public"}),
         )
         logger.info("Created Azure DNS zone %s", base_domain)
 
@@ -756,15 +788,20 @@ class AzureDriver(ProviderDriver):
         else:
             record_name = hostname
 
+        from azure.mgmt.dns.models import RecordSet
+
         dns_client.record_sets.create_or_update(
             rg,
             zone_name,
             record_name,
             "A",
-            {
-                "ttl": 60,
-                "arecords": [{"ipv4_address": ip_address}],
-            },
+            cast(
+                RecordSet,
+                {
+                    "ttl": 60,
+                    "arecords": [{"ipv4_address": ip_address}],
+                },
+            ),
         )
         logger.info("DNS: created %s -> %s", hostname, ip_address)
 
@@ -825,15 +862,23 @@ class AzureDriver(ProviderDriver):
         network_client = _get_network_client(creds_dict)
         ip_name = f"troshka-eip-{eip_id[:12]}"
 
+        from azure.mgmt.network.models import PublicIPAddress as PublicIPAddressModel
+
         poller = network_client.public_ip_addresses.begin_create_or_update(
             rg,
             ip_name,
-            {
-                "location": location,
-                "sku": {"name": "Standard"},
-                "public_ip_allocation_method": "Static",
-                "tags": {"managed-by": "troshka", "troshka-eip-id": eip_id[:12]},
-            },
+            cast(
+                PublicIPAddressModel,
+                {
+                    "location": location,
+                    "sku": {"name": "Standard"},
+                    "public_ip_allocation_method": "Static",
+                    "tags": {
+                        "managed-by": "troshka",
+                        "troshka-eip-id": eip_id[:12],
+                    },
+                },
+            ),
         )
         pip = poller.result()
         public_ip = pip.ip_address
@@ -856,20 +901,31 @@ class AzureDriver(ProviderDriver):
         nic = network_client.network_interfaces.get(rg, nic_name)
 
         # Add a secondary IP config pointing to this public IP
+        from azure.mgmt.network.models import (
+            NetworkInterface as NetworkInterfaceModel,
+            NetworkInterfaceIPConfiguration,
+        )
+
         secondary_name = f"eip-{allocation_id}"
+        ip_configs = nic.ip_configurations or []
         # Check if this IP config already exists
-        existing_names = {ipc.name for ipc in nic.ip_configurations}
+        existing_names = {ipc.name for ipc in ip_configs}
         if secondary_name not in existing_names:
-            nic.ip_configurations.append(
-                {
-                    "name": secondary_name,
-                    "subnet": {"id": nic.ip_configurations[0].subnet.id},
-                    "public_ip_address": {"id": pip.id},
-                    "private_ip_allocation_method": "Dynamic",
-                }
+            primary_subnet = ip_configs[0].subnet if ip_configs else None
+            subnet_id = primary_subnet.id if primary_subnet else None
+            ip_configs.append(
+                cast(
+                    NetworkInterfaceIPConfiguration,
+                    {
+                        "name": secondary_name,
+                        "subnet": {"id": subnet_id},
+                        "public_ip_address": {"id": pip.id},
+                        "private_ip_allocation_method": "Dynamic",
+                    },
+                )
             )
             poller = network_client.network_interfaces.begin_create_or_update(
-                rg, nic_name, nic.serialize()
+                rg, nic_name, cast(NetworkInterfaceModel, nic.serialize())
             )
             poller.result()
 
@@ -933,20 +989,25 @@ class AzureDriver(ProviderDriver):
             priority = priority_base + i
 
             try:
+                from azure.mgmt.network.models import SecurityRule
+
                 network_client.security_rules.begin_create_or_update(
                     rg,
                     nsg_name,
                     rule_name,
-                    {
-                        "protocol": "Tcp",
-                        "source_address_prefix": "*",
-                        "source_port_range": "*",
-                        "destination_address_prefix": dest_ip,
-                        "destination_port_range": str(port),
-                        "access": "Allow",
-                        "direction": "Inbound",
-                        "priority": priority,
-                    },
+                    cast(
+                        SecurityRule,
+                        {
+                            "protocol": "Tcp",
+                            "source_address_prefix": "*",
+                            "source_port_range": "*",
+                            "destination_address_prefix": dest_ip,
+                            "destination_port_range": str(port),
+                            "access": "Allow",
+                            "direction": "Inbound",
+                            "priority": priority,
+                        },
+                    ),
                 ).result()
             except Exception as e:
                 logger.warning("Failed to create NSG rule %s: %s", rule_name, e)

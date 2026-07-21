@@ -49,7 +49,7 @@ def _detach_install_iso(host, db_session):
 
             drv = get_provider_driver(prov)
             if hasattr(drv, "detach_iso"):
-                drv.detach_iso(prov, host.instance_id)
+                drv.detach_iso(prov, host.instance_id)  # type: ignore[attr-defined]
                 logger.info("Detached install ISO from host %s", host.id[:8])
     except Exception:
         logger.warning("Failed to detach ISO from host %s (non-fatal)", host.id[:8])
@@ -192,12 +192,12 @@ def host_storage(
                     namespace="openshift-storage",
                     label_selector="app=rook-ceph-tools",
                 )
-                if toolbox_pods.items:
+                if toolbox_pods.items:  # type: ignore[union-attr]
                     from kubernetes.stream import stream as k8s_stream
 
                     resp = k8s_stream(
                         core_api.connect_get_namespaced_pod_exec,
-                        toolbox_pods.items[0].metadata.name,
+                        toolbox_pods.items[0].metadata.name,  # type: ignore[union-attr, index]
                         "openshift-storage",
                         command=["ceph", "df", "-f", "json"],
                         stderr=True,
@@ -235,10 +235,10 @@ def host_storage(
             continue
 
         try:
-            disk = check_disk_usage(h)
+            disk: dict[str, Any] = check_disk_usage(h)  # type: ignore[assignment]
         except Exception:
             continue
-        if disk.get("error"):
+        if not disk or disk.get("error"):
             continue
         partitions = disk.get("partitions")
         if partitions:
@@ -339,7 +339,7 @@ def add_host(
         region = provider.name
     provider.get_credentials()
 
-    nfs_kwargs = {}
+    nfs_kwargs: dict[str, Any] = {}
     if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
         nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
     elif pool and pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
@@ -463,7 +463,7 @@ def add_host(
             _data_disk = get_provider_data_disk(provider_type)
 
             if not wait_for_ssh(
-                ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user
+                ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user  # type: ignore[arg-type]
             ):
                 h.agent_status = "install_failed"
                 s.commit()
@@ -479,14 +479,14 @@ def add_host(
                 _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
                 if _pool and _pool.ca_cert and _pool.ca_key:
                     _host_cert, _host_key = sign_host_cert(
-                        _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""
+                        _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""  # type: ignore[arg-type]
                     )
                     _ca_cert = _pool.ca_cert
             from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
 
             result = deploy_agent(
-                ssh_host or h.ip_address,
-                h.private_key,
+                ssh_host or h.ip_address,  # type: ignore[arg-type]
+                h.private_key,  # type: ignore[arg-type]
                 h.id,
                 storage_mode=_sm,
                 nfs_server=nfs_kwargs.get("nfs_server", ""),
@@ -523,7 +523,7 @@ def add_host(
                     from app.services.providers import get_provider_driver
 
                     fqdn = console_domain_for_host(
-                        h.instance_id, provider_console_domain
+                        h.instance_id, provider_console_domain  # type: ignore[arg-type]
                     )
                     try:
                         drv = get_provider_driver(prov_obj)
@@ -1017,6 +1017,7 @@ def poweron_host(
             _drv = _get_drv(_prov)
 
             # Wait for instance to fully stop if it's still shutting down
+            state_now = "unknown"
             for _ in range(60):
                 st_check = _drv.get_host_status(_prov, instance_id)
                 state_now = st_check["state"] if st_check else "unknown"
@@ -1041,6 +1042,7 @@ def poweron_host(
             # Poll until instance is running (up to 5 min)
             deadline = time.time() + 300
             new_ip = None
+            st: dict[str, Any] | None = None
             while time.time() < deadline:
                 st = _drv.get_host_status(_prov, instance_id)
                 if st and st.get("state") == "running":
@@ -1102,8 +1104,8 @@ def poweron_host(
             _data_disk2 = get_provider_data_disk(_provider_type)
 
             if not wait_for_ssh(
-                h.ip_address,
-                h.private_key,
+                h.ip_address,  # type: ignore[arg-type]
+                h.private_key,  # type: ignore[arg-type]
                 ssh_user=_ssh_user2,
                 port=_ssh_port2,
                 timeout=300,
@@ -1149,7 +1151,7 @@ def poweron_host(
                         _hc, _hk = _shc(
                             _pool.ca_cert,
                             _pool.ca_key,
-                            h.ip_address,
+                            h.ip_address,  # type: ignore[arg-type]
                             h.private_ip or "",
                         )
                         _kwargs["ca_cert"] = _pool.ca_cert
@@ -1158,7 +1160,7 @@ def poweron_host(
             from app.services.agent_ca_service import get_agent_ca_cert as _get_aca3
 
             _kwargs["agent_ca_cert"] = _get_aca3()
-            result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)
+            result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)  # type: ignore[arg-type]
             h.agent_status = "connected" if result["success"] else "disconnected"
 
             # Store troshkad credentials
@@ -1449,6 +1451,7 @@ def remove_host(
 
     # Get provider credentials for termination
     creds = None
+    provider = None
     if host.provider_id:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if provider:
@@ -1547,7 +1550,7 @@ def remove_host(
                 if not h:
                     return
                 if not status or status["state"] == "terminated":
-                    if h.key_pair_name and prov:
+                    if h.key_pair_name and prov and drv:
                         try:
                             drv.delete_key_pair(prov, h.key_pair_name)
                         except Exception:
@@ -1891,6 +1894,8 @@ def evacuate_host_endpoint(
         raise HTTPException(400, "Host is not in a storage pool")
 
     pool = db.query(StoragePool).get(host.storage_pool_id)
+    if not pool:
+        raise HTTPException(400, "Storage pool not found")
     if pool.mode == "local":
         raise HTTPException(400, "Cannot evacuate hosts in local-mode pools")
 

@@ -2101,7 +2101,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             from kubernetes import client as _klient
 
             _batch = _klient.BatchV1Api(_ac)
-            for job in _batch.list_namespaced_job(_ns).items:
+            for job in _batch.list_namespaced_job(_ns).items:  # type: ignore[union-attr]
                 try:
                     _batch.delete_namespaced_job(
                         name=job.metadata.name,
@@ -2138,7 +2138,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 _pods = _cv1.list_namespaced_pod(
                     _ns, label_selector="kubevirt.io=virt-launcher"
                 )
-                if cr_gone and not _vmis.get("items", []) and not _pods.items:
+                if cr_gone and not _vmis.get("items", []) and not _pods.items:  # type: ignore[union-attr]
                     logger.info(
                         "Deploy %s: old resources cleaned up after %ds",
                         project_id[:8],
@@ -2238,7 +2238,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                         namespace=ns,
                         plural="datavolumes",
                     )
-                    all_dvs.extend(dvs.get("items", []))
+                    all_dvs.extend(dvs.get("items", []))  # type: ignore[union-attr]
                 except Exception:
                     pass
             clone_name_map = {}
@@ -2454,7 +2454,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     )
 
 
-def deploy_project_async(
+def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
     """Background thread: deploy a project's topology to a host."""
@@ -3577,6 +3577,7 @@ def _clean_kubelet_certs(
                 }
                 if bastion_disk_path:
                     recert_params["bastion_disk"] = bastion_disk_path
+                kubeadmin_pw = ""
                 if common_password:
                     import bcrypt
                     import secrets as _secrets

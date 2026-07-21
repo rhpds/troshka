@@ -77,9 +77,9 @@ def test_is_ocp_topology_false_no_rhcos():
     assert _is_ocp_topology(topo) is False
 
 
-def test_is_ocp_topology_false_no_bastion():
+def test_is_ocp_topology_true_no_bastion():
     topo = _make_ocp_topology([{"name": "cp-0", "os": "rhcos"}])
-    assert _is_ocp_topology(topo) is False
+    assert _is_ocp_topology(topo) is True
 
 
 def test_is_pattern_deploy_true():

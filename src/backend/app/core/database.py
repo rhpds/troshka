@@ -1,9 +1,11 @@
 import logging
 import os
 from collections.abc import Generator
+from typing import cast
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from app.core.config import config
 
@@ -16,7 +18,7 @@ engine = create_engine(
 
 @event.listens_for(engine, "checkout")
 def _on_checkout(dbapi_conn, connection_record, connection_proxy):
-    pool = engine.pool
+    pool = cast(QueuePool, engine.pool)
     _log.debug(
         "DB pool: %d/%d checked out, %d overflow",
         pool.checkedout(),
@@ -27,7 +29,7 @@ def _on_checkout(dbapi_conn, connection_record, connection_proxy):
 
 @event.listens_for(engine, "checkin")
 def _on_checkin(dbapi_conn, connection_record):
-    pool = engine.pool
+    pool = cast(QueuePool, engine.pool)
     if pool.checkedout() > pool.size():
         _log.warning(
             "DB pool pressure: %d/%d checked out, %d overflow",

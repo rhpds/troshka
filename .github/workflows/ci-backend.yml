@@ -28,14 +28,10 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
-      - name: Type check with mypy
+      - name: Type check with pyright
         run: |
-          count=$(mypy app/ --ignore-missing-imports 2>&1 | tail -1 | grep -oP '\d+(?= error)' || echo 0)
-          echo "mypy: $count errors (baseline: 124)"
-          if [ "$count" -gt 124 ]; then
-            echo "::error::mypy errors increased from 124 to $count"
-            exit 1
-          fi
+          pip install pyright
+          pyright app/
 
       - name: Run tests
         run: pytest tests/ -v --tb=short

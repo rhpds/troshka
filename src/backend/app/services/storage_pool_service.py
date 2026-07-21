@@ -1,6 +1,7 @@
 import datetime
 import logging
 import threading
+from typing import Any
 
 import boto3
 
@@ -253,6 +254,8 @@ def _poll_fsx_until_available(
             status = fs["Lifecycle"]
             if status == "AVAILABLE":
                 pool = db.query(StoragePool).get(pool_id)
+                if not pool:
+                    return
                 pool.status = "available"
                 pool.fsx_dns_name = fs.get("DNSName")
                 if fs.get("NetworkInterfaceIds"):
@@ -269,6 +272,8 @@ def _poll_fsx_until_available(
                 return
             elif status in ("FAILED", "DELETING"):
                 pool = db.query(StoragePool).get(pool_id)
+                if not pool:
+                    return
                 pool.status = "error"
                 db.commit()
                 logger.error(
@@ -277,6 +282,8 @@ def _poll_fsx_until_available(
                 return
 
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.status = "error"
         db.commit()
         logger.error("FSx %s timed out for pool %s", filesystem_id, pool_id)
@@ -304,12 +311,16 @@ def provision_fsx_pool(
             throughput_mbps,
         )
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.fsx_filesystem_id = result["filesystem_id"]
         pool.fsx_dns_name = result.get("dns_name")
         db.commit()
     except Exception as e:
         logger.error("FSx provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.status = "error"
         db.commit()
         return
@@ -562,11 +573,11 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
                 ],
             ),
         )
-        created_svc = core_api.create_namespaced_service(ODF_NAMESPACE, body=svc)
+        created_svc: Any = core_api.create_namespaced_service(ODF_NAMESPACE, body=svc)
         node_port = created_svc.spec.ports[0].node_port
         logger.info("NodePort service %s created, port %d", svc_name, node_port)
 
-        nfs_pod = core_api.list_namespaced_pod(
+        nfs_pod: Any = core_api.list_namespaced_pod(
             ODF_NAMESPACE,
             label_selector=",".join(
                 f"{k}={v}" for k, v in CEPH_NFS_SVC_SELECTOR.items()
@@ -575,13 +586,13 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
         nfs_node_name = nfs_pod.items[0].spec.node_name if nfs_pod.items else None
         node_ip = None
         if nfs_node_name:
-            node = core_api.read_node(nfs_node_name)
+            node: Any = core_api.read_node(nfs_node_name)
             for addr in node.status.addresses:
                 if addr.type == "InternalIP":
                     node_ip = addr.address
                     break
         if not node_ip:
-            nodes = core_api.list_node()
+            nodes: Any = core_api.list_node()
             for n in nodes.items:
                 for addr in n.status.addresses:
                     if addr.type == "InternalIP":
@@ -716,6 +727,7 @@ def create_netapp_pool_and_volume(
         storage_pool=pool,
     )
     pool_result = op.result()
+    assert pool_result is not None
     logger.info("NetApp storage pool created: %s", pool_result.name)
 
     volume = netapp_v1.Volume(
@@ -730,6 +742,7 @@ def create_netapp_pool_and_volume(
         volume=volume,
     )
     vol_result = op.result()
+    assert vol_result is not None
     logger.info("NetApp volume created: %s", vol_result.name)
 
     mount_ip = None
@@ -788,6 +801,8 @@ def provision_netapp_pool(
             service_level,
         )
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.netapp_pool_id = result["pool_name"]
         pool.netapp_mount_ip = result["mount_ip"]
         pool.netapp_volume_name = result["share_name"]
@@ -799,6 +814,8 @@ def provision_netapp_pool(
     except Exception as e:
         logger.error("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.status = "error"
         db.commit()
     finally:
@@ -888,7 +905,7 @@ def create_azure_files_nfs(
         },
     }
     pe_poller = network_client.private_endpoints.begin_create_or_update(  # type: ignore[call-overload]
-        resource_group, f"{account_name}-pe", pe_params
+        resource_group, f"{account_name}-pe", pe_params  # type: ignore[arg-type]
     )
     pe_result = pe_poller.result()
 
@@ -905,7 +922,7 @@ def create_azure_files_nfs(
         dns_client.private_zones.get(resource_group, dns_zone)
     except Exception:
         dns_client.private_zones.begin_create_or_update(  # type: ignore[call-overload]
-            resource_group, dns_zone, {"location": "global"}
+            resource_group, dns_zone, {"location": "global"}  # type: ignore[arg-type]
         ).result()
 
     try:
@@ -917,7 +934,7 @@ def create_azure_files_nfs(
             resource_group,
             dns_zone,
             "troshka-vnet-link",
-            {
+            {  # type: ignore[arg-type]
                 "location": "global",
                 "virtual_network": {"id": vnet_id},
                 "registration_enabled": False,
@@ -931,7 +948,7 @@ def create_azure_files_nfs(
             dns_zone,
             account_name,
             "A",
-            {"ttl": 300, "a_records": [{"ipv4_address": pe_ip}]},
+            {"ttl": 300, "a_records": [{"ipv4_address": pe_ip}]},  # type: ignore[arg-type]
         )
     except Exception:
         logger.warning("Failed to create DNS A record for %s", account_name)
@@ -1003,6 +1020,8 @@ def provision_azure_files_pool(
             credentials, resource_group, location, subnet_id, capacity_gb, share_name
         )
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.azure_storage_account = result["storage_account"]
         pool.azure_file_share_name = result["share_name"]
         pool.azure_file_share_url = result["mount_url"]
@@ -1017,6 +1036,8 @@ def provision_azure_files_pool(
     except Exception as e:
         logger.error("Azure Files provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.query(StoragePool).get(pool_id)
+        if not pool:
+            return
         pool.status = "error"
         db.commit()
     finally:

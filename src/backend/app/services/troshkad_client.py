@@ -7,6 +7,7 @@ Uses urllib3 connection pooling for performance and reliability.
 import json
 import logging
 import time
+from typing import Any
 
 import urllib3
 from urllib3.exceptions import MaxRetryError, SSLError
@@ -55,7 +56,7 @@ def _get_pool(host):
     key = f"{host.ip_address}:{fp_clean}"
     pool = _pools.get(key)
     if pool is None:
-        pool_kwargs = dict(
+        pool_kwargs: dict[str, Any] = dict(
             host=host.ip_address,
             port=TROSHKAD_PORT,
             maxsize=4,

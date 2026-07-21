@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import datetime
 import json
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.host import Host
 
 
 class Provider(Base):

@@ -744,7 +744,7 @@ def update_project(
             if project.auto_stop_started_at:
                 project.auto_stop_expires_at = (
                     project.auto_stop_started_at
-                    + datetime.timedelta(minutes=project.auto_stop_minutes)
+                    + datetime.timedelta(minutes=project.auto_stop_minutes or 0)
                 )
             project.auto_stop_warned = False
 
@@ -761,7 +761,7 @@ def update_project(
             if project.auto_delete_started_at:
                 project.lifetime_expires_at = (
                     project.auto_delete_started_at
-                    + datetime.timedelta(minutes=project.auto_delete_minutes)
+                    + datetime.timedelta(minutes=project.auto_delete_minutes or 0)
                 )
             project.auto_delete_warned = False
 

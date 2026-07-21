@@ -158,6 +158,9 @@ def create_pool(
     if body.mode == "shared-fsx":
         credentials = provider.get_credentials()
         region = provider.default_region
+        sg_id = provider.security_group_id
+        if not region or not sg_id:
+            raise HTTPException(400, "Provider missing region or security group")
 
         subnet_id = storage_pool_service.ensure_subnet_in_az(
             credentials, region, provider.vpc_id, body.az  # type: ignore[arg-type]
@@ -165,9 +168,7 @@ def create_pool(
         pool.subnet_id = subnet_id
         db.commit()
 
-        storage_pool_service.add_sg_rules_for_shared_storage(
-            credentials, region, provider.security_group_id
-        )
+        storage_pool_service.add_sg_rules_for_shared_storage(credentials, region, sg_id)
 
         t = threading.Thread(
             target=storage_pool_service.provision_fsx_pool,
@@ -176,7 +177,7 @@ def create_pool(
                 credentials,
                 region,
                 subnet_id,
-                provider.security_group_id,
+                sg_id,
                 body.fsx_storage_gb,
                 body.fsx_throughput_mbps,
             ),
@@ -187,8 +188,11 @@ def create_pool(
     elif body.mode == "shared-byo":
         credentials = provider.get_credentials()
         region = provider.default_region
+        sg_id = provider.security_group_id
+        if not region or not sg_id:
+            raise HTTPException(400, "Provider missing region or security group")
         storage_pool_service.add_sg_rules_for_shared_storage(
-            credentials, region, provider.security_group_id, include_nfs=False
+            credentials, region, sg_id, include_nfs=False
         )
 
     elif body.mode == "shared-ceph-nfs":
@@ -260,7 +264,15 @@ def update_pool(
 
     if pool.mode == "shared-fsx":
         provider = db.query(Provider).get(pool.provider_id)
+        if not provider:
+            raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
+        region = provider.default_region
+        if not region:
+            raise HTTPException(400, "Provider missing default region")
+        fsx_id = pool.fsx_filesystem_id
+        if not fsx_id:
+            raise HTTPException(400, "Pool missing FSx filesystem ID")
 
         if (
             body.fsx_throughput_mbps
@@ -268,8 +280,8 @@ def update_pool(
         ):
             storage_pool_service.update_fsx_throughput(
                 credentials,
-                provider.default_region,
-                pool.fsx_filesystem_id,
+                region,
+                fsx_id,
                 body.fsx_throughput_mbps,
             )
             pool.fsx_throughput_mbps = body.fsx_throughput_mbps
@@ -285,8 +297,8 @@ def update_pool(
                 )
             storage_pool_service.update_fsx_storage(
                 credentials,
-                provider.default_region,
-                pool.fsx_filesystem_id,
+                region,
+                fsx_id,
                 body.fsx_storage_gb,
             )
             pool.fsx_storage_gb = body.fsx_storage_gb
@@ -380,13 +392,20 @@ def delete_pool(
 
     if pool.mode == "shared-fsx" and pool.fsx_filesystem_id:
         provider = db.query(Provider).get(pool.provider_id)
+        if not provider:
+            raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
+        region = provider.default_region
+        if not region:
+            raise HTTPException(400, "Provider missing default region")
         storage_pool_service.delete_fsx_filesystem(
-            credentials, provider.default_region, pool.fsx_filesystem_id
+            credentials, region, pool.fsx_filesystem_id
         )
 
     if pool.mode == "shared-ceph-nfs":
         provider = db.query(Provider).get(pool.provider_id)
+        if not provider:
+            raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
         storage_pool_service.delete_ceph_nfs_pool(
             pool.id, credentials, pool.ceph_subvolume_group
@@ -448,9 +467,14 @@ def probe_azs(
     else:
         raise HTTPException(404, "Storage pool not found")
 
+    if not provider:
+        raise HTTPException(404, "Provider not found")
     credentials = provider.get_credentials()
+    region = provider.default_region
+    if not region:
+        raise HTTPException(400, "Provider missing default region")
     az_results = storage_pool_service.probe_az_capacity(
-        credentials, provider.default_region, instance_types
+        credentials, region, instance_types
     )
 
     results = []

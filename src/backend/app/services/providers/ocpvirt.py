@@ -763,7 +763,8 @@ class OCPVirtDriver(ProviderDriver):
             else:
                 raise
 
-        transit_port = created_svc.spec.ports[0].node_port
+        svc_obj: Any = created_svc
+        transit_port = svc_obj.spec.ports[0].node_port
 
         # Set up nftables DNAT on the host: transit_port → VM int_ip:vm_port
         ns_name = f"troshka-{project_id[:8]}"
@@ -970,12 +971,15 @@ class OCPVirtDriver(ProviderDriver):
         namespace = creds.get("namespace", "troshka")
         custom_api, _ = _get_k8s_clients(creds)
 
-        vm = custom_api.get_namespaced_custom_object(
-            group="kubevirt.io",
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=instance_id,
+        vm = cast(
+            dict[str, Any],
+            custom_api.get_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=instance_id,
+            ),
         )
 
         spec = vm.get("spec", {}).get("template", {}).get("spec", {})

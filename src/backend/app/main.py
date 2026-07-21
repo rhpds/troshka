@@ -198,7 +198,9 @@ async def lifespan(app):
                 try:
                     creds = provider.get_credentials()
                     add_sg_rules_for_shared_storage(
-                        creds, provider.default_region, provider.security_group_id
+                        creds,
+                        provider.default_region or "",
+                        provider.security_group_id,
                     )
                     logger.info("Startup: synced SG rules for pool %s", pool.name)
                 except Exception as e:
@@ -265,7 +267,11 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
         ssh_port = get_provider_ssh_port(provider.type)
 
         if not wait_for_ssh(
-            ssh_host, host.private_key, port=ssh_port, ssh_user=ssh_user, timeout=120
+            ssh_host or "",
+            host.private_key or "",
+            port=ssh_port,
+            ssh_user=ssh_user,
+            timeout=120,
         ):
             logger.warning("PB retry: SSH not available on %s", host_id[:8])
             return
@@ -283,7 +289,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
             cert_pem, key_pem = sign_host_cert(
                 pool.ca_cert,
                 pool.ca_key,
-                host.ip_address,
+                host.ip_address or "",
                 host.private_ip or "",
             )
             ca_pem = pool.ca_cert
@@ -303,7 +309,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
         from app.services.agent_ca_service import get_agent_ca_cert
 
         deploy_agent(
-            ssh_host,
+            ssh_host or "",
             host.private_key or "",
             host_id=host_id,
             storage_mode=storage_mode,

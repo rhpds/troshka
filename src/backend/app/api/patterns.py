@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_
+from sqlalchemy import or_, false as sa_false
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -343,7 +343,7 @@ def list_patterns(
         q = db.query(Pattern).filter(
             or_(
                 Pattern.owner_id == user.id,
-                Pattern.id.in_(shared_ids) if shared_ids else False,
+                Pattern.id.in_(shared_ids) if shared_ids else sa_false(),
                 Pattern.visibility == "public",
             )
         )

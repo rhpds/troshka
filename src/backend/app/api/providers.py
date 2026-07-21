@@ -459,11 +459,12 @@ def delete_provider(
     if provider.type == "kubevirt":
         from app.models.host import Host
 
+        creds = provider.get_credentials()
+        core_api = None
         try:
             from app.services.providers.kubevirt import _get_k8s_clients
 
             custom_api, core_api, api_client = _get_k8s_clients(provider)
-            creds = provider.get_credentials()
             operator_ns = creds.get("namespace", "troshka-operator")
             cache_ns = creds.get("cache_namespace", "troshka-cache")
 
@@ -522,7 +523,8 @@ def delete_provider(
                 try:
                     prefix = creds.get("project_prefix", "troshka-")
                     proj_ns = f"{prefix}{project.id[:8]}"
-                    core_api.delete_namespace(name=proj_ns)
+                    if core_api is not None:
+                        core_api.delete_namespace(name=proj_ns)
                 except Exception:
                     pass
                 db.delete(project)
@@ -952,7 +954,9 @@ def discover_isos(
 
         _, core_api = _get_k8s_clients(creds)
         namespace = creds.get("namespace", "troshka")
-        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+        pvcs: Any = core_api.list_namespaced_persistent_volume_claim(
+            namespace=namespace
+        )
         isos = []
         for pvc in pvcs.items:
             name = pvc.metadata.name
@@ -987,7 +991,7 @@ def discover_datasources(
         from app.services.providers.ocpvirt import _get_k8s_clients
 
         custom_api, _ = _get_k8s_clients(creds)
-        ds_list = custom_api.list_namespaced_custom_object(
+        ds_list: dict[str, Any] = custom_api.list_namespaced_custom_object(  # type: ignore[assignment]
             group="cdi.kubevirt.io",
             version="v1beta1",
             namespace="openshift-virtualization-os-images",
@@ -1073,7 +1077,7 @@ def test_provider(
             custom_api, core_api = _get_k8s_clients(creds)
             ns = creds.get("namespace", "troshka")
             core_api.read_namespace(ns)
-            nodes = core_api.list_node()
+            nodes: Any = core_api.list_node()
             node_count = len(nodes.items)
             return {
                 "status": "ok",
@@ -1087,7 +1091,7 @@ def test_provider(
             )
 
             custom_api, core_api, _ = _get_kv_clients(provider)
-            nodes = core_api.list_node()
+            nodes: Any = core_api.list_node()
             node_count = len(nodes.items)
 
             operator_ns = creds.get("namespace", "troshka-operator")
@@ -1095,7 +1099,7 @@ def test_provider(
             operator_status = "not installed"
             try:
                 core_api.read_namespace(operator_ns)
-                deps = custom_api.list_namespaced_custom_object(
+                deps: dict[str, Any] = custom_api.list_namespaced_custom_object(  # type: ignore[assignment]
                     group="apps",
                     version="v1",
                     namespace=operator_ns,
@@ -1118,16 +1122,19 @@ def test_provider(
 
             crds_installed = False
             crds_status = "missing"
-            try:
-                from kubernetes import client as k8s_client
+            from kubernetes import client as k8s_client
+            from kubernetes.client.exceptions import (
+                ApiException as K8sApiException,
+            )
 
+            try:
                 ext_api = k8s_client.ApiextensionsV1Api(_get_kv_clients(provider)[2])
                 ext_api.read_custom_resource_definition(
                     "troshkaprojects.troshka.redhat.com"
                 )
                 crds_installed = True
                 crds_status = "installed"
-            except k8s_client.exceptions.ApiException as e:
+            except K8sApiException as e:
                 if e.status == 403:
                     crds_status = "no permission (SA needs apiextensions.k8s.io access)"
                 else:
@@ -1776,12 +1783,13 @@ def create_network_azure(
 
     # Create Resource Group
     resource_client = ResourceManagementClient(credential, subscription_id)
-    resource_client.resource_groups.create_or_update(rg_name, {"location": location})
+    rg_params: Any = {"location": location}
+    resource_client.resource_groups.create_or_update(rg_name, rg_params)
 
     network_client = NetworkManagementClient(credential, subscription_id)
 
     # Create NSG with rules
-    nsg_params = {
+    nsg_params: Any = {
         "location": location,
         "security_rules": [
             {
@@ -1830,13 +1838,13 @@ def create_network_azure(
             },
         ],
     }
-    nsg_poller = network_client.network_security_groups.begin_create_or_update(  # type: ignore[call-overload]
+    nsg_poller = network_client.network_security_groups.begin_create_or_update(
         rg_name, "troshka-nsg", nsg_params
     )
     nsg = nsg_poller.result()
 
     # Create VNet with subnet
-    vnet_params = {
+    vnet_params: Any = {
         "location": location,
         "address_space": {"address_prefixes": ["10.100.0.0/16"]},
         "subnets": [
@@ -1847,7 +1855,7 @@ def create_network_azure(
             }
         ],
     }
-    vnet_poller = network_client.virtual_networks.begin_create_or_update(  # type: ignore[call-overload]
+    vnet_poller = network_client.virtual_networks.begin_create_or_update(
         rg_name, "troshka-vnet", vnet_params
     )
     vnet = vnet_poller.result()

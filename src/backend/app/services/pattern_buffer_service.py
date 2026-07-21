@@ -244,11 +244,18 @@ def _provision_pattern_buffer(pool_id: str):
         ] = f"Provisioning failed ({type(e).__name__}). Check server logs for details."
         db.rollback()
         try:
-            if result and result.get("instance_id") and provider:
+            _result = locals().get("result")
+            _provider = locals().get("provider")
+            if (
+                _result
+                and isinstance(_result, dict)
+                and _result.get("instance_id")
+                and _provider
+            ):
                 from app.services.providers import get_provider_driver as _get_drv
 
-                _get_drv(provider).terminate_host(provider, result["instance_id"])
-                logger.info("Cleaned up orphaned instance %s", result["instance_id"])
+                _get_drv(_provider).terminate_host(_provider, _result["instance_id"])
+                logger.info("Cleaned up orphaned instance %s", _result["instance_id"])
         except Exception:
             logger.warning("Failed to clean up instance after error", exc_info=True)
     finally:
@@ -389,6 +396,7 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
         new_ip = inst.get("PublicIpAddress", "")
     else:
         # Non-EC2: poll driver for status
+        status: dict | None = None
         for _ in range(60):
             status = drv.get_host_status(provider, host.instance_id)
             if status and status["state"] == "running":

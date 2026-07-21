@@ -49,6 +49,9 @@ def validate_migration(
         return errors
 
     pool = db.query(StoragePool).get(source.storage_pool_id)
+    if not pool:
+        errors.append("Storage pool not found")
+        return errors
     if pool.mode == "local":
         errors.append("Migration requires shared storage (pool mode is 'local')")
 
@@ -108,6 +111,8 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         project = db.query(Project).get(project_id)
         source = db.query(Host).get(source_host_id)
         target = db.query(Host).get(target_host_id)
+        if not project or not source or not target:
+            raise RuntimeError("Project, source, or target host not found")
 
         project.state = "migrating"
         db.commit()
@@ -204,6 +209,9 @@ def _do_evacuate_host(host_id: str):
     db = SessionLocal()
     try:
         host = db.query(Host).get(host_id)
+        if not host:
+            logger.error("Evacuate %s: host not found", host_id[:8])
+            return
 
         projects = (
             db.query(Project)

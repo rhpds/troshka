@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -504,7 +505,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
         if not host:
             return {"error": "Host not found"}
 
-        report = {"host_id": host_id, "host_ip": host.ip_address}
+        report: dict[str, Any] = {"host_id": host_id, "host_ip": host.ip_address}
 
         # Skip GC if any project is deploying on this host
         from app.models.project import Project
@@ -654,7 +655,11 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
         if pool.mode == "local":
             return {"error": "Pool-level GC only applies to shared storage pools"}
 
-        report = {"pool_id": pool_id, "pool_name": pool.name, "mode": pool.mode}
+        report: dict[str, Any] = {
+            "pool_id": pool_id,
+            "pool_name": pool.name,
+            "mode": pool.mode,
+        }
 
         # Find a connected host to run filesystem scans
         scan_host = (

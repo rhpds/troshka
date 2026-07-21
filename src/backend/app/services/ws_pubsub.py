@@ -177,12 +177,13 @@ def _poll_active_projects():
                     try:
                         custom_api, _, _ = _get_k8s_clients(provider)
                         namespace = _project_ns(provider, project.id)
-                        vmis = custom_api.list_namespaced_custom_object(
+                        vmis_raw = custom_api.list_namespaced_custom_object(
                             group="kubevirt.io",
                             version="v1",
                             namespace=namespace,
                             plural="virtualmachineinstances",
                         )
+                        vmis: dict = vmis_raw if isinstance(vmis_raw, dict) else {}
                         vmi_phases = {}
                         for vmi in vmis.get("items", []):
                             vmi_phases[vmi["metadata"]["name"]] = vmi.get(

@@ -915,8 +915,8 @@ def deploy_agent(
                 timeout=300,
             )
         except subprocess.TimeoutExpired as te:
-            stdout = te.stdout if isinstance(te.stdout, str) else ""
-            stderr = te.stderr if isinstance(te.stderr, str) else ""
+            stdout = str(te.stdout) if te.stdout else ""
+            stderr = str(te.stderr) if te.stderr else ""
             partial = stdout + stderr
             last_lines = "\n".join(partial.strip().splitlines()[-15:])
             logger.error(

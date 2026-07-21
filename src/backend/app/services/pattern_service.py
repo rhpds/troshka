@@ -501,14 +501,15 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     for attempt in range(270):
         _time.sleep(10)
         try:
-            cr = custom_api.get_namespaced_custom_object(
+            cr_obj = custom_api.get_namespaced_custom_object(
                 group=CRD_GROUP,
                 version=CRD_VERSION,
                 namespace=namespace,
                 plural="troshkaprojects",
                 name=cr_name,
             )
-            cr_status = cr.get("status", {})
+            cr: dict = cr_obj if isinstance(cr_obj, dict) else {}
+            cr_status: dict = cr.get("status") or {}
             phase = cr_status.get("phase", "")
             progress = cr_status.get("captureProgress", "")
 
@@ -617,9 +618,11 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
                 for cd in captured_disks
             ],
         }
-        s3_storage.put_object(
-            f"patterns/{pattern_id}/metadata.json",
-            _json2.dumps(metadata).encode(),
+        s3_storage._get_s3_client().put_object(
+            Bucket=s3_storage._bucket(),
+            Key=f"patterns/{pattern_id}/metadata.json",
+            Body=_json2.dumps(metadata).encode(),
+            ContentType="application/json",
         )
     except Exception:
         log.warning("Failed to save metadata.json for pattern %s", pattern_id[:8])
@@ -627,13 +630,14 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     # Optionally restart VMs
     if restart_after:
         try:
-            vms = custom_api.list_namespaced_custom_object(
+            vms_obj = custom_api.list_namespaced_custom_object(
                 group="kubevirt.io",
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
             )
-            for vm in vms.get("items", []):
+            vms_list: dict = vms_obj if isinstance(vms_obj, dict) else {}
+            for vm in vms_list.get("items", []):
                 custom_api.patch_namespaced_custom_object(
                     group="kubevirt.io",
                     version="v1",
