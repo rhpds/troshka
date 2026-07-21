@@ -192,17 +192,15 @@ def build_cloudinit_secret(vm_cr):
 
 
 def build_datavolume_from_s3(
-    name, namespace, s3_path, size_gb, s3_config, presigned_url=""
+    name, namespace, s3_path, size_gb, s3_config, secret_name="s3-credentials"  # pragma: allowlist secret
 ):
-    url = presigned_url
-    if not url:
-        bucket = s3_config.get("bucket", "")
-        endpoint = s3_config.get("endpoint", "")
-        region = s3_config.get("region", "us-east-1")
-        if endpoint and "://" in endpoint:
-            url = f"{endpoint}/{bucket}/{s3_path}"
-        else:
-            url = f"https://s3.{region}.amazonaws.com/{bucket}/{s3_path}"
+    bucket = s3_config.get("bucket", "")
+    endpoint = s3_config.get("endpoint", "")
+    region = s3_config.get("region", "us-east-1")
+    if endpoint and "://" in endpoint:
+        s3_url = f"{endpoint}/{bucket}/{s3_path}"
+    else:
+        s3_url = f"https://s3.{region}.amazonaws.com/{bucket}/{s3_path}"
     return {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",
@@ -212,8 +210,9 @@ def build_datavolume_from_s3(
         },
         "spec": {
             "source": {
-                "http": {
-                    "url": url,
+                "s3": {
+                    "url": s3_url,
+                    "secretRef": secret_name,
                 },
             },
             "pvc": {

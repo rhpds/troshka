@@ -1926,7 +1926,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
     driver = get_provider_driver(provider)
 
+    from app.services.s3_storage import _get_readonly_s3_config
+
     s3_config = _get_s3_config()
+    central_s3_config = _get_readonly_s3_config()
 
     import boto3
 
@@ -1939,22 +1942,28 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     )
     bucket = s3_config.get("bucket", "troshka-images")
 
-    def _presign(s3_path):
-        return s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": s3_path},
-            ExpiresIn=86400,
+    central_s3_client = None
+    central_bucket = ""
+    if central_s3_config:
+        central_s3_client = boto3.client(
+            "s3",
+            region_name=central_s3_config.get("region", "us-east-1"),
+            aws_access_key_id=central_s3_config.get("access_key_id", ""),
+            aws_secret_access_key=central_s3_config.get("secret_access_key", ""),
+            endpoint_url=central_s3_config.get("endpoint_url") or None,
         )
+        central_bucket = central_s3_config.get("bucket", "")
 
-    def _qcow2_virtual_size_gb(s3_path):
+    def _qcow2_virtual_size_gb(s3_path, use_central=False):
         try:
-            url = _presign(s3_path)
+            cl = central_s3_client if use_central else s3_client
+            bk = central_bucket if use_central else bucket
+            if not cl:
+                return 0
             import struct
-            import urllib.request
 
-            req = urllib.request.Request(url, headers={"Range": "bytes=0-31"})
-            resp = urllib.request.urlopen(req, timeout=10)
-            header = resp.read()
+            resp = cl.get_object(Bucket=bk, Key=s3_path, Range="bytes=0-31")
+            header = resp["Body"].read()
             if len(header) >= 32 and header[:4] == b"QFI\xfb":
                 vsize = struct.unpack(">Q", header[24:32])[0]
                 return int(vsize / (1024**3)) + 1
@@ -1994,9 +2003,21 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     (pid, label), data.get("patternDiskId", "")
                 )
                 s3_path = f"patterns/{pid}/{orig_disk_id}.qcow2"
-                data["presignedUrl"] = _presign(s3_path)
+                use_central = False
+                if central_s3_client:
+                    try:
+                        s3_client.head_object(Bucket=bucket, Key=s3_path)
+                    except Exception:
+                        try:
+                            central_s3_client.head_object(
+                                Bucket=central_bucket, Key=s3_path
+                            )
+                            use_central = True
+                        except Exception:
+                            pass
                 data["resolvedS3Path"] = s3_path
-                real_size = _qcow2_virtual_size_gb(s3_path)
+                data["centralSource"] = use_central
+                real_size = _qcow2_virtual_size_gb(s3_path, use_central)
                 if real_size and real_size > (data.get("size", 0) or 0):
                     data["size"] = real_size
             elif data.get("source") == "library" and data.get("libraryItemId"):
@@ -2010,8 +2031,20 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 else:
                     fmt = data.get("format", "qcow2")
                     s3_path = f"library/{data['libraryItemId']}.{fmt}"
-                data["presignedUrl"] = _presign(s3_path)
+                use_central = False
+                if central_s3_client:
+                    try:
+                        s3_client.head_object(Bucket=bucket, Key=s3_path)
+                    except Exception:
+                        try:
+                            central_s3_client.head_object(
+                                Bucket=central_bucket, Key=s3_path
+                            )
+                            use_central = True
+                        except Exception:
+                            pass
                 data["resolvedS3Path"] = s3_path
+                data["centralSource"] = use_central
 
     # Generate per-deploy SSH key pair for exec pod → VM access
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -2166,6 +2199,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             topology,
             s3_config,
             exec_ssh_key=exec_privkey_pem,
+            central_s3_config=central_s3_config,
         )
     except Exception as e:
         if "AlreadyExists" in str(e):

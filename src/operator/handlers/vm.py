@@ -24,9 +24,23 @@ def _get_s3_config_from_project(namespace):
         namespace=namespace,
         plural="troshkaprojects",
     )
-    items = projects.get("items", [])
+    items = projects.get("items", [])  # type: ignore[union-attr]
     if items:
         return items[0].get("spec", {}).get("s3Config", {})
+    return {}
+
+
+def _get_central_s3_config_from_project(namespace):
+    custom_api = client.CustomObjectsApi()
+    projects = custom_api.list_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural="troshkaprojects",
+    )
+    items = projects.get("items", [])  # type: ignore[union-attr]
+    if items:
+        return items[0].get("spec", {}).get("centralS3Config", {})
     return {}
 
 
@@ -75,7 +89,7 @@ def _wait_for_datavolume(custom_api, name, namespace, timeout=3600, owner_name=N
     return False
 
 
-def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, presigned_url=""):
+def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, secret_name="s3-credentials"):  # pragma: allowlist secret
     pvc_name = golden_pvc_name(s3_path)
     try:
         core_api.read_namespaced_persistent_volume_claim(
@@ -102,7 +116,7 @@ def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, presig
 
     dv = build_datavolume_from_s3(
         pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config,
-        presigned_url=presigned_url,
+        secret_name=secret_name,
     )
     try:
         custom_api.create_namespaced_custom_object(
@@ -137,24 +151,32 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
     disk_pvcs = {}
 
+    central_s3_config = _get_central_s3_config_from_project(namespace)
+
     for disk in spec.get("disks", []):
         disk_id = disk.get("id", "")[:8]
         pvc_name = f"{name}-disk-{disk_id}"
 
         s3_path = None
-        presigned_url = ""
+        use_central = False
         if disk.get("libraryImage", {}).get("s3Path"):
             s3_path = disk["libraryImage"]["s3Path"]
-            presigned_url = disk["libraryImage"].get("presignedUrl", "")
+            use_central = disk["libraryImage"].get("central", False)
         elif disk.get("patternImage", {}).get("s3Path"):
             s3_path = disk["patternImage"]["s3Path"]
-            presigned_url = disk["patternImage"].get("presignedUrl", "")
+            use_central = disk["patternImage"].get("central", False)
 
         if s3_path:
+            if use_central and central_s3_config:
+                disk_s3 = central_s3_config
+                secret = "s3-central-credentials"  # pragma: allowlist secret
+            else:
+                disk_s3 = s3_config
+                secret = "s3-credentials"  # pragma: allowlist secret
             size_gb = disk.get("sizeGb", 20)
             golden_name = _ensure_golden_pvc(
-                custom_api, core_api, s3_path, size_gb, s3_config,
-                presigned_url=presigned_url,
+                custom_api, core_api, s3_path, size_gb, disk_s3,
+                secret_name=secret,
             )
 
             clone_dv = build_clone_datavolume(

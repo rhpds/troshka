@@ -38,12 +38,21 @@ def _get_k8s_clients(provider):
     )
 
 
-def _ensure_s3_secret(provider, namespace, s3_config):
-    """Create or update s3-credentials Secret in the project namespace."""
+def _ensure_s3_secret(
+    provider,
+    namespace,
+    s3_config,
+    secret_name="s3-credentials",  # pragma: allowlist secret
+):
+    """Create or update S3 credentials Secret in the given namespace."""
     from kubernetes import client as k8s_client
 
     _, core_api, _ = _get_k8s_clients(provider)
     secret_data = {
+        # CDI source.s3 expects these keys
+        "accessKeyId": s3_config.get("access_key_id", ""),
+        "secretKey": s3_config.get("secret_access_key", ""),
+        # AWS env vars for export jobs
         "AWS_ACCESS_KEY_ID": s3_config.get("access_key_id", ""),
         "AWS_SECRET_ACCESS_KEY": s3_config.get("secret_access_key", ""),
         "AWS_DEFAULT_REGION": s3_config.get("region", "us-east-1"),
@@ -56,14 +65,14 @@ def _ensure_s3_secret(provider, namespace, s3_config):
         core_api.create_namespaced_secret(
             namespace=namespace,
             body=k8s_client.V1Secret(
-                metadata=k8s_client.V1ObjectMeta(name="s3-credentials"),
+                metadata=k8s_client.V1ObjectMeta(name=secret_name),
                 string_data=secret_data,
             ),
         )
     except Exception as e:
         if "AlreadyExists" in str(e):
             core_api.patch_namespaced_secret(
-                name="s3-credentials",
+                name=secret_name,
                 namespace=namespace,
                 body=k8s_client.V1Secret(string_data=secret_data),
             )
@@ -604,18 +613,21 @@ class KubeVirtDriver(ProviderDriver):
             if "AlreadyExists" not in str(e):
                 raise
 
-        if s3_config.get("credentials_secret_data"):
-            try:
-                core_api.create_namespaced_secret(
-                    namespace=namespace,
-                    body=k8s_client.V1Secret(
-                        metadata=k8s_client.V1ObjectMeta(name="s3-credentials"),
-                        string_data=s3_config["credentials_secret_data"],
-                    ),
-                )
-            except Exception as e:
-                if "AlreadyExists" not in str(e):
-                    raise
+        _ensure_s3_secret(provider, namespace, s3_config, "s3-credentials")
+
+        central_s3 = kwargs.get("central_s3_config")
+        if central_s3:
+            _ensure_s3_secret(provider, namespace, central_s3, "s3-central-credentials")
+
+        s3_cr_config = {
+            "bucket": s3_config.get("bucket", ""),
+            "endpoint": s3_config.get("endpoint_url", "")
+            or s3_config.get("endpoint", ""),
+            "region": s3_config.get("region", ""),
+            "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
+            "accessKeyId": s3_config.get("access_key_id", ""),
+            "secretKey": s3_config.get("secret_access_key", ""),
+        }
 
         project_cr = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
@@ -627,16 +639,20 @@ class KubeVirtDriver(ProviderDriver):
             "spec": {
                 "projectId": project_id,
                 "topology": topology,
-                "s3Config": {
-                    "bucket": s3_config.get("bucket", ""),
-                    "endpoint": s3_config.get("endpoint_url", "")
-                    or s3_config.get("endpoint", ""),
-                    "region": s3_config.get("region", ""),
-                    "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
-                },
+                "s3Config": s3_cr_config,
                 "action": "deploy",
             },
         }
+        if central_s3:
+            project_cr["spec"]["centralS3Config"] = {
+                "bucket": central_s3.get("bucket", ""),
+                "endpoint": central_s3.get("endpoint_url", "")
+                or central_s3.get("endpoint", ""),
+                "region": central_s3.get("region", ""),
+                "credentialsSecret": "s3-central-credentials",  # pragma: allowlist secret
+                "accessKeyId": central_s3.get("access_key_id", ""),
+                "secretKey": central_s3.get("secret_access_key", ""),
+            }
         if kwargs.get("common_password"):
             project_cr["spec"]["commonPassword"] = kwargs["common_password"]
         if kwargs.get("registry_credentials"):

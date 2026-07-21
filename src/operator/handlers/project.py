@@ -571,6 +571,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         from helpers.k8s import golden_pvc_name
 
         s3_config = spec.get("s3Config", {})
+        central_s3_config = spec.get("centralS3Config", {})
         core_api = client.CoreV1Api()
 
         try:
@@ -586,6 +587,39 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             if e.status != 409:
                 raise
 
+        # Create S3 credential secrets in cache namespace for CDI source.s3
+        for secret_name, cfg in [
+            ("s3-credentials", s3_config),
+            ("s3-central-credentials", central_s3_config),
+        ]:
+            if not cfg.get("accessKeyId"):
+                continue
+            try:
+                core_api.create_namespaced_secret(
+                    namespace=CACHE_NAMESPACE,
+                    body=client.V1Secret(
+                        metadata=client.V1ObjectMeta(name=secret_name),
+                        string_data={
+                            "accessKeyId": cfg.get("accessKeyId", ""),
+                            "secretKey": cfg.get("secretKey", ""),
+                        },
+                    ),
+                )
+            except ApiException as e:
+                if e.status == 409:
+                    core_api.patch_namespaced_secret(
+                        name=secret_name,
+                        namespace=CACHE_NAMESPACE,
+                        body=client.V1Secret(
+                            string_data={
+                                "accessKeyId": cfg.get("accessKeyId", ""),
+                                "secretKey": cfg.get("secretKey", ""),
+                            },
+                        ),
+                    )
+                else:
+                    raise
+
         patch.status["deployProgress"] = {
             "percent": 30,
             "stage": "Downloading images",
@@ -594,15 +628,22 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
         for disk in all_disks:
             s3_path = None
-            presigned_url = ""
+            use_central = False
             if disk.get("libraryImage", {}).get("s3Path"):
                 s3_path = disk["libraryImage"]["s3Path"]
-                presigned_url = disk["libraryImage"].get("presignedUrl", "")
+                use_central = disk["libraryImage"].get("central", False)
             elif disk.get("patternImage", {}).get("s3Path"):
                 s3_path = disk["patternImage"]["s3Path"]
-                presigned_url = disk["patternImage"].get("presignedUrl", "")
+                use_central = disk["patternImage"].get("central", False)
             if not s3_path:
                 continue
+
+            if use_central and central_s3_config:
+                disk_s3_config = central_s3_config
+                secret_name = "s3-central-credentials"  # pragma: allowlist secret
+            else:
+                disk_s3_config = s3_config
+                secret_name = "s3-credentials"  # pragma: allowlist secret
 
             pvc_name = golden_pvc_name(s3_path)
             try:
@@ -620,8 +661,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 CACHE_NAMESPACE,
                 s3_path,
                 size_gb,
-                s3_config,
-                presigned_url=presigned_url,
+                disk_s3_config,
+                secret_name=secret_name,
             )
             try:
                 custom_api.create_namespaced_custom_object(
