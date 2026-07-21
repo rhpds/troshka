@@ -1168,7 +1168,18 @@ export default function ProjectsPage() {
                   if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
                   setDeletingProjects(prev => new Set(prev).add(p.id));
                   fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
-                    if (r.ok) { setProjects(prev => prev.filter((pr) => pr.id !== p.id)); localStorage.removeItem(`troshka-canvas-${p.id}`); }
+                    if (r.ok) {
+                      r.json().then((data) => {
+                        if (data.status === "deleting") {
+                          setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deleting" } : pr));
+                        } else {
+                          setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                          localStorage.removeItem(`troshka-canvas-${p.id}`);
+                        }
+                      }).catch(() => {
+                        setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                      });
+                    }
                     setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
                   });
                 }}>{deletingProjects.has(p.id) ? <><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</> : "Delete"}</Button>
