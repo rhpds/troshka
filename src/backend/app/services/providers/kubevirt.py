@@ -138,10 +138,12 @@ def _deploy_operator(provider):
             try:
                 if kind == "ClusterRole":
                     rbac_api.read_cluster_role(name=name)
+                    logger.info(f"ClusterRole {name} already exists, skipping")
+                    continue
                 else:
-                    rbac_api.read_cluster_role_binding(name=name)
-                logger.info(f"{kind} {name} already exists, skipping")
-                continue
+                    rbac_api.patch_cluster_role_binding(name=name, body=body)
+                    logger.info(f"ClusterRoleBinding {name} patched")
+                    continue
             except ApiException as e:
                 if e.status == 404:
                     pass

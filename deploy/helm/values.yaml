@@ -64,7 +64,7 @@ s3:
 s4:
   deploy: false
   image: quay.io/rh-aiservices-bu/s4:latest
-  storageSize: 50Gi
+  storageSize: 500Gi
   password: ""
 
 defaults:
