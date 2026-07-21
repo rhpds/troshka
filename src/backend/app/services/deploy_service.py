@@ -2029,9 +2029,34 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             elif data.get("source") == "library" and data.get("libraryItemId"):
                 from app.models.library import LibraryItem
 
-                lib_item = (
-                    db.query(LibraryItem).filter_by(id=data["libraryItemId"]).first()
-                )
+                lib_item = db.get(LibraryItem, data["libraryItemId"])
+                if not lib_item:
+                    fmt = data.get("format", "qcow2")
+                    candidates = db.query(LibraryItem).filter_by(format=fmt).all()
+                    lib_name = data.get("libraryItemName", "")
+                    if lib_name:
+                        name_lower = lib_name.lower()
+                        for c in candidates:
+                            cn = c.name.lower()
+                            if name_lower in cn or cn in name_lower:
+                                lib_item = c
+                                break
+                        if not lib_item:
+                            name_words = set(name_lower.split())
+                            for c in candidates:
+                                c_words = set(c.name.lower().split())
+                                if len(name_words & c_words) >= 2:
+                                    lib_item = c
+                                    break
+                    if not lib_item and len(candidates) == 1:
+                        lib_item = candidates[0]
+                    if lib_item:
+                        logger.info(
+                            "Deploy: resolved library item %s -> %s (%s)",
+                            data["libraryItemId"][:8],
+                            lib_item.id[:8],
+                            lib_item.name,
+                        )
                 if lib_item and lib_item.s3_key:
                     s3_path = lib_item.s3_key
                 else:
