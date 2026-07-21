@@ -1,0 +1,22 @@
+{{- if .Values.deploy }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: troshka-api
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host | replace "troshka." "troshka-api." }}
+  {{- end }}
+  to:
+    kind: Service
+    name: troshka-backend
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

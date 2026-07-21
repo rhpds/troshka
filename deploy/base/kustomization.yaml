@@ -11,3 +11,4 @@ resources:
   - backend-deployment.yaml
   - frontend-deployment.yaml
   - frontend-route.yaml
+  - backend-route.yaml

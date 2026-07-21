@@ -79,3 +79,23 @@
           weight: 100
         port:
           targetPort: "{{ 'proxy' if (troshka_oauth_enabled | bool) else 'http' }}"
+
+- name: Create API Route
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: troshka-api
+        namespace: "{{ troshka_namespace }}"
+      spec:
+        host: "{{ _troshka_route_host | regex_replace('^troshka\\.', 'troshka-api.') }}"
+        tls:
+          termination: edge
+          insecureEdgeTerminationPolicy: Redirect
+        to:
+          kind: Service
+          name: troshka-backend
+        port:
+          targetPort: http
