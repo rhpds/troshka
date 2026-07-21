@@ -10,6 +10,8 @@ The KubeVirt native provider creates VMs as KubeVirt `VirtualMachine` CRs on tar
 
 **Architecture**: Troshka backend → Kubernetes API → TroshkaProject CR → Operator → KubeVirt VMs + networking pods
 
+**Disk images**: Downloaded from S3 via CDI `source.s3` with `secretRef` for authenticated access. Supports dual S3 sources — a local read-write S4 for user content and a central read-only S4 for shared gold images. Images are cached as golden PVCs in a `troshka-cache` namespace and cloned per-project via CDI.
+
 ## Prerequisites
 
 Each target cluster needs:
@@ -100,6 +102,29 @@ On creation, the backend automatically:
 2. Queries cluster capacity (worker node vCPUs, RAM, Ceph storage)
 3. Creates a virtual Host record representing the cluster
 
+## S3 Storage Setup
+
+KubeVirt native uses CDI `source.s3` for authenticated disk image downloads. Two S3 providers are needed:
+
+### Read-Write S3 (local)
+
+For user-created patterns, library uploads, and snapshots. Created as an S3 provider in the Troshka UI.
+
+**Important**: The S3 endpoint must be reachable from all target clusters. If Troshka and S4 run on the same cluster as the target, an internal service URL works. For multi-cluster deployments, use an OCP Route with edge TLS termination:
+
+```bash
+oc create route edge troshka-s4 --service=troshka-s4 --port=s3 -n troshka
+```
+
+### Read-Only S3 (central gold images)
+
+For shared disk images and patterns distributed to all instances. Created as an `s3_readonly` provider. The central S4 must have:
+
+- **S3 keys matching the source** — library items must use the same `library/{library_id}/{item_id}/{name}.{format}` path structure as the original AWS S3 bucket. Pattern disks under `patterns/{pattern_id}/` are already correct if copied with `rclone`.
+- **External Route** — same requirement as read-write, target clusters must be able to reach it.
+
+The backend automatically detects whether each disk comes from local or central S3 based on the `LibraryItem.source` field and `head_object` probes against both buckets.
+
 ## Automated Setup Script
 
 For bulk setup across multiple clusters, use the setup script:
@@ -157,7 +182,8 @@ In the Troshka UI:
 | Nested virt | Required | Not needed |
 | Host agent | troshkad daemon in host VM | No agent — operator manages VMs |
 | Networking | VXLAN + nftables inside host VM | OVN layer2 secondary networks + dnsmasq/gateway pods |
-| Storage | Ceph-NFS mount inside host VM | Ceph RBD PVCs via CDI DataVolumes |
+| Storage | Ceph-NFS mount inside host VM | Ceph RBD PVCs via CDI `source.s3` DataVolumes |
+| Image download | troshkad boto3 from S3 | CDI `source.s3` with `secretRef` |
 | Console | vncd in host VM | VNC proxy pod per project |
 | BMC | sushy/vbmc in host VM | sushy pod with KubeVirt driver (Redfish only) |
 | Live migration | libvirt TLS between pool hosts | KubeVirt native live migration (future) |
@@ -174,7 +200,7 @@ oc logs deployment/troshka-operator -n troshka
 
 Common causes:
 - **403 Forbidden on CRDs** — operator ClusterRole not applied (Step 2)
-- **ClusterRoleBinding namespace mismatch** — the binding subjects must reference the correct namespace
+- **ClusterRoleBinding namespace mismatch** — the binding subjects must reference the namespace where the operator is deployed. The backend patches this automatically on provider creation.
 
 ### Pods failing with SCC errors
 
@@ -188,15 +214,31 @@ Common causes:
 
 ### Deploy stuck at "images: waiting"
 
-The operator is downloading disk images from S3 via CDI DataVolumes. Check:
+The operator downloads disk images from S3 via CDI DataVolumes into a `troshka-cache` namespace. Check:
 
 ```bash
-oc get datavolumes -n troshka-<project-id>
-oc get pods -n troshka-<project-id> | grep importer
-oc logs <importer-pod> -n troshka-<project-id>
+# DataVolume status
+oc get datavolumes -n troshka-cache
+
+# Importer pod logs
+oc get pods -n troshka-cache
+oc logs <importer-pod> -n troshka-cache
 ```
 
 Common causes:
-- S3 endpoint not reachable from the cluster
-- S3 credentials incorrect
-- CDI not installed or misconfigured
+- **S3 endpoint not reachable** — target cluster can't reach the S3 Route. Verify with `curl` from a pod on the target cluster.
+- **S3 credentials incorrect** — check the `s3-credentials` and `s3-central-credentials` Secrets in `troshka-cache` namespace. CDI expects `accessKeyId` and `secretKey` keys.
+- **Wrong S3 bucket** — if the importer shows `NoSuchKey`, the disk exists in the central bucket but the DataVolume was created with the local S3 config. Check that `centralS3Config` is set on the TroshkaProject CR and that the storage node's `centralSource` flag is `true` in the topology.
+- **Stale cache** — golden PVCs from previous failed deploys may be reused. Delete all DataVolumes and PVCs in `troshka-cache` and redeploy.
+- **CDI not installed** — verify `oc get cdi` returns a healthy CDI instance.
+
+### Namespace stuck in Terminating after project delete
+
+The operator's finalizers on TroshkaProject/TroshkaNetwork CRs can block namespace deletion. Force-clean:
+
+```bash
+# Remove finalizers from CRs
+for cr in $(oc get troshkaproject,troshkanetwork -n troshka-<id> -o name); do
+  oc patch "$cr" -n troshka-<id> --type=merge -p '{"metadata":{"finalizers":[]}}'
+done
+```
