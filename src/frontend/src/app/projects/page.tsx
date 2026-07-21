@@ -1164,7 +1164,7 @@ export default function ProjectsPage() {
                     });
                   }}>Republish</Button>
                 )}
-                <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={() => {
+                {p.state !== "deleting" && <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={() => {
                   if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
                   setDeletingProjects(prev => new Set(prev).add(p.id));
                   fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
@@ -1182,7 +1182,7 @@ export default function ProjectsPage() {
                     }
                     setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
                   });
-                }}>{deletingProjects.has(p.id) ? <><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</> : "Delete"}</Button>
+                }}>{deletingProjects.has(p.id) ? <><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</> : "Delete"}</Button>}
                 </>)}
               </CardBody>
             </Card>
