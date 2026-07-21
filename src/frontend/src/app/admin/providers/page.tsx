@@ -65,7 +65,7 @@ export default function AdminProvidersPage() {
   const [rhelVersion, setRhelVersion] = useState<Record<string, string>>({});
 
   const [name, setName] = useState("");
-  const [type, setType] = useState("ec2");
+  const [type, setType] = useState("kubevirt");
   const [region, setRegion] = useState("us-east-1");
   const [accessKey, setAccessKey] = useState("");
   const [secretKey, setSecretKey] = useState("");
