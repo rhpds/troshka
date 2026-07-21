@@ -479,7 +479,7 @@ export default function PatternsPage() {
                       });
                     }}>Cancel</Button>
                   )}
-                  {!saving && (
+                  {!saving && pattern.visibility !== "public" && (
                     <Button variant="danger" size="sm" onClick={() => {
                       if (!window.confirm(`Delete pattern "${pattern.name}"? This cannot be undone.`)) return;
                       fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {

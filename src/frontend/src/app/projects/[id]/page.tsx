@@ -159,7 +159,7 @@ export default function ProjectCanvasPage() {
   const prevStateRef = React.useRef(projectState);
   useEffect(() => {
     if (!ws.projectState) return;
-    const wasTransitional = ["reconfiguring", "deploying", "starting"].includes(prevStateRef.current);
+    const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(prevStateRef.current);
     setProjectState(ws.projectState);
     setDeployError(ws.deployError || null);
     if (ws.projectState === "deploying") {
@@ -620,7 +620,7 @@ export default function ProjectCanvasPage() {
               Export Template
             </button>
           )}
-          {projectState !== "deploying" && projectState !== "reconfiguring" && (
+          {projectState !== "deploying" && projectState !== "reconfiguring" && projectState !== "deleting" && (
             <button
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
@@ -778,6 +778,14 @@ export default function ProjectCanvasPage() {
           )}
         </div>
       </div>
+      {projectState === "deleting" && (
+        <div style={{ position: "absolute", bottom: 24, right: 24, background: "var(--pf-t--global--background--color--primary--default)", border: "1px solid var(--pf-t--global--border--color--default)", borderRadius: 8, padding: 16, minWidth: 200, zIndex: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="project-btn-spinner" style={{ width: 16, height: 16 }} />
+            <strong>Deleting...</strong>
+          </div>
+        </div>
+      )}
       {(projectState === "deploying" || projectState === "reconfiguring" || (projectState === "error" && deployError)) && (
         <div style={{
           position: "absolute", inset: 0, zIndex: 100,
@@ -799,7 +807,7 @@ export default function ProjectCanvasPage() {
               )}
             </h3>
             {deployProgress && projectState !== "error" && (
-              <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0, whiteSpace: "pre-line" }}>
+              <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0, whiteSpace: "pre-line", maxHeight: 300, overflowY: "auto" }}>
                 <span style={{ opacity: 0.7 }}>{deployProgress.step}</span>
                 {deployProgress.detail ? `:\n${deployProgress.detail}` : ""}
               </div>

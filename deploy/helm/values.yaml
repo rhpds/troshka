@@ -65,7 +65,6 @@ s4:
   deploy: false
   image: quay.io/rh-aiservices-bu/s4:latest
   storageSize: 500Gi
-  password: ""
 
 defaults:
   runTimerHours: 8

@@ -3205,9 +3205,7 @@ def delete_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
-    notify_project(project_id, {"type": "project-deleted"})
-
-    # Release EIPs before deleting DB record (delete cascades null the FK)
+    # Release EIPs
     from app.models.elastic_ip import ElasticIp
     from app.services.eip_service import release_eip
 
@@ -3218,10 +3216,14 @@ def delete_project(
         except Exception:
             logger.warning("Failed to release EIP %s on delete", eip.public_ip)
 
-    # Capture all data needed for cleanup BEFORE deleting the DB row
     if project.host_id and project.state not in ("draft",):
         import copy
         import threading
+
+        project.state = "deleting"
+        project.deploy_error = None
+        db.commit()
+        notify_project(project_id, {"type": "project-state", "state": "deleting"})
 
         destroy_ctx = {
             "project_id": project.id,
@@ -3239,9 +3241,11 @@ def delete_project(
             daemon=True,
             name=f"destroy-{project.id[:8]}",
         ).start()
+        return {"status": "deleting", "id": project_id}
 
     db.delete(project)
     db.commit()
+    notify_project(project_id, {"type": "project-deleted"})
 
 
 class ImportVMRequest(PydanticBaseModel):

@@ -110,11 +110,33 @@ KubeVirt native uses CDI `source.s3` for authenticated disk image downloads. Two
 
 For user-created patterns, library uploads, and snapshots. Created as an S3 provider in the Troshka UI.
 
-**Important**: The S3 endpoint must be reachable from all target clusters. If Troshka and S4 run on the same cluster as the target, an internal service URL works. For multi-cluster deployments, use an OCP Route with edge TLS termination:
+**Important**: The S3 endpoint must be reachable from all target clusters. For multi-cluster deployments, use an OCP Route with edge TLS termination (the Helm chart creates this automatically).
+
+**S4 Credentials**: The S4 image initializes with default credentials (`s4admin`/`s4secret`). For production, create a custom user with a random password via `radosgw-admin` inside the S4 pod:
 
 ```bash
-oc create route edge troshka-s4 --service=troshka-s4 --port=s3 -n troshka
+# Generate a random key
+NEW_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Create user inside S4 pod
+oc exec deployment/troshka-s4 -n troshka -- \
+  radosgw-admin user create --uid=troshka --display-name="Troshka" \
+  --access-key=troshka --secret-key="$NEW_KEY"
+
+# Grant bucket access via policy (using old credentials)
+python3 -c "
+import boto3, json
+client = boto3.client('s3', endpoint_url='http://troshka-s4:7480',
+    aws_access_key_id='s4admin', aws_secret_access_key='s4secret', region_name='us-east-1')
+client.put_bucket_policy(Bucket='troshka-images', Policy=json.dumps({
+    'Version': '2012-10-17',
+    'Statement': [{'Effect': 'Allow', 'Principal': {'AWS': ['arn:aws:iam:::user/troshka']},
+        'Action': ['s3:*'], 'Resource': ['arn:aws:s3:::troshka-images', 'arn:aws:s3:::troshka-images/*']}]
+}))
+"
 ```
+
+Then create the S3 provider in the UI with access key `troshka` and the generated secret key.
 
 ### Read-Only S3 (central gold images)
 
@@ -122,6 +144,7 @@ For shared disk images and patterns distributed to all instances. Created as an 
 
 - **S3 keys matching the source** — library items must use the same `library/{library_id}/{item_id}/{name}.{format}` path structure as the original AWS S3 bucket. Pattern disks under `patterns/{pattern_id}/` are already correct if copied with `rclone`.
 - **External Route** — same requirement as read-write, target clusters must be able to reach it.
+- **Custom user** — same `radosgw-admin` + bucket policy approach as local S4. Do NOT change the S4 env vars — this breaks existing data access.
 
 The backend automatically detects whether each disk comes from local or central S3 based on the `LibraryItem.source` field and `head_object` probes against both buckets.
 

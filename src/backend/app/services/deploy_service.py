@@ -2431,6 +2431,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         elif dv_lines:
             step = "images"
             detail = dv_detail
+        elif op_stage:
+            step = op_stage.lower()
+            detail = op_detail or step
         else:
             step = last.get("step", "") or "deploying"
             detail = last.get("detail", "")
@@ -5200,6 +5203,45 @@ def start_project_async(project_id: str):
         s.close()
 
 
+def _delete_project_record(project_id: str):
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    s = SessionLocal()
+    try:
+        project = s.get(Project, project_id)
+        if project:
+            s.delete(project)
+            s.commit()
+            notify_project(project_id, {"type": "project-deleted"})
+            logger.info("Destroy %s: DB record deleted", project_id[:8])
+    finally:
+        s.close()
+
+
+def _set_destroy_error(project_id: str, error: str):
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    s = SessionLocal()
+    try:
+        project = s.get(Project, project_id)
+        if project:
+            project.state = "error"
+            project.deploy_error = f"Delete failed: {error}"
+            s.commit()
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": project.deploy_error,
+                },
+            )
+    finally:
+        s.close()
+
+
 def destroy_project_sync(ctx: dict):
     """Synchronously destroy a project's VMs and networks.
     ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
@@ -5212,6 +5254,7 @@ def destroy_project_sync(ctx: dict):
     try:
         host = s.query(Host).filter_by(id=ctx["host_id"]).first()
         if not host or not host.ip_address:
+            _delete_project_record(project_id)
             return
 
         # KubeVirt native: delegate destroy to operator
@@ -5222,8 +5265,16 @@ def destroy_project_sync(ctx: dict):
             provider = s.query(Provider).filter_by(id=host.provider_id).first()
             if provider:
                 driver = get_provider_driver(provider)
-                driver.destroy_project(provider, project_id)
-                logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
+                try:
+                    driver.destroy_project(provider, project_id)
+                    logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
+                except Exception as e:
+                    logger.exception(
+                        "Destroy %s: kubevirt cleanup failed", project_id[:8]
+                    )
+                    _set_destroy_error(project_id, str(e))
+                    return
+            _delete_project_record(project_id)
             return
 
         vni_map = ctx.get("vni_map", {})
@@ -5427,7 +5478,11 @@ def destroy_project_sync(ctx: dict):
                 logger.warning("Failed to release EIP %s on destroy", eip.public_ip)
 
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
-    except Exception:
+        s.close()
+        _delete_project_record(project_id)
+        return
+    except Exception as e:
         logger.exception("Destroy %s failed", project_id[:8])
+        _set_destroy_error(project_id, str(e))
     finally:
         s.close()

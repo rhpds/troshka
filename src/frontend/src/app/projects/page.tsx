@@ -49,6 +49,7 @@ const stateColors: Record<string, string> = {
   starting: "#fbbf24",
   stopped: "#f87171",
   error: "#ef4444",
+  deleting: "#fb923c",
 };
 
 interface PatternSummary {
@@ -1064,7 +1065,7 @@ export default function ProjectsPage() {
                     }}>
                       {p.state === "stopped" && p.auto_stopped ? "stopped (auto)" : p.state}
                     </span>
-                    {(p.state === "stopping" || p.state === "starting" || p.state === "deploying") && (
+                    {(p.state === "stopping" || p.state === "starting" || p.state === "deploying" || p.state === "deleting") && (
                       <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
                     )}
                   </div>

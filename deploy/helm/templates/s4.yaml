@@ -26,6 +26,14 @@ spec:
               name: s3
             - containerPort: 5000
               name: ui
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: s4admin
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s4-password  # pragma: allowlist secret
           volumeMounts:
             - name: data
               mountPath: /data
@@ -71,4 +79,78 @@ spec:
     - port: 5000
       targetPort: 5000
       name: ui
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: troshka-s4
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+spec:
+  to:
+    kind: Service
+    name: troshka-s4
+  port:
+    targetPort: s3
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: troshka-s4-init
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-s4
+          image: {{ include "troshka.backendImage" . }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "Waiting for S4..."
+              until bash -c 'echo > /dev/tcp/troshka-s4/7480' 2>/dev/null; do
+                sleep 2
+              done
+              echo "S4 is ready"
+      containers:
+        - name: create-bucket
+          image: {{ include "troshka.backendImage" . }}
+          command: ["python3", "-c"]
+          args:
+            - |
+              import boto3, os
+              client = boto3.client('s3',
+                  region_name='us-east-1',
+                  aws_access_key_id='s4admin',
+                  aws_secret_access_key=os.environ['S4_PASSWORD'],
+                  endpoint_url='http://troshka-s4:7480',
+              )
+              bucket = '{{ .Values.s3.bucket }}'
+              try:
+                  client.create_bucket(Bucket=bucket)
+                  print(f'Bucket {bucket} created')
+              except Exception as e:
+                  if 'BucketAlreadyExists' in str(e) or 'BucketAlreadyOwnedByYou' in str(e):
+                      print(f'Bucket {bucket} already exists')
+                  else:
+                      raise
+          env:
+            - name: S4_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s4-password  # pragma: allowlist secret
 {{- end }}
