@@ -5273,6 +5273,8 @@ def destroy_project_sync(ctx: dict):
                     _set_destroy_error(project_id, str(e))
                     return
 
+                import time as _del_time
+
                 from app.services.providers.kubevirt import (
                     _get_k8s_clients,
                     _project_ns,
@@ -5284,11 +5286,11 @@ def destroy_project_sync(ctx: dict):
                 for _ in range(60):
                     try:
                         core_api.read_namespace(name=ns_name)
-                        time.sleep(5)
+                        _del_time.sleep(5)
                     except _KApiErr as e:
                         if e.status == 404:
                             break
-                        time.sleep(5)
+                        _del_time.sleep(5)
                     except Exception:
                         break
                 logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
