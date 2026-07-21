@@ -53,7 +53,7 @@ rules:
   # Namespace — ensure troshka namespace exists
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create"]
+    verbs: ["get", "create", "delete"]
   # Nodes — find IPs for NodePort access
   - apiGroups: [""]
     resources: ["nodes"]
