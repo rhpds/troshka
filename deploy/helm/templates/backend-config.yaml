@@ -27,10 +27,10 @@ data:
       operator_groups: {{ .Values.auth.operatorGroups | quote }}
     {{- if or .Values.s4.deploy .Values.s3.endpoint }}
     s3:
-      {{- if .Values.s4.deploy }}
-      endpoint_url: "http://troshka-s4.{{ include "troshka.namespace" . }}.svc:7480"
-      {{- else }}
+      {{- if .Values.s3.endpoint }}
       endpoint_url: {{ .Values.s3.endpoint | quote }}
+      {{- else if .Values.s4.deploy }}
+      endpoint_url: "http://troshka-s4.{{ include "troshka.namespace" . }}.svc:7480"
       {{- end }}
       bucket: {{ .Values.s3.bucket | quote }}
     {{- end }}
