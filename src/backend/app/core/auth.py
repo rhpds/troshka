@@ -153,19 +153,12 @@ def _get_user_from_api_key(request: Request, db: Session):
     return api_key.user
 
 
-def _enforce_allowed_users(identity: str, db: Session):
-    if not _allowed_users:
-        return
-    if identity.lower() in _allowed_users:
-        return
-    from app.models.user import User
-
-    if db.query(User).filter_by(email=identity.lower()).first():
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=f"Access denied for user {identity}",
-    )
+def _enforce_allowed_users(identity: str):
+    if _allowed_users and identity.lower() not in _allowed_users:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied for user {identity}",
+        )
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
@@ -175,18 +168,18 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     if config.auth.oauth_enabled:
         user_info = _get_user_from_oauth_headers(request)
         if user_info:
+            _enforce_allowed_users(user_info["email"])
             user = _upsert_sso_user(
                 user_info["email"],
                 user_info.get("user"),
                 db,
             )
-            _enforce_allowed_users(user_info["email"], db)
             return user
 
     # Try API key (trk_ prefix)
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
-        _enforce_allowed_users(api_key_user.email, db)
+        _enforce_allowed_users(api_key_user.email)
         return api_key_user
 
     # Try JWT token (works in both dev and SSO mode)
@@ -194,9 +187,9 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     if user_info:
         email = user_info.get("email") or user_info.get("sub")
         if email:
+            _enforce_allowed_users(email)
             user = db.query(User).filter_by(email=email).first()
             if user:
-                _enforce_allowed_users(email, db)
                 return user
 
     # Dev mode: auto-authenticate as the default admin user
