@@ -901,11 +901,12 @@ Troshka supports two auth modes: OIDC (production) and dev-mode (local developme
 ### OIDC Mode
 
 **Flow**
-1. OAuth proxy (e.g., oauth2-proxy) sits in front of FastAPI backend
-2. Proxy validates OIDC token with Red Hat SSO
+1. OAuth proxy (`ose-oauth-proxy`) sits in front of the frontend
+2. Proxy validates identity via OpenShift OAuth
 3. Proxy forwards requests with `X-Forwarded-Email` and `X-Forwarded-User` headers
-4. Backend calls `_upsert_sso_user()` to create/update User record
-5. Role assigned via `role_for_email()`: checks `admin_users` and `operator_users` CSV config
+4. Backend calls `_enforce_access()` to check group membership or email allowlist
+5. Role resolved via `_resolve_role()`: email config takes precedence, then group membership, then default "user"
+6. Backend calls `_upsert_sso_user()` to create/update User record (role updated on each login if group membership changed)
 
 **Configuration**
 - `config.auth.oauth_enabled=true`
@@ -979,6 +980,57 @@ Troshka supports two auth modes: OIDC (production) and dev-mode (local developme
 - `Depends(require_role("admin"))` on admin-only routes
 - `role_levels` dict: `{"user": 0, "operator": 1, "admin": 2}`
 - Comparison: `user_level >= required_level`
+
+### Group-Based Access Control
+
+When deployed on OpenShift, Troshka can resolve user roles from OCP group membership instead of (or in addition to) per-email CSV lists.
+
+**How It Works**
+1. Backend queries `user.openshift.io/v1/groups` via the Kubernetes Python client using the pod's ServiceAccount token
+2. Groups are cached in memory for 60 seconds (stale cache returned on API errors)
+3. User's OCP username (from `X-Forwarded-User`) is matched against group member lists
+4. Graceful degradation: when the SA token is absent (dev mode, non-OCP), group resolution is silently skipped
+
+**Role Resolution Priority**
+1. Email config (`admin_users`, `operator_users`) — highest priority, explicit per-user override
+2. Group membership (`admin_groups`, `operator_groups`, `allowed_groups`) — group-based role
+3. Default `"user"` role — fallback when no match
+
+**Access Control**
+- If `allowed_groups` is configured: user must belong to at least one configured group (any of `allowed_groups`, `admin_groups`, or `operator_groups`) OR appear in the `allowed_users` email fallback
+- If only `allowed_users` is configured: email-only gate (existing behavior)
+- If neither is configured: all authenticated users allowed
+
+**Configuration**
+```yaml
+auth:
+  allowed_groups: "troshka-users,rhpds-admins"  # Groups that can access the app
+  admin_groups: "rhpds-admins"                   # Groups granted admin role
+  operator_groups: "troshka-operators"            # Groups granted operator role
+```
+
+**RBAC Requirements**
+
+The backend ServiceAccount needs a ClusterRole to read OCP groups:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-group-reader
+rules:
+  - apiGroups: ["user.openshift.io"]
+    resources: ["groups"]
+    verbs: ["get", "list"]
+```
+
+This is automatically created by all three deployment methods (Helm, Kustomize, Ansible).
+
+**Key Implementation Details**
+- OCP groups store usernames (e.g., `prutledg`), not email addresses — matching uses the `X-Forwarded-User` header
+- `_upsert_sso_user()` updates the user's role on each login if group membership has changed
+- No database tables for groups — purely runtime resolution from the OCP API
+- Functions in `src/backend/app/core/auth.py`: `_fetch_openshift_groups()`, `_get_user_groups()`, `_role_for_groups()`, `_resolve_role()`, `_enforce_access()`
 
 ### Encryption
 

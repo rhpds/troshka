@@ -1,0 +1,17 @@
+{{- if .Values.deploy }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-frontend
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+{{- end }}

@@ -1,0 +1,9 @@
+apiVersion: v2
+name: troshka
+description: Nested VM environment builder — FastAPI backend + Next.js frontend
+type: application
+version: 0.1.0
+appVersion: "latest"
+maintainers:
+  - name: Patrick Rutledge
+    email: prutledg@redhat.com

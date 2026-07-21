@@ -1,0 +1,43 @@
+{{- if .Values.deploy }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: troshka-config
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+data:
+  config.yaml: |
+    app:
+      port: 8200
+      host: "0.0.0.0"
+      external_url: "https://{{ .Values.route.host }}"
+    auth:
+      oauth_enabled: {{ .Values.auth.oauthEnabled }}
+      jwt_algorithm: "HS256"
+      admin_users: {{ .Values.auth.adminUsers | quote }}
+      operator_users: {{ .Values.auth.operatorUsers | quote }}
+      allowed_users: {{ .Values.auth.allowedUsers | quote }}
+      allowed_groups: {{ .Values.auth.allowedGroups | quote }}
+      admin_groups: {{ .Values.auth.adminGroups | quote }}
+      operator_groups: {{ .Values.auth.operatorGroups | quote }}
+    {{- if or .Values.s4.deploy .Values.s3.endpoint }}
+    s3:
+      {{- if .Values.s4.deploy }}
+      endpoint_url: "http://troshka-s4.{{ include "troshka.namespace" . }}.svc:7480"
+      {{- else }}
+      endpoint_url: {{ .Values.s3.endpoint | quote }}
+      {{- end }}
+      bucket: {{ .Values.s3.bucket | quote }}
+    {{- end }}
+    defaults:
+      run_timer_hours: {{ .Values.defaults.runTimerHours }}
+      lifetime_days: {{ .Values.defaults.lifetimeDays }}
+      max_vms_per_project: {{ .Values.defaults.maxVmsPerProject }}
+      max_projects_per_user: {{ .Values.defaults.maxProjectsPerUser }}
+      user_library_quota_gb: {{ .Values.defaults.userLibraryQuotaGb }}
+    overcommit:
+      cpu_ratio: {{ .Values.overcommit.cpuRatio }}
+      ram_ratio: {{ .Values.overcommit.ramRatio }}
+{{- end }}

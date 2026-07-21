@@ -12,7 +12,8 @@ repos:
             ^src/backend/alembic/.*|
             ^src/frontend/.*|
             ^docs/.*|
-            ^dev-services\.sh$
+            ^dev-services\.sh$|
+            ^deploy/helm/templates/.*
           )
 
   # Security: Alternative secret detection
@@ -31,6 +32,7 @@ repos:
         exclude: \.md$
       - id: check-yaml
         args: ["--unsafe"]
+        exclude: ^deploy/helm/templates/
       - id: check-json
       - id: check-merge-conflict
       - id: check-case-conflict

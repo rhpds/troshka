@@ -5,6 +5,7 @@ namespace: troshka
 
 resources:
   - namespace.yaml
+  - backend-rbac.yaml
   - backend-config.yaml
   - backend-secret.yaml
   - backend-deployment.yaml

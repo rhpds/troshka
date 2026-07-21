@@ -1,0 +1,74 @@
+{{- if and .Values.deploy .Values.s4.deploy }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-s4
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-s4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-s4
+        app.kubernetes.io/component: storage
+    spec:
+      containers:
+        - name: s4
+          image: {{ .Values.s4.image }}
+          ports:
+            - containerPort: 7480
+              name: s3
+            - containerPort: 5000
+              name: ui
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: troshka-s4-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: troshka-s4-data
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.s4.storageSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-s4
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-s4
+  ports:
+    - port: 7480
+      targetPort: 7480
+      name: s3
+    - port: 5000
+      targetPort: 5000
+      name: ui
+{{- end }}

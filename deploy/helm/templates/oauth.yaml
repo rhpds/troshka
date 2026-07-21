@@ -1,0 +1,117 @@
+{{- if and .Values.deploy .Values.auth.oauthEnabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: troshka-oauth
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: >-
+      {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"troshka"}}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: troshka-oauth-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  client-secret: {{ randAlphaNum 25 | quote }}
+  cookie-secret: {{ randAlphaNum 32 | quote }}
+---
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: troshka
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+secret: {{ randAlphaNum 25 | quote }}
+redirectURIs:
+  - "https://{{ .Values.route.host }}/oauth/callback"
+grantMethod: auto
+respondWithChallenges: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-oauth-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-oauth-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-oauth-proxy
+        app.kubernetes.io/component: auth
+    spec:
+      serviceAccountName: troshka-oauth
+      containers:
+        - name: oauth-proxy
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:latest
+          ports:
+            - containerPort: 8443
+              name: proxy
+          args:
+            - --provider=openshift
+            - --https-address=:8443
+            - --http-address=
+            - --upstream=http://troshka-frontend:3000
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret-file=/etc/oauth/cookie-secret
+            - --client-id=troshka
+            - --client-secret-file=/etc/oauth/client-secret
+            - --openshift-service-account=troshka-oauth
+            - --openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - --pass-user-headers=true
+            - --pass-access-token=false
+            - --skip-auth-regex=^/api/v1/health
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+            - name: oauth-secrets
+              mountPath: /etc/oauth
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: tls
+          secret:
+            secretName: troshka-oauth-tls  # pragma: allowlist secret
+        - name: oauth-secrets
+          secret:
+            secretName: troshka-oauth-proxy  # pragma: allowlist secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-oauth-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: troshka-oauth-tls
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-oauth-proxy
+  ports:
+    - port: 8443
+      targetPort: 8443
+      name: proxy
+{{- end }}

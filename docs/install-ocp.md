@@ -59,7 +59,24 @@ This additionally deploys:
 - ServiceAccount with OAuth redirect annotation
 - Route points to oauth-proxy → frontend → backend
 
-Users log in via the cluster's OAuth provider. The proxy injects `X-Forwarded-Email` and `X-Forwarded-User` headers. Admin/operator roles are assigned based on the `troshka_admin_users` and `troshka_operator_users` CSV lists.
+Users log in via the cluster's OAuth provider. The proxy injects `X-Forwarded-Email` and `X-Forwarded-User` headers. Roles are assigned by email config first (`troshka_admin_users`, `troshka_operator_users`), then by OCP group membership (`troshka_admin_groups`, `troshka_operator_groups`).
+
+### With SSO + Group-Based Access Control
+
+For shared instances where access is managed via OCP groups:
+
+```bash
+ansible-playbook deploy/ansible/deploy.yaml \
+  -e troshka_deploy_postgres=true \
+  -e troshka_deploy_minio=true \
+  -e troshka_oauth_enabled=true \
+  -e troshka_admin_users=admin@redhat.com \
+  -e troshka_allowed_groups="rhpds-admins,troshka-users" \
+  -e troshka_admin_groups="rhpds-admins" \
+  -e troshka_operator_groups="troshka-operators"
+```
+
+When `troshka_allowed_groups` is set, only users who belong to a configured group (or are listed in `troshka_allowed_users`) can access the application. Group membership is resolved at runtime by querying the OpenShift `user.openshift.io/v1/groups` API — no changes to the OAuth proxy are needed.
 
 ### External Database + S3 (no built-in services)
 
@@ -115,6 +132,10 @@ All variables have defaults in `deploy/ansible/inventory/group_vars/all.yaml`.
 | `troshka_oauth_enabled` | `false` | Enable SSO via ose-oauth-proxy |
 | `troshka_admin_users` | `""` | CSV of admin user emails |
 | `troshka_operator_users` | `""` | CSV of operator user emails |
+| `troshka_allowed_users` | `""` | CSV of allowed user emails (empty = allow all) |
+| `troshka_allowed_groups` | `""` | CSV of OCP groups that can access the app |
+| `troshka_admin_groups` | `""` | CSV of OCP groups granted admin role |
+| `troshka_operator_groups` | `""` | CSV of OCP groups granted operator role |
 
 ### Resource Limits
 
@@ -229,9 +250,44 @@ This deletes the entire namespace (all pods, PVCs, secrets) and the OAuthClient 
 
 **Warning:** This permanently deletes all data including the PostgreSQL database and MinIO storage. Back up any important data before running undeploy.
 
+## Helm Chart (Alternative)
+
+Deploy Troshka using the Helm chart at `deploy/helm/`:
+
+```bash
+# All-in-one with PostgreSQL, SSO, and group-based access
+helm install troshka deploy/helm/ -n troshka --create-namespace \
+  --set postgres.deploy=true \
+  --set auth.oauthEnabled=true \
+  --set auth.adminUsers=admin@redhat.com \
+  --set auth.allowedGroups="rhpds-admins\,troshka-users" \
+  --set auth.adminGroups="rhpds-admins" \
+  --set route.host=troshka.apps.cluster.example.com
+
+# External database, no SSO
+helm install troshka deploy/helm/ -n troshka --create-namespace \
+  --set secrets.databaseUrl="postgresql+psycopg2://user:pass@db:5432/troshka" \
+  --set route.host=troshka.apps.cluster.example.com
+
+# Upgrade (secrets are preserved automatically)
+helm upgrade troshka deploy/helm/ -n troshka \
+  --set backend.image.tag=v1.2.0 \
+  --set frontend.image.tag=v1.2.0
+```
+
+The chart includes all optional components with toggles:
+- `postgres.deploy=true` — in-cluster PostgreSQL StatefulSet
+- `s4.deploy=true` — in-cluster S4 object storage
+- `auth.oauthEnabled=true` — OpenShift OAuth proxy
+- `deploy=false` — suppress all resources (useful in ArgoCD)
+
+Secrets (JWT, encryption key, passwords) are auto-generated on first install and preserved on upgrade via `helm.sh/resource-policy: keep`. Database migrations run automatically as a pre-install/pre-upgrade Helm hook.
+
+See `deploy/helm/values.yaml` for all configurable values.
+
 ## Kustomize (Alternative)
 
-If you prefer raw manifests over Ansible, use kustomize directly:
+If you prefer raw manifests over Ansible or Helm, use kustomize directly:
 
 ```bash
 # Base only (you must edit backend-secret.yaml with real values)
@@ -247,7 +303,7 @@ oc apply -k deploy/overlays/postgres/
 oc apply -k deploy/overlays/minio/
 ```
 
-Note: kustomize overlays require manual secret management. The Ansible playbook is recommended for production use.
+Note: kustomize overlays require manual secret management. The Ansible playbook or Helm chart is recommended for production use.
 
 ## Upgrading
 

@@ -1,13 +1,14 @@
+{{- if .Values.deploy }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: troshka-backend
-  namespace: troshka
+  namespace: {{ include "troshka.namespace" . }}
   labels:
-    app.kubernetes.io/name: troshka-backend
+    {{- include "troshka.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
-  replicas: 1
+  replicas: {{ .Values.backend.replicas }}
   selector:
     matchLabels:
       app.kubernetes.io/name: troshka-backend
@@ -16,11 +17,13 @@ spec:
       labels:
         app.kubernetes.io/name: troshka-backend
         app.kubernetes.io/component: backend
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/backend-config.yaml") . | sha256sum }}
     spec:
       serviceAccountName: troshka-backend
       containers:
         - name: backend
-          image: quay.io/redhat-gpte/troshka-backend:latest
+          image: {{ include "troshka.backendImage" . }}
           ports:
             - containerPort: 8200
               name: http
@@ -69,27 +72,9 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 30
           resources:
-            requests:
-              cpu: 250m
-              memory: 512Mi
-            limits:
-              memory: 2Gi
+            {{- toYaml .Values.backend.resources | nindent 12 }}
       volumes:
         - name: config
           configMap:
             name: troshka-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: troshka-backend
-  namespace: troshka
-  labels:
-    app.kubernetes.io/name: troshka-backend
-spec:
-  selector:
-    app.kubernetes.io/name: troshka-backend
-  ports:
-    - port: 8200
-      targetPort: 8200
-      name: http
+{{- end }}

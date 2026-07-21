@@ -13,6 +13,10 @@ data:
       oauth_enabled: false
       admin_users: ""
       operator_users: ""
+      allowed_users: ""
+      allowed_groups: ""
+      admin_groups: ""
+      operator_groups: ""
     defaults:
       run_timer_hours: 8
       lifetime_days: 30

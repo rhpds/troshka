@@ -11,6 +11,9 @@
     - name: Determine route host
       ansible.builtin.include_tasks: tasks/route-host.yaml
 
+    - name: Create RBAC
+      ansible.builtin.include_tasks: tasks/rbac.yaml
+
     - name: Manage secrets
       ansible.builtin.include_tasks: tasks/secrets.yaml
 

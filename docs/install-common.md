@@ -81,9 +81,10 @@ The configuration file contains the following sections:
 - `allow_registration`: Allow new user registration (default: `true`)
 - `admin_users`: Comma-separated list of admin user emails (default: `prutledg@redhat.com`)
 - `operator_users`: Comma-separated list of operator user emails (default: `""`)
-- `allowed_groups`: Comma-separated list of allowed OIDC groups (default: `""`)
-- `admin_groups`: Comma-separated list of admin OIDC groups (default: `""`)
-- `operator_groups`: Comma-separated list of operator OIDC groups (default: `""`)
+- `allowed_users`: Comma-separated list of allowed user emails — if set, only these users can access (default: `""`)
+- `allowed_groups`: Comma-separated list of OpenShift groups that can access the app (default: `""`)
+- `admin_groups`: Comma-separated list of OpenShift groups granted admin role (default: `""`)
+- `operator_groups`: Comma-separated list of OpenShift groups granted operator role (default: `""`)
 
 #### `aws` — AWS default settings
 
@@ -380,14 +381,18 @@ server {
 }
 ```
 
-### OIDC Authentication
+### SSO Authentication
 
-For production deployments, enable OIDC authentication by setting `oauth_enabled: true` and configuring:
+For production deployments on OpenShift, enable SSO by setting `oauth_enabled: true`. The OpenShift OAuth proxy handles login and passes user identity headers to the backend.
 
-- `admin_users`: Comma-separated list of admin user emails
-- `admin_groups`: OIDC groups that grant admin access
-- `operator_groups`: OIDC groups that grant operator (read-only) access
-- `allowed_groups`: OIDC groups that grant user access
+**Role assignment** works in two tiers (email config takes precedence over groups):
+
+1. **Per-email** — `admin_users` and `operator_users` CSV lists grant roles to specific users
+2. **Per-group** — `admin_groups`, `operator_groups`, and `allowed_groups` grant roles based on OpenShift group membership
+
+Groups are resolved at runtime by querying the `user.openshift.io/v1/groups` API using the backend pod's ServiceAccount token (cached for 60 seconds). No OAuth proxy configuration changes are needed.
+
+**Access control** — if `allowed_groups` is configured, users must belong to at least one configured group or appear in the `allowed_users` email list. If neither is set, all authenticated users are allowed.
 
 Example production auth configuration:
 

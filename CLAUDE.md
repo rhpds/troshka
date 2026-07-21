@@ -68,6 +68,18 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Progress tracking: module-level dicts (e.g., `_deploy_progress`)
 - Host operations: `troshkad_client.start_job()` / `poll_job()` / `wait_for_job()` / `cancel_job()`
 
+### Group-Based Access Control
+- Groups resolved at runtime from OpenShift `user.openshift.io/v1/groups` API via `kubernetes` Python client
+- No group tables in DB — purely runtime resolution from the OCP cluster, cached 60s
+- Backend ServiceAccount `troshka-backend` needs ClusterRole `troshka-group-reader` (get/list on `user.openshift.io` groups)
+- Three group config keys: `allowed_groups` (access gate), `admin_groups` (admin role), `operator_groups` (operator role)
+- Role resolution priority: email config (`admin_users`/`operator_users`) > group membership > default `"user"`
+- Access check: if `allowed_groups` is set, user must be in any configured group (allowed/admin/operator) OR in `allowed_users` email fallback
+- `_upsert_sso_user()` updates role on each login if group membership changed
+- Graceful degradation: when SA token is absent (dev mode, non-OCP), group resolution is skipped entirely
+- OCP groups store usernames (e.g., `prutledg`), matched via `X-Forwarded-User` header from OAuth proxy
+- Key functions in `src/backend/app/core/auth.py`: `_fetch_openshift_groups()`, `_get_user_groups()`, `_role_for_groups()`, `_resolve_role()`, `_enforce_access()`
+
 ### Frontend Pages
 - `"use client"` directive on all pages
 - Raw `fetch()` for API calls (no TanStack Query)
@@ -529,3 +541,50 @@ cd src/backend
 ```
 
 Head revision chain is in `src/backend/alembic/versions/`. FK columns must use `postgresql.UUID(as_uuid=False)` to match the existing schema (not `String(36)`).
+
+## Deployment
+
+Three deployment methods — all produce equivalent results:
+
+### Helm Chart (`deploy/helm/`)
+```bash
+helm install troshka deploy/helm/ -n troshka \
+  --set postgres.deploy=true \
+  --set auth.oauthEnabled=true \
+  --set auth.allowedGroups="rhpds-admins\,troshka-users" \
+  --set auth.adminGroups="rhpds-admins" \
+  --set route.host=troshka.apps.cluster.example.com
+```
+- Full-stack chart: backend, frontend, PostgreSQL, S4, OAuth proxy, RBAC, migration Job
+- All components conditional via `values.yaml` toggles (`postgres.deploy`, `s4.deploy`, `auth.oauthEnabled`)
+- Global `deploy: false` suppresses all resources (ArgoCD pattern)
+- Migration runs as Helm pre-install/pre-upgrade hook
+- Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)
+- ConfigMap changes trigger pod restart via `checksum/config` annotation
+
+### Kustomize (`deploy/base/` + `deploy/overlays/`)
+```bash
+oc apply -k deploy/overlays/postgres   # base + in-cluster PostgreSQL
+oc apply -k deploy/overlays/sso        # base + OAuth proxy
+oc apply -k deploy/overlays/s4         # base + in-cluster S4
+```
+- Base: namespace, backend (Deployment + Service + ConfigMap + Secret), frontend (Deployment + Service + Route), RBAC (ServiceAccount + ClusterRole + ClusterRoleBinding)
+- Overlays compose additively — apply multiple overlays by creating a new overlay that references them
+
+### Ansible (`deploy/ansible/`)
+```bash
+ansible-playbook deploy/ansible/deploy.yaml \
+  -e kubeconfig=~/secrets/cluster.kubeconfig \
+  -e troshka_deploy_postgres=true \
+  -e troshka_oauth_enabled=true \
+  -e troshka_allowed_groups="rhpds-admins,troshka-users"
+```
+- Variables in `deploy/ansible/inventory/group_vars/all.yaml`
+- Task order: namespace → RBAC → secrets → PostgreSQL → S4 → backend → migration → frontend → OAuth
+- Secrets auto-generated on first deploy, preserved on re-deploy
+- Undeploy: `ansible-playbook deploy/ansible/undeploy.yaml`
+
+### Container Images
+- Built by GitHub Actions on push to `main` or version tags
+- Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,sushy,vnc-proxy}`
+- Containerfiles in `deploy/containerfiles/` (backend, frontend) and `src/operator/images/` (operator components)

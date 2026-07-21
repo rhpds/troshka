@@ -1,0 +1,46 @@
+---
+- name: Create backend ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: troshka-backend
+        namespace: "{{ troshka_namespace }}"
+        labels:
+          app.kubernetes.io/name: troshka-backend
+
+- name: Create group-reader ClusterRole
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: troshka-group-reader
+        labels:
+          app.kubernetes.io/name: troshka
+      rules:
+        - apiGroups: ["user.openshift.io"]
+          resources: ["groups"]
+          verbs: ["get", "list"]
+
+- name: Create group-reader ClusterRoleBinding
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: troshka-group-reader
+        labels:
+          app.kubernetes.io/name: troshka
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: troshka-group-reader
+      subjects:
+        - kind: ServiceAccount
+          name: troshka-backend
+          namespace: "{{ troshka_namespace }}"

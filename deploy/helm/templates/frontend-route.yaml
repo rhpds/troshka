@@ -1,0 +1,34 @@
+{{- if .Values.deploy }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: troshka
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  {{- if .Values.route.host }}
+  host: {{ .Values.route.host }}
+  {{- end }}
+  to:
+    kind: Service
+    {{- if .Values.auth.oauthEnabled }}
+    name: troshka-oauth-proxy
+    {{- else }}
+    name: troshka-frontend
+    {{- end }}
+  port:
+    {{- if .Values.auth.oauthEnabled }}
+    targetPort: proxy
+    {{- else }}
+    targetPort: http
+    {{- end }}
+  tls:
+    {{- if .Values.auth.oauthEnabled }}
+    termination: reencrypt
+    {{- else }}
+    termination: edge
+    {{- end }}
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

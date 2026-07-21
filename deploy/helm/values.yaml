@@ -1,0 +1,79 @@
+deploy: true
+
+namespace:
+  create: true
+  name: troshka
+
+backend:
+  image:
+    repository: quay.io/redhat-gpte/troshka-backend
+    tag: latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+frontend:
+  image:
+    repository: quay.io/redhat-gpte/troshka-frontend
+    tag: latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+route:
+  host: ""
+  tls: edge
+
+auth:
+  oauthEnabled: false
+  adminUsers: ""
+  operatorUsers: ""
+  allowedUsers: ""
+  allowedGroups: ""
+  adminGroups: ""
+  operatorGroups: ""
+
+secrets:
+  databaseUrl: ""
+  jwtSecret: ""
+  encryptionKey: ""
+  s3AccessKey: ""
+  s3SecretKey: ""
+
+database:
+  url: ""
+
+postgres:
+  deploy: false
+  image: registry.redhat.io/rhel9/postgresql-16:latest
+  storageSize: 10Gi
+  password: ""
+
+s3:
+  bucket: troshka-images
+  endpoint: ""
+
+s4:
+  deploy: false
+  image: quay.io/rh-aiservices-bu/s4:latest
+  storageSize: 50Gi
+  password: ""
+
+defaults:
+  runTimerHours: 8
+  lifetimeDays: 30
+  maxVmsPerProject: 20
+  maxProjectsPerUser: 10
+  userLibraryQuotaGb: 500
+
+overcommit:
+  cpuRatio: 4.0
+  ramRatio: 1.5

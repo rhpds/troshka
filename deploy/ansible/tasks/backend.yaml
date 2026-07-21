@@ -19,6 +19,10 @@
             jwt_algorithm: "HS256"
             admin_users: "{{ troshka_admin_users }}"
             operator_users: "{{ troshka_operator_users }}"
+            allowed_users: "{{ troshka_allowed_users }}"
+            allowed_groups: "{{ troshka_allowed_groups }}"
+            admin_groups: "{{ troshka_admin_groups }}"
+            operator_groups: "{{ troshka_operator_groups }}"
           {% if troshka_deploy_s4 | bool %}
           s3:
             endpoint_url: "http://troshka-s4.{{ troshka_namespace }}.svc:7480"
@@ -55,6 +59,7 @@
             labels:
               app.kubernetes.io/name: troshka-backend
           spec:
+            serviceAccountName: troshka-backend
             containers:
               - name: backend
                 image: "{{ troshka_backend_image }}"
