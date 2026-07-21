@@ -196,7 +196,7 @@ def _get_host_pool(host, db_session):
         return None
     from app.models.storage_pool import StoragePool
 
-    return db_session.query(StoragePool).get(host.storage_pool_id)
+    return db_session.get(StoragePool, host.storage_pool_id)
 
 
 def _check_shared_cache(db_session, pool, item_id, item_type):

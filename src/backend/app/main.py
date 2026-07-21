@@ -155,7 +155,7 @@ async def lifespan(app):
         )
         for pool in creating_pools:
             if pool.fsx_filesystem_id:
-                provider = s.query(Provider).get(pool.provider_id)
+                provider = s.get(Provider, pool.provider_id)
                 if provider:
                     creds = provider.get_credentials()
                     from app.services.storage_pool_service import (
@@ -193,7 +193,7 @@ async def lifespan(app):
             .all()
         )
         for pool in available_pools:
-            provider = s.query(Provider).get(pool.provider_id)
+            provider = s.get(Provider, pool.provider_id)
             if provider and provider.security_group_id:
                 try:
                     creds = provider.get_credentials()

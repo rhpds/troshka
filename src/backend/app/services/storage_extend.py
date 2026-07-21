@@ -124,7 +124,7 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
 
     from app.models.provider import Provider
 
-    provider = db.query(Provider).get(pool.provider_id)
+    provider = db.get(Provider, pool.provider_id)
     if not provider:
         raise ValueError("No provider associated with pool")
     creds = provider.get_credentials()
@@ -176,7 +176,7 @@ def extend_pool_netapp(pool, db, increment_gb: int | None = None):
 
     from app.models.provider import Provider
 
-    provider = db.query(Provider).get(pool.provider_id)
+    provider = db.get(Provider, pool.provider_id)
     if not provider:
         raise ValueError("No provider associated with pool")
     creds = provider.get_credentials()
@@ -217,7 +217,7 @@ def extend_pool_azure_files(pool, db, increment_gb: int | None = None):
 
     from app.models.provider import Provider
 
-    provider = db.query(Provider).get(pool.provider_id)
+    provider = db.get(Provider, pool.provider_id)
     if not provider:
         raise ValueError("No provider associated with pool")
     creds = provider.get_credentials()

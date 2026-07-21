@@ -76,7 +76,7 @@ def get_pool(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
     return _pool_response(pool, db)
@@ -102,7 +102,7 @@ def create_pool(
     if existing:
         raise HTTPException(409, f"Pool named '{body.name}' already exists")
 
-    provider = db.query(Provider).get(body.provider_id)
+    provider = db.get(Provider, body.provider_id)
     if not provider:
         raise HTTPException(404, "Provider not found")
 
@@ -258,12 +258,12 @@ def update_pool(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
 
     if pool.mode == "shared-fsx":
-        provider = db.query(Provider).get(pool.provider_id)
+        provider = db.get(Provider, pool.provider_id)
         if not provider:
             raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
@@ -332,7 +332,7 @@ def extend_pool(
     db: Session = Depends(get_db),
 ):
     """Extend the FSx filesystem by the configured increment."""
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
     if pool.mode != "shared-fsx":
@@ -354,7 +354,7 @@ def delete_pool(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
 
@@ -375,7 +375,7 @@ def delete_pool(
             try:
                 from app.services.providers import get_provider_driver
 
-                provider = db.query(Provider).get(pool.provider_id)
+                provider = db.get(Provider, pool.provider_id)
                 drv = get_provider_driver(provider)
                 drv.terminate_host(provider, worker.instance_id)
                 logger.info("Terminated pattern buffer %s", worker.id[:8])
@@ -391,7 +391,7 @@ def delete_pool(
         db.commit()
 
     if pool.mode == "shared-fsx" and pool.fsx_filesystem_id:
-        provider = db.query(Provider).get(pool.provider_id)
+        provider = db.get(Provider, pool.provider_id)
         if not provider:
             raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
@@ -403,7 +403,7 @@ def delete_pool(
         )
 
     if pool.mode == "shared-ceph-nfs":
-        provider = db.query(Provider).get(pool.provider_id)
+        provider = db.get(Provider, pool.provider_id)
         if not provider:
             raise HTTPException(404, "Provider not found")
         credentials = provider.get_credentials()
@@ -421,7 +421,7 @@ def list_cache(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
     entries = (
@@ -461,9 +461,9 @@ def probe_azs(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if pool:
-        provider = db.query(Provider).get(pool.provider_id)
+        provider = db.get(Provider, pool.provider_id)
     else:
         raise HTTPException(404, "Storage pool not found")
 
@@ -498,7 +498,7 @@ def run_pool_gc(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    pool = db.query(StoragePool).get(pool_id)
+    pool = db.get(StoragePool, pool_id)
     if not pool:
         raise HTTPException(404, "Storage pool not found")
     if pool.mode == "local":
@@ -554,7 +554,7 @@ def delete_pattern_buffer(
         try:
             from app.services.providers import get_provider_driver
 
-            provider = db.query(Provider).get(pool.provider_id)
+            provider = db.get(Provider, pool.provider_id)
             drv = get_provider_driver(provider)
             drv.terminate_host(provider, worker.instance_id)
         except Exception:

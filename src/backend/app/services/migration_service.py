@@ -16,7 +16,7 @@ def validate_migration(
 ) -> list[str]:
     errors = []
 
-    project = db.query(Project).get(project_id)
+    project = db.get(Project, project_id)
     if not project:
         errors.append("Project not found")
         return errors
@@ -27,8 +27,8 @@ def validate_migration(
     if project.host_id != source_host_id:
         errors.append("Project is not on the specified source host")
 
-    source = db.query(Host).get(source_host_id)
-    target = db.query(Host).get(target_host_id)
+    source = db.get(Host, source_host_id)
+    target = db.get(Host, target_host_id)
     if not source:
         errors.append("Source host not found")
     if not target:
@@ -48,7 +48,7 @@ def validate_migration(
         errors.append("Hosts must be in a storage pool to migrate")
         return errors
 
-    pool = db.query(StoragePool).get(source.storage_pool_id)
+    pool = db.get(StoragePool, source.storage_pool_id)
     if not pool:
         errors.append("Storage pool not found")
         return errors
@@ -108,9 +108,9 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
 
     db = SessionLocal()
     try:
-        project = db.query(Project).get(project_id)
-        source = db.query(Host).get(source_host_id)
-        target = db.query(Host).get(target_host_id)
+        project = db.get(Project, project_id)
+        source = db.get(Host, source_host_id)
+        target = db.get(Host, target_host_id)
         if not project or not source or not target:
             raise RuntimeError("Project, source, or target host not found")
 
@@ -189,7 +189,7 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
     except Exception as e:
         logger.error("Migration %s failed: %s", project_id[:8], e)
         try:
-            project = db.query(Project).get(project_id)
+            project = db.get(Project, project_id)
             if project:
                 project.state = "error"
                 project.deploy_error = f"Migration failed: {e}"
@@ -208,7 +208,7 @@ def evacuate_host(host_id: str):
 def _do_evacuate_host(host_id: str):
     db = SessionLocal()
     try:
-        host = db.query(Host).get(host_id)
+        host = db.get(Host, host_id)
         if not host:
             logger.error("Evacuate %s: host not found", host_id[:8])
             return

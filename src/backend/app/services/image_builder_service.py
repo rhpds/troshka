@@ -188,8 +188,8 @@ def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-1
 
     db = SessionLocal()
     try:
-        provider = db.query(Provider).get(provider_id)
-        user = db.query(User).get(user_id)
+        provider = db.get(Provider, provider_id)
+        user = db.get(User, user_id)
         if not provider or not user:
             _build_progress[provider_id] = {
                 "status": "error",

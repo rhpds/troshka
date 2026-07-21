@@ -649,7 +649,7 @@ def reconcile_pool(pool_id: str, dry_run: bool = False) -> dict:
 
     db = SessionLocal()
     try:
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return {"error": "Pool not found"}
         if pool.mode == "local":

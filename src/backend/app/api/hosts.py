@@ -43,7 +43,7 @@ def _detach_install_iso(host, db_session):
         logger.debug("ISO unmount/repo cleanup skipped for %s", host.id[:8])
 
     try:
-        prov = db_session.query(Provider).get(host.provider_id)
+        prov = db_session.get(Provider, host.provider_id)
         if prov:
             from app.services.providers import get_provider_driver
 
@@ -321,7 +321,7 @@ def add_host(
     if body.storage_pool_id:
         from app.models.storage_pool import StoragePool
 
-        pool = db.query(StoragePool).get(body.storage_pool_id)
+        pool = db.get(StoragePool, body.storage_pool_id)
         if not pool:
             raise HTTPException(status_code=404, detail="Storage pool not found")
         if pool.provider_id != provider.id:
@@ -517,7 +517,7 @@ def add_host(
 
             # Create console DNS/Route record
             if h.instance_id and h.ip_address:
-                prov_obj = s.query(Provider).get(h.provider_id)
+                prov_obj = s.get(Provider, h.provider_id)
                 if provider_console_domain:
                     from app.services.console_dns import console_domain_for_host
                     from app.services.providers import get_provider_driver
@@ -610,7 +610,7 @@ def install_agent(
             if h.provider_id:
                 from app.models.provider import Provider as _Prov
 
-                _prov = s.query(_Prov).get(h.provider_id)
+                _prov = s.get(_Prov, h.provider_id)
                 if _prov:
                     _provider_type = _prov.type
 
@@ -648,7 +648,7 @@ def install_agent(
             if h.storage_pool_id:
                 from app.models.storage_pool import StoragePool as _SP2
 
-                _pool = s.query(_SP2).get(h.storage_pool_id)
+                _pool = s.get(_SP2, h.storage_pool_id)
                 if _pool and _pool.mode.startswith("shared"):
                     _install_kwargs["storage_mode"] = "shared"
                     if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
@@ -1095,7 +1095,7 @@ def poweron_host(
             if h.provider_id:
                 from app.models.provider import Provider as _Prov2
 
-                _prov2 = s.query(_Prov2).get(h.provider_id)
+                _prov2 = s.get(_Prov2, h.provider_id)
                 if _prov2:
                     _provider_type = _prov2.type
 
@@ -1128,7 +1128,7 @@ def poweron_host(
             if h.storage_pool_id:
                 from app.models.storage_pool import StoragePool as _SP
 
-                _pool = s.query(_SP).get(h.storage_pool_id)
+                _pool = s.get(_SP, h.storage_pool_id)
                 if _pool and _pool.mode.startswith("shared"):
                     _kwargs["storage_mode"] = "shared"
                     if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
@@ -1533,7 +1533,7 @@ def remove_host(
 
         s = SessionLocal()
         try:
-            prov = s.query(Provider).get(provider_id) if provider_id else None
+            prov = s.get(Provider, provider_id) if provider_id else None
             if prov:
                 from app.services.providers import get_provider_driver
 
@@ -1887,13 +1887,13 @@ def evacuate_host_endpoint(
     from app.models.storage_pool import StoragePool
     from app.services.migration_service import evacuate_host
 
-    host = db.query(Host).get(host_id)
+    host = db.get(Host, host_id)
     if not host:
         raise HTTPException(404, "Host not found")
     if not host.storage_pool_id:
         raise HTTPException(400, "Host is not in a storage pool")
 
-    pool = db.query(StoragePool).get(host.storage_pool_id)
+    pool = db.get(StoragePool, host.storage_pool_id)
     if not pool:
         raise HTTPException(400, "Storage pool not found")
     if pool.mode == "local":

@@ -253,7 +253,7 @@ def _poll_fsx_until_available(
             fs = resp["FileSystems"][0]
             status = fs["Lifecycle"]
             if status == "AVAILABLE":
-                pool = db.query(StoragePool).get(pool_id)
+                pool = db.get(StoragePool, pool_id)
                 if not pool:
                     return
                 pool.status = "available"
@@ -271,7 +271,7 @@ def _poll_fsx_until_available(
                 logger.info("FSx %s is available for pool %s", filesystem_id, pool_id)
                 return
             elif status in ("FAILED", "DELETING"):
-                pool = db.query(StoragePool).get(pool_id)
+                pool = db.get(StoragePool, pool_id)
                 if not pool:
                     return
                 pool.status = "error"
@@ -281,7 +281,7 @@ def _poll_fsx_until_available(
                 )
                 return
 
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.status = "error"
@@ -310,7 +310,7 @@ def provision_fsx_pool(
             storage_gb,
             throughput_mbps,
         )
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.fsx_filesystem_id = result["filesystem_id"]
@@ -318,7 +318,7 @@ def provision_fsx_pool(
         db.commit()
     except Exception as e:
         logger.error("FSx provisioning failed for pool %s: %s", pool_id[:8], e)
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.status = "error"
@@ -476,7 +476,7 @@ def _ceph_exec(core_api, toolbox_pod: str, command: list[str]) -> str:
 def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
     db = SessionLocal()
     try:
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
 
@@ -615,7 +615,7 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
 
     except Exception as e:
         logger.error("Ceph-NFS provisioning failed for pool %s: %s", pool_id[:8], e)
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if pool:
             pool.status = "error"
             db.commit()
@@ -800,7 +800,7 @@ def provision_netapp_pool(
             volume_name,
             service_level,
         )
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.netapp_pool_id = result["pool_name"]
@@ -813,7 +813,7 @@ def provision_netapp_pool(
         logger.info("NetApp pool %s is available", pool_id[:8])
     except Exception as e:
         logger.error("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.status = "error"
@@ -1019,7 +1019,7 @@ def provision_azure_files_pool(
         result = create_azure_files_nfs(
             credentials, resource_group, location, subnet_id, capacity_gb, share_name
         )
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.azure_storage_account = result["storage_account"]
@@ -1035,7 +1035,7 @@ def provision_azure_files_pool(
         logger.info("Azure Files NFS pool %s is available", pool_id[:8])
     except Exception as e:
         logger.error("Azure Files provisioning failed for pool %s: %s", pool_id[:8], e)
-        pool = db.query(StoragePool).get(pool_id)
+        pool = db.get(StoragePool, pool_id)
         if not pool:
             return
         pool.status = "error"

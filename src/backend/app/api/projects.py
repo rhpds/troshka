@@ -891,7 +891,7 @@ def deploy_project(
     if storage_pool_id:
         from app.models.storage_pool import StoragePool
 
-        pool = db.query(StoragePool).get(storage_pool_id)
+        pool = db.get(StoragePool, storage_pool_id)
         if not pool:
             raise HTTPException(status_code=404, detail="Storage pool not found")
         if pool.mode.startswith("shared") and pool.status != "available":
@@ -3453,7 +3453,7 @@ def migrate_project_endpoint(
 ):
     from app.services.migration_service import migrate_project, validate_migration
 
-    project = db.query(Project).get(project_id)
+    project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
 
