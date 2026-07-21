@@ -629,7 +629,8 @@ class KubeVirtDriver(ProviderDriver):
                 "topology": topology,
                 "s3Config": {
                     "bucket": s3_config.get("bucket", ""),
-                    "endpoint": s3_config.get("endpoint", ""),
+                    "endpoint": s3_config.get("endpoint_url", "")
+                    or s3_config.get("endpoint", ""),
                     "region": s3_config.get("region", ""),
                     "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
                 },
