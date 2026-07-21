@@ -19,5 +19,6 @@ class UserIdentity(BaseModel):
     email: str
     display_name: str | None = None
     role: str
+    auth_source: str | None = None
 
     model_config = {"from_attributes": True}

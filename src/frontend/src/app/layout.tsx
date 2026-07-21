@@ -55,7 +55,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       .then(async (r) => {
         if (r.status === 403) {
           const body = await r.json().catch(() => ({}));
-          setUser({ denied: true, detail: body.detail || "Access denied" } as any);
+          const detail = body.detail || "Access denied";
+          const emailMatch = detail.match(/user\s+(\S+@\S+)/);
+          setUser({ denied: true, detail, email: emailMatch?.[1] || "" } as any);
           return null;
         }
         if (!r.ok) { setUser(null); return null; }
@@ -106,7 +108,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const isLoginPage = pathname === "/login";
   const isConsolePage = pathname?.startsWith("/console");
   const isPortalPage = pathname?.startsWith("/portal");
-  const isAuthenticated = !!user && !isLoginPage;
+  const isDenied = !!(user as any)?.denied;
+  const isAuthenticated = !!user && !isLoginPage && !isDenied;
   const isAdmin = user?.role === "admin";
 
   const [backendDown, setBackendDown] = useState(false);
@@ -218,37 +221,39 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   <ToolbarItem>
                     <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, opacity: 0.85 }}>
                       <UserIcon />
-                      {user.display_name || user.email}
-                      <select
-                        value={user.role}
-                        onChange={async (e) => {
-                          const newRole = e.target.value;
-                          try {
-                            const resp = await fetch(`/api/v1/auth/dev-token/${newRole}`);
-                            if (!resp.ok) return;
-                            const data = await resp.json();
-                            localStorage.setItem("troshka-token", data.token);
-                            localStorage.setItem("troshka-user", JSON.stringify({
-                              id: data.user_id, email: data.email,
-                              display_name: data.display_name, role: data.role,
-                            }));
-                            setUser({ id: data.user_id, email: data.email, display_name: data.display_name, role: data.role });
-                          } catch { /* ignore */ }
-                        }}
-                        style={{
-                          fontSize: 11,
-                          padding: "1px 6px",
-                          borderRadius: 4,
-                          border: "none",
-                          cursor: "pointer",
-                          background: user.role === "admin" ? "rgba(108,99,255,0.2)" : user.role === "operator" ? "rgba(251,191,36,0.2)" : "rgba(148,163,184,0.2)",
-                          color: user.role === "admin" ? "#a78bfa" : user.role === "operator" ? "#fbbf24" : "#94a3b8",
-                        }}
-                      >
-                        <option value="admin">admin</option>
-                        <option value="operator">operator</option>
-                        <option value="user">user</option>
-                      </select>
+                      {user.email}
+                      {(user as any).auth_source !== "sso" && (
+                        <select
+                          value={user.role}
+                          onChange={async (e) => {
+                            const newRole = e.target.value;
+                            try {
+                              const resp = await fetch(`/api/v1/auth/dev-token/${newRole}`);
+                              if (!resp.ok) return;
+                              const data = await resp.json();
+                              localStorage.setItem("troshka-token", data.token);
+                              localStorage.setItem("troshka-user", JSON.stringify({
+                                id: data.user_id, email: data.email,
+                                display_name: data.display_name, role: data.role,
+                              }));
+                              setUser({ id: data.user_id, email: data.email, display_name: data.display_name, role: data.role });
+                            } catch { /* ignore */ }
+                          }}
+                          style={{
+                            fontSize: 11,
+                            padding: "1px 6px",
+                            borderRadius: 4,
+                            border: "none",
+                            cursor: "pointer",
+                            background: user.role === "admin" ? "rgba(108,99,255,0.2)" : user.role === "operator" ? "rgba(251,191,36,0.2)" : "rgba(148,163,184,0.2)",
+                            color: user.role === "admin" ? "#a78bfa" : user.role === "operator" ? "#fbbf24" : "#94a3b8",
+                          }}
+                        >
+                          <option value="admin">admin</option>
+                          <option value="operator">operator</option>
+                          <option value="user">user</option>
+                        </select>
+                      )}
                     </span>
                   </ToolbarItem>
                   <ToolbarItem>
@@ -257,6 +262,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     </Button>
                   </ToolbarItem>
                 </>
+              )}
+              {isDenied && (
+                <ToolbarItem>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, opacity: 0.85 }}>
+                    <UserIcon />
+                    {(user as any).email || ""}
+                  </span>
+                </ToolbarItem>
               )}
             </ToolbarGroup>
           </ToolbarContent>
