@@ -341,29 +341,82 @@ def create_provider(
 
     if body.type == "kubevirt":
         import threading
+        import uuid as _uuid
+
+        from app.models.host import Host
+
+        host_id = str(_uuid.uuid4())
+        host = Host(
+            id=host_id,
+            provider_id=provider.id,
+            instance_id="",
+            instance_type="kubevirt-cluster",
+            region=provider.default_region or "",
+            state="provisioning",
+            host_type="kubevirt-cluster",
+            total_vcpus=0,
+            total_ram_mb=0,
+            ip_address="",
+            agent_status="provisioning",
+            storage_size_gb=0,
+            max_eips=0,
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
 
         _provider_id = provider.id
+        _host_id = host_id
 
-        def _install_kubevirt_operator():
+        def _provision_kubevirt():
             from app.core.database import SessionLocal
+            from app.models.host import Host as HostModel
             from app.models.provider import Provider as ProvModel
-            from app.services.providers.kubevirt import _deploy_operator
+            from app.services.providers import get_provider_driver
 
             s = SessionLocal()
             try:
+                h = s.get(HostModel, _host_id)
                 prov = s.get(ProvModel, _provider_id)
-                if not prov:
+                if not h or not prov:
                     return
-                _deploy_operator(prov)
+                drv = get_provider_driver(prov)
+                result = drv.provision_host(
+                    provider=prov,
+                    host_id=_host_id,
+                    instance_type="kubevirt-cluster",
+                    storage_size_gb=0,
+                )
+                h.instance_id = result["instance_id"]
+                h.instance_type = result["instance_type"]
+                h.state = "active"
+                h.total_vcpus = result["total_vcpus"]
+                h.total_ram_mb = result["total_ram_mb"]
+                h.ip_address = result["public_ip"]
+                h.private_ip = result.get("private_ip")
+                h.agent_status = "connected"
+                h.agent_token = prov.get_credentials().get("token", "")
+                h.storage_size_gb = result.get("storage_size_gb", 0)
+                s.commit()
                 logger.info(
-                    "Operator installed for kubevirt provider %s", _provider_id[:8]
+                    "KubeVirt provider %s ready — %d vCPUs, %d MB RAM",
+                    _provider_id[:8],
+                    result["total_vcpus"],
+                    result["total_ram_mb"],
                 )
             except Exception:
-                logger.exception("Failed to install operator for %s", _provider_id[:8])
+                logger.exception(
+                    "Failed to provision kubevirt provider %s", _provider_id[:8]
+                )
+                h = s.get(HostModel, _host_id)
+                if h:
+                    h.state = "error"
+                    h.agent_status = "provision_failed"
+                    s.commit()
             finally:
                 s.close()
 
-        threading.Thread(target=_install_kubevirt_operator, daemon=True).start()
+        threading.Thread(target=_provision_kubevirt, daemon=True).start()
 
     return ProviderResponse(
         id=provider.id,
