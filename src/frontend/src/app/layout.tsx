@@ -114,7 +114,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     let failures = 0;
     const check = () => {
       fetch("/api/v1/auth/me", { signal: AbortSignal.timeout(5000) })
-        .then((r) => { failures = r.ok || r.status === 401 ? 0 : failures + 1; setBackendDown(failures >= 2); })
+        .then((r) => { failures = r.ok || r.status === 401 || r.status === 403 ? 0 : failures + 1; setBackendDown(failures >= 2); })
         .catch(() => { failures++; setBackendDown(failures >= 2); });
     };
     check();
