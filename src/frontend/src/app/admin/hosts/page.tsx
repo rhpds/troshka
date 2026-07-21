@@ -641,7 +641,7 @@ export default function AdminHostsPage() {
               <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                 <div style={{ height: 4, borderRadius: 2, width: `${totCpuPct}%`, background: totCpuPct > 80 ? "#f87171" : "#4ade80" }} />
               </div>
-              <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {Math.round(usedRamMb / 1024)}/{Math.round(totRamMb / 1024)} GB</div>
+              <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {(() => { const used = Math.round(usedRamMb / 1024); return used > 900 ? `${(used / 1024).toFixed(1)} TB` : `${used} GB`; })()}/{(() => { const tot = Math.round(totRamMb / 1024); return tot > 900 ? `${(tot / 1024).toFixed(1)} TB` : `${tot} GB`; })()}</div>
               <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                 <div style={{ height: 4, borderRadius: 2, width: `${totRamPct}%`, background: totRamPct > 80 ? "#f87171" : "#4ade80" }} />
               </div>
@@ -660,16 +660,16 @@ export default function AdminHostsPage() {
             return (
             <Card key={ps.id} isClickable isSelectable
               onClick={() => setFilterProvider(ps.id === filterProvider ? "" : ps.id)}
-              style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : undefined }}>
+              style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : `3px solid ${ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#6b7280"}40` }}>
               <CardBody>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ opacity: 0.4 }}>({ps.type})</span></div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: ps.type === "ec2" ? "rgba(251,146,60,0.15)" : ps.type === "gcp" ? "rgba(96,165,250,0.15)" : ps.type === "azure" ? "rgba(34,211,238,0.15)" : ps.type === "kubevirt" ? "rgba(167,139,250,0.15)" : ps.type === "ocpvirt" ? "rgba(244,114,182,0.15)" : "rgba(107,114,128,0.15)", color: ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#9ca3af" }}>{ps.type === "ec2" ? "AWS" : ps.type === "kubevirt" ? "KubeVirt" : ps.type === "ocpvirt" ? "OCP Virt" : ps.type.toUpperCase()}</span></div>
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{activeCount}<span style={{ fontSize: 14, opacity: 0.5 }}>/{ps.hosts.length}</span></div>
                 <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts &middot; {pRunningVms} VMs</div>
                 <div style={{ fontSize: 11, marginTop: 8 }}>vCPU: {pUsedVcpus}/{pVcpus}</div>
                 <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                   <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
                 </div>
-                <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {Math.round(pUsedRamMb / 1024)}/{Math.round(pRamMb / 1024)} GB</div>
+                <div style={{ fontSize: 11, marginTop: 6 }}>RAM: {(() => { const used = Math.round(pUsedRamMb / 1024); return used > 900 ? `${(used / 1024).toFixed(1)} TB` : `${used} GB`; })()}/{(() => { const tot = Math.round(pRamMb / 1024); return tot > 900 ? `${(tot / 1024).toFixed(1)} TB` : `${tot} GB`; })()}</div>
                 <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                   <div style={{ height: 4, borderRadius: 2, width: `${ramPct}%`, background: ramPct > 80 ? "#f87171" : "#4ade80" }} />
                 </div>
