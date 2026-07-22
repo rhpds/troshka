@@ -2506,7 +2506,11 @@ COMMAND_HANDLERS["vms/recert"] = _handle_vm_recert
 
 
 def _handle_oc_exec(job, params):
-    """Run an oc command inside the project's network namespace."""
+    """Run an oc command inside the project's network namespace.
+
+    Uses unshare --mount to bind a custom resolv.conf pointing at the
+    project's dnsmasq gateway so oc can resolve cluster-internal domains.
+    """
     project_id = _validate_project_id(params["project_id"])
     command = params.get("command", "")
     cmd_timeout = min(int(params.get("timeout", 30)), 300)
@@ -2522,16 +2526,63 @@ def _handle_oc_exec(job, params):
     if not os.path.isfile(kc_path):
         raise RuntimeError(f"No kubeconfig for project {project_id[:8]}")
 
+    gateway_ip = params.get("gateway_ip", "")
+    if not gateway_ip:
+        try:
+            out = subprocess.run(
+                ["ip", "netns", "exec", ns, "ip", "-4", "addr", "show"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout
+            for line in out.split("\n"):
+                line = line.strip()
+                if (
+                    line.startswith("inet ")
+                    and "scope global" in line
+                    and "secondary" not in line
+                ):
+                    addr = line.split()[1].split("/")[0]
+                    if (
+                        addr != "127.0.0.1"
+                        and not addr.startswith("169.254")
+                        and not addr.startswith("192.168.100")
+                    ):
+                        gateway_ip = addr
+                        break
+        except Exception:
+            pass
+
     import shlex
 
-    full_cmd = [
-        "ip",
-        "netns",
-        "exec",
-        ns,
-        "/usr/local/bin/oc",
-        f"--kubeconfig={kc_path}",
-    ] + shlex.split(command)
+    if gateway_ip:
+        resolv_path = f"/tmp/troshka-resolv-{project_id[:8]}.conf"
+        with open(resolv_path, "w") as f:
+            f.write(f"nameserver {gateway_ip}\n")
+        shell_cmd = (
+            f"mount --bind {resolv_path} /etc/resolv.conf && "
+            f"/usr/local/bin/oc --kubeconfig={kc_path} {command}"
+        )
+        full_cmd = [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "unshare",
+            "--mount",
+            "sh",
+            "-c",
+            shell_cmd,
+        ]
+    else:
+        full_cmd = [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "/usr/local/bin/oc",
+            f"--kubeconfig={kc_path}",
+        ] + shlex.split(command)
 
     result = subprocess.run(
         full_cmd,

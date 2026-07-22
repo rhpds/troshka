@@ -3878,7 +3878,11 @@ def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
                 exec_pod.metadata.name,
                 namespace,
                 container="exec",
-                command=["oc", "--kubeconfig=/root/.kube/config"] + command.split(),
+                command=[
+                    "sh",
+                    "-c",
+                    f"export KUBECONFIG=/root/.kube/config; oc {command}",
+                ],
                 stderr=True,
                 stdout=True,
                 stdin=False,
@@ -3940,9 +3944,18 @@ def _exec_on_bastion(
     command: str,
     timeout: int = 15,
 ):
-    # oc-exec runs inside the project namespace which inherits the host's
-    # resolv.conf — can't resolve project-internal domains like api.ocp.ocp.local.
-    # Always use bastion SSH for oc/kubectl commands.
+    # Try direct oc for simple oc/kubectl commands (no bastion needed).
+    # - kubevirt: exec pod has network access + mounted kubeconfig
+    # - troshkad: oc-exec uses unshare --mount to set DNS to project dnsmasq
+    # Skip shell pipelines (|, &&, ;) — those need the bastion SSH path.
+    cmd_stripped = command.strip()
+    if cmd_stripped.startswith(("oc ", "kubectl ")) and not any(
+        c in command for c in ("|", "&&", ";")
+    ):
+        try:
+            return _exec_oc(host, project_id, command, timeout)
+        except Exception:
+            pass
 
     if host.host_type == "kubevirt-cluster":
         return _exec_on_bastion_kubevirt(
