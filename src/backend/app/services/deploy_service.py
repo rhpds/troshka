@@ -5258,9 +5258,10 @@ def _set_destroy_error(project_id: str, error: str):
         s.close()
 
 
-def destroy_project_sync(ctx: dict):
+def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
     """Synchronously destroy a project's VMs and networks.
     ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
+    When delete_record is False, the DB record is preserved (used by redeploy).
     """
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -5270,7 +5271,8 @@ def destroy_project_sync(ctx: dict):
     try:
         host = s.query(Host).filter_by(id=ctx["host_id"]).first()
         if not host or not host.ip_address:
-            _delete_project_record(project_id)
+            if delete_record:
+                _delete_project_record(project_id)
             return
 
         # KubeVirt native: delegate destroy to operator
@@ -5312,7 +5314,8 @@ def destroy_project_sync(ctx: dict):
                     except Exception:
                         break
                 logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
-            _delete_project_record(project_id)
+            if delete_record:
+                _delete_project_record(project_id)
             return
 
         vni_map = ctx.get("vni_map", {})
@@ -5517,7 +5520,8 @@ def destroy_project_sync(ctx: dict):
 
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
         s.close()
-        _delete_project_record(project_id)
+        if delete_record:
+            _delete_project_record(project_id)
         return
     except Exception as e:
         logger.exception("Destroy %s failed", project_id[:8])

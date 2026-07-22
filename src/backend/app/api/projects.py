@@ -3104,7 +3104,8 @@ def redeploy_project(
                 "topology": project.deployed_topology or project.topology or {},
                 "dns_provider_id": project.dns_provider_id,
                 "domain": project.domain,
-            }
+            },
+            delete_record=False,
         )
         project.host_id = None
         db.commit()
@@ -3181,7 +3182,8 @@ def undeploy_project(
                 "topology": project.deployed_topology or project.topology or {},
                 "dns_provider_id": project.dns_provider_id,
                 "domain": project.domain,
-            }
+            },
+            delete_record=False,
         )
 
     project.state = "draft"
