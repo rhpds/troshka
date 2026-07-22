@@ -282,6 +282,8 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Credentials stored in topology JSONB (preserved in patterns for lab instruction stability)
 - Troshkad endpoints: `/bmc/setup`, `/bmc/teardown`, `/bmc/status`
 - Deploy order: BMC setup runs after VM definition but before VM startup
+- **SSL**: HTTPS on port 8443 alongside HTTP on port 8000. Self-signed EC P-256 certs generated per VM at setup time. Troshkad runs a second `sushy-emulator` process with SSL config (`sushy-{vm}-ssl.conf`). KubeVirt entrypoint.py runs dual HTTPServer threads. Restore/teardown/status handlers auto-detect SSL files via `sushy-*-ssl.*` glob patterns.
+- **BMC data in deployed_topology**: `deployed_topology.bmc` stores per-VM `redfish_url`, `redfish_url_ssl`, `ipmi_address`, username, password. Populated at deploy completion for both troshkad and KubeVirt paths.
 
 ### Garbage Collector
 - Runs on host agent connect, admin Clean button, or future cron
@@ -468,6 +470,15 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - **Boot order**: `bootOrder` is a sibling of `disk:` on the disk entry, NOT nested inside `disk.disk`
 - **VM state polling**: WS poller reads `vmStates` from TroshkaProject CR, maps by VM node UUID (not domain name), normalizes `Running`→`running`
 - **Not supported**: clock backdating (no `virsh domtime` equivalent in KubeVirt), gateway NAT pod (TODO)
+- **Operator workloads as Deployments**: dnsmasq, gateway, exec, BMC pods are all Deployments (not standalone Pods). Enables `oc rollout restart` for image updates. VNC proxy was already a Deployment. Legacy standalone Pods auto-cleaned on upgrade via `_cleanup_legacy_pod()`.
+- **oc-exec via exec pod**: `_exec_oc` for kubevirt-cluster uses the exec pod directly with `KUBECONFIG=/root/.kube/config`. No bastion needed for simple `oc` commands. Shell pipelines fall through to bastion SSH.
+
+### OC-Exec DNS Resolution
+- **Problem**: `ip netns exec` runs `oc` inside the project namespace, but the namespace inherits the host's `/etc/resolv.conf` — can't resolve project-internal domains like `api.ocp.ocp.local`
+- **Troshkad fix**: `unshare --mount` creates private mount namespace, bind-mounts custom resolv.conf pointing at project dnsmasq gateway IP. Gateway IP auto-detected from namespace bridge IPs.
+- **KubeVirt fix**: exec pod already has correct DNS via `dnsConfig` in pod spec
+- **Shell pipelines** (`|`, `&&`, `;`) skip `_exec_oc` and fall through to bastion SSH
+- **Bastionless**: simple `oc` commands work without a bastion on all providers
 
 ### GCP Provider Setup
 - Provider type `gcp` — creates nested-virt RHEL VMs on Google Compute Engine
