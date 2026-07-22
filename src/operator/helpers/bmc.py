@@ -4,10 +4,10 @@ import json
 SUSHY_IMAGE = "quay.io/redhat-gpte/troshka-sushy:latest"
 
 
-def build_bmc_pod(
+def build_bmc_deployment(
     project_name, namespace, bmc_vms, bmc_network_nad, credentials
 ):
-    pod_name = f"bmc-{project_name}"
+    dep_name = f"bmc-{project_name}"
 
     vm_map = {}
     for vm in bmc_vms:
@@ -35,49 +35,61 @@ def build_bmc_pod(
             }
         )
 
+    labels = {
+        "app": "troshka-bmc",
+        "troshka-project": project_name,
+    }
+    annotations = {
+        "k8s.v1.cni.cncf.io/networks": bmc_network_nad,
+    }
+
     return {
-        "apiVersion": "v1",
-        "kind": "Pod",
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
         "metadata": {
-            "name": pod_name,
+            "name": dep_name,
             "namespace": namespace,
-            "labels": {
-                "app": "troshka-bmc",
-                "troshka-project": project_name,
-            },
-            "annotations": {
-                "k8s.v1.cni.cncf.io/networks": bmc_network_nad,
-            },
+            "labels": labels,
         },
         "spec": {
-            "serviceAccountName": "troshka-bmc",
-            "containers": [
-                {
-                    "name": "sushy",
-                    "image": SUSHY_IMAGE,
-                    "ports": [
+            "replicas": 1,
+            "selector": {"matchLabels": labels},
+            "template": {
+                "metadata": {
+                    "labels": labels,
+                    "annotations": annotations,
+                },
+                "spec": {
+                    "serviceAccountName": "troshka-bmc",
+                    "containers": [
                         {
-                            "containerPort": 8000,
-                            "protocol": "TCP",
-                        },
-                        {
-                            "containerPort": 8443,
-                            "protocol": "TCP",
-                        },
+                            "name": "sushy",
+                            "image": SUSHY_IMAGE,
+                            "imagePullPolicy": "Always",
+                            "ports": [
+                                {
+                                    "containerPort": 8000,
+                                    "protocol": "TCP",
+                                },
+                                {
+                                    "containerPort": 8443,
+                                    "protocol": "TCP",
+                                },
+                            ],
+                            "env": env,
+                            "resources": {
+                                "requests": {
+                                    "cpu": "100m",
+                                    "memory": "128Mi",
+                                },
+                                "limits": {
+                                    "cpu": "500m",
+                                    "memory": "256Mi",
+                                },
+                            },
+                        }
                     ],
-                    "env": env,
-                    "resources": {
-                        "requests": {
-                            "cpu": "100m",
-                            "memory": "128Mi",
-                        },
-                        "limits": {
-                            "cpu": "500m",
-                            "memory": "256Mi",
-                        },
-                    },
-                }
-            ],
-            "restartPolicy": "Always",
+                },
+            },
         },
     }
