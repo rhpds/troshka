@@ -3912,6 +3912,26 @@ def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
         raise RuntimeError(job.get("result", {}).get("error", "oc-exec failed"))
 
 
+_ocpvirt_hosts: dict[str, bool] = {}
+
+
+def _is_ocpvirt_host(host) -> bool:
+    """Check if a host is on an ocpvirt provider (cached)."""
+    if host.id in _ocpvirt_hosts:
+        return _ocpvirt_hosts[host.id]
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+
+    db = SessionLocal()
+    try:
+        prov = db.query(Provider).filter_by(id=host.provider_id).first()
+        result = prov.type == "ocpvirt" if prov else False
+    finally:
+        db.close()
+    _ocpvirt_hosts[host.id] = result
+    return result
+
+
 def _exec_on_bastion(
     host,
     project_id: str,
@@ -3921,11 +3941,12 @@ def _exec_on_bastion(
     timeout: int = 15,
 ):
     # Try direct oc for oc/kubectl commands (bastion-optional).
-    # Skip for kubevirt — the exec pod's mounted kubeconfig goes stale
-    # after recert; the bastion SSH path always has the live kubeconfig.
+    # Skip for kubevirt (exec pod kubeconfig goes stale after recert)
+    # and ocpvirt (namespace DNS can't resolve project domains).
     if (
         command.strip().startswith(("oc ", "kubectl "))
         and host.host_type != "kubevirt-cluster"
+        and not _is_ocpvirt_host(host)
     ):
         try:
             return _exec_oc(host, project_id, command, timeout)
