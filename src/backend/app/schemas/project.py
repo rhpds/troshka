@@ -53,6 +53,7 @@ class ProjectResponse(BaseModel):
     topology: dict | None = None
     deployed_topology: dict | None = None
     deploy_error: str | None = None
+    deploy_progress: dict | None = None
     tags: dict | None = None
     guid: str | None = None
     clock_target: datetime.datetime | None = None

@@ -40,6 +40,7 @@ interface Project {
   ocp_status?: string | null;
   ocp_status_detail?: string | null;
   ocp_install_elapsed?: number | null;
+  deploy_progress?: { step?: string; detail?: string } | null;
 }
 
 const API_BASE = "";
@@ -1070,6 +1071,11 @@ export default function ProjectsPage() {
                     </span>
                     {(p.state === "stopping" || p.state === "starting" || p.state === "deploying" || p.state === "deleting") && (
                       <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
+                    )}
+                    {p.state === "deploying" && p.deploy_progress?.detail && (
+                      <span style={{ fontSize: 11, opacity: 0.6 }}>
+                        {p.deploy_progress.detail}
+                      </span>
                     )}
                     {p.ocp_status && p.ocp_status !== "none" && (
                       <span style={{

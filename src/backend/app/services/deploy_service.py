@@ -144,6 +144,18 @@ def _update_deploy_progress(
         progress["items"] = items
     _deploy_progress[project_id] = progress
     notify_project(project_id, {"type": "deploy-progress", "progress": progress})
+    try:
+        from app.core.database import SessionLocal as _DP_SL
+        from app.models.project import Project as _DP_Proj
+
+        _ds = _DP_SL()
+        _dp = _ds.get(_DP_Proj, project_id)
+        if _dp:
+            _dp.deploy_progress = progress
+            _ds.commit()
+        _ds.close()
+    except Exception:
+        pass
 
 
 def get_deploy_progress(project_id: str) -> dict | None:
