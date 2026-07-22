@@ -16,7 +16,7 @@ Per-VM self-signed RSA 2048-bit certificate generated at BMC setup time using Py
 
 ### Libvirt Provider (troshkad)
 
-**New helper:** `_generate_self_signed_cert(cert_path, key_path, cn, ip)` in troshkad.py. Uses Python stdlib — troshkad is stdlib-only, no pip dependencies.
+**New helper:** `_generate_self_signed_cert(cert_path, key_path, cn, ip)` in troshkad.py. Uses `subprocess.run(["openssl", ...])` — consistent with existing cert generation in agent_deployer.py. `openssl` is always available on RHEL hosts.
 
 **`/bmc/setup` handler:** For each BMC-enabled VM, after generating the existing HTTP sushy config:
 
