@@ -108,7 +108,14 @@ stop_backend() {
             echo "  Backend:    in-flight work detected — will resume after restart"
         fi
         kill "$(cat "$PID_DIR/backend.pid")" 2>/dev/null || true
-        rm -f "$PID_DIR/backend.pid"
+    fi
+    rm -f "$PID_DIR/backend.pid"
+    # Kill any orphaned uvicorn processes listening on the backend port
+    local orphans
+    orphans=$(lsof -ti :"$BACKEND_PORT" -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$orphans" ]; then
+        echo "$orphans" | xargs kill 2>/dev/null || true
+        sleep 1
     fi
     echo "  Backend:    stopped"
 }
