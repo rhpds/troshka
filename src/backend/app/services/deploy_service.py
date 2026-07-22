@@ -2496,6 +2496,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 project.ocp_monitor_started_at = datetime.datetime.now(
                     datetime.timezone.utc
                 )
+            project.deploy_progress = None
             db.commit()
             _deploy_progress.pop(project_id, None)
             notify_project(project_id, {"type": "project-state", "state": "active"})
