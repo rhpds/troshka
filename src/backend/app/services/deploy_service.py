@@ -3940,18 +3940,9 @@ def _exec_on_bastion(
     command: str,
     timeout: int = 15,
 ):
-    # Try direct oc for oc/kubectl commands (bastion-optional).
-    # Skip for kubevirt (exec pod kubeconfig goes stale after recert)
-    # and ocpvirt (namespace DNS can't resolve project domains).
-    if (
-        command.strip().startswith(("oc ", "kubectl "))
-        and host.host_type != "kubevirt-cluster"
-        and not _is_ocpvirt_host(host)
-    ):
-        try:
-            return _exec_oc(host, project_id, command, timeout)
-        except Exception:
-            pass
+    # oc-exec runs inside the project namespace which inherits the host's
+    # resolv.conf — can't resolve project-internal domains like api.ocp.ocp.local.
+    # Always use bastion SSH for oc/kubectl commands.
 
     if host.host_type == "kubevirt-cluster":
         return _exec_on_bastion_kubevirt(
