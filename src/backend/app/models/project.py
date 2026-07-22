@@ -61,6 +61,9 @@ class Project(Base):
     ocp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     ocp_status_detail: Mapped[str | None] = mapped_column(String(200), nullable=True)
     ocp_install_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ocp_monitor_started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     guid: Mapped[str | None] = mapped_column(String(50), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True)

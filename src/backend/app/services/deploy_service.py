@@ -2479,6 +2479,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             project.deploy_error = None
             if _is_ocp_topology(topology):
                 project.ocp_status = "monitoring"
+                project.ocp_status_detail = None
+                project.ocp_install_elapsed = None
+                project.ocp_monitor_started_at = datetime.datetime.now(
+                    datetime.timezone.utc
+                )
             db.commit()
             _deploy_progress.pop(project_id, None)
             notify_project(project_id, {"type": "project-state", "state": "active"})
@@ -3555,6 +3560,11 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
 
         if auto_start and _is_ocp_topology(topology):
             project.ocp_status = "monitoring"
+            project.ocp_status_detail = None
+            project.ocp_install_elapsed = None
+            project.ocp_monitor_started_at = datetime.datetime.now(
+                datetime.timezone.utc
+            )
             s.commit()
 
     except Exception as e:
@@ -3811,7 +3821,11 @@ def maybe_start_ocp_health_monitor(project_id: str):
             return
         if project.ocp_install_elapsed is not None:
             return
-        deploy_start = project.updated_at.timestamp() if project.updated_at else 0
+        deploy_start = (
+            project.ocp_monitor_started_at.timestamp()
+            if project.ocp_monitor_started_at
+            else 0
+        )
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
@@ -5198,6 +5212,11 @@ def start_project_async(project_id: str):
 
         if _is_ocp_topology(topology):
             project.ocp_status = "monitoring"
+            project.ocp_status_detail = None
+            project.ocp_install_elapsed = None
+            project.ocp_monitor_started_at = datetime.datetime.now(
+                datetime.timezone.utc
+            )
         s.commit()
         notify_project(
             project_id,
