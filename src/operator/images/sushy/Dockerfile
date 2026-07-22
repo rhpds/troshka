@@ -7,6 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY kubevirt_driver.py entrypoint.py ./
 
-EXPOSE 8000
+EXPOSE 8000 8443
 
 CMD ["python3", "entrypoint.py"]

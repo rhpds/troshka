@@ -59,7 +59,11 @@ def build_bmc_pod(
                         {
                             "containerPort": 8000,
                             "protocol": "TCP",
-                        }
+                        },
+                        {
+                            "containerPort": 8443,
+                            "protocol": "TCP",
+                        },
                     ],
                     "env": env,
                     "resources": {

@@ -124,7 +124,43 @@ class RedfishHandler(BaseHTTPRequestHandler):
         pass
 
 
+def _generate_self_signed_cert(cert_path, key_path):
+    """Generate a self-signed TLS certificate."""
+    import subprocess
+    subprocess.run(
+        [
+            "openssl", "req", "-x509",
+            "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-nodes", "-days", "3650",
+            "-subj", "/CN=troshka-bmc",
+            "-keyout", key_path,
+            "-out", cert_path,
+        ],
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+
+
 if __name__ == "__main__":
-    server = HTTPServer(("0.0.0.0", LISTEN_PORT), RedfishHandler)
-    print(f"Redfish emulator listening on port {LISTEN_PORT}")
-    server.serve_forever()
+    import ssl
+    import threading
+
+    # HTTP server on existing port (default 8000)
+    http_server = HTTPServer(("0.0.0.0", LISTEN_PORT), RedfishHandler)
+
+    # HTTPS server on port 8443
+    ssl_port = int(os.environ.get("SUSHY_SSL_PORT", "8443"))
+    cert_path = "/tmp/sushy.crt"
+    key_path = "/tmp/sushy.key"
+    _generate_self_signed_cert(cert_path, key_path)
+
+    https_server = HTTPServer(("0.0.0.0", ssl_port), RedfishHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_path, key_path)
+    https_server.socket = ctx.wrap_socket(https_server.socket, server_side=True)
+
+    ssl_thread = threading.Thread(target=https_server.serve_forever, daemon=True)
+    ssl_thread.start()
+    print(f"Redfish emulator listening on port {LISTEN_PORT} (HTTP) and {ssl_port} (HTTPS)")
+    http_server.serve_forever()
