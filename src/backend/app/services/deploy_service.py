@@ -3881,7 +3881,7 @@ def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
                 command=[
                     "sh",
                     "-c",
-                    f"export KUBECONFIG=/root/.kube/config; oc {command}",
+                    f"export KUBECONFIG=/root/.kube/config; {command}",
                 ],
                 stderr=True,
                 stdout=True,
