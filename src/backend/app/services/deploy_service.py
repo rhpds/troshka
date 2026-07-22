@@ -3964,15 +3964,6 @@ def _exec_on_bastion_kubevirt(host, project_id, bastion_ip, password, command, t
         if not exec_pod:
             return None
 
-        if (
-            command.strip().startswith(("oc ", "kubectl "))
-            and "KUBECONFIG" not in command
-        ):
-            command = (
-                "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                + command
-            )
-
         ssh_cmd = [
             "ssh",
             "-o",
