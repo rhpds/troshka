@@ -4104,14 +4104,17 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             msg["items"] = items
         notify_project(project_id, msg)
         try:
-            _ss = SessionLocal()
-            _pp = _ss.get(Project, project_id)
+            from app.core.database import SessionLocal as _PushSL
+            from app.models.project import Project as _PushProj
+
+            _ss = _PushSL()
+            _pp = _ss.get(_PushProj, project_id)
             if _pp:
                 _pp.ocp_status_detail = detail_with_time
                 _ss.commit()
             _ss.close()
         except Exception:
-            pass
+            logger.exception("Failed to save ocp_status_detail for %s", project_id[:8])
 
     nodes = topology.get("nodes", [])
     bastion = next(
