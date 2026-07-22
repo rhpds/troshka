@@ -2445,6 +2445,23 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 ndata.pop("resolvedS3Path", None)
                 ndata.pop("presignedUrl", None)
                 ndata.pop("ciGeneratedUserData", None)
+            bmc_config = _extract_bmc_config(clean_topo, project_id)
+            if bmc_config:
+                clean_topo["bmc"] = {
+                    "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+                    "password": bmc_config["bmc_network"].get(
+                        "bmcPassword", "password"
+                    ),
+                    "vms": {
+                        vm["node_id"]: {
+                            "ip": vm["bmc_ip"],
+                            "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['bmc_ip']}",
+                            "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{vm['bmc_ip']}",
+                            "ipmi_address": f"{vm['bmc_ip']}:623",
+                        }
+                        for vm in bmc_config["vms"]
+                    },
+                }
             project.deployed_topology = clean_topo
             project.topology = clean_topo
             project.deploy_error = None
@@ -3490,6 +3507,7 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
                     vm["node_id"]: {
                         "ip": vm["bmc_ip"],
                         "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
+                        "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
                         "ipmi_address": f"{vm['bmc_ip']}:623",
                     }
                     for vm in bmc_config["vms"]
