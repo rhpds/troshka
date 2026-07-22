@@ -3903,7 +3903,12 @@ def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
         )
         job = wait_for_job(host, job_id, timeout=timeout + 15)
         if job.get("status") == "completed":
-            return job.get("result", {}).get("output", "")
+            result = job.get("result", {})
+            if result.get("exit_code", 1) != 0:
+                raise RuntimeError(
+                    result.get("error") or result.get("output") or "oc-exec failed"
+                )
+            return result.get("output", "")
         raise RuntimeError(job.get("result", {}).get("error", "oc-exec failed"))
 
 
