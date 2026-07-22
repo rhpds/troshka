@@ -186,8 +186,17 @@ def _should_skip(resume_from: str | None, step: str) -> bool:
         return False
 
 
-# Serializes nftables-touching network setup across concurrent deploys
-_network_lock = threading.Lock()
+# Per-host locks for nftables-touching network setup (concurrent deploys on
+# different hosts can proceed in parallel)
+_network_locks: dict[str, threading.Lock] = {}
+_network_locks_guard = threading.Lock()
+
+
+def _get_network_lock(host_id: str) -> threading.Lock:
+    with _network_locks_guard:
+        if host_id not in _network_locks:
+            _network_locks[host_id] = threading.Lock()
+        return _network_locks[host_id]
 
 
 # ── Shared storage pool helpers ──
@@ -2731,7 +2740,7 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
         # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
         _checkpoint(s, project_id, "networks")
         _update_deploy_progress(project_id, "networking", "waiting for lock")
-        with _network_lock:
+        with _get_network_lock(host.id):
             _update_deploy_progress(project_id, "networking", "configuring VXLAN")
             logger.info(
                 "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
@@ -3556,22 +3565,22 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
             if project:
                 project.state = "error"
                 project.deploy_error = str(e)
-                # Clean up any "downloading" cache entries this deploy created
                 if project.host_id:
-                    pool = _get_host_pool(s, project.host_id)
-                    if pool and pool.mode.startswith("shared"):
-                        from app.models.storage_pool import SharedCacheEntry
+                    h = s.query(Host).filter_by(id=project.host_id).first()
+                    if h:
+                        pool = _get_host_pool(h, s)
+                        if pool and pool.mode.startswith("shared"):
+                            from app.models.storage_pool import SharedCacheEntry
 
-                        stale = (
-                            s.query(SharedCacheEntry)
-                            .filter(
-                                SharedCacheEntry.storage_pool_id == pool.id,
-                                SharedCacheEntry.status == "downloading",
-                            )
-                            .all()
-                        )
-                        for entry in stale:
-                            s.delete(entry)
+                            for entry in (
+                                s.query(SharedCacheEntry)
+                                .filter(
+                                    SharedCacheEntry.storage_pool_id == pool.id,
+                                    SharedCacheEntry.status == "downloading",
+                                )
+                                .all()
+                            ):
+                                s.delete(entry)
                 s.commit()
                 notify_project(
                     project_id,
@@ -3582,7 +3591,7 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
                     },
                 )
         except Exception:
-            pass
+            logger.exception("Deploy %s: failed to set error state", project_id[:8])
     finally:
         s.close()
 
@@ -5123,7 +5132,7 @@ def start_project_async(project_id: str):
 
         # Recreate networks via troshkad (serialized to avoid nftables contention)
         if vni_map:
-            with _network_lock:
+            with _get_network_lock(host.id):
                 net_result = _setup_networks_via_troshkad(
                     host, topology, vni_map, s, project_id
                 )
@@ -5425,7 +5434,7 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
             )
 
         # Tear down networks via troshkad (serialized to avoid nftables contention)
-        with _network_lock:
+        with _get_network_lock(host.id):
             _teardown_networks_via_troshkad(host, project_id, vni_map)
 
         from app.services.placement import sync_host_capacity

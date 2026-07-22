@@ -11,8 +11,11 @@ VNI ranges:
 
 import logging
 import os
+import threading
 
 from sqlalchemy.orm import Session
+
+_vni_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,8 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
 
     Returns a mapping of canvas node ID -> VNI.
     Only allocates for 'network' subtype nodes (not routers/gateways).
+    Thread-safe: uses _vni_lock to prevent concurrent allocations from
+    getting the same VNIs.
     """
     nodes = topology.get("nodes", [])
     network_nodes = [
@@ -61,42 +66,45 @@ def allocate_vnis_for_project(db: Session, topology: dict) -> dict[str, int]:
         and n.get("data", {}).get("networkType") != "bmc"
     ]
 
-    used_vnis = _get_all_used_vnis(db)
-    db_max = max(used_vnis, default=VNI_MIN - 1)
+    with _vni_lock:
+        used_vnis = _get_all_used_vnis(db)
+        db_max = max(used_vnis, default=VNI_MIN - 1)
 
-    # Read high-water mark from host file (survives DB wipes)
-    hwm_file = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-        ".vni_hwm",
-    )
-    file_hwm = VNI_MIN - 1
-    try:
-        with open(hwm_file) as f:
-            file_hwm = int(f.read().strip())
-    except (FileNotFoundError, ValueError):
-        pass
-
-    next_vni = max(db_max, file_hwm) + 1
-
-    vni_map = {}
-    for node in network_nodes:
-        if next_vni > VNI_MAX:
-            raise ValueError("VNI pool exhausted")
-        vni_map[node["id"]] = next_vni
-        used_vnis.add(next_vni)
-        logger.info(
-            "Allocated VNI %d for network %s", next_vni, node["data"].get("name")
+        hwm_file = os.path.join(
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            ".vni_hwm",
         )
-        next_vni += 1
-
-    # Persist high-water mark
-    if vni_map:
-        hwm = max(vni_map.values())
+        file_hwm = VNI_MIN - 1
         try:
-            with open(hwm_file, "w") as f:
-                f.write(str(hwm))
-        except OSError:
+            with open(hwm_file) as f:
+                file_hwm = int(f.read().strip())
+        except (FileNotFoundError, ValueError):
             pass
+
+        next_vni = max(db_max, file_hwm) + 1
+
+        vni_map = {}
+        for node in network_nodes:
+            if next_vni > VNI_MAX:
+                raise ValueError("VNI pool exhausted")
+            vni_map[node["id"]] = next_vni
+            used_vnis.add(next_vni)
+            logger.info(
+                "Allocated VNI %d for network %s",
+                next_vni,
+                node["data"].get("name"),
+            )
+            next_vni += 1
+
+        if vni_map:
+            hwm = max(vni_map.values())
+            try:
+                with open(hwm_file, "w") as f:
+                    f.write(str(hwm))
+            except OSError:
+                pass
 
     return vni_map
 

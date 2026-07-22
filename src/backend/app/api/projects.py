@@ -1340,9 +1340,9 @@ def start_vm(
 
                 # Recreate bridges and DNAT rules via troshkad
                 if vni_map:
-                    from app.services.deploy_service import _network_lock
+                    from app.services.deploy_service import _get_network_lock
 
-                    with _network_lock:
+                    with _get_network_lock(h.id):
                         _setup_networks_via_troshkad(h, topology, vni_map, s, p_id)
 
                 # Start only the target VM
@@ -2419,9 +2419,9 @@ def reconfigure_project(
 
             _deploy_progress[p_id] = {"step": "networking", "detail": "configuring"}
 
-            from app.services.deploy_service import _network_lock
+            from app.services.deploy_service import _get_network_lock
 
-            with _network_lock:
+            with _get_network_lock(h.id):
                 net_result = _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
             if net_result is not True:
                 proj.state = "error"
