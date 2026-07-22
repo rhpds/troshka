@@ -7469,6 +7469,36 @@ def _restore_bmc_services():
     logger.info("BMC restore complete")
 
 
+def _generate_self_signed_cert(cert_path, key_path, cn, ip):
+    """Generate a self-signed TLS certificate with the given CN and IP SAN."""
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "3650",
+            "-subj",
+            f"/CN={cn}",
+            "-addext",
+            f"subjectAltName=IP:{ip}",
+            "-keyout",
+            key_path,
+            "-out",
+            cert_path,
+        ],
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+    os.chmod(key_path, 0o600)
+
+
 def _handle_bmc_setup(job, params):
     """Set up virtual BMC endpoints for a project's VMs.
 
@@ -7703,6 +7733,58 @@ def _handle_bmc_setup(job, params):
         _job_log(
             job,
             f"sushy-emulator started for {domain_name} at {bmc_ip}:8000 (PID {proc.pid})",
+        )
+
+        # Start SSL sushy-emulator on port 8443
+        cert_path = os.path.join(bmc_dir, f"sushy-{vm_short}.crt")
+        key_path = os.path.join(bmc_dir, f"sushy-{vm_short}.key")
+        _generate_self_signed_cert(cert_path, key_path, f"sushy-{domain_name}", bmc_ip)
+
+        ssl_conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.conf")
+        with open(ssl_conf_path, "w") as f:
+            f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
+            f.write("SUSHY_EMULATOR_LISTEN_PORT = 8443\n")
+            f.write("SUSHY_EMULATOR_LIBVIRT_URI = 'qemu:///system'\n")
+            f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
+            f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
+            f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
+            f.write(f"SUSHY_EMULATOR_STORAGE_POOL = '{pool_name}'\n")
+            f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
+            f.write(f"SUSHY_EMULATOR_SSL_CERT = '{cert_path}'\n")
+            f.write(f"SUSHY_EMULATOR_SSL_KEY = '{key_path}'\n")
+            if dom_uuid:
+                f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
+
+        ssl_pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.pid")
+
+        if os.path.exists(ssl_pid_path):
+            try:
+                with open(ssl_pid_path) as f:
+                    old_pid = int(f.read().strip())
+                _safe_kill(old_pid, signal.SIGTERM)
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+
+        ssl_proc = subprocess.Popen(
+            [
+                "ip",
+                "netns",
+                "exec",
+                ns,
+                f"{venv_bin}/sushy-emulator",
+                "--config",
+                ssl_conf_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        with open(ssl_pid_path, "w") as f:
+            f.write(str(ssl_proc.pid))
+
+        _job_log(
+            job,
+            f"sushy-emulator SSL started for {domain_name} at {bmc_ip}:8443 (PID {ssl_proc.pid})",
         )
 
     # 5. Start vbmcd and register VMs for IPMI
