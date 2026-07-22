@@ -57,6 +57,7 @@ class ProjectResponse(BaseModel):
     guid: str | None = None
     clock_target: datetime.datetime | None = None
     guest_exec_enabled: bool = True
+    ocp_status: str | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
