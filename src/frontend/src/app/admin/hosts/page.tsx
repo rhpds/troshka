@@ -663,8 +663,17 @@ export default function AdminHostsPage() {
               style={{ minWidth: 200, borderLeft: filterProvider === ps.id ? "3px solid var(--pf-t--global--color--brand--default)" : `3px solid ${ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#6b7280"}40` }}>
               <CardBody>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{ps.name} <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: ps.type === "ec2" ? "rgba(251,146,60,0.15)" : ps.type === "gcp" ? "rgba(96,165,250,0.15)" : ps.type === "azure" ? "rgba(34,211,238,0.15)" : ps.type === "kubevirt" ? "rgba(167,139,250,0.15)" : ps.type === "ocpvirt" ? "rgba(244,114,182,0.15)" : "rgba(107,114,128,0.15)", color: ps.type === "ec2" ? "#fb923c" : ps.type === "gcp" ? "#60a5fa" : ps.type === "azure" ? "#22d3ee" : ps.type === "kubevirt" ? "#a78bfa" : ps.type === "ocpvirt" ? "#f472b6" : "#9ca3af" }}>{ps.type === "ec2" ? "AWS" : ps.type === "kubevirt" ? "KubeVirt" : ps.type === "ocpvirt" ? "OCP Virt" : ps.type.toUpperCase()}</span></div>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>{activeCount}<span style={{ fontSize: 14, opacity: 0.5 }}>/{ps.hosts.length}</span></div>
-                <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts &middot; {pRunningVms} VMs</div>
+                {ps.type === "kubevirt" ? (
+                  <>
+                    <div style={{ fontSize: 24, fontWeight: 700 }}>{pRunningVms} <span style={{ fontSize: 14, opacity: 0.5 }}>VMs</span></div>
+                    <div style={{ fontSize: 11, opacity: 0.6 }}>cluster</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 24, fontWeight: 700 }}>{activeCount}<span style={{ fontSize: 14, opacity: 0.5 }}>/{ps.hosts.length}</span></div>
+                    <div style={{ fontSize: 11, opacity: 0.6 }}>active hosts &middot; {pRunningVms} VMs</div>
+                  </>
+                )}
                 <div style={{ fontSize: 11, marginTop: 8 }}>vCPU: {pUsedVcpus}/{pVcpus}</div>
                 <div style={{ height: 4, background: "rgba(255,255,255,0.1)", borderRadius: 2, marginTop: 2 }}>
                   <div style={{ height: 4, borderRadius: 2, width: `${cpuPct}%`, background: cpuPct > 80 ? "#f87171" : "#4ade80" }} />
