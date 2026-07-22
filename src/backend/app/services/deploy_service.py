@@ -4082,28 +4082,33 @@ def _approve_pending_csrs(host, project_id, bastion_ip, password):
         project_id,
         bastion_ip,
         password,
-        "oc get csr --no-headers 2>/dev/null | grep -c Pending || echo 0",
+        "oc get csr --no-headers 2>/dev/null",
         timeout=10,
     )
-    pending = 0
-    if result:
-        try:
-            pending = int(result.strip())
-        except ValueError:
-            pass
-    if pending > 0:
+    if not result:
+        return 0
+    pending_names = []
+    for line in result.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and "Pending" in line:
+            pending_names.append(parts[0])
+    if not pending_names:
+        return 0
+    for name in pending_names:
         _exec_on_bastion(
             host,
             project_id,
             bastion_ip,
             password,
-            "oc get csr -o name 2>/dev/null | xargs oc adm certificate approve 2>/dev/null",
-            timeout=30,
+            f"oc adm certificate approve {name} 2>/dev/null",
+            timeout=10,
         )
-        logger.info(
-            "Approved %d pending CSR(s) for project %s", pending, project_id[:8]
-        )
-    return pending
+    logger.info(
+        "Approved %d pending CSR(s) for project %s",
+        len(pending_names),
+        project_id[:8],
+    )
+    return len(pending_names)
 
 
 def _monitor_ocp_health(
@@ -4792,19 +4797,16 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             project_id,
             bastion_ip,
             password,
-            f"oc get co console --no-headers 2>/dev/null | awk '{{print $3}}' && curl -sk {console_url} -o /dev/null -w '%{{http_code}}' 2>/dev/null",
+            "oc get co console --no-headers 2>/dev/null",
             timeout=15,
         )
-        if result:
-            lines = result.strip().split("\n")
-            co_available = lines[0].strip() == "True" if lines else False
-            http_code = lines[-1].strip() if len(lines) > 1 else ""
-            if co_available and http_code == "200":
+        if result and "error" not in result.lower():
+            parts = result.strip().split()
+            co_available = parts[2] == "True" if len(parts) >= 4 else False
+            if co_available:
                 _push("console", "console ready")
                 console_ready = True
                 break
-            elif co_available:
-                _push("console", "operator ready, waiting for route")
             else:
                 _push("console", "waiting for console operator")
         _push("console", "waiting for OpenShift console")
