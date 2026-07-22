@@ -8,14 +8,14 @@ HTTP metadata service script to run on the host bridge.
 import json
 import logging
 
+from passlib.hash import sha512_crypt as _sha512_crypt_impl
+
 logger = logging.getLogger(__name__)
 
 
 def _sha512_crypt(password: str, rounds: int = 5000) -> str:
     """SHA-512 crypt hash compatible with /etc/shadow."""
-    from passlib.hash import sha512_crypt
-
-    return sha512_crypt.using(rounds=rounds).hash(password)
+    return _sha512_crypt_impl.using(rounds=rounds).hash(password)
 
 
 def generate_userdata(vm_data: dict) -> str:
