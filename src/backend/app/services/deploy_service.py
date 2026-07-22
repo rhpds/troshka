@@ -13,6 +13,9 @@ import os
 import threading
 import time as _time
 
+import boto3  # noqa: F401 — eager import to prevent thread race
+import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
+
 from app.models.host import Host
 from app.models.pattern import Pattern
 from app.services.troshkad_client import (
