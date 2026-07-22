@@ -3087,7 +3087,18 @@ def redeploy_project(
 
     _check_library_items_ready(project.topology or {}, db)
 
-    # Destroy existing and release capacity
+    if not project.topology:
+        raise HTTPException(status_code=400, detail="Project has no topology")
+
+    reqs = calculate_project_requirements(project.topology)
+    if reqs["vm_count"] == 0:
+        raise HTTPException(status_code=400, detail="Project has no VMs")
+
+    # Capture destroy context before resetting state
+    import copy
+    import threading
+
+    destroy_ctx = None
     old_host_id = project.host_id
     if project.host_id:
         old_host = db.query(Host).filter_by(id=old_host_id).first()
@@ -3096,68 +3107,72 @@ def redeploy_project(
                 status_code=503,
                 detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.",
             )
-        destroy_project_sync(
-            {
-                "project_id": project.id,
-                "host_id": project.host_id,
-                "vni_map": project.vni_map or {},
-                "topology": project.deployed_topology or project.topology or {},
-                "dns_provider_id": project.dns_provider_id,
-                "domain": project.domain,
-            },
-            delete_record=False,
-        )
-        project.host_id = None
-        db.commit()
-        from app.services.gc_service import sync_host_capacity
-
-        sync_host_capacity(db, old_host)
+        destroy_ctx = {
+            "project_id": project.id,
+            "host_id": project.host_id,
+            "vni_map": copy.deepcopy(project.vni_map or {}),
+            "topology": copy.deepcopy(
+                project.deployed_topology or project.topology or {}
+            ),
+            "dns_provider_id": project.dns_provider_id,
+            "domain": project.domain,
+        }
 
     # Cancel any in-flight deploy thread for this project
     from app.services.deploy_service import _deploy_cancelled
 
     _deploy_cancelled.add(project.id)
 
-    # Reset for fresh deploy — redeploy on the same host
+    # Set state to deploying and return immediately
     project.state = "deploying"
-    if not project.host_id and old_host_id:
-        project.host_id = old_host_id
+    project.host_id = old_host_id
     project.vni_map = None
     project.deploy_error = None
     project.ocp_status = None
     project.ocp_install_elapsed = None
     db.commit()
 
-    # Now deploy again
-    if not project.topology:
-        raise HTTPException(status_code=400, detail="Project has no topology")
+    def _redeploy_bg(pid, ctx, host_id):
+        from app.core.database import SessionLocal
+        from app.services.gc_service import sync_host_capacity
 
-    reqs = calculate_project_requirements(project.topology)
-    if reqs["vm_count"] == 0:
-        raise HTTPException(status_code=400, detail="Project has no VMs")
+        s = SessionLocal()
+        try:
+            if ctx:
+                destroy_project_sync(ctx, delete_record=False)
+                proj = s.get(Project, pid)
+                if not proj:
+                    return
+                proj.host_id = None
+                s.commit()
+                h = s.query(Host).filter_by(id=ctx["host_id"]).first()
+                if h:
+                    sync_host_capacity(s, h)
 
-    result = place_project(db, project, host_id=project.host_id)
-    if "error" in result:
-        raise HTTPException(status_code=503, detail=result["error"])
+            proj = s.get(Project, pid)
+            if not proj:
+                return
+            result = place_project(s, proj, host_id=host_id)
+            if "error" in result:
+                proj.state = "error"
+                proj.deploy_error = result["error"]
+                s.commit()
+                return
+            proj.vni_map = result.get("vni_map")
+            s.commit()
+        finally:
+            s.close()
 
-    project.vni_map = result.get("vni_map")
-    db.commit()
-
-    import threading
+        deploy_project_async(pid)
 
     threading.Thread(
-        target=deploy_project_async,
-        args=(project.id,),
+        target=_redeploy_bg,
+        args=(project.id, destroy_ctx, old_host_id),
         daemon=True,
-        name=f"deploy-{project.id[:8]}",
+        name=f"redeploy-{project.id[:8]}",
     ).start()
 
-    return {
-        "status": "deploying",
-        "host_id": result["host_id"],
-        "host_ip": result["host_ip"],
-        "requirements": result["requirements"],
-    }
+    return {"status": "deploying"}
 
 
 @router.post("/{project_id}/undeploy")
