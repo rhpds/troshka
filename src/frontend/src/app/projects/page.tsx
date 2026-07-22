@@ -1035,7 +1035,7 @@ export default function ProjectsPage() {
               style={{ marginBottom: 8, cursor: "pointer" }}
             >
               {/* Row 1: Info */}
-              <CardBody style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: deletingProjects.has(p.id) ? 0.4 : 1, pointerEvents: deletingProjects.has(p.id) ? "none" : "auto" }} onClick={() => { if (!deletingProjects.has(p.id)) router.push(`/projects/${p.id}`); }}>
+              <CardBody component="a" href={`/projects/${p.id}`} style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: deletingProjects.has(p.id) ? 0.4 : 1, pointerEvents: deletingProjects.has(p.id) ? "none" : "auto", textDecoration: "none", color: "inherit" }} onClick={(e: React.MouseEvent) => { e.preventDefault(); if (!deletingProjects.has(p.id)) router.push(`/projects/${p.id}`); }}>
                 <input
                   type="checkbox"
                   checked={selectedProjects.has(p.id)}
