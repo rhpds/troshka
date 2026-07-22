@@ -1,3 +1,4 @@
+import datetime
 import json
 import kopf
 import logging
@@ -9,8 +10,8 @@ from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
     owner_ref,
-    build_exec_pod,
-    build_gateway_pod,
+    build_exec_deployment,
+    build_gateway_deployment,
 )
 from helpers.topology import (
     extract_networks,
@@ -23,13 +24,25 @@ from helpers.topology import (
 logger = logging.getLogger(__name__)
 
 
-def _ensure_pod_gone(core_api, namespace, pod_name, timeout=30):
-    """Force-delete a pod and wait for it to be fully gone."""
+def _cleanup_legacy_pod(core_api, namespace, pod_name):
+    """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
     try:
-        core_api.delete_namespaced_pod(
-            name=pod_name,
+        pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+        owners = getattr(pod.metadata, "owner_references", None) or []
+        if not any(o.kind == "ReplicaSet" for o in owners):
+            core_api.delete_namespaced_pod(name=pod_name, namespace=namespace)
+            logger.info(f"Deleted legacy standalone Pod {pod_name}")
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
+def _ensure_deployment_gone(apps_api, namespace, dep_name, timeout=30):
+    """Force-delete a deployment and wait for it to be fully gone."""
+    try:
+        apps_api.delete_namespaced_deployment(
+            name=dep_name,
             namespace=namespace,
-            body=client.V1DeleteOptions(grace_period_seconds=0),
         )
     except ApiException as e:
         if e.status == 404:
@@ -38,7 +51,7 @@ def _ensure_pod_gone(core_api, namespace, pod_name, timeout=30):
 
     for _ in range(timeout):
         try:
-            core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            apps_api.read_namespaced_deployment(name=dep_name, namespace=namespace)
             time.sleep(1)
         except ApiException as e:
             if e.status == 404:
@@ -478,7 +491,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "detail": f"{i + 1}/{len(networks)} networks",
         }
 
-    # Create single gateway pod for all externalAccess networks
+    # Create single gateway deployment for all externalAccess networks
     gateway_nads = []
     gateway_ips = {}
     for net in networks:
@@ -492,10 +505,12 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 }
 
     if gateway_nads:
-        _ensure_pod_gone(core_api, namespace, f"gateway-{namespace}")
-        gw_pod = build_gateway_pod(body, gateway_nads, gateway_ips)
-        core_api.create_namespaced_pod(namespace=namespace, body=gw_pod)
-        logger.info(f"Created gateway pod for {name}")
+        apps_api = client.AppsV1Api()
+        _cleanup_legacy_pod(core_api, namespace, f"gateway-{namespace}")
+        _ensure_deployment_gone(apps_api, namespace, f"gateway-{namespace}")
+        gw_dep = build_gateway_deployment(body, gateway_nads, gateway_ips)
+        apps_api.create_namespaced_deployment(namespace=namespace, body=gw_dep)
+        logger.info(f"Created gateway deployment for {name}")
 
     # Create SSH key Secret + exec pod attached to the first standard network
     cluster_nad = None
@@ -543,8 +558,9 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     raise
 
         exec_project_id = spec.get("projectId", namespace)[:8]
-        _ensure_pod_gone(core_api, namespace, f"exec-{exec_project_id}")
-        exec_pod = build_exec_pod(
+        _cleanup_legacy_pod(core_api, namespace, f"exec-{exec_project_id}")
+        _ensure_deployment_gone(apps_api, namespace, f"exec-{exec_project_id}")
+        exec_dep = build_exec_deployment(
             body,
             cluster_nad,
             cidr=cluster_cidr,
@@ -552,8 +568,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 "exec-ssh-key" if exec_ssh_key else None
             ),  # pragma: allowlist secret
         )
-        core_api.create_namespaced_pod(namespace=namespace, body=exec_pod)
-        logger.info(f"Created exec pod for {name}")
+        apps_api.create_namespaced_deployment(namespace=namespace, body=exec_dep)
+        logger.info(f"Created exec deployment for {name}")
 
     vms = extract_vms(topology)
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)

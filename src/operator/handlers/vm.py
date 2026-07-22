@@ -16,6 +16,19 @@ from helpers.kubevirt import (
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_legacy_pod(core_api, namespace, pod_name):
+    """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
+    try:
+        pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+        owners = getattr(pod.metadata, "owner_references", None) or []
+        if not any(o.kind == "ReplicaSet" for o in owners):
+            core_api.delete_namespaced_pod(name=pod_name, namespace=namespace)
+            logger.info(f"Deleted legacy standalone Pod {pod_name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+
+
 def _get_s3_config_from_project(namespace):
     custom_api = client.CustomObjectsApi()
     projects = custom_api.list_namespaced_custom_object(
@@ -44,7 +57,9 @@ def _get_central_s3_config_from_project(namespace):
     return {}
 
 
-def _wait_for_datavolume(custom_api, name, namespace, timeout=3600, owner_name=None, owner_namespace=None):
+def _wait_for_datavolume(
+    custom_api, name, namespace, timeout=3600, owner_name=None, owner_namespace=None
+):
     for _ in range(timeout // 5):
         if owner_name and owner_namespace:
             try:
@@ -57,7 +72,9 @@ def _wait_for_datavolume(custom_api, name, namespace, timeout=3600, owner_name=N
                 )
             except client.exceptions.ApiException as e:
                 if e.status == 404:
-                    logger.warning(f"Owner TroshkaVM {owner_name} deleted, aborting wait for {name}")
+                    logger.warning(
+                        f"Owner TroshkaVM {owner_name} deleted, aborting wait for {name}"
+                    )
                     return False
             except Exception:
                 pass
@@ -89,7 +106,9 @@ def _wait_for_datavolume(custom_api, name, namespace, timeout=3600, owner_name=N
     return False
 
 
-def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, secret_name="s3-credentials"):  # pragma: allowlist secret
+def _ensure_golden_pvc(
+    custom_api, core_api, s3_path, size_gb, s3_config, secret_name="s3-credentials"  # pragma: allowlist secret
+):
     pvc_name = golden_pvc_name(s3_path)
     try:
         core_api.read_namespaced_persistent_volume_claim(
@@ -115,7 +134,11 @@ def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, secret
             raise
 
     dv = build_datavolume_from_s3(
-        pvc_name, CACHE_NAMESPACE, s3_path, size_gb, s3_config,
+        pvc_name,
+        CACHE_NAMESPACE,
+        s3_path,
+        size_gb,
+        s3_config,
         secret_name=secret_name,
     )
     try:
@@ -131,9 +154,7 @@ def _ensure_golden_pvc(custom_api, core_api, s3_path, size_gb, s3_config, secret
             raise
 
     if not _wait_for_datavolume(custom_api, pvc_name, CACHE_NAMESPACE):
-        raise kopf.TemporaryError(
-            f"Golden PVC {pvc_name} import failed", delay=30
-        )
+        raise kopf.TemporaryError(f"Golden PVC {pvc_name} import failed", delay=30)
 
     logger.info(f"Golden PVC {pvc_name} ready")
     return pvc_name
@@ -175,7 +196,11 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 secret = "s3-credentials"  # pragma: allowlist secret
             size_gb = disk.get("sizeGb", 20)
             golden_name = _ensure_golden_pvc(
-                custom_api, core_api, s3_path, size_gb, disk_s3,
+                custom_api,
+                core_api,
+                s3_path,
+                size_gb,
+                disk_s3,
                 secret_name=secret,
             )
 
@@ -193,7 +218,9 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 )
             except client.exceptions.ApiException as e:
                 if e.status == 409:
-                    logger.info(f"DataVolume {pvc_name} exists (stale), waiting for deletion")
+                    logger.info(
+                        f"DataVolume {pvc_name} exists (stale), waiting for deletion"
+                    )
                     for _ in range(30):
                         try:
                             custom_api.get_namespaced_custom_object(
@@ -219,7 +246,13 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 else:
                     raise
 
-            if not _wait_for_datavolume(custom_api, pvc_name, namespace, owner_name=name, owner_namespace=namespace):
+            if not _wait_for_datavolume(
+                custom_api,
+                pvc_name,
+                namespace,
+                owner_name=name,
+                owner_namespace=namespace,
+            ):
                 patch.status["state"] = "Error"
                 patch.status["message"] = f"Disk clone failed for {disk_id}"
                 raise kopf.PermanentError(f"Disk clone {pvc_name} failed")
@@ -250,7 +283,9 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 golden_pvc = core_api.read_namespaced_persistent_volume_claim(
                     name=golden_name, namespace=CACHE_NAMESPACE
                 )
-                golden_storage = golden_pvc.spec.resources.requests.get("storage", "10Gi")
+                golden_storage = golden_pvc.spec.resources.requests.get(
+                    "storage", "10Gi"
+                )
                 cdrom_size = max(cdrom_size, int(golden_storage.rstrip("Gi")))
             except Exception:
                 pass
@@ -269,10 +304,18 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             except client.exceptions.ApiException as e:
                 if e.status != 409:
                     raise
-            _wait_for_datavolume(custom_api, cdrom_pvc, namespace, owner_name=name, owner_namespace=namespace)
+            _wait_for_datavolume(
+                custom_api,
+                cdrom_pvc,
+                namespace,
+                owner_name=name,
+                owner_namespace=namespace,
+            )
             disk_pvcs["cdrom"] = cdrom_pvc
         except Exception as e:
-            logger.warning(f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}")
+            logger.warning(
+                f"CDROM setup failed for {name} (non-fatal, VM will boot without ISO): {e}"
+            )
 
     # Recert is handled by the project handler before VMs are created
 
@@ -282,18 +325,14 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         ci_secret["metadata"]["ownerReferences"] = [owner_ref(body)]
         cloudinit_secret_name = ci_secret["metadata"]["name"]
         try:
-            core_api.create_namespaced_secret(
-                namespace=namespace, body=ci_secret
-            )
+            core_api.create_namespaced_secret(namespace=namespace, body=ci_secret)
         except client.exceptions.ApiException as e:
             if e.status != 409:
                 raise
 
     if spec.get("guestfishCommands"):
         gf_commands = spec["guestfishCommands"]
-        root_disk_id = (
-            spec["disks"][0]["id"] if spec.get("disks") else ""
-        )
+        root_disk_id = spec["disks"][0]["id"] if spec.get("disks") else ""
         root_pvc = disk_pvcs.get(root_disk_id)
         if root_pvc and gf_commands:
             gf_job_name = f"guestfish-{name}"
@@ -326,17 +365,13 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                                             "mountPath": "/disk",
                                         }
                                     ],
-                                    "securityContext": {
-                                        "privileged": True
-                                    },
+                                    "securityContext": {"privileged": True},
                                 }
                             ],
                             "volumes": [
                                 {
                                     "name": "disk",
-                                    "persistentVolumeClaim": {
-                                        "claimName": root_pvc
-                                    },
+                                    "persistentVolumeClaim": {"claimName": root_pvc},
                                 }
                             ],
                             "restartPolicy": "Never",
@@ -346,9 +381,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             }
             batch_api = client.BatchV1Api()
             try:
-                batch_api.create_namespaced_job(
-                    namespace=namespace, body=job
-                )
+                batch_api.create_namespaced_job(namespace=namespace, body=job)
             except client.exceptions.ApiException as e:
                 if e.status != 409:
                     raise
@@ -361,9 +394,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                     if j.status.succeeded:
                         break
                     if j.status.failed:
-                        logger.error(
-                            f"Guestfish job {gf_job_name} failed"
-                        )
+                        logger.error(f"Guestfish job {gf_job_name} failed")
                         break
                 except Exception:
                     pass
@@ -379,16 +410,12 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         )
         for net in networks.get("items", []):
             net_name = net["metadata"]["name"]
-            nad_name = net.get("status", {}).get(
-                "nadName", f"{net_name}-nad"
-            )
+            nad_name = net.get("status", {}).get("nadName", f"{net_name}-nad")
             nad_refs[net_name] = nad_name
     except Exception:
         pass
 
-    kv_vm = build_kubevirt_vm(
-        body, disk_pvcs, nad_refs, cloudinit_secret_name
-    )
+    kv_vm = build_kubevirt_vm(body, disk_pvcs, nad_refs, cloudinit_secret_name)
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
 
     kv_vm_name = kv_vm["metadata"]["name"]
@@ -403,7 +430,9 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         logger.info(f"Created KubeVirt VM {kv_vm_name}")
     except client.exceptions.ApiException as e:
         if e.status == 409:
-            logger.info(f"KubeVirt VM {kv_vm_name} exists (stale), waiting for deletion")
+            logger.info(
+                f"KubeVirt VM {kv_vm_name} exists (stale), waiting for deletion"
+            )
             for _ in range(30):
                 try:
                     custom_api.get_namespaced_custom_object(
@@ -430,7 +459,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             raise
 
     if spec.get("bmcEnabled"):
-        from helpers.bmc import build_bmc_pod
+        from helpers.bmc import build_bmc_deployment
 
         try:
             core_api.create_namespaced_service_account(
@@ -461,6 +490,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             pass
 
         if bmc_nad:
+            apps_api = client.AppsV1Api()
             project_label = namespace.replace("troshka-", "")
             bmc_vms = [
                 {
@@ -471,21 +501,22 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
             existing_bmc = None
             try:
-                existing_bmc = core_api.read_namespaced_pod(
+                existing_bmc = apps_api.read_namespaced_deployment(
                     name=f"bmc-{project_label}", namespace=namespace
                 )
             except client.exceptions.ApiException:
                 pass
 
             if not existing_bmc:
-                bmc_pod = build_bmc_pod(
+                _cleanup_legacy_pod(core_api, namespace, f"bmc-{project_label}")
+                bmc_dep = build_bmc_deployment(
                     project_label, namespace, bmc_vms, bmc_nad, {}
                 )
                 try:
-                    core_api.create_namespaced_pod(
-                        namespace=namespace, body=bmc_pod
+                    apps_api.create_namespaced_deployment(
+                        namespace=namespace, body=bmc_dep
                     )
-                    logger.info(f"Created BMC pod for {namespace}")
+                    logger.info(f"Created BMC deployment for {namespace}")
                 except client.exceptions.ApiException as e:
                     if e.status != 409:
                         raise
@@ -550,9 +581,7 @@ async def vm_delete(spec, status, meta, namespace, name, **_):
 
     ci_secret_name = f"cloudinit-{name}"
     try:
-        core_api.delete_namespaced_secret(
-            name=ci_secret_name, namespace=namespace
-        )
+        core_api.delete_namespaced_secret(name=ci_secret_name, namespace=namespace)
     except client.exceptions.ApiException as e:
         if e.status != 404:
             logger.warning(f"Failed to delete cloud-init secret {ci_secret_name}: {e}")

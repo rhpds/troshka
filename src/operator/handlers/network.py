@@ -1,3 +1,4 @@
+import datetime
 import kopf
 import logging
 from kubernetes import client
@@ -5,11 +6,24 @@ from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
     build_nad,
-    build_dnsmasq_pod,
+    build_dnsmasq_deployment,
 )
 from helpers.dnsmasq import generate_dnsmasq_config
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_legacy_pod(core_api, namespace, pod_name):
+    """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
+    try:
+        pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+        owners = getattr(pod.metadata, "owner_references", None) or []
+        if not any(o.kind == "ReplicaSet" for o in owners):
+            core_api.delete_namespaced_pod(name=pod_name, namespace=namespace)
+            logger.info(f"Deleted legacy standalone Pod {pod_name}")
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkanetworks")
@@ -81,26 +95,33 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
         if e.status != 409:
             raise
 
-    dnsmasq_pod = build_dnsmasq_pod(body, dnsmasq_conf)
-    pod_name = f"dnsmasq-{name}"
+    apps_api = client.AppsV1Api()
+    dep_name = f"dnsmasq-{name}"
+    _cleanup_legacy_pod(api, namespace, dep_name)
+
+    dnsmasq_dep = build_dnsmasq_deployment(body, dnsmasq_conf)
     try:
-        api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
-        logger.info(f"Created dnsmasq pod for {name}")
+        apps_api.create_namespaced_deployment(namespace=namespace, body=dnsmasq_dep)
+        logger.info(f"Created dnsmasq deployment for {name}")
     except client.exceptions.ApiException as e:
         if e.status == 409:
             import time
 
-            logger.info(f"Dnsmasq pod {pod_name} exists (stale), waiting for deletion")
+            logger.info(
+                f"Dnsmasq deployment {dep_name} exists (stale), waiting for deletion"
+            )
             for _ in range(30):
                 try:
-                    api.read_namespaced_pod(name=pod_name, namespace=namespace)
+                    apps_api.read_namespaced_deployment(
+                        name=dep_name, namespace=namespace
+                    )
                     time.sleep(2)
                 except client.exceptions.ApiException as ge:
                     if ge.status == 404:
                         break
                     raise
-            api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
-            logger.info(f"Created dnsmasq pod {pod_name} (after stale cleanup)")
+            apps_api.create_namespaced_deployment(namespace=namespace, body=dnsmasq_dep)
+            logger.info(f"Created dnsmasq deployment {dep_name} (after stale cleanup)")
         else:
             raise
 
@@ -138,34 +159,32 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
         else:
             raise
 
-    pod_name = f"dnsmasq-{name}"
-    try:
-        api.delete_namespaced_pod(name=pod_name, namespace=namespace)
-        logger.info(f"Deleted dnsmasq pod {pod_name} for restart")
-    except client.exceptions.ApiException as e:
-        if e.status != 404:
-            raise
-
-    import time
-
-    for _ in range(30):
-        try:
-            api.read_namespaced_pod(name=pod_name, namespace=namespace)
-            time.sleep(2)
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                break
-            raise
-
-    dnsmasq_pod = build_dnsmasq_pod(body, dnsmasq_conf)
-    api.create_namespaced_pod(namespace=namespace, body=dnsmasq_pod)
-    logger.info(f"Recreated dnsmasq pod {pod_name} with updated config")
+    # Trigger rollout restart via annotation
+    apps_api = client.AppsV1Api()
+    dep_name = f"dnsmasq-{name}"
+    apps_api.patch_namespaced_deployment(
+        name=dep_name,
+        namespace=namespace,
+        body={
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "kubectl.kubernetes.io/restartedAt": datetime.datetime.utcnow().isoformat()
+                        }
+                    }
+                }
+            }
+        },
+    )
+    logger.info(f"Triggered rollout restart for dnsmasq deployment {dep_name}")
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkanetworks")
 async def network_delete(spec, meta, namespace, name, **_):
     logger.info(f"Deleting network {name} in {namespace} — cleaning up resources")
     api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
     custom_api = client.CustomObjectsApi()
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
@@ -205,13 +224,13 @@ async def network_delete(spec, meta, namespace, name, **_):
         if e.status != 404:
             logger.warning(f"Failed to delete NAD {nad_name}: {e}")
 
-    for pod_name in [f"dnsmasq-{name}", f"gateway-{namespace}"]:
+    for dep_name in [f"dnsmasq-{name}", f"gateway-{namespace}"]:
         try:
-            api.delete_namespaced_pod(name=pod_name, namespace=namespace)
-            logger.info(f"Deleted pod {pod_name}")
+            apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
+            logger.info(f"Deleted deployment {dep_name}")
         except client.exceptions.ApiException as e:
             if e.status != 404:
-                logger.warning(f"Failed to delete pod {pod_name}: {e}")
+                logger.warning(f"Failed to delete deployment {dep_name}: {e}")
 
     for resource_name in [f"dnsmasq-{name}"]:
         try:
