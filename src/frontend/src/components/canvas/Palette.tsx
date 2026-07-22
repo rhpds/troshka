@@ -360,7 +360,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               </div>
             ) : (
               <div
-                style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", padding: "0 12px 8px", lineHeight: 1.6, cursor: "pointer" }}
+                style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", padding: "0 12px 8px", lineHeight: 1.6, cursor: "pointer", maxHeight: 200, overflowY: "auto", overflowX: "auto", whiteSpace: "nowrap" }}
                 onClick={() => setEditingDesc(true)}
                 title="Click to edit"
               >
@@ -383,6 +383,19 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     )}
                   </>
                 )}
+                {(() => {
+                  const bmcData = (window as any).__deployedTopology?.bmc;
+                  if (!bmcData?.vms) return null;
+                  const bmcVms = Object.values(bmcData.vms) as any[];
+                  if (!bmcVms.length) return null;
+                  return bmcVms.map((vm: any, i: number) => (
+                    <div key={i} style={{ marginTop: i === 0 ? 4 : 0 }}>
+                      <span style={{ opacity: 0.4 }}>BMC:</span>{" "}
+                      <code style={{ fontSize: 10 }}>http://{vm.ip}:8000</code>{" · "}
+                      <code style={{ fontSize: 10 }}>https://{vm.ip}:8443</code>
+                    </div>
+                  ));
+                })()}
               </div>
             )
           )}
