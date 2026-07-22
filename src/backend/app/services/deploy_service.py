@@ -3811,7 +3811,7 @@ def maybe_start_ocp_health_monitor(project_id: str):
             return
         if project.ocp_install_elapsed is not None:
             return
-        deploy_start = 0
+        deploy_start = project.updated_at.timestamp() if project.updated_at else 0
         _active_health_monitors.add(project_id)
         threading.Thread(
             target=_monitor_ocp_health,
@@ -4080,14 +4080,24 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
 
     def _push(phase, detail, items=None):
+        detail_with_time = f"{detail} ({_elapsed()})"
         msg = {
             "type": "ocp-health",
             "phase": phase,
-            "detail": f"{detail} ({_elapsed()})",
+            "detail": detail_with_time,
         }
         if items:
             msg["items"] = items
         notify_project(project_id, msg)
+        try:
+            _ss = SessionLocal()
+            _pp = _ss.get(Project, project_id)
+            if _pp:
+                _pp.ocp_status_detail = detail_with_time
+                _ss.commit()
+            _ss.close()
+        except Exception:
+            pass
 
     nodes = topology.get("nodes", [])
     bastion = next(

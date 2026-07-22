@@ -58,6 +58,8 @@ class ProjectResponse(BaseModel):
     clock_target: datetime.datetime | None = None
     guest_exec_enabled: bool = True
     ocp_status: str | None = None
+    ocp_status_detail: str | None = None
+    ocp_install_elapsed: int | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 

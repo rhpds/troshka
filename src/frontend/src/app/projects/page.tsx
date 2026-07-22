@@ -38,6 +38,8 @@ interface Project {
   host_provider_type: string | null;
   auto_stopped?: boolean;
   ocp_status?: string | null;
+  ocp_status_detail?: string | null;
+  ocp_install_elapsed?: number | null;
 }
 
 const API_BASE = "";
@@ -1075,7 +1077,7 @@ export default function ProjectsPage() {
                         background: p.ocp_status === "ready" ? "rgba(74,222,128,0.15)" : p.ocp_status === "error" ? "rgba(248,113,113,0.15)" : "rgba(251,191,36,0.15)",
                         color: p.ocp_status === "ready" ? "#4ade80" : p.ocp_status === "error" ? "#f87171" : "#fbbf24",
                       }}>
-                        OCP {p.ocp_status}
+                        {p.ocp_status_detail || `OCP ${p.ocp_status}`}
                       </span>
                     )}
                   </div>

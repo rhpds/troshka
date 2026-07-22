@@ -59,6 +59,7 @@ class Project(Base):
     deploy_step: Mapped[str | None] = mapped_column(String(30), nullable=True)
     deploy_progress: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ocp_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ocp_status_detail: Mapped[str | None] = mapped_column(String(200), nullable=True)
     ocp_install_elapsed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     guid: Mapped[str | None] = mapped_column(String(50), nullable=True)
