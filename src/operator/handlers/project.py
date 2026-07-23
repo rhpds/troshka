@@ -1122,6 +1122,65 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
             patch.status["recertCleaned"] = True
             logger.info(f"Recert cleanup done for {name}, disks released")
 
+        # Phase 1.9: Delete stale VolumeAttachments left by CDI clones
+        if not status.get("pvcsReleased"):
+            from kubernetes import client as _sc
+
+            storage_api = _sc.StorageV1Api()
+            core_api_pvc = client.CoreV1Api()
+            try:
+                pvc_list = core_api_pvc.list_namespaced_persistent_volume_claim(
+                    namespace=namespace
+                )
+                pv_names = {}
+                for pvc in pvc_list.items or []:  # type: ignore[union-attr]
+                    vol = pvc.spec.volume_name  # type: ignore[union-attr]
+                    if vol:
+                        pv_names[vol] = pvc.metadata.name  # type: ignore[union-attr]
+                if pv_names:
+                    attachments = storage_api.list_volume_attachment()
+                    stale = []
+                    for va in attachments.items or []:  # type: ignore[union-attr]
+                        pv = va.spec.source.persistent_volume_name  # type: ignore[union-attr]
+                        if pv not in pv_names:
+                            continue
+                        node = va.spec.node_name  # type: ignore[union-attr]
+                        pod_on_node = False
+                        try:
+                            pods = core_api_pvc.list_namespaced_pod(
+                                namespace=namespace,
+                                field_selector=f"spec.nodeName={node}",
+                            )
+                            for p in pods.items or []:  # type: ignore[union-attr]
+                                if p.metadata.deletion_timestamp:  # type: ignore[union-attr]
+                                    continue
+                                for v in p.spec.volumes or []:  # type: ignore[union-attr]
+                                    claim = getattr(v, "persistent_volume_claim", None)
+                                    if claim and claim.claim_name == pv_names[pv]:
+                                        pod_on_node = True
+                                        break
+                        except Exception:
+                            pass
+                        if not pod_on_node:
+                            stale.append(va.metadata.name)  # type: ignore[union-attr]
+                    for va_name in stale:
+                        try:
+                            storage_api.delete_volume_attachment(name=va_name)
+                            logger.info(f"Deleted stale VolumeAttachment {va_name}")
+                        except Exception:
+                            pass
+                    if stale:
+                        patch.status["deployProgress"] = {
+                            "percent": 79,
+                            "stage": "Releasing disks",
+                            "detail": f"detached {len(stale)} stale volume(s)",
+                        }
+                        return
+            except Exception as e:
+                logger.warning(f"PVC release check failed for {name}: {e}")
+            patch.status["pvcsReleased"] = True
+            logger.info(f"All PVCs released for {name}")
+
         # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
         if status.get("recertConfig") and not status.get("recertCleaned"):
             return
