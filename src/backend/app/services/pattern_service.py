@@ -423,7 +423,6 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         vm_id = disk_to_vm.get(disk_node["id"], "")
         if not vm_id:
             continue
-        vm_data = vm_nodes.get(vm_id, {}).get("data", {})
         vm_name = f"vm-{vm_id[:8]}"
         disk_id = disk_node["id"]
         pvc_name = f"{vm_name}-disk-{disk_id[:8]}"
@@ -588,6 +587,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             node["data"].pop("libraryItemName", None)
 
     import json as _json2
+
     from sqlalchemy import text
 
     db.execute(

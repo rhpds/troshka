@@ -494,7 +494,6 @@ class KubeVirtDriver(ProviderDriver):
         self, provider, host, project_id, vm_name, int_ip, port, target_port=None
     ):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
         namespace = _project_ns(provider, project_id)
         tgt_port = target_port or port
 
@@ -838,8 +837,8 @@ class KubeVirtDriver(ProviderDriver):
 
 def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600):
     """Execute command via qemu-guest-agent inside the virt-launcher pod."""
-    import json
     import base64
+    import json
 
     _, core_v1, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)

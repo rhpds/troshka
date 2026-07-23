@@ -1955,8 +1955,6 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     s3_config = _get_s3_config()
     central_s3_config = _get_readonly_s3_config()
 
-    import boto3
-
     s3_client = boto3.client(
         "s3",
         region_name=s3_config.get("region", "us-east-1"),
@@ -2082,8 +2080,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 )
 
     # Generate per-deploy SSH key pair for exec pod → VM access
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     logger.info("Deploy %s: generating exec SSH key pair", project_id[:8])
     exec_key = Ed25519PrivateKey.generate()
@@ -2157,6 +2155,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         # Wait for old CR and resources to be fully gone before creating new CR
         from app.services.providers.kubevirt import (
             _get_k8s_clients as _kc,
+        )
+        from app.services.providers.kubevirt import (
             _project_ns as _pns,
         )
 
@@ -2287,8 +2287,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
         dv_lines = []
         try:
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
             import hashlib
+
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
             golden_name_map = {}
             for node in topology.get("nodes", []):
@@ -2493,9 +2494,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 project.ocp_status = "monitoring"
                 project.ocp_status_detail = None
                 project.ocp_install_elapsed = None
-                project.ocp_monitor_started_at = datetime.datetime.now(
-                    datetime.timezone.utc
-                )
+                project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
             project.deploy_progress = None
             db.commit()
             _deploy_progress.pop(project_id, None)
@@ -3575,9 +3574,7 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
             project.ocp_status = "monitoring"
             project.ocp_status_detail = None
             project.ocp_install_elapsed = None
-            project.ocp_monitor_started_at = datetime.datetime.now(
-                datetime.timezone.utc
-            )
+            project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
             s.commit()
 
     except Exception as e:
@@ -3680,8 +3677,9 @@ def _clean_kubelet_certs(
                     recert_params["bastion_disk"] = bastion_disk_path
                 kubeadmin_pw = ""
                 if common_password:
-                    import bcrypt
                     import secrets as _secrets
+
+                    import bcrypt
 
                     # OCP 4.22+ requires kubeadmin password >= 23 chars
                     kubeadmin_pw = common_password
@@ -3854,8 +3852,8 @@ def maybe_start_ocp_health_monitor(project_id: str):
 def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
     """Run an oc command directly — no bastion needed."""
     if host.host_type == "kubevirt-cluster":
-        from app.models.provider import Provider
         from app.core.database import SessionLocal
+        from app.models.provider import Provider
 
         db = SessionLocal()
         try:
@@ -3970,8 +3968,8 @@ def _exec_on_bastion_kubevirt(host, project_id, bastion_ip, password, command, t
     import re as _re
 
     try:
-        from app.models.provider import Provider
         from app.core.database import SessionLocal
+        from app.models.provider import Provider
 
         db = SessionLocal()
         try:
@@ -3981,12 +3979,13 @@ def _exec_on_bastion_kubevirt(host, project_id, bastion_ip, password, command, t
         if not provider:
             return None
 
+        from kubernetes.stream import stream as k8s_stream
+
         from app.services.providers.kubevirt import (
             _find_exec_pod,
             _get_k8s_clients,
             _project_ns,
         )
-        from kubernetes.stream import stream as k8s_stream
 
         _, core_v1, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
@@ -4199,7 +4198,6 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     dns_domain = name[4:]
                     break
 
-    console_url = f"https://console-openshift-console.apps.{dns_domain}"
     deadline = _t.time() + 1800
     logger.info(
         "OCP health monitor started for %s (bastion=%s, domain=%s)",
@@ -5262,9 +5260,7 @@ def start_project_async(project_id: str):
             project.ocp_status = "monitoring"
             project.ocp_status_detail = None
             project.ocp_install_elapsed = None
-            project.ocp_monitor_started_at = datetime.datetime.now(
-                datetime.timezone.utc
-            )
+            project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
         s.commit()
         notify_project(
             project_id,
@@ -5384,11 +5380,12 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
 
                 import time as _del_time
 
+                from kubernetes.client.exceptions import ApiException as _KApiErr
+
                 from app.services.providers.kubevirt import (
                     _get_k8s_clients,
                     _project_ns,
                 )
-                from kubernetes.client.exceptions import ApiException as _KApiErr
 
                 _, core_api, _ = _get_k8s_clients(provider)
                 ns_name = _project_ns(provider, project_id)
