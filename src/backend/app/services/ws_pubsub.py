@@ -1,9 +1,12 @@
 """
-In-memory WebSocket pub/sub for real-time project state updates.
+In-memory WebSocket pub/sub + background state poller.
 
-Manages subscriber sets keyed by project_id. Sync callers (background threads,
-deploy service) use notify_project() which bridges into the async event loop
-via asyncio.run_coroutine_threadsafe().
+Background services (VM state polling, OCP monitors, timers) run continuously
+against the DB regardless of connected viewers. WebSocket subscribers receive
+real-time pushes of state changes, but the poller runs independently.
+
+Sync callers (background threads, deploy service) use notify_project() which
+bridges into the async event loop via asyncio.run_coroutine_threadsafe().
 """
 
 import asyncio
@@ -44,11 +47,6 @@ def unsubscribe(project_id: str, ws: WebSocket):
             subs.discard(ws)
             if not subs:
                 del _subscribers[project_id]
-
-
-def get_active_project_ids() -> set[str]:
-    with _lock:
-        return {k for k in _subscribers.keys() if ":" not in k}
 
 
 async def _send_to_subscribers(project_id: str, message: dict):
@@ -159,10 +157,6 @@ def _maybe_scan_ocp_monitors():
 
 
 def _poll_active_projects():
-    project_ids = get_active_project_ids()
-    if not project_ids:
-        return
-
     from app.api.projects import _domain_name, _redeploy_progress
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -172,27 +166,29 @@ def _poll_active_projects():
 
     db = SessionLocal()
     try:
-        # Load all subscribed projects
-        projects = {}
-        for project_id in project_ids:
-            project = db.query(Project).filter_by(id=project_id).first()
-            if project:
-                projects[project_id] = project
+        # Poll ALL projects with a host in active/stopped state
+        all_projects = (
+            db.query(Project)
+            .filter(
+                Project.host_id.isnot(None),
+                Project.state.in_(("active", "stopped")),
+            )
+            .all()
+        )
+        if not all_projects:
+            return
+
+        projects = {p.id: p for p in all_projects}
 
         # Check which hosts have active deploys
         deploying_host_ids = set()
-        for pid in project_ids:
-            if pid in _deploy_progress:
-                p = projects.get(pid)
-                if p and p.host_id:
-                    deploying_host_ids.add(p.host_id)
+        for pid, p in projects.items():
+            if pid in _deploy_progress and p.host_id:
+                deploying_host_ids.add(p.host_id)
 
         # Batch-fetch VM states: one call per host instead of per-VM
-        host_batch_states = {}
-        hosts_polled = {}
+        host_batch_states: dict = {}
         for project in projects.values():
-            if not project.host_id or project.state not in ("active", "stopped"):
-                continue
             if (
                 project.host_id in deploying_host_ids
                 or project.host_id in host_batch_states
@@ -243,7 +239,6 @@ def _poll_active_projects():
                 continue
             if host.agent_status != "connected":
                 continue
-            hosts_polled[project.host_id] = host
             try:
                 batch = get_all_vm_states(host)
                 if batch is not None:
@@ -252,12 +247,6 @@ def _poll_active_projects():
                 pass
 
         for project_id, project in projects.items():
-            # Start OCP health monitor on demand (only when someone is watching)
-            if project.ocp_status == "monitoring" and project.state == "active":
-                from app.services.deploy_service import maybe_start_ocp_health_monitor
-
-                maybe_start_ocp_health_monitor(project_id)
-
             # Always push project state changes
             last = _last_states.get(project_id, {})
             current_project_state = project.state
@@ -361,6 +350,11 @@ def _poll_active_projects():
                 "vm_progress": vm_progress,
                 "vm_boot_devs": vm_boot_devs,
             }
+
+        # Evict stale cache entries for projects no longer active/stopped
+        stale = [k for k in _last_states if k not in projects]
+        for k in stale:
+            del _last_states[k]
     finally:
         db.close()
 
