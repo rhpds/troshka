@@ -47,9 +47,21 @@ jobs:
             echo "version_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Cache key
+        id: cache-key
+        run: |
+          echo "hash=$(cat deploy/containerfiles/Containerfile.backend src/backend/requirements.txt src/backend/pyproject.toml 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/.buildah-cache
+          key: buildah-backend-${{ steps.cache-key.outputs.hash }}
+          restore-keys: buildah-backend-
+
       - name: Build backend image
         run: |
-          podman build \
+          buildah build \
+            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
             -f deploy/containerfiles/Containerfile.backend \
             -t quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-backend:latest \
@@ -58,17 +70,17 @@ jobs:
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          podman tag \
+          buildah tag \
             quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
             quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.version_tag }}
 
       - name: Push to Quay.io
         run: |
-          podman login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
-          podman push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-backend:latest
+          buildah login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
+          buildah push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-backend:latest
           if [[ -n "${{ steps.tags.outputs.version_tag }}" ]]; then
-            podman push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.version_tag }}
+            buildah push quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.version_tag }}
           fi
 
   build-frontend:
@@ -88,9 +100,21 @@ jobs:
             echo "version_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Cache key
+        id: cache-key
+        run: |
+          echo "hash=$(cat deploy/containerfiles/Containerfile.frontend src/frontend/package-lock.json 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/.buildah-cache
+          key: buildah-frontend-${{ steps.cache-key.outputs.hash }}
+          restore-keys: buildah-frontend-
+
       - name: Build frontend image
         run: |
-          podman build \
+          buildah build \
+            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
             -f deploy/containerfiles/Containerfile.frontend \
             -t quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-frontend:latest \
@@ -99,17 +123,17 @@ jobs:
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          podman tag \
+          buildah tag \
             quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
             quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.version_tag }}
 
       - name: Push to Quay.io
         run: |
-          podman login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
-          podman push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-frontend:latest
+          buildah login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
+          buildah push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-frontend:latest
           if [[ -n "${{ steps.tags.outputs.version_tag }}" ]]; then
-            podman push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.version_tag }}
+            buildah push quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.version_tag }}
           fi
 
   build-operator:
@@ -129,75 +153,92 @@ jobs:
             echo "version_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Cache key
+        id: cache-key
+        run: |
+          echo "hash=$(cat src/operator/Dockerfile src/operator/requirements.txt src/operator/images/*/Dockerfile 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/.buildah-cache
+          key: buildah-operator-${{ steps.cache-key.outputs.hash }}
+          restore-keys: buildah-operator-
+
       - name: Login to Quay.io
-        run: podman login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
+        run: buildah login -u="${{ secrets.QUAY_USERNAME }}" -p="${{ secrets.QUAY_PASSWORD }}" quay.io
 
       - name: Build and push operator image
         run: |
-          podman build \
+          buildah build \
+            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
             -f src/operator/Dockerfile \
             -t quay.io/redhat-gpte/troshka-operator:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-operator:latest \
             src/operator/
-          podman push quay.io/redhat-gpte/troshka-operator:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-operator:latest
+          buildah push quay.io/redhat-gpte/troshka-operator:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-operator:latest
 
       - name: Build and push dnsmasq image
         run: |
-          podman build \
+          buildah build \
+            --layers \
             -f src/operator/images/dnsmasq/Dockerfile \
             -t quay.io/redhat-gpte/troshka-dnsmasq:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-dnsmasq:latest \
             src/operator/images/dnsmasq/
-          podman push quay.io/redhat-gpte/troshka-dnsmasq:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-dnsmasq:latest
+          buildah push quay.io/redhat-gpte/troshka-dnsmasq:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-dnsmasq:latest
 
       - name: Build and push gateway image
         run: |
-          podman build \
+          buildah build \
+            --layers \
             -f src/operator/images/gateway/Dockerfile \
             -t quay.io/redhat-gpte/troshka-gateway:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-gateway:latest \
             src/operator/images/gateway/
-          podman push quay.io/redhat-gpte/troshka-gateway:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-gateway:latest
+          buildah push quay.io/redhat-gpte/troshka-gateway:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-gateway:latest
 
       - name: Build and push troshka-tools image
         run: |
-          podman build \
+          buildah build \
+            --layers \
             -f src/operator/images/troshka-tools/Dockerfile \
             -t quay.io/redhat-gpte/troshka-tools:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-tools:latest \
             src/operator/images/troshka-tools/
-          podman push quay.io/redhat-gpte/troshka-tools:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-tools:latest
+          buildah push quay.io/redhat-gpte/troshka-tools:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-tools:latest
 
       - name: Build and push sushy image
         run: |
-          podman build \
+          buildah build \
+            --layers \
             -f src/operator/images/sushy/Dockerfile \
             -t quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-sushy:latest \
             src/operator/images/sushy/
-          podman push quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-sushy:latest
+          buildah push quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-sushy:latest
 
       - name: Build and push vnc-proxy image
         run: |
-          podman build \
+          buildah build \
+            --layers \
             -f src/operator/images/vnc-proxy/Dockerfile \
             -t quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-vnc-proxy:latest \
             src/operator/images/vnc-proxy/
-          podman push quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-vnc-proxy:latest
+          buildah push quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }}
+          buildah push quay.io/redhat-gpte/troshka-vnc-proxy:latest
 
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           for img in troshka-operator troshka-dnsmasq troshka-gateway troshka-tools troshka-sushy troshka-vnc-proxy; do
-            podman tag \
+            buildah tag \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.sha_tag }} \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.version_tag }}
-            podman push quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.version_tag }}
+            buildah push quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.version_tag }}
           done
