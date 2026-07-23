@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: https://github.com/rhpds/troshka.git
     targetRevision: main
-    path: src/operator/deploy
+    path: src/operator
   destination:
     server: https://kubernetes.default.svc
     namespace: troshka
