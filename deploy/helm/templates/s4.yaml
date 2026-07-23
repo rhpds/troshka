@@ -28,12 +28,15 @@ spec:
               name: ui
           env:
             - name: AWS_ACCESS_KEY_ID
-              value: s4admin
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-access-key
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: troshka-secrets
-                  key: s4-password  # pragma: allowlist secret
+                  key: s3-secret-key
           volumeMounts:
             - name: data
               mountPath: /data
@@ -108,7 +111,9 @@ metadata:
   annotations:
     helm.sh/hook: post-install
     helm.sh/hook-weight: "10"
-    helm.sh/hook-delete-policy: before-hook-creation
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
 spec:
   backoffLimit: 3
   template:
@@ -126,16 +131,34 @@ spec:
               done
               echo "S4 is ready"
       containers:
-        - name: create-bucket
-          image: {{ include "troshka.backendImage" . }}
-          command: ["python3", "-c"]
+        - name: setup-s4
+          image: {{ .Values.s4.image }}
+          command: ["bash", "-c"]
           args:
             - |
+              set -e
+              # Create troshka user (idempotent — radosgw-admin modify if exists)
+              if radosgw-admin user info --uid=troshka 2>/dev/null; then
+                echo "User troshka already exists"
+              else
+                radosgw-admin user create --uid=troshka --display-name="Troshka" \
+                  --access-key="$S3_ACCESS_KEY" --secret-key="$S3_SECRET_KEY"
+                echo "Created user troshka"
+              fi
+
+              # Remove insecure default s4admin user
+              if radosgw-admin user info --uid=s4admin 2>/dev/null; then
+                radosgw-admin user rm --uid=s4admin
+                echo "Removed default s4admin user"
+              fi
+
+              # Create bucket via S3 API
+              python3 -c "
               import boto3, os
               client = boto3.client('s3',
                   region_name='us-east-1',
-                  aws_access_key_id='s4admin',
-                  aws_secret_access_key=os.environ['S4_PASSWORD'],
+                  aws_access_key_id=os.environ['S3_ACCESS_KEY'],
+                  aws_secret_access_key=os.environ['S3_SECRET_KEY'],
                   endpoint_url='http://troshka-s4:7480',
               )
               bucket = '{{ .Values.s3.bucket }}'
@@ -147,10 +170,16 @@ spec:
                       print(f'Bucket {bucket} already exists')
                   else:
                       raise
+              "
           env:
-            - name: S4_PASSWORD
+            - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: troshka-secrets
-                  key: s4-password  # pragma: allowlist secret
+                  key: s3-access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-secret-key
 {{- end }}
