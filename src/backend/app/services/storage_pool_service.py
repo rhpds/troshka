@@ -706,7 +706,7 @@ def create_netapp_pool_and_volume(
     volume_name: str = "troshka",
     service_level: str = "FLEX",
 ) -> dict:
-    from google.cloud import netapp_v1
+    from google.cloud import netapp_v1  # type: ignore[attr-defined]
     from google.oauth2 import service_account
 
     sa_json = credentials.get("service_account_json", {})
@@ -762,7 +762,7 @@ def create_netapp_pool_and_volume(
 
 
 def update_netapp_capacity(credentials: dict, volume_name: str, new_capacity_gb: int):
-    from google.cloud import netapp_v1
+    from google.cloud import netapp_v1  # type: ignore[attr-defined]
     from google.oauth2 import service_account
     from google.protobuf import field_mask_pb2
 

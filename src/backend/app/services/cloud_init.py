@@ -8,7 +8,7 @@ HTTP metadata service script to run on the host bridge.
 import json
 import logging
 
-from passlib.hash import sha512_crypt as _sha512_crypt_impl
+from passlib.hash import sha512_crypt as _sha512_crypt_impl  # type: ignore[attr-defined]
 
 logger = logging.getLogger(__name__)
 

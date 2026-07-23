@@ -24,6 +24,7 @@ dependencies = [
     "pyyaml>=6.0",
     "azure-identity>=1.15",
     "azure-mgmt-compute>=30.0",
+    "azure-mgmt-resource>=23.0",
     "azure-mgmt-network>=25.0",
     "azure-mgmt-storage>=21.0",
     "azure-mgmt-dns>=8.1",
@@ -31,6 +32,7 @@ dependencies = [
     "azure-mgmt-marketplaceordering>=1.1",
     "google-cloud-compute>=1.17",
     "google-cloud-dns>=0.35",
+    "google-cloud-netapp>=0.3",
 ]
 
 [project.optional-dependencies]

@@ -664,7 +664,7 @@ class AzureDriver(ProviderDriver):
             poller = compute_client.virtual_machines.begin_update(
                 rg,
                 instance_id,
-                {"hardware_profile": {"vm_size": new_instance_type}},
+                {"hardware_profile": {"vm_size": new_instance_type}},  # type: ignore[arg-type]
             )
             poller.result()
             logger.info("Hot-resized %s to %s", instance_id, new_instance_type)
@@ -682,7 +682,7 @@ class AzureDriver(ProviderDriver):
             poller = compute_client.virtual_machines.begin_update(
                 rg,
                 instance_id,
-                {"hardware_profile": {"vm_size": new_instance_type}},
+                {"hardware_profile": {"vm_size": new_instance_type}},  # type: ignore[arg-type]
             )
             poller.result()
 
@@ -720,7 +720,7 @@ class AzureDriver(ProviderDriver):
         poller = compute_client.disks.begin_update(
             rg,
             data_disk_name,
-            {"disk_size_gb": new_size},
+            {"disk_size_gb": new_size},  # type: ignore[arg-type]
         )
         poller.result()
 
