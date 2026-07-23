@@ -1,4 +1,3 @@
-# Troshka Backend
 import faulthandler
 import logging
 import signal
