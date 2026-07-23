@@ -2112,21 +2112,24 @@ def get_operator_status(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    from app.services.operator_updater import get_registry_digest
+    from app.services.operator_updater import _get_operator_info, get_registry_digest
 
     provider = db.get(Provider, provider_id)
     if not provider:
         raise HTTPException(404, "Provider not found")
     host = next((h for h in provider.hosts if h.host_type == "kubevirt-cluster"), None)
     registry = get_registry_digest()
+    _, rolling_out = _get_operator_info(provider)
+    running = host.operator_digest if host else None
     return {
-        "operator_digest": host.operator_digest if host else None,
+        "operator_digest": running,
         "registry_digest": registry[:20] if registry else None,
         "up_to_date": (
-            host.operator_digest == registry
-            if host and host.operator_digest and registry
-            else None
+            True
+            if rolling_out
+            else (running == registry if running and registry else None)
         ),
+        "rolling_out": rolling_out,
     }
 
 

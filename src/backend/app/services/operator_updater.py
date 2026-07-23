@@ -48,8 +48,12 @@ def _fetch_registry_digest() -> str | None:
         return None
 
 
-def _get_running_digest(provider) -> str | None:
-    """Get the image digest of the running operator pod on a provider cluster."""
+def _get_operator_info(provider) -> tuple[str | None, bool]:
+    """Get the running operator digest and whether a rollout is in progress.
+
+    Returns (digest, rolling_out). During a rollout, digest may be stale
+    but rolling_out=True signals not to show the update button.
+    """
     from kubernetes import client
 
     creds = provider.get_credentials()
@@ -59,22 +63,43 @@ def _get_running_digest(provider) -> str | None:
     config.verify_ssl = creds.get("verify_ssl", False)
     api_client = client.ApiClient(config)
     core_api = client.CoreV1Api(api_client)
+    apps_api = client.AppsV1Api(api_client)
 
     operator_ns = creds.get("namespace", "troshka-operator")
+    digest = None
+    rolling_out = False
+
+    try:
+        dep = apps_api.read_namespaced_deployment(
+            name="troshka-operator", namespace=operator_ns
+        )
+        desired = dep.spec.replicas or 1  # type: ignore[union-attr]
+        updated = dep.status.updated_replicas or 0  # type: ignore[union-attr]
+        ready = dep.status.ready_replicas or 0  # type: ignore[union-attr]
+        if updated < desired or ready < desired:
+            rolling_out = True
+    except Exception:
+        pass
+
     try:
         pods = core_api.list_namespaced_pod(
             namespace=operator_ns,
             label_selector="app=troshka-operator",
         )
         for pod in pods.items or []:  # type: ignore[union-attr]
+            phase = pod.status.phase  # type: ignore[union-attr]
+            if phase != "Running":
+                continue
             for cs in pod.status.container_statuses or []:  # type: ignore[union-attr]
+                if not (cs.ready and cs.started):  # type: ignore[union-attr]
+                    continue
                 image_id = cs.image_id or ""
                 if "@sha256:" in image_id:
-                    return "sha256:" + image_id.split("@sha256:")[-1]
-        return None
+                    digest = "sha256:" + image_id.split("@sha256:")[-1]
     except Exception as e:
         logger.warning("Failed to get operator digest on %s: %s", provider.name, e)
-        return None
+
+    return digest, rolling_out
 
 
 def _poll_operator_digests():
@@ -94,7 +119,7 @@ def _poll_operator_digests():
         for host in hosts:
             if not host.provider:
                 continue
-            running = _get_running_digest(host.provider)
+            running, _ = _get_operator_info(host.provider)
             if running and running != host.operator_digest:
                 host.operator_digest = running
         db.commit()

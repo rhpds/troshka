@@ -65,8 +65,7 @@ export default function AdminProvidersPage() {
   const [buildingProvider, setBuildingProvider] = useState<string | null>(null);
   const [rhelVersion, setRhelVersion] = useState<Record<string, string>>({});
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
-  const [operatorStatus, setOperatorStatus] = useState<Record<string, { up_to_date: boolean | null; operator_digest: string | null; registry_digest: string | null }>>({});
-  const [operatorUpdating, setOperatorUpdating] = useState<Record<string, number>>({});
+  const [operatorStatus, setOperatorStatus] = useState<Record<string, { up_to_date: boolean | null; operator_digest: string | null; registry_digest: string | null; rolling_out?: boolean }>>({});
 
   const [name, setName] = useState("");
   const [type, setType] = useState("kubevirt");
@@ -108,8 +107,6 @@ export default function AdminProvidersPage() {
         setLoading(false);
         // Load operator status for kubevirt providers
         for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
-          const updatedAt = operatorUpdating[p.id];
-          if (updatedAt && Date.now() - updatedAt < 300000) continue;
           fetch(`/api/v1/providers/${p.id}/operator-status`)
             .then((r) => r.ok ? r.json() : null)
             .then((s) => { if (s) setOperatorStatus((prev) => ({ ...prev, [p.id]: s })); })
@@ -994,8 +991,7 @@ export default function AdminProvidersPage() {
                         if (resp.ok) {
                           const data = await resp.json();
                           setTestResult((prev) => ({ ...prev, [p.id]: `Operator updated → ${data.registry_digest}` }));
-                          setOperatorStatus((prev) => ({ ...prev, [p.id]: { ...prev[p.id], up_to_date: true } }));
-                          setOperatorUpdating((prev) => ({ ...prev, [p.id]: Date.now() }));
+                          setOperatorStatus((prev) => ({ ...prev, [p.id]: { ...prev[p.id], up_to_date: true, rolling_out: true } }));
                         } else {
                           const data = await resp.json().catch(() => ({}));
                           setTestResult((prev) => ({ ...prev, [p.id]: `Update failed: ${data.detail || data.message || "unknown"}` }));
