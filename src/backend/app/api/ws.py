@@ -48,13 +48,11 @@ def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
 
 
 def _build_snapshot(project: Project, db) -> dict:
-    """Build initial WS snapshot. DB session is used then closed before troshkad calls."""
-    from app.api.projects import _domain_name, _redeploy_progress
-    from app.models.host import Host
+    """Build initial WS snapshot from cached poller data only."""
     from app.services.deploy_service import _deploy_progress
-    from app.services.troshkad_client import get_vm_state as troshkad_get_vm_state
+    from app.services.ws_pubsub import get_cached_vm_states
 
-    snapshot = {
+    snapshot: dict = {
         "type": "snapshot",
         "project_state": project.state,
         "deploy_error": project.deploy_error,
@@ -63,54 +61,12 @@ def _build_snapshot(project: Project, db) -> dict:
         "vm_progress": {},
     }
 
-    if not project.host_id:
-        return snapshot
-
-    host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.ip_address:
-        return snapshot
-
-    # Collect all data we need from DB objects before closing the session
-    project_id = project.id
-    topology_nodes = (project.topology or {}).get("nodes", [])
-    agent_connected = host.agent_status == "connected"
-    host_copy = type(
-        "H",
-        (),
-        {
-            "ip_address": host.ip_address,
-            "agent_token": host.agent_token,
-            "agent_cert_fingerprint": host.agent_cert_fingerprint,
-        },
-    )()
-
-    # Close DB session before making network calls to troshkad
     db.close()
 
-    # Try cached states first, fall back to live fetch (runs in thread via to_thread)
-    from app.services.ws_pubsub import get_cached_vm_states
-
-    cached = get_cached_vm_states(project_id)
-    if cached and cached.get("states"):
-        snapshot["vm_states"] = cached["states"]
+    cached = get_cached_vm_states(project.id)
+    if cached:
+        snapshot["vm_states"] = cached.get("states", {})
         snapshot["vm_progress"] = cached.get("progress", {})
-    elif agent_connected:
-        for node in topology_nodes:
-            if node.get("type") != "vmNode":
-                continue
-            dom_name = _domain_name(project_id, node["id"])
-            if dom_name in _redeploy_progress:
-                snapshot["vm_states"][node["id"]] = "redeploying"
-                snapshot["vm_progress"][node["id"]] = _redeploy_progress[dom_name]
-            else:
-                try:
-                    vm_info = troshkad_get_vm_state(host_copy, dom_name, timeout=5)
-                    state = vm_info["state"]
-                    if state == "shut_off":
-                        state = "stopped"
-                    snapshot["vm_states"][node["id"]] = state
-                except Exception:
-                    snapshot["vm_states"][node["id"]] = "unknown"
 
     return snapshot
 

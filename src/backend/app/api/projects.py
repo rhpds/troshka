@@ -117,6 +117,12 @@ def _project_response_dict(project):
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached_states = get_cached_vm_states(project.id)
+    if cached_states:
+        result["vm_states"] = cached_states
+
     deployed_topo = project.deployed_topology or {}
     bmc_data = deployed_topo.get("bmc")
     if bmc_data:
@@ -1182,70 +1188,13 @@ def get_all_vm_states(
     # (avoids blocking troshkad calls on every browser poll)
     from app.services.ws_pubsub import get_cached_vm_states
 
+    # Always return cached states from the background poller.
+    # The poller is the single source of truth — no direct troshkad
+    # calls from REST to avoid racing with the WS poller.
     cached = get_cached_vm_states(project_id)
-    if cached and cached.get("states"):
+    if cached:
         return cached
-
-    host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.private_key or not host.ip_address:
-        return {"states": {}}
-
-    states: dict[str, Any] = {}
-    container_states: dict[str, Any] = {}
-    progress: dict[str, Any] = {}
-
-    if host.agent_status != "connected":
-        for node in (project.topology or {}).get("nodes", []):
-            if node.get("type") == "vmNode":
-                states[node["id"]] = "unknown"
-            elif node.get("type") == "containerNode":
-                container_states[node["id"]] = "unknown"
-        return {
-            "states": states,
-            "container_states": container_states,
-            "progress": progress,
-        }
-
-    from app.services.troshkad_client import get_all_container_states
-    from app.services.troshkad_client import get_all_vm_states as troshkad_batch_states
-
-    batch = troshkad_batch_states(host) or {}
-    container_batch = get_all_container_states(host) or {}
-
-    for node in (project.topology or {}).get("nodes", []):
-        if node.get("type") == "vmNode":
-            dom_name = _domain_name(project_id, node["id"])
-            if dom_name in _redeploy_progress:
-                states[node["id"]] = "redeploying"
-                progress[node["id"]] = _redeploy_progress[dom_name]
-            else:
-                raw = batch.get(dom_name, "unknown")
-                if raw == "not_found" or raw == "unknown":
-                    states[node["id"]] = raw
-                elif raw == "running":
-                    states[node["id"]] = "running"
-                elif raw == "shut_off":
-                    states[node["id"]] = "stopped"
-                else:
-                    states[node["id"]] = raw
-        elif node.get("type") == "containerNode":
-            ctr_name = f"troshka-{project_id[:8]}-{node['id'][:8]}"
-            ctr_info = container_batch.get(ctr_name, {})
-            raw = (
-                ctr_info.get("state", "unknown")
-                if isinstance(ctr_info, dict)
-                else ctr_info
-            )
-            state = "stopped" if raw == "exited" else raw
-            container_states[node["id"]] = {
-                "state": state,
-                "ips": ctr_info.get("ips", []) if isinstance(ctr_info, dict) else [],
-            }
-    return {
-        "states": states,
-        "container_states": container_states,
-        "progress": progress,
-    }
+    return {"states": {}, "container_states": {}, "progress": {}}
 
 
 @router.post("/{project_id}/vms/{vm_id}/start")

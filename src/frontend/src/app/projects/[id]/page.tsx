@@ -38,7 +38,7 @@ export default function ProjectCanvasPage() {
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
   const [projectGuid, setProjectGuid] = useState("");
-  const [projectState, setProjectState] = useState("draft");
+  const [projectState, setProjectState] = useState("");
   const [projectHostId, setProjectHostId] = useState("");
   const [autoStopMinutes, setAutoStopMinutes] = useState<number | null>(null);
   const [autoDeleteMinutes, setAutoDeleteMinutes] = useState<number | null>(null);

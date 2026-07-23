@@ -20,6 +20,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const isRestarting = d.status === "restarting";
   const isRedeploying = d.status === "redeploying";
   const isNotFound = (d as any).status === "not_found";
+  const statusPending = (!d.status || d.status === "unknown") && (projectState === "active" || projectState === "stopped" || projectState === "starting");
 
   const nicCount = (d.nics || []).length;
   const dcCount = (d.diskControllers || []).length;
@@ -182,6 +183,8 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         {isDirty && <span title="Unsaved changes — republish to apply" style={{ fontSize: 10, opacity: 0.6 }}>💾</span>}
         {(actionPending || d.status === "redeploying") ? (
           <span title={d.redeployStep as string || ""} className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
+        ) : statusPending ? (
+          <span className="vm-btn-spinner" style={{ width: 8, height: 8 }} />
         ) : (
         <span
           className="vm-node-status-dot"
@@ -322,7 +325,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       <div className="vm-node-footer nopan nodrag">
-        {isDeployed && !isRunning && !isStopping && !isRestarting && !isRedeploying && !isNotFound && (
+        {isDeployed && !statusPending && !isRunning && !isStopping && !isRestarting && !isRedeploying && !isNotFound && (
           <button
             className="vm-node-action power-stopped"
             title="Start"

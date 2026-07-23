@@ -720,43 +720,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       .then((project) => {
         if (project?.topology) {
           const t = project.topology;
-          const prevNodes = get().nodes;
-          const prevStatusMap: Record<string, string> = {};
-          for (const n of prevNodes) {
-            if (n.type === "vmNode" && n.data?.status) {
-              prevStatusMap[n.id] = (n.data as Record<string, unknown>).status as string;
-            }
-            if (n.type === "containerNode" && n.data?.status) {
-              prevStatusMap[n.id] = (n.data as Record<string, unknown>).status as string;
-            }
-          }
-          const deployed = get().deployedVmIds;
-          const nodes = (t.nodes || []).map((n: Record<string, unknown>) => {
-            if (n.type === "containerNode" && n.id) {
-              const ctrState = _latestContainerStates[n.id as string];
-              if (ctrState) {
-                return { ...n, data: { ...(n.data as Record<string, unknown>), status: ctrState } };
-              }
-              const prev = prevStatusMap[n.id as string];
-              if (prev) {
-                return { ...n, data: { ...(n.data as Record<string, unknown>), status: prev } };
-              }
-            }
-            if (n.type === "vmNode" && n.id) {
-              const wsState = _latestVmStates[n.id as string];
-              if (wsState) {
-                return { ...n, data: { ...(n.data as Record<string, unknown>), status: wsState } };
-              }
-              const prev = prevStatusMap[n.id as string];
-              if (prev) {
-                return { ...n, data: { ...(n.data as Record<string, unknown>), status: prev } };
-              }
-              if (deployed.has(n.id as string)) {
-                return { ...n, data: { ...(n.data as Record<string, unknown>), status: "running" } };
-              }
-            }
-            return n;
-          });
+          const nodes = (t.nodes || []).map((n: Record<string, unknown>) => n);
           set({
             nodes,
             edges: t.edges || [],
