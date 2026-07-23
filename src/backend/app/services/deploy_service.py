@@ -4636,7 +4636,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     all_up = False
             _push(
                 "nodes",
-                f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} reachable",
+                f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} nodes reachable",
                 items,
             )
             if all_up:
@@ -4756,7 +4756,9 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     else:
                         items.append(f"{name}: progressing")
             if total > 0:
-                _push("operators", f"{available_count}/{total} available", items)
+                _push(
+                    "operators", f"{available_count}/{total} operators available", items
+                )
                 if available_count >= total:
                     operators_ready = True
                     break
