@@ -1073,14 +1073,12 @@ export default function ProjectsPage() {
                       <span style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
                         background: "rgba(251,191,36,0.15)", color: "#fbbf24",
-                        display: "inline-flex", alignItems: "center", gap: 4,
                       }}>
                         {p.deploy_progress.detail}
-                        <span className="project-btn-spinner" style={{ width: 12, height: 12 }} />
                       </span>
                     )}
-                    {!p.deploy_progress?.detail && (p.state === "stopping" || p.state === "starting" || p.state === "deploying" || p.state === "deleting") && (
-                      <span className="project-btn-spinner" style={{ width: 14, height: 14 }} />
+                    {(p.state === "deploying" || p.state === "stopping" || p.state === "starting" || p.state === "deleting") && (
+                      <span className="project-btn-spinner" style={{ width: 14, height: 14, marginLeft: "auto" }} />
                     )}
                     {p.ocp_status && p.ocp_status !== "none" && (
                       <span style={{

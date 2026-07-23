@@ -193,6 +193,7 @@ export default function PatternsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [bulkPatternId, setBulkPatternId] = useState<string | null>(null);
+  const [bulkCreatedCount, setBulkCreatedCount] = useState<number | null>(null);
   const [previewPattern, setPreviewPattern] = useState<{ id: string; name: string } | null>(null);
   const [deployPattern, setDeployPattern] = useState<{ id: string; name: string; is_sno?: boolean } | null>(null);
   const [deploying, setDeploying] = useState<string | null>(null);
@@ -510,9 +511,40 @@ export default function PatternsPage() {
           onClose={() => setBulkPatternId(null)}
           onDeployed={(count) => {
             setBulkPatternId(null);
-            alert(`Successfully created ${count} project(s). Check the Projects page.`);
+            setBulkCreatedCount(count);
           }}
         />
+      )}
+
+      {bulkCreatedCount !== null && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 10000,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(0,0,0,0.6)",
+        }}>
+          <div style={{
+            background: "var(--pf-t--global--background--color--primary--default)",
+            borderRadius: 12, padding: 24, width: 360,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+            border: "1px solid var(--pf-t--global--border--color--default)",
+            textAlign: "center",
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>&#10003;</div>
+            <div style={{ fontSize: 15, marginBottom: 16 }}>
+              Successfully created {bulkCreatedCount} project{bulkCreatedCount !== 1 ? "s" : ""}.
+            </div>
+            <button
+              onClick={() => { setBulkCreatedCount(null); router.push("/projects"); }}
+              style={{
+                padding: "8px 24px", borderRadius: 6, cursor: "pointer", fontSize: 13,
+                background: "rgba(74,222,128,0.15)", border: "1px solid #4ade80",
+                color: "#4ade80",
+              }}
+            >
+              View Projects
+            </button>
+          </div>
+        </div>
       )}
 
       {deployPattern && <DeployNameModal
