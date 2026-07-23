@@ -1079,7 +1079,52 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                 patch.status["recertDone"] = True
             return
 
+        # Phase 1.5: Wait for recert Job pod to terminate and release PVCs
+        if status.get("recertDone") and not status.get("recertCleaned"):
+            recert_cfg = status.get("recertConfig", {})
+            rhcos_pvc = recert_cfg.get("rhcosPvc", "")
+            vm_part = rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
+            recert_job_name = f"recert-{vm_part}"
+            core_api = client.CoreV1Api()
+            try:
+                pod_list = core_api.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=f"job-name={recert_job_name}",
+                )
+                pods = pod_list.items or []  # type: ignore[union-attr]
+                if pods:
+                    for pod in pods:
+                        try:
+                            core_api.delete_namespaced_pod(
+                                name=pod.metadata.name, namespace=namespace
+                            )
+                        except Exception:
+                            pass
+                    patch.status["deployProgress"] = {
+                        "percent": 78,
+                        "stage": "Releasing disks",
+                        "detail": "waiting for recert pod to terminate",
+                    }
+                    return
+            except Exception:
+                pass
+            try:
+                from kubernetes import client as _kc
+
+                batch_api = _kc.BatchV1Api()
+                batch_api.delete_namespaced_job(
+                    name=recert_job_name,
+                    namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+            patch.status["recertCleaned"] = True
+            logger.info(f"Recert cleanup done for {name}, disks released")
+
         # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
+        if status.get("recertConfig") and not status.get("recertCleaned"):
+            return
         if not status.get("vmsStarted"):
             started = 0
             for vm in vm_items:
