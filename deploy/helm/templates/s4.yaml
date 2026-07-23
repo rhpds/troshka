@@ -154,12 +154,17 @@ spec:
                 echo "Removed default s4admin user"
               fi
 
-              # Create bucket via radosgw-admin (no boto3 needed)
+              # Create bucket via S3 PUT (no boto3 needed)
               BUCKET="{{ .Values.s3.bucket }}"
               if radosgw-admin bucket stats --bucket="$BUCKET" 2>/dev/null; then
                 echo "Bucket $BUCKET already exists"
               else
-                radosgw-admin bucket create --bucket="$BUCKET" --uid=troshka
+                # Use curl with S3 auth headers
+                DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
+                SIG=$(printf "PUT\n\n\n${DATE}\n/${BUCKET}" | openssl dgst -sha1 -hmac "$S3_SECRET_KEY" -binary | base64)
+                curl -s -X PUT "http://troshka-s4:7480/${BUCKET}" \
+                  -H "Date: ${DATE}" \
+                  -H "Authorization: AWS ${S3_ACCESS_KEY}:${SIG}"
                 echo "Created bucket $BUCKET"
               fi
           env:
