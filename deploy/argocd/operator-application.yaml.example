@@ -4,7 +4,7 @@ metadata:
   name: troshka-operator
   namespace: openshift-gitops
   annotations:
-    argocd-image-updater.argoproj.io/image-list: operator=quay.io/redhat-gpte/troshka-operator:~production
+    argocd-image-updater.argoproj.io/image-list: operator=quay.io/redhat-gpte/troshka-operator:production
     argocd-image-updater.argoproj.io/operator.update-strategy: digest
     argocd-image-updater.argoproj.io/write-back-method: argocd
 spec:

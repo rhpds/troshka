@@ -5,8 +5,8 @@ metadata:
   namespace: openshift-gitops
   annotations:
     argocd-image-updater.argoproj.io/image-list: >-
-      backend=quay.io/redhat-gpte/troshka-backend:~production,
-      frontend=quay.io/redhat-gpte/troshka-frontend:~production
+      backend=quay.io/redhat-gpte/troshka-backend:production,
+      frontend=quay.io/redhat-gpte/troshka-frontend:production
     argocd-image-updater.argoproj.io/backend.update-strategy: digest
     argocd-image-updater.argoproj.io/frontend.update-strategy: digest
     argocd-image-updater.argoproj.io/backend.helm.image-name: backend.image.repository
