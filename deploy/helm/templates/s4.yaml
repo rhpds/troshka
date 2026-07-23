@@ -139,7 +139,7 @@ spec:
           args:
             - |
               set -e
-              # Create troshka user (idempotent — radosgw-admin modify if exists)
+              # Create troshka user (idempotent)
               if radosgw-admin user info --uid=troshka 2>/dev/null; then
                 echo "User troshka already exists"
               else
@@ -154,25 +154,14 @@ spec:
                 echo "Removed default s4admin user"
               fi
 
-              # Create bucket via S3 API
-              python3 -c "
-              import boto3, os
-              client = boto3.client('s3',
-                  region_name='us-east-1',
-                  aws_access_key_id=os.environ['S3_ACCESS_KEY'],
-                  aws_secret_access_key=os.environ['S3_SECRET_KEY'],
-                  endpoint_url='http://troshka-s4:7480',
-              )
-              bucket = '{{ .Values.s3.bucket }}'
-              try:
-                  client.create_bucket(Bucket=bucket)
-                  print(f'Bucket {bucket} created')
-              except Exception as e:
-                  if 'BucketAlreadyExists' in str(e) or 'BucketAlreadyOwnedByYou' in str(e):
-                      print(f'Bucket {bucket} already exists')
-                  else:
-                      raise
-              "
+              # Create bucket via radosgw-admin (no boto3 needed)
+              BUCKET="{{ .Values.s3.bucket }}"
+              if radosgw-admin bucket stats --bucket="$BUCKET" 2>/dev/null; then
+                echo "Bucket $BUCKET already exists"
+              else
+                radosgw-admin bucket create --bucket="$BUCKET" --uid=troshka
+                echo "Created bucket $BUCKET"
+              fi
           env:
             - name: S3_ACCESS_KEY
               valueFrom:
