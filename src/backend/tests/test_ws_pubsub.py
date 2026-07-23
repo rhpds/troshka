@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock
 
 from app.services.ws_pubsub import (
     _subscribers,
-    get_active_project_ids,
     subscribe,
     unsubscribe,
 )
@@ -20,9 +19,9 @@ def test_subscribe_and_unsubscribe():
     _subscribers.clear()
     ws = _make_ws()
     subscribe("proj-1", ws)
-    assert "proj-1" in get_active_project_ids()
+    assert "proj-1" in _subscribers
     unsubscribe("proj-1", ws)
-    assert "proj-1" not in get_active_project_ids()
+    assert "proj-1" not in _subscribers
 
 
 def test_subscribe_multiple():
@@ -74,5 +73,5 @@ def test_notify_dead_connection_removed():
     notify_project("proj-1", {"type": "test"})
     loop.run_until_complete(asyncio.sleep(0.1))
 
-    assert "proj-1" not in get_active_project_ids()
+    assert "proj-1" not in _subscribers
     loop.close()
