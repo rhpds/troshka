@@ -20,7 +20,7 @@ jobs:
       frontend: ${{ steps.check.outputs.frontend }}
       operator: ${{ steps.check.outputs.operator }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 2
       - id: check
@@ -35,7 +35,7 @@ jobs:
     if: needs.changes.outputs.backend == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set image tags
         id: tags
@@ -52,7 +52,7 @@ jobs:
         run: |
           echo "hash=$(cat deploy/containerfiles/Containerfile.backend src/backend/requirements.txt src/backend/pyproject.toml 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: /var/lib/containers/storage
           key: buildah-backend-${{ steps.cache-key.outputs.hash }}
@@ -87,7 +87,7 @@ jobs:
     if: needs.changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set image tags
         id: tags
@@ -104,7 +104,7 @@ jobs:
         run: |
           echo "hash=$(cat deploy/containerfiles/Containerfile.frontend src/frontend/package-lock.json 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: /var/lib/containers/storage
           key: buildah-frontend-${{ steps.cache-key.outputs.hash }}
@@ -139,7 +139,7 @@ jobs:
     if: needs.changes.outputs.operator == 'true' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set image tags
         id: tags
@@ -156,7 +156,7 @@ jobs:
         run: |
           echo "hash=$(cat src/operator/Dockerfile src/operator/requirements.txt src/operator/images/*/Dockerfile 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: /var/lib/containers/storage
           key: buildah-operator-${{ steps.cache-key.outputs.hash }}
