@@ -29,9 +29,9 @@ def get_registry_digest() -> str | None:
     return _registry_digest
 
 
-def _fetch_registry_digest() -> str | None:
-    """Get the current digest for the :production tag from quay.io."""
-    url = f"https://{REGISTRY}/v2/{IMAGE}/manifests/{TAG}"
+def _fetch_registry_digest(tag: str | None = None) -> str | None:
+    """Get the current digest for the given tag from quay.io."""
+    url = f"https://{REGISTRY}/v2/{IMAGE}/manifests/{tag or TAG}"
     req = urllib.request.Request(
         url,
         headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
@@ -48,11 +48,11 @@ def _fetch_registry_digest() -> str | None:
         return None
 
 
-def _get_operator_info(provider) -> tuple[str | None, bool]:
-    """Get the running operator digest and whether a rollout is in progress.
+def _get_operator_info(provider) -> tuple[str | None, bool, str]:
+    """Get the running operator digest, rollout status, and image tag.
 
-    Returns (digest, rolling_out). During a rollout, digest may be stale
-    but rolling_out=True signals not to show the update button.
+    Returns (digest, rolling_out, tag). The tag is read from the deployment
+    spec so the registry check uses the correct tag (latest vs production).
     """
     from kubernetes import client
 
@@ -68,6 +68,7 @@ def _get_operator_info(provider) -> tuple[str | None, bool]:
     operator_ns = creds.get("namespace", "troshka-operator")
     digest = None
     rolling_out = False
+    tag = TAG
 
     try:
         dep = apps_api.read_namespaced_deployment(
@@ -78,6 +79,9 @@ def _get_operator_info(provider) -> tuple[str | None, bool]:
         ready = dep.status.ready_replicas or 0  # type: ignore[union-attr]
         if updated < desired or ready < desired:
             rolling_out = True
+        image = dep.spec.template.spec.containers[0].image or ""  # type: ignore[union-attr]
+        if ":" in image:
+            tag = image.rsplit(":", 1)[1]
     except Exception:
         pass
 
@@ -99,7 +103,7 @@ def _get_operator_info(provider) -> tuple[str | None, bool]:
     except Exception as e:
         logger.warning("Failed to get operator digest on %s: %s", provider.name, e)
 
-    return digest, rolling_out
+    return digest, rolling_out, tag
 
 
 def _poll_operator_digests():
@@ -119,7 +123,7 @@ def _poll_operator_digests():
         for host in hosts:
             if not host.provider:
                 continue
-            running, rolling_out = _get_operator_info(host.provider)
+            running, rolling_out, _ = _get_operator_info(host.provider)
             if rolling_out:
                 continue
             if running and running != host.operator_digest:

@@ -2112,13 +2112,16 @@ def get_operator_status(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    from app.services.operator_updater import _get_operator_info, get_registry_digest
+    from app.services.operator_updater import (
+        _fetch_registry_digest,
+        _get_operator_info,
+    )
 
     provider = db.get(Provider, provider_id)
     if not provider:
         raise HTTPException(404, "Provider not found")
-    registry = get_registry_digest()
-    running, rolling_out = _get_operator_info(provider)
+    running, rolling_out, tag = _get_operator_info(provider)
+    registry = _fetch_registry_digest(tag)
     return {
         "operator_digest": running[:20] if running else None,
         "registry_digest": registry[:20] if registry else None,
