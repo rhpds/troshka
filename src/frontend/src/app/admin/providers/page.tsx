@@ -109,7 +109,7 @@ export default function AdminProvidersPage() {
         // Load operator status for kubevirt providers
         for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
           const updatedAt = operatorUpdating[p.id];
-          if (updatedAt && Date.now() - updatedAt < 90000) continue;
+          if (updatedAt && Date.now() - updatedAt < 300000) continue;
           fetch(`/api/v1/providers/${p.id}/operator-status`)
             .then((r) => r.ok ? r.json() : null)
             .then((s) => { if (s) setOperatorStatus((prev) => ({ ...prev, [p.id]: s })); })
