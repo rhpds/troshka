@@ -65,6 +65,7 @@ export default function AdminProvidersPage() {
   const [buildingProvider, setBuildingProvider] = useState<string | null>(null);
   const [rhelVersion, setRhelVersion] = useState<Record<string, string>>({});
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [operatorStatus, setOperatorStatus] = useState<Record<string, { up_to_date: boolean | null; operator_digest: string | null; registry_digest: string | null }>>({});
 
   const [name, setName] = useState("");
   const [type, setType] = useState("kubevirt");
@@ -104,6 +105,13 @@ export default function AdminProvidersPage() {
       .then((data) => {
         setProviders(Array.isArray(data) ? data : []);
         setLoading(false);
+        // Load operator status for kubevirt providers
+        for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
+          fetch(`/api/v1/providers/${p.id}/operator-status`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((s) => { if (s) setOperatorStatus((prev) => ({ ...prev, [p.id]: s })); })
+            .catch(() => {});
+        }
         // Load build status for GCP/Azure providers
         const gcpAzureProviders = (Array.isArray(data) ? data : []).filter(
           (pr: { type: string }) => pr.type === "gcp" || pr.type === "azure"
@@ -976,24 +984,14 @@ export default function AdminProvidersPage() {
                         }
                       }}>{p.host_count > 0 ? "Reinstall Operator" : "Install Operator"}</Button>
                     )}
-                    {p.type === "kubevirt" && p.host_count > 0 && (
-                      <Button variant="secondary" onClick={async () => {
-                        setTestResult((prev) => ({ ...prev, [p.id]: "Checking operator..." }));
-                        const statusResp = await fetch(`/api/v1/providers/${p.id}/operator-status`);
-                        if (!statusResp.ok) {
-                          setTestResult((prev) => ({ ...prev, [p.id]: "Failed to check operator status" }));
-                          return;
-                        }
-                        const status = await statusResp.json();
-                        if (status.up_to_date) {
-                          setTestResult((prev) => ({ ...prev, [p.id]: `Operator already up to date (${status.registry_digest})` }));
-                          return;
-                        }
-                        setTestResult((prev) => ({ ...prev, [p.id]: `Updating operator: ${status.operator_digest || "unknown"} → ${status.registry_digest}...` }));
+                    {p.type === "kubevirt" && p.host_count > 0 && operatorStatus[p.id]?.up_to_date === false && (
+                      <Button variant="warning" onClick={async () => {
+                        setTestResult((prev) => ({ ...prev, [p.id]: `Updating operator: ${operatorStatus[p.id]?.operator_digest || "unknown"} → ${operatorStatus[p.id]?.registry_digest}...` }));
                         const resp = await fetch(`/api/v1/providers/${p.id}/update-operator`, { method: "POST" });
                         if (resp.ok) {
                           const data = await resp.json();
                           setTestResult((prev) => ({ ...prev, [p.id]: `Operator updated → ${data.registry_digest}` }));
+                          setOperatorStatus((prev) => ({ ...prev, [p.id]: { ...prev[p.id], up_to_date: true } }));
                         } else {
                           const data = await resp.json().catch(() => ({}));
                           setTestResult((prev) => ({ ...prev, [p.id]: `Update failed: ${data.detail || data.message || "unknown"}` }));
