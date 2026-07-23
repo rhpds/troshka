@@ -1,8 +1,8 @@
+import asyncio
 import datetime
 import json
 import kopf
 import logging
-import time
 from typing import Any, cast
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
@@ -37,7 +37,7 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
             raise
 
 
-def _ensure_deployment_gone(apps_api, namespace, dep_name, timeout=30):
+async def _ensure_deployment_gone(apps_api, namespace, dep_name, timeout=30):
     """Force-delete a deployment and wait for it to be fully gone."""
     try:
         apps_api.delete_namespaced_deployment(
@@ -52,7 +52,7 @@ def _ensure_deployment_gone(apps_api, namespace, dep_name, timeout=30):
     for _ in range(timeout):
         try:
             apps_api.read_namespaced_deployment(name=dep_name, namespace=namespace)
-            time.sleep(1)
+            await asyncio.sleep(1)
         except ApiException as e:
             if e.status == 404:
                 return
@@ -187,7 +187,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
                 break
         except Exception:
             pass
-        time.sleep(3)
+        await asyncio.sleep(3)
 
     # Snapshot and export each disk
     captured_disks = []
@@ -237,7 +237,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
                     break
             except Exception:
                 pass
-            time.sleep(5)
+            await asyncio.sleep(5)
 
         temp_pvc = build_temp_pvc_from_snapshot(
             temp_pvc_name, namespace, snap_name, size_gb
@@ -298,7 +298,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
                 all_done = False
         if all_done:
             break
-        time.sleep(10)
+        await asyncio.sleep(10)
 
     # Read Job pod logs to get actual file sizes
     for ej in export_jobs:
@@ -504,10 +504,10 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                     "cidr": net.get("cidr", "10.0.0.0/24"),
                 }
 
+    apps_api = client.AppsV1Api()
     if gateway_nads:
-        apps_api = client.AppsV1Api()
         _cleanup_legacy_pod(core_api, namespace, f"gateway-{namespace}")
-        _ensure_deployment_gone(apps_api, namespace, f"gateway-{namespace}")
+        await _ensure_deployment_gone(apps_api, namespace, f"gateway-{namespace}")
         gw_dep = build_gateway_deployment(body, gateway_nads, gateway_ips)
         apps_api.create_namespaced_deployment(namespace=namespace, body=gw_dep)
         logger.info(f"Created gateway deployment for {name}")
@@ -559,7 +559,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
         exec_project_id = spec.get("projectId", namespace)[:8]
         _cleanup_legacy_pod(core_api, namespace, f"exec-{exec_project_id}")
-        _ensure_deployment_gone(apps_api, namespace, f"exec-{exec_project_id}")
+        await _ensure_deployment_gone(apps_api, namespace, f"exec-{exec_project_id}")
         exec_dep = build_exec_deployment(
             body,
             cluster_nad,

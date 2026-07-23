@@ -1,6 +1,6 @@
+import asyncio
 import kopf
 import logging
-import time
 from kubernetes import client
 from helpers.k8s import CRD_GROUP, CRD_VERSION, golden_pvc_name, owner_ref, TOOLS_IMAGE
 from helpers.kubevirt import (
@@ -57,7 +57,7 @@ def _get_central_s3_config_from_project(namespace):
     return {}
 
 
-def _wait_for_datavolume(
+async def _wait_for_datavolume(
     custom_api, name, namespace, timeout=3600, owner_name=None, owner_namespace=None
 ):
     for _ in range(timeout // 5):
@@ -101,13 +101,18 @@ def _wait_for_datavolume(
                 return False
         except Exception:
             pass
-        time.sleep(5)
+        await asyncio.sleep(5)
     logger.warning(f"DataVolume {name} timed out after {timeout}s")
     return False
 
 
-def _ensure_golden_pvc(
-    custom_api, core_api, s3_path, size_gb, s3_config, secret_name="s3-credentials"  # pragma: allowlist secret
+async def _ensure_golden_pvc(
+    custom_api,
+    core_api,
+    s3_path,
+    size_gb,
+    s3_config,
+    secret_name="s3-credentials",  # pragma: allowlist secret
 ):
     pvc_name = golden_pvc_name(s3_path)
     try:
@@ -153,7 +158,7 @@ def _ensure_golden_pvc(
         if e.status != 409:
             raise
 
-    if not _wait_for_datavolume(custom_api, pvc_name, CACHE_NAMESPACE):
+    if not await _wait_for_datavolume(custom_api, pvc_name, CACHE_NAMESPACE):
         raise kopf.TemporaryError(f"Golden PVC {pvc_name} import failed", delay=30)
 
     logger.info(f"Golden PVC {pvc_name} ready")
@@ -195,7 +200,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 disk_s3 = s3_config
                 secret = "s3-credentials"  # pragma: allowlist secret
             size_gb = disk.get("sizeGb", 20)
-            golden_name = _ensure_golden_pvc(
+            golden_name = await _ensure_golden_pvc(
                 custom_api,
                 core_api,
                 s3_path,
@@ -230,7 +235,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                                 plural="datavolumes",
                                 name=pvc_name,
                             )
-                            time.sleep(2)
+                            await asyncio.sleep(2)
                         except client.exceptions.ApiException as ge:
                             if ge.status == 404:
                                 break
@@ -246,7 +251,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 else:
                     raise
 
-            if not _wait_for_datavolume(
+            if not await _wait_for_datavolume(
                 custom_api,
                 pvc_name,
                 namespace,
@@ -275,7 +280,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         cdrom_pvc = f"{name}-cdrom"
         cdrom_s3 = spec["cdrom"]["s3Path"]
         try:
-            golden_name = _ensure_golden_pvc(
+            golden_name = await _ensure_golden_pvc(
                 custom_api, core_api, cdrom_s3, 10, s3_config
             )
             cdrom_size = 10
@@ -304,7 +309,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             except client.exceptions.ApiException as e:
                 if e.status != 409:
                     raise
-            _wait_for_datavolume(
+            await _wait_for_datavolume(
                 custom_api,
                 cdrom_pvc,
                 namespace,
@@ -398,7 +403,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                         break
                 except Exception:
                     pass
-                time.sleep(5)
+                await asyncio.sleep(5)
 
     nad_refs = {}
     try:
@@ -442,7 +447,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                         plural="virtualmachines",
                         name=kv_vm_name,
                     )
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                 except client.exceptions.ApiException as ge:
                     if ge.status == 404:
                         break

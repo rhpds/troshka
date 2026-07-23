@@ -46,26 +46,37 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
     for scc_name in ("troshka-network-pods", "troshka-gateway"):
-        try:
-            scc = custom_api.get_cluster_custom_object(
-                group="security.openshift.io",
-                version="v1",
-                plural="securitycontextconstraints",
-                name=scc_name,
-            )
-            users = scc.get("users", []) or []
-            if sa_ref not in users:
-                users.append(sa_ref)
-                custom_api.patch_cluster_custom_object(
+        for attempt in range(5):
+            try:
+                scc = custom_api.get_cluster_custom_object(
                     group="security.openshift.io",
                     version="v1",
                     plural="securitycontextconstraints",
                     name=scc_name,
-                    body={"users": users},
                 )
-                logger.info(f"Added {sa_ref} to {scc_name} SCC")
-        except Exception as e:
-            logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
+                users = scc.get("users", []) or []
+                if sa_ref not in users:
+                    users.append(sa_ref)
+                    custom_api.patch_cluster_custom_object(
+                        group="security.openshift.io",
+                        version="v1",
+                        plural="securitycontextconstraints",
+                        name=scc_name,
+                        body={"users": users},
+                    )
+                    logger.info(f"Added {sa_ref} to {scc_name} SCC")
+                break
+            except client.exceptions.ApiException as e:
+                if e.status == 409 and attempt < 4:
+                    import asyncio
+
+                    await asyncio.sleep(0.2 * (attempt + 1))
+                    continue
+                logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
+                break
+            except Exception as e:
+                logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
+                break
 
     nad = build_nad(body)
     try:
@@ -105,7 +116,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
         logger.info(f"Created dnsmasq deployment for {name}")
     except client.exceptions.ApiException as e:
         if e.status == 409:
-            import time
+            import asyncio as _asyncio
 
             logger.info(
                 f"Dnsmasq deployment {dep_name} exists (stale), waiting for deletion"
@@ -115,7 +126,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
                     apps_api.read_namespaced_deployment(
                         name=dep_name, namespace=namespace
                     )
-                    time.sleep(2)
+                    await _asyncio.sleep(2)
                 except client.exceptions.ApiException as ge:
                     if ge.status == 404:
                         break
@@ -189,26 +200,37 @@ async def network_delete(spec, meta, namespace, name, **_):
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
     for scc_name in ("troshka-network-pods", "troshka-gateway"):
-        try:
-            scc = custom_api.get_cluster_custom_object(
-                group="security.openshift.io",
-                version="v1",
-                plural="securitycontextconstraints",
-                name=scc_name,
-            )
-            users = scc.get("users", []) or []
-            if sa_ref in users:
-                users.remove(sa_ref)
-                custom_api.patch_cluster_custom_object(
+        for attempt in range(5):
+            try:
+                scc = custom_api.get_cluster_custom_object(
                     group="security.openshift.io",
                     version="v1",
                     plural="securitycontextconstraints",
                     name=scc_name,
-                    body={"users": users},
                 )
-                logger.info(f"Removed {sa_ref} from {scc_name} SCC")
-        except Exception as e:
-            logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
+                users = scc.get("users", []) or []
+                if sa_ref in users:
+                    users.remove(sa_ref)
+                    custom_api.patch_cluster_custom_object(
+                        group="security.openshift.io",
+                        version="v1",
+                        plural="securitycontextconstraints",
+                        name=scc_name,
+                        body={"users": users},
+                    )
+                    logger.info(f"Removed {sa_ref} from {scc_name} SCC")
+                break
+            except client.exceptions.ApiException as e:
+                if e.status == 409 and attempt < 4:
+                    import asyncio
+
+                    await asyncio.sleep(0.2 * (attempt + 1))
+                    continue
+                logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
+                break
+            except Exception as e:
+                logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
+                break
 
     nad_name = f"{name}-nad"
     try:

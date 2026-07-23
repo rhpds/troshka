@@ -17,4 +17,6 @@ import handlers.container  # noqa: F401,E402
 def configure(settings: kopf.OperatorSettings, **_):
     settings.posting.level = logging.WARNING
     settings.persistence.finalizer = "troshka.redhat.com/finalizer"
-    logger.info("Troshka operator starting")
+    settings.execution.max_workers = 100
+    settings.batching.batch_window = 0.5
+    logger.info("Troshka operator starting (max_workers=100)")

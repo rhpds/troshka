@@ -61,6 +61,7 @@ class ProjectResponse(BaseModel):
     ocp_status: str | None = None
     ocp_status_detail: str | None = None
     ocp_install_elapsed: int | None = None
+    deploy_started_at: datetime.datetime | None = None
     created_at: datetime.datetime
     updated_at: datetime.datetime
 
