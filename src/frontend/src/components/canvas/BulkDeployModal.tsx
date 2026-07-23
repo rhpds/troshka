@@ -9,7 +9,7 @@ interface BulkDeployModalProps {
 }
 
 export default function BulkDeployModal({ patternId, onClose, onDeployed }: BulkDeployModalProps) {
-  const [count, setCount] = useState(5);
+  const [count, setCount] = useState<number | "">(5);
   const [nameTemplate, setNameTemplate] = useState("lab-{n}");
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [deploying, setDeploying] = useState(false);
@@ -38,16 +38,17 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
 
   const previewNames = useMemo(() => {
     const names: string[] = [];
-    const limit = Math.min(count, 3);
+    const c = count || 0;
+    const limit = Math.min(c, 3);
     for (let i = 1; i <= limit; i++) {
       names.push(nameTemplate.replace(/\{n\}/g, String(i)));
     }
-    if (count > 3) names.push("...");
+    if (c > 3) names.push("...");
     return names;
   }, [count, nameTemplate]);
 
   const handleDeploy = async () => {
-    if (count < 1 || count > 500) { setError("Count must be between 1 and 500"); return; }
+    if (!count || count < 1 || count > 500) { setError("Count must be between 1 and 500"); return; }
     setDeploying(true);
     setError("");
     try {
@@ -99,7 +100,13 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
               min={1}
               max={500}
               value={count}
-              onChange={(e) => setCount(Math.max(1, Math.min(500, parseInt(e.target.value) || 1)))}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "") { setCount(""); return; }
+                const n = parseInt(v);
+                if (!isNaN(n)) setCount(Math.min(500, n));
+              }}
+              onBlur={() => { if (count === "" || count < 1) setCount(1); }}
             />
           </div>
           <div>
@@ -160,7 +167,7 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
             {previewNames.map((name, i) => (
               <div key={i} style={{ paddingLeft: 8 }}>{name}</div>
             ))}
-            {count > 0 && <div style={{ marginTop: 4, opacity: 0.6 }}>{count} project{count !== 1 ? "s" : ""} total</div>}
+            {!!count && count > 0 && <div style={{ marginTop: 4, opacity: 0.6 }}>{count} project{count !== 1 ? "s" : ""} total</div>}
           </div>
 
           {error && <div style={{ color: "#f87171", fontSize: 13 }}>{error}</div>}
