@@ -1148,8 +1148,11 @@ async def project_status_check(status, namespace, name, patch, **_):
             patch.status["recertCleaned"] = True
             logger.info(f"Recert cleanup done for {name}, disks released")
 
-        # Phase 1.9: Delete stale VolumeAttachments left by CDI clones
-        if not status.get("pvcsReleased"):
+        # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
+        if status.get("recertConfig") and not status.get("recertCleaned"):
+            return
+        if not status.get("vmsStarted"):
+            # Clean up stale VolumeAttachments left by CDI clones before starting
             from kubernetes import client as _sc
 
             storage_api = _sc.StorageV1Api()
@@ -1173,11 +1176,11 @@ async def project_status_check(status, namespace, name, patch, **_):
                         node = va.spec.node_name  # type: ignore[union-attr]
                         pod_on_node = False
                         try:
-                            pods = core_api_pvc.list_namespaced_pod(
+                            node_pods = core_api_pvc.list_namespaced_pod(
                                 namespace=namespace,
                                 field_selector=f"spec.nodeName={node}",
                             )
-                            for p in pods.items or []:  # type: ignore[union-attr]
+                            for p in node_pods.items or []:  # type: ignore[union-attr]
                                 if p.metadata.deletion_timestamp:  # type: ignore[union-attr]
                                     continue
                                 for v in p.spec.volumes or []:  # type: ignore[union-attr]
@@ -1204,13 +1207,6 @@ async def project_status_check(status, namespace, name, patch, **_):
                         return
             except Exception as e:
                 logger.warning(f"PVC release check failed for {name}: {e}")
-            patch.status["pvcsReleased"] = True
-            logger.info(f"All PVCs released for {name}")
-
-        # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
-        if status.get("recertConfig") and not status.get("recertCleaned"):
-            return
-        if not status.get("vmsStarted"):
             started = 0
             for vm in vm_items:
                 kv_name = vm.get("status", {}).get("kubevirtVmName", "")
