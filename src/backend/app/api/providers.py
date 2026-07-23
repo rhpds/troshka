@@ -1848,7 +1848,7 @@ def create_network_azure(
 
     from azure.identity import ClientSecretCredential
     from azure.mgmt.network import NetworkManagementClient
-    from azure.mgmt.resource import ResourceManagementClient
+    from azure.mgmt.resource import ResourceManagementClient  # type: ignore[attr-defined]
 
     creds = provider.get_credentials()
     credential = ClientSecretCredential(

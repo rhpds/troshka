@@ -1096,7 +1096,7 @@ export default function ProjectsPage() {
                   </div>
                   <p style={{ fontSize: 13, opacity: 0.7, margin: "4px 0 0" }}>{p.description || "No description"}</p>
                   <p style={{ fontSize: 11, opacity: 0.5, margin: "4px 0 0" }}>
-                    {p.host_type} &middot; {new Date(p.created_at).toLocaleDateString()}
+                    {p.host_type} &middot; created {new Date(p.created_at).toLocaleString()}
                     {p.deploy_started_at && <> &middot; deployed {new Date(p.deploy_started_at).toLocaleString()}</>}
                     {p.host_instance_id && <> &middot; {p.host_instance_id}{p.host_ip ? ` · ${p.host_ip}` : ""}{p.host_provider_name ? ` · ${p.host_provider_name} (${p.host_provider_type})` : ""}</>}
                   </p>
