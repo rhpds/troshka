@@ -2117,12 +2117,10 @@ def get_operator_status(
     provider = db.get(Provider, provider_id)
     if not provider:
         raise HTTPException(404, "Provider not found")
-    host = next((h for h in provider.hosts if h.host_type == "kubevirt-cluster"), None)
     registry = get_registry_digest()
-    _, rolling_out = _get_operator_info(provider)
-    running = host.operator_digest if host else None
+    running, rolling_out = _get_operator_info(provider)
     return {
-        "operator_digest": running,
+        "operator_digest": running[:20] if running else None,
         "registry_digest": registry[:20] if registry else None,
         "up_to_date": (
             True
