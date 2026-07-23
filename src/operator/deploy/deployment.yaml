@@ -17,6 +17,7 @@ spec:
       containers:
         - name: operator
           image: quay.io/redhat-gpte/troshka-operator:production
+          imagePullPolicy: Always
           command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces", "--standalone"]
           env:
             - name: IMAGE_TAG
