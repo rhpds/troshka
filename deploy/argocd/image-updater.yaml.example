@@ -4,11 +4,6 @@ metadata:
   name: troshka-image-updater
   namespace: openshift-gitops
 spec:
-  registries:
-    - name: quay.io
-      prefix: quay.io
-      api_url: https://quay.io
-      default: true
-      insecure: false
-  log_level: info
-  interval: 2m
+  applicationRefs:
+    - namePattern: "troshka*"
+      useAnnotations: true
