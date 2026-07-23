@@ -122,10 +122,10 @@ def _project_response_dict(project):
     if bmc_data:
         result["bmc"] = bmc_data
     if project.host_id:
+        from sqlalchemy.orm import Session as _S
+
         from app.models.host import Host
         from app.models.provider import Provider
-
-        from sqlalchemy.orm import Session as _S
 
         s: _S = object.__getattribute__(project, "_sa_instance_state").session
         if s:
@@ -169,6 +169,8 @@ def list_projects(
                 for pv in db.query(Provider).filter(Provider.id.in_(prov_ids)).all()
             }
 
+    from app.services.deploy_service import _deploy_progress
+
     results = []
     for p in projects:
         resp = ProjectResponse.model_validate(p)
@@ -180,6 +182,9 @@ def list_projects(
             if prov:
                 resp.host_provider_name = prov.name
                 resp.host_provider_type = prov.type
+        dp = _deploy_progress.get(p.id)
+        if dp:
+            resp.deploy_progress = dp
         results.append(resp)
     return results
 
@@ -1784,10 +1789,10 @@ def vm_exec(
     if host.host_type == "kubevirt-cluster":
         from app.models.provider import Provider
         from app.services.providers.kubevirt import (
+            kubevirt_exec_console,
             kubevirt_exec_guest_agent,
             kubevirt_exec_ssh,
             kubevirt_exec_vnc,
-            kubevirt_exec_console,
         )
 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
