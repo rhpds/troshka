@@ -45,6 +45,7 @@ class Host(Base):
     agent_token: Mapped[str | None] = mapped_column(Text)
     agent_cert_fingerprint: Mapped[str | None] = mapped_column(String(100))
     agent_version: Mapped[str | None] = mapped_column(String(50))
+    operator_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
     storage_pool_id: Mapped[str | None] = mapped_column(ForeignKey("storage_pools.id"))
     storage_warnings: Mapped[list | None] = mapped_column(JSONB, default=None)
     auto_extend_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

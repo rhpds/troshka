@@ -46,6 +46,10 @@ async def lifespan(app):
     start_project_timer()
     start_state_poller()
 
+    from app.services.operator_updater import start_operator_updater
+
+    start_operator_updater()
+
     # Reset projects stuck in transient states from a previous crash/restart
     import threading
 

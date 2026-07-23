@@ -2104,3 +2104,44 @@ def clear_build_image_status(
     from app.services import image_builder_service
 
     image_builder_service.clear_build_status(provider_id)
+
+
+@router.get("/{provider_id}/operator-status")
+def get_operator_status(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    from app.services.operator_updater import get_registry_digest
+
+    provider = db.get(Provider, provider_id)
+    if not provider:
+        raise HTTPException(404, "Provider not found")
+    host = next((h for h in provider.hosts if h.host_type == "kubevirt-cluster"), None)
+    registry = get_registry_digest()
+    return {
+        "operator_digest": host.operator_digest if host else None,
+        "registry_digest": registry[:20] if registry else None,
+        "up_to_date": (
+            host.operator_digest == registry
+            if host and host.operator_digest and registry
+            else None
+        ),
+    }
+
+
+@router.post("/{provider_id}/update-operator")
+def update_operator_endpoint(
+    provider_id: str,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    provider = db.get(Provider, provider_id)
+    if not provider:
+        raise HTTPException(404, "Provider not found")
+    if provider.type != "kubevirt":
+        raise HTTPException(400, "Not a kubevirt provider")
+
+    from app.services.operator_updater import update_operator
+
+    return update_operator(provider)
