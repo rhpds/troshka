@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: troshka-operator
-  namespace: troshka
+  namespace: troshka-operator
 spec:
   replicas: 1
   selector:

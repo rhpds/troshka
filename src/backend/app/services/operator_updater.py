@@ -60,7 +60,7 @@ def _get_running_digest(provider) -> str | None:
     api_client = client.ApiClient(config)
     core_api = client.CoreV1Api(api_client)
 
-    operator_ns = creds.get("namespace", "troshka")
+    operator_ns = creds.get("namespace", "troshka-operator")
     try:
         pods = core_api.list_namespaced_pod(
             namespace=operator_ns,
@@ -117,7 +117,7 @@ def update_operator(provider) -> dict:
     api_client = client.ApiClient(config)
     apps_api = client.AppsV1Api(api_client)
 
-    operator_ns = creds.get("namespace", "troshka")
+    operator_ns = creds.get("namespace", "troshka-operator")
     try:
         apps_api.patch_namespaced_deployment(
             name="troshka-operator",
