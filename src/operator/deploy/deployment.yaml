@@ -16,8 +16,11 @@ spec:
       serviceAccountName: troshka-operator
       containers:
         - name: operator
-          image: quay.io/redhat-gpte/troshka-operator:latest
+          image: quay.io/redhat-gpte/troshka-operator:production
           command: ["kopf", "run", "operator.py", "--verbose", "--all-namespaces", "--standalone"]
+          env:
+            - name: IMAGE_TAG
+              value: production
           resources:
             requests:
               cpu: "1"

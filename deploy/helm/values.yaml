@@ -7,7 +7,7 @@ namespace:
 backend:
   image:
     repository: quay.io/redhat-gpte/troshka-backend
-    tag: latest
+    tag: production
   replicas: 1
   resources:
     requests:
@@ -19,7 +19,7 @@ backend:
 frontend:
   image:
     repository: quay.io/redhat-gpte/troshka-frontend
-    tag: latest
+    tag: production
   replicas: 1
   resources:
     requests:

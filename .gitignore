@@ -62,6 +62,10 @@ ansible/vars/*-host.yml
 # Superpowers brainstorming artifacts
 .superpowers/
 
+# ArgoCD cluster-specific manifests (use .example files as templates)
+deploy/argocd/*.yaml
+!deploy/argocd/*.example
+
 # Troshkad test artifacts
 *.py.new
 src/backend/.vni_hwm

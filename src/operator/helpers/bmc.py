@@ -1,7 +1,8 @@
 import json
+import os
 
-
-SUSHY_IMAGE = "quay.io/redhat-gpte/troshka-sushy:latest"
+_IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
+SUSHY_IMAGE = f"quay.io/redhat-gpte/troshka-sushy:{_IMAGE_TAG}"
 
 
 def build_bmc_deployment(

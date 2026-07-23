@@ -1,0 +1,45 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 'Source tag to promote (default: latest)'
+        required: false
+        default: 'latest'
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Login to Quay.io
+        run: skopeo login quay.io -u "${{ secrets.QUAY_USERNAME }}" -p "${{ secrets.QUAY_PASSWORD }}"
+
+      - name: Promote images to production
+        run: |
+          REGISTRY="quay.io/redhat-gpte"
+          SOURCE="${{ github.event.inputs.source_tag || 'latest' }}"
+          TARGET="production"
+          IMAGES=(
+            troshka-backend
+            troshka-frontend
+            troshka-operator
+            troshka-dnsmasq
+            troshka-gateway
+            troshka-tools
+            troshka-sushy
+            troshka-vnc-proxy
+          )
+
+          echo "Promoting ${SOURCE} → ${TARGET}"
+          for img in "${IMAGES[@]}"; do
+            echo "::group::${img}"
+            skopeo copy --all \
+              "docker://${REGISTRY}/${img}:${SOURCE}" \
+              "docker://${REGISTRY}/${img}:${TARGET}"
+            echo "::endgroup::"
+          done
+          echo "All images promoted to :${TARGET}"

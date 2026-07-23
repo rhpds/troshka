@@ -1,6 +1,9 @@
+import os
+
 from helpers.k8s import owner_ref
 
-VNC_PROXY_IMAGE = "quay.io/redhat-gpte/troshka-vnc-proxy:latest"
+_IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
+VNC_PROXY_IMAGE = f"quay.io/redhat-gpte/troshka-vnc-proxy:{_IMAGE_TAG}"
 
 
 def build_vnc_proxy_deployment(project_name, namespace, owner_body=None):
