@@ -972,6 +972,8 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
     vm_states = {}
     ready_count = 0
+    scheduling_errors = {}
+    core_api_ev = client.CoreV1Api()
     for vm in vm_items:
         vm_id = vm.get("spec", {}).get("vmId", vm["metadata"]["name"])
         kv_name = vm.get("status", {}).get("kubevirtVmName", "")
@@ -983,9 +985,31 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
             state = vm.get("status", {}).get("state", "")
             if not state:
                 state = "creating"
-            # No VMI means VM is stopped (defined but not running)
             if kv_name and kv_name not in vmi_states and state == "Running":
                 state = "Stopped"
+
+        if state == "Scheduling" and kv_name:
+            try:
+                pods = core_api_ev.list_namespaced_pod(
+                    namespace=namespace,
+                    label_selector=f"kubevirt.io/domain={kv_name}",
+                )
+                for pod in pods.items or []:  # type: ignore[union-attr]
+                    for cond in pod.status.conditions or []:  # type: ignore[union-attr]
+                        if cond.reason == "Unschedulable":
+                            scheduling_errors[vm_id] = cond.message or "Unschedulable"
+                    for ev in (
+                        core_api_ev.list_namespaced_event(
+                            namespace=namespace,
+                            field_selector=f"involvedObject.name={pod.metadata.name},reason=FailedAttachVolume",  # type: ignore[union-attr]
+                        ).items
+                        or []
+                    ):
+                        scheduling_errors[vm_id] = ev.message or "Volume attach failed"
+            except Exception:
+                pass
+            if vm_id in scheduling_errors:
+                state = "error"
 
         vm_states[vm_id] = state
         if state in ("Running", "Stopped"):
@@ -994,6 +1018,12 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
     old_states = status.get("vmStates", {})
     if vm_states != old_states:
         patch.status["vmStates"] = vm_states
+    if scheduling_errors:
+        old_errors = status.get("schedulingErrors", {})
+        if scheduling_errors != old_errors:
+            patch.status["schedulingErrors"] = scheduling_errors
+            for vm_id, msg in scheduling_errors.items():
+                logger.warning(f"VM {vm_id} scheduling error: {msg}")
 
     if phase == "Deploying":
         # Phase 1: Recert (if needed) — runs while VMs are defined but stopped
