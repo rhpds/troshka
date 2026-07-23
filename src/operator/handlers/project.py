@@ -998,13 +998,11 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                     for cond in pod.status.conditions or []:  # type: ignore[union-attr]
                         if cond.reason == "Unschedulable":
                             scheduling_errors[vm_id] = cond.message or "Unschedulable"
-                    for ev in (
-                        core_api_ev.list_namespaced_event(
-                            namespace=namespace,
-                            field_selector=f"involvedObject.name={pod.metadata.name},reason=FailedAttachVolume",  # type: ignore[union-attr]
-                        ).items
-                        or []
-                    ):
+                    ev_list = core_api_ev.list_namespaced_event(
+                        namespace=namespace,
+                        field_selector=f"involvedObject.name={pod.metadata.name},reason=FailedAttachVolume",  # type: ignore[union-attr]
+                    )
+                    for ev in ev_list.items or []:  # type: ignore[union-attr]
                         scheduling_errors[vm_id] = ev.message or "Volume attach failed"
             except Exception:
                 pass
