@@ -110,6 +110,10 @@ def get_cached_vm_states(project_id: str) -> dict | None:
     }
 
 
+_OCP_MONITOR_SCAN_INTERVAL = 30
+_last_ocp_scan = 0.0
+
+
 def _poll_loop():
     logger.info("WS state poller started (interval=%ds)", _POLL_INTERVAL)
     import time
@@ -120,6 +124,38 @@ def _poll_loop():
             _poll_active_projects()
         except Exception:
             logger.exception("WS state poller error")
+        try:
+            _maybe_scan_ocp_monitors()
+        except Exception:
+            logger.exception("OCP monitor scan error")
+
+
+def _maybe_scan_ocp_monitors():
+    """Periodically start OCP health monitors for projects still in 'monitoring'
+    state, even if no one has the project open in the UI."""
+    import time
+
+    global _last_ocp_scan
+    now = time.time()
+    if now - _last_ocp_scan < _OCP_MONITOR_SCAN_INTERVAL:
+        return
+    _last_ocp_scan = now
+
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.deploy_service import maybe_start_ocp_health_monitor
+
+    db = SessionLocal()
+    try:
+        projects = (
+            db.query(Project.id)
+            .filter(Project.ocp_status == "monitoring", Project.state == "active")
+            .all()
+        )
+        for (project_id,) in projects:
+            maybe_start_ocp_health_monitor(project_id)
+    finally:
+        db.close()
 
 
 def _poll_active_projects():
