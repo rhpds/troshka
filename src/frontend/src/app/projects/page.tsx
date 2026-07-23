@@ -43,6 +43,7 @@ interface Project {
   ocp_install_elapsed?: number | null;
   deploy_progress?: { step?: string; detail?: string } | null;
   deploy_started_at?: string | null;
+  deploy_error?: string | null;
 }
 
 const API_BASE = "";
@@ -1094,6 +1095,9 @@ export default function ProjectsPage() {
                       </span>
                     )}
                   </div>
+                  {p.state === "error" && p.deploy_error && (
+                    <p style={{ fontSize: 12, color: "#f87171", margin: "4px 0 0" }}>{p.deploy_error}</p>
+                  )}
                   <p style={{ fontSize: 13, opacity: 0.7, margin: "4px 0 0" }}>{p.description || "No description"}</p>
                   <p style={{ fontSize: 11, opacity: 0.5, margin: "4px 0 0" }}>
                     {p.host_type} &middot; created {new Date(p.created_at).toLocaleString()}

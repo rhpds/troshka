@@ -12,7 +12,7 @@ from app.core.config import config
 _log = logging.getLogger(__name__)
 
 engine = create_engine(
-    config.database.url, pool_pre_ping=True, pool_size=20, max_overflow=30
+    config.database.url, pool_pre_ping=True, pool_size=50, max_overflow=100
 )
 
 
