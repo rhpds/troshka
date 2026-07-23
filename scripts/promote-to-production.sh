@@ -27,4 +27,4 @@ for img in "${IMAGES[@]}"; do
 done
 
 echo ""
-echo "Done. ArgoCD Image Updater will detect the digest change within ~2 minutes."
+echo "Done. ArgoCD Image Updater handles infra01. Use the admin UI to update operators."
