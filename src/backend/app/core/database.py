@@ -63,8 +63,9 @@ def init_db():
 
 def _run_migrations():
     try:
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         alembic_dir = os.path.join(os.path.dirname(__file__), "..", "..")
         alembic_cfg = Config(os.path.join(alembic_dir, "alembic.ini"))
