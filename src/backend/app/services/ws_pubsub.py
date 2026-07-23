@@ -186,13 +186,11 @@ def _poll_active_projects():
             if pid in _deploy_progress and p.host_id:
                 deploying_host_ids.add(p.host_id)
 
-        # Batch-fetch VM states: one call per host instead of per-VM
+        # Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt)
         host_batch_states: dict = {}
+        project_batch_states: dict = {}
         for project in projects.values():
-            if (
-                project.host_id in deploying_host_ids
-                or project.host_id in host_batch_states
-            ):
+            if project.host_id in deploying_host_ids:
                 continue
             host = db.query(Host).filter_by(id=project.host_id).first()
             if not host or not host.ip_address:
@@ -233,18 +231,19 @@ def _poll_active_projects():
                             else:
                                 vm_states[node_id] = "Stopped"
                         if vm_states:
-                            host_batch_states[project.host_id] = vm_states
+                            project_batch_states[project.id] = vm_states
                     except Exception:
                         pass
                 continue
             if host.agent_status != "connected":
                 continue
-            try:
-                batch = get_all_vm_states(host)
-                if batch is not None:
-                    host_batch_states[project.host_id] = batch
-            except Exception:
-                pass
+            if project.host_id not in host_batch_states:
+                try:
+                    batch = get_all_vm_states(host)
+                    if batch is not None:
+                        host_batch_states[project.host_id] = batch
+                except Exception:
+                    pass
 
         for project_id, project in projects.items():
             # Always push project state changes
@@ -273,13 +272,12 @@ def _poll_active_projects():
             vm_states = {}
             vm_progress = {}
             vm_boot_devs = {}
-            batch = host_batch_states.get(project.host_id) if project.host_id else None
-            host = (
-                db.query(Host).filter_by(id=project.host_id).first()
-                if project.host_id
-                else None
+            kv_batch = project_batch_states.get(project_id)
+            host_batch = (
+                host_batch_states.get(project.host_id) if project.host_id else None
             )
-            is_kubevirt = host and host.host_type == "kubevirt-cluster"
+            batch = kv_batch or host_batch
+            is_kubevirt = kv_batch is not None
             if batch is not None and current_project_state in ("active", "stopped"):
                 for node in (project.topology or {}).get("nodes", []):
                     if node.get("type") != "vmNode":

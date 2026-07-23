@@ -64,6 +64,9 @@ class Project(Base):
     ocp_monitor_started_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    deploy_started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     guid: Mapped[str | None] = mapped_column(String(50), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -3,6 +3,7 @@ Pattern API — create, share, deploy, and manage reusable VM topology patterns.
 """
 
 import copy
+import datetime
 import logging
 import random
 import threading
@@ -815,6 +816,7 @@ def deploy_pattern(
         if body.host_id:
             project.host_id = body.host_id
         project.state = "deploying"
+        project.deploy_started_at = datetime.datetime.now(datetime.UTC)
         db.commit()
         threading.Thread(
             target=deploy_project_async,
@@ -863,6 +865,7 @@ def _bulk_deploy_projects(project_ids: list[str]):
                 continue
             project.vni_map = result.get("vni_map")
             project.state = "deploying"
+            project.deploy_started_at = datetime.datetime.now(datetime.UTC)
             ready_ids.append(project_id)
         s.commit()
     except Exception:

@@ -5,6 +5,7 @@ Called when a user clicks Deploy. Finds a host with enough capacity
 for the project's VMs, or fails if no host has room.
 """
 
+import datetime
 import logging
 
 from sqlalchemy import func
@@ -274,6 +275,7 @@ def place_project(
     sync_host_capacity(db, host)
     project.host_id = host.id
     project.state = "deploying"
+    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
 
     logger.info(

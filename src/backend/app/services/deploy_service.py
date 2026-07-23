@@ -3833,9 +3833,13 @@ def maybe_start_ocp_health_monitor(project_id: str):
         if project.ocp_install_elapsed is not None:
             return
         deploy_start = (
-            project.ocp_monitor_started_at.timestamp()
-            if project.ocp_monitor_started_at
-            else 0
+            project.deploy_started_at.timestamp()
+            if project.deploy_started_at
+            else (
+                project.ocp_monitor_started_at.timestamp()
+                if project.ocp_monitor_started_at
+                else 0
+            )
         )
         _active_health_monitors.add(project_id)
         threading.Thread(

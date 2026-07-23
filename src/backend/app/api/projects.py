@@ -1082,6 +1082,7 @@ def start_project(
         )
 
     project.state = "starting"
+    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
     notify_project(
         project_id, {"type": "project-state", "state": "starting", "deploy_error": None}
@@ -3135,6 +3136,7 @@ def redeploy_project(
     project.deploy_error = None
     project.ocp_status = None
     project.ocp_install_elapsed = None
+    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
 
     def _redeploy_bg(pid, ctx, host_id):
