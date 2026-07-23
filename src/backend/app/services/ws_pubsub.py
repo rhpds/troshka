@@ -344,7 +344,7 @@ def _poll_active_projects():
                 "project_state": current_project_state,
                 "deploy_error": current_deploy_error,
                 "deploy_progress": dp,
-                "vm_states": vm_states,
+                "vm_states": vm_states if vm_states else last.get("vm_states", {}),
                 "vm_progress": vm_progress,
                 "vm_boot_devs": vm_boot_devs,
             }
