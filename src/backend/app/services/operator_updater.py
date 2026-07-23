@@ -119,7 +119,9 @@ def _poll_operator_digests():
         for host in hosts:
             if not host.provider:
                 continue
-            running, _ = _get_operator_info(host.provider)
+            running, rolling_out = _get_operator_info(host.provider)
+            if rolling_out:
+                continue
             if running and running != host.operator_digest:
                 host.operator_digest = running
         db.commit()
