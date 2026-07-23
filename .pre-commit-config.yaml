@@ -57,8 +57,25 @@ repos:
         args: ["--fix"]
         files: ^src/backend/
 
-  # Dead code detection (run manually: vulture src/backend/app/ --min-confidence 90)
-  # Disabled in pre-commit — too many false positives with FastAPI/SQLAlchemy patterns
+  # Python type checking (backend) — matches CI pyright step
+  - repo: local
+    hooks:
+      - id: pyright-backend
+        name: Pyright check (backend)
+        entry: bash -c 'cd src/backend && pyright app/'
+        language: system
+        files: ^src/backend/app/.*\.py$
+        pass_filenames: false
+
+  # TypeScript type checking (frontend) — matches CI next build
+  - repo: local
+    hooks:
+      - id: tsc-frontend
+        name: TypeScript check (frontend)
+        entry: bash -c 'cd src/frontend && npx tsc --noEmit'
+        language: system
+        files: ^src/frontend/.*\.(ts|tsx)$
+        pass_filenames: false
 
   # Spell checking
   - repo: https://github.com/crate-ci/typos
