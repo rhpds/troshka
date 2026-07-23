@@ -54,14 +54,13 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: /tmp/.buildah-cache
+          path: /var/lib/containers/storage
           key: buildah-backend-${{ steps.cache-key.outputs.hash }}
           restore-keys: buildah-backend-
 
       - name: Build backend image
         run: |
-          buildah build \
-            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
+          buildah build --layers \
             -f deploy/containerfiles/Containerfile.backend \
             -t quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-backend:latest \
@@ -107,14 +106,13 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: /tmp/.buildah-cache
+          path: /var/lib/containers/storage
           key: buildah-frontend-${{ steps.cache-key.outputs.hash }}
           restore-keys: buildah-frontend-
 
       - name: Build frontend image
         run: |
-          buildah build \
-            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
+          buildah build --layers \
             -f deploy/containerfiles/Containerfile.frontend \
             -t quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-frontend:latest \
@@ -160,7 +158,7 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: /tmp/.buildah-cache
+          path: /var/lib/containers/storage
           key: buildah-operator-${{ steps.cache-key.outputs.hash }}
           restore-keys: buildah-operator-
 
@@ -169,8 +167,7 @@ jobs:
 
       - name: Build and push operator image
         run: |
-          buildah build \
-            --layers --cache-from=dir:/tmp/.buildah-cache --cache-to=dir:/tmp/.buildah-cache \
+          buildah build --layers \
             -f src/operator/Dockerfile \
             -t quay.io/redhat-gpte/troshka-operator:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-operator:latest \
@@ -180,8 +177,7 @@ jobs:
 
       - name: Build and push dnsmasq image
         run: |
-          buildah build \
-            --layers \
+          buildah build --layers \
             -f src/operator/images/dnsmasq/Dockerfile \
             -t quay.io/redhat-gpte/troshka-dnsmasq:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-dnsmasq:latest \
@@ -191,8 +187,7 @@ jobs:
 
       - name: Build and push gateway image
         run: |
-          buildah build \
-            --layers \
+          buildah build --layers \
             -f src/operator/images/gateway/Dockerfile \
             -t quay.io/redhat-gpte/troshka-gateway:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-gateway:latest \
@@ -202,8 +197,7 @@ jobs:
 
       - name: Build and push troshka-tools image
         run: |
-          buildah build \
-            --layers \
+          buildah build --layers \
             -f src/operator/images/troshka-tools/Dockerfile \
             -t quay.io/redhat-gpte/troshka-tools:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-tools:latest \
@@ -213,8 +207,7 @@ jobs:
 
       - name: Build and push sushy image
         run: |
-          buildah build \
-            --layers \
+          buildah build --layers \
             -f src/operator/images/sushy/Dockerfile \
             -t quay.io/redhat-gpte/troshka-sushy:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-sushy:latest \
@@ -224,8 +217,7 @@ jobs:
 
       - name: Build and push vnc-proxy image
         run: |
-          buildah build \
-            --layers \
+          buildah build --layers \
             -f src/operator/images/vnc-proxy/Dockerfile \
             -t quay.io/redhat-gpte/troshka-vnc-proxy:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-vnc-proxy:latest \
