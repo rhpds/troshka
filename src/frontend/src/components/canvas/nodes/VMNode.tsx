@@ -20,7 +20,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const isRestarting = d.status === "restarting";
   const isRedeploying = d.status === "redeploying";
   const isNotFound = (d as any).status === "not_found";
-  const statusPending = (!d.status || d.status === "unknown") && (projectState === "active" || projectState === "stopped" || projectState === "starting");
+  const statusPending = (!d.status || (d as any).status === "unknown") && (projectState === "active" || projectState === "stopped" || projectState === "starting");
 
   const nicCount = (d.nics || []).length;
   const dcCount = (d.diskControllers || []).length;
