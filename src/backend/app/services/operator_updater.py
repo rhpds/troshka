@@ -34,7 +34,7 @@ def _fetch_registry_digest(tag: str | None = None) -> str | None:
     url = f"https://{REGISTRY}/v2/{IMAGE}/manifests/{tag or TAG}"
     req = urllib.request.Request(
         url,
-        headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+        headers={"Accept": "application/vnd.oci.image.manifest.v1+json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
