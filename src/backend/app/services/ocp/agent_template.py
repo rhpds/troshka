@@ -210,6 +210,7 @@ def _generate_dns_manifests(topology, base_domain):
     2. DNS operator forwarder for the lab domain (works after CoreDNS takes over)
     """
     import base64 as _b64
+
     import yaml as _yaml
 
     cluster_cidr = _find_cluster_cidr(topology)

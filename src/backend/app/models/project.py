@@ -83,17 +83,17 @@ class Project(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    owner: Mapped["User"] = relationship(back_populates="projects")
-    vms: Mapped[list["VM"]] = relationship(
+    owner: Mapped[User] = relationship(back_populates="projects")
+    vms: Mapped[list[VM]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    networks: Mapped[list["Network"]] = relationship(
+    networks: Mapped[list[Network]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    disks: Mapped[list["Disk"]] = relationship(
+    disks: Mapped[list[Disk]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
-    shares: Mapped[list["ProjectShare"]] = relationship(
+    shares: Mapped[list[ProjectShare]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
 
@@ -108,4 +108,4 @@ class ProjectShare(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     permission: Mapped[str] = mapped_column(String(20), default="view")
 
-    project: Mapped["Project"] = relationship(back_populates="shares")
+    project: Mapped[Project] = relationship(back_populates="shares")

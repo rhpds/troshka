@@ -85,12 +85,12 @@ class StoragePool(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    provider: Mapped["Provider"] = relationship()
-    hosts: Mapped[list["Host"]] = relationship(
+    provider: Mapped[Provider] = relationship()
+    hosts: Mapped[list[Host]] = relationship(
         back_populates="storage_pool",
         foreign_keys="[Host.storage_pool_id]",
     )
-    cache_entries: Mapped[list["SharedCacheEntry"]] = relationship(
+    cache_entries: Mapped[list[SharedCacheEntry]] = relationship(
         back_populates="storage_pool", cascade="all, delete-orphan"
     )
 
@@ -112,4 +112,4 @@ class SharedCacheEntry(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    storage_pool: Mapped["StoragePool"] = relationship(back_populates="cache_entries")
+    storage_pool: Mapped[StoragePool] = relationship(back_populates="cache_entries")

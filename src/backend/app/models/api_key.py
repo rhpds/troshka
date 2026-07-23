@@ -3,8 +3,8 @@ from __future__ import annotations
 import datetime
 import hashlib
 import secrets
-from typing import TYPE_CHECKING
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -45,4 +45,4 @@ class ApiKey(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    user: Mapped["User"] = relationship()
+    user: Mapped[User] = relationship()

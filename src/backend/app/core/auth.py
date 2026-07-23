@@ -24,7 +24,8 @@ def _get_k8s_client():
     if _k8s_client is not None:
         return _k8s_client
     try:
-        from kubernetes import client, config as k8s_config
+        from kubernetes import client
+        from kubernetes import config as k8s_config
 
         k8s_config.load_incluster_config()
         _k8s_client = client.CustomObjectsApi()

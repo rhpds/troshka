@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -25,8 +25,8 @@ class Library(Base):
     quota_bytes: Mapped[int | None] = mapped_column(Integer)
     used_bytes: Mapped[int] = mapped_column(Integer, default=0)
 
-    owner: Mapped["User | None"] = relationship(back_populates="libraries")
-    items: Mapped[list["LibraryItem"]] = relationship(
+    owner: Mapped[User | None] = relationship(back_populates="libraries")
+    items: Mapped[list[LibraryItem]] = relationship(
         back_populates="library", cascade="all, delete-orphan"
     )
 
@@ -61,8 +61,8 @@ class LibraryItem(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    library: Mapped["Library"] = relationship(back_populates="items")
-    item_disks: Mapped[list["LibraryItemDisk"]] = relationship(
+    library: Mapped[Library] = relationship(back_populates="items")
+    item_disks: Mapped[list[LibraryItemDisk]] = relationship(
         back_populates="library_item", cascade="all, delete-orphan"
     )
 
@@ -95,7 +95,7 @@ class LibraryItemDisk(Base):
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(20), default="uploading")
 
-    library_item: Mapped["LibraryItem"] = relationship(back_populates="item_disks")
+    library_item: Mapped[LibraryItem] = relationship(back_populates="item_disks")
 
 
 class ImageCache(Base):

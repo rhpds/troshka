@@ -903,6 +903,8 @@ class AzureDriver(ProviderDriver):
         # Add a secondary IP config pointing to this public IP
         from azure.mgmt.network.models import (
             NetworkInterface as NetworkInterfaceModel,
+        )
+        from azure.mgmt.network.models import (
             NetworkInterfaceIPConfiguration,
         )
 

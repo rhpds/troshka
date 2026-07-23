@@ -56,11 +56,11 @@ class Host(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    provider: Mapped["Provider | None"] = relationship(back_populates="hosts")
-    storage_pool: Mapped["StoragePool | None"] = relationship(
+    provider: Mapped[Provider | None] = relationship(back_populates="hosts")
+    storage_pool: Mapped[StoragePool | None] = relationship(
         back_populates="hosts", foreign_keys="[Host.storage_pool_id]"
     )
-    vms: Mapped[list["VM"]] = relationship(back_populates="host")
+    vms: Mapped[list[VM]] = relationship(back_populates="host")
 
 
 class HostAssignment(Base):

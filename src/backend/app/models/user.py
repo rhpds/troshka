@@ -45,9 +45,9 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    projects: Mapped[list["Project"]] = relationship(back_populates="owner")
-    libraries: Mapped[list["Library"]] = relationship(back_populates="owner")
-    ssh_keys: Mapped[list["UserSshKey"]] = relationship(
+    projects: Mapped[list[Project]] = relationship(back_populates="owner")
+    libraries: Mapped[list[Library]] = relationship(back_populates="owner")
+    ssh_keys: Mapped[list[UserSshKey]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -63,4 +63,4 @@ class UserSshKey(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    user: Mapped["User"] = relationship(back_populates="ssh_keys")
+    user: Mapped[User] = relationship(back_populates="ssh_keys")

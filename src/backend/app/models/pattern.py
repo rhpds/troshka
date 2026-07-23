@@ -46,11 +46,11 @@ class Pattern(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    owner: Mapped["User"] = relationship()
-    disks: Mapped[list["PatternDisk"]] = relationship(
+    owner: Mapped[User] = relationship()
+    disks: Mapped[list[PatternDisk]] = relationship(
         back_populates="pattern", cascade="all, delete-orphan"
     )
-    shares: Mapped[list["PatternShare"]] = relationship(
+    shares: Mapped[list[PatternShare]] = relationship(
         back_populates="pattern", cascade="all, delete-orphan"
     )
 
@@ -73,7 +73,7 @@ class PatternDisk(Base):
     checksum_sha256: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(20), default="uploading")
 
-    pattern: Mapped["Pattern"] = relationship(back_populates="disks")
+    pattern: Mapped[Pattern] = relationship(back_populates="disks")
 
 
 class PatternShare(Base):
@@ -88,4 +88,4 @@ class PatternShare(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    pattern: Mapped["Pattern"] = relationship(back_populates="shares")
+    pattern: Mapped[Pattern] = relationship(back_populates="shares")

@@ -43,12 +43,12 @@ class VM(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped["Project"] = relationship(back_populates="vms")
-    host: Mapped["Host | None"] = relationship(back_populates="vms")
-    interfaces: Mapped[list["VMInterface"]] = relationship(
+    project: Mapped[Project] = relationship(back_populates="vms")
+    host: Mapped[Host | None] = relationship(back_populates="vms")
+    interfaces: Mapped[list[VMInterface]] = relationship(
         back_populates="vm", cascade="all, delete-orphan"
     )
-    prereqs: Mapped[list["BootPrereq"]] = relationship(
+    prereqs: Mapped[list[BootPrereq]] = relationship(
         back_populates="vm",
         foreign_keys="BootPrereq.vm_id",
         cascade="all, delete-orphan",
@@ -64,7 +64,7 @@ class BootPrereq(Base):
     check_type: Mapped[str] = mapped_column(String(20), default="none")
     check_value: Mapped[str | None] = mapped_column(String(100))
 
-    vm: Mapped["VM"] = relationship(back_populates="prereqs", foreign_keys=[vm_id])
+    vm: Mapped[VM] = relationship(back_populates="prereqs", foreign_keys=[vm_id])
 
 
 class VMInterface(Base):
@@ -78,4 +78,4 @@ class VMInterface(Base):
     mac_address: Mapped[str | None] = mapped_column(String(17))
     dns_name: Mapped[str | None] = mapped_column(String(255))
 
-    vm: Mapped["VM"] = relationship(back_populates="interfaces")
+    vm: Mapped[VM] = relationship(back_populates="interfaces")

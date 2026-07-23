@@ -55,7 +55,7 @@ class Provider(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    hosts: Mapped[list["Host"]] = relationship(back_populates="provider")
+    hosts: Mapped[list[Host]] = relationship(back_populates="provider")
 
     def get_credentials(self) -> dict:
         if not self.credentials:

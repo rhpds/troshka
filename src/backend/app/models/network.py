@@ -36,8 +36,8 @@ class Network(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped["Project"] = relationship(back_populates="networks")
-    security_rules: Mapped[list["SecurityRule"]] = relationship(
+    project: Mapped[Project] = relationship(back_populates="networks")
+    security_rules: Mapped[list[SecurityRule]] = relationship(
         back_populates="network", cascade="all, delete-orphan"
     )
 
@@ -58,4 +58,4 @@ class SecurityRule(Base):
     priority: Mapped[int] = mapped_column(Integer, default=100)
     description: Mapped[str | None] = mapped_column(String(500))
 
-    network: Mapped["Network"] = relationship(back_populates="security_rules")
+    network: Mapped[Network] = relationship(back_populates="security_rules")

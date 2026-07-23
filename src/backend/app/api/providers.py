@@ -1243,7 +1243,7 @@ def test_provider(
                             }
                         )
                         ns_checks[ns_label] = "ok (just created)"
-                    except Exception as e:
+                    except Exception:
                         ns_checks[ns_label] = "no access"
 
             return {
