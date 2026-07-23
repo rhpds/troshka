@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import AlertModal from "@/components/AlertModal";
 import { useCanvasStore } from "@/stores/canvasStore";
 
 interface NodeContextMenuProps {
@@ -19,6 +20,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const ref = useRef<HTMLDivElement>(null);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const node = nodes.find((n) => n.id === nodeId);
   const isVm = node?.type === "vmNode";
@@ -103,7 +105,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
               updateNodeData(nodeId, { status: "redeploying" });
             } else {
               updateNodeData(nodeId, { status: "stopped" });
-              alert(`Redeploy failed: ${result.output || result.error || "unknown"}`);
+              setAlertMsg(`Redeploy failed: ${result.output || result.error || "unknown"}`);
             }
           }, 50);
         }}>
@@ -113,6 +115,7 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM }:
       <button onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
         ✕ Delete
       </button>
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>
   );
 }

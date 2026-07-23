@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import AlertModal from "@/components/AlertModal";
 import {
   PageSection,
   Title,
@@ -90,6 +91,7 @@ export default function StoragePoolsPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const [newName, setNewName] = useState("");
   const [newMode, setNewMode] = useState("shared-fsx");
@@ -444,7 +446,7 @@ export default function StoragePoolsPage() {
     setExtending({ ...extending, [pool.id]: false });
     if (resp.ok) {
       setExtendTarget({ ...extendTarget, [pool.id]: "" });
-      alert(`Pool storage resized: ${currentGb} GB → ${targetGb} GB`);
+      setAlertMsg(`Pool storage resized: ${currentGb} GB → ${targetGb} GB`);
       loadData();
     } else {
       const data = await resp.json();
@@ -800,9 +802,9 @@ export default function StoragePoolsPage() {
                             const resp = await fetch(`/api/v1/hosts/${pool.worker_host_id}/gc`, { method: "POST" });
                             if (resp.ok) {
                               const r = await resp.json();
-                              alert(`Cleaned: ${r.cleanup?.cleaned || 0} orphans, ${r.cleanup?.cache_cleaned || 0} cache items`);
+                              setAlertMsg(`Cleaned: ${r.cleanup?.cleaned || 0} orphans, ${r.cleanup?.cache_cleaned || 0} cache items`);
                             } else {
-                              alert("Clean failed");
+                              setAlertMsg("Clean failed");
                             }
                           } finally {
                             setExtending((p) => ({ ...p, [`gc-${pool.id}`]: false }));
@@ -940,6 +942,7 @@ export default function StoragePoolsPage() {
           </Card>
         </div>
       )}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </PageSection>
   );
 }

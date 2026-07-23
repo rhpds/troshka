@@ -16,6 +16,7 @@ import {
   Label,
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
+import AlertModal from "@/components/AlertModal";
 
 interface Host {
   id: string;
@@ -63,6 +64,7 @@ export default function AdminHostsPage() {
   const [newInstanceType, setNewInstanceType] = useState("m8i.xlarge");
   const [newRegion, setNewRegion] = useState("");
   const [error, setError] = useState("");
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [filterProvider, setFilterProvider] = useState("");
   const [filterProviderType, setFilterProviderType] = useState("");
   const [filterText, setFilterText] = useState("");
@@ -214,7 +216,7 @@ export default function AdminHostsPage() {
       loadData();
     } else {
       const data = await resp.json();
-      alert(data.detail || "Failed to remove host");
+      setAlertMsg(data.detail || "Failed to remove host");
     }
     setRemovingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
@@ -273,7 +275,7 @@ export default function AdminHostsPage() {
     if (showKeyFor === hostId) { setShowKeyFor(null); return; }
     if (!keyData[hostId]) {
       const resp = await fetch(`/api/v1/hosts/${hostId}/ssh-key`);
-      if (!resp.ok) { alert("No SSH key available for this host"); return; }
+      if (!resp.ok) { setAlertMsg("No SSH key available for this host"); return; }
       const data = await resp.json();
       setKeyData((prev) => ({ ...prev, [hostId]: data }));
     }
@@ -299,13 +301,13 @@ export default function AdminHostsPage() {
       const resp = await fetch(`/api/v1/hosts/${hostId}/${action}`, opts);
       if (!resp.ok) {
         const data = await resp.json();
-        alert(data.detail || `Failed to ${action}`);
+        setAlertMsg(data.detail || `Failed to ${action}`);
       } else {
         setResizeType((prev) => { const next = { ...prev }; delete next[hostId]; return next; });
       }
       loadData();
     } catch {
-      alert("Failed to connect to server");
+      setAlertMsg("Failed to connect to server");
     }
     setPoweringHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
@@ -418,7 +420,7 @@ export default function AdminHostsPage() {
       if (resp.ok) {
         const data = await resp.json();
         setResizeTarget({ ...resizeTarget, [host.id]: "" });
-        alert(`Storage resized: ${data.old_size_gb} GB → ${data.new_size_gb} GB`);
+        setAlertMsg(`Storage resized: ${data.old_size_gb} GB → ${data.new_size_gb} GB`);
         loadData();
       } else {
         const data = await resp.json();
@@ -967,14 +969,14 @@ export default function AdminHostsPage() {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
                       if (!resp.ok) {
                         const data = await resp.json();
-                        alert(data.detail || "Update failed");
+                        setAlertMsg(data.detail || "Update failed");
                         return;
                       }
                       const data = await resp.json();
                       const targetVersion = data.version;
                       const oldVersion = h.agent_version;
                       if (targetVersion && targetVersion === oldVersion) {
-                        alert(`Already up to date (v${oldVersion})`);
+                        setAlertMsg(`Already up to date (v${oldVersion})`);
                         return;
                       }
                       let sawDown = false;
@@ -987,17 +989,17 @@ export default function AdminHostsPage() {
                           if (!updated || updated.agent_status === "disconnected") {
                             sawDown = true;
                           } else if (sawDown && updated.agent_status === "connected") {
-                            alert(`Updated → v${updated.agent_version}`);
+                            setAlertMsg(`Updated → v${updated.agent_version}`);
                             loadData();
                             return;
                           } else if (updated.agent_version && updated.agent_version !== oldVersion) {
-                            alert(`Updated → v${updated.agent_version}`);
+                            setAlertMsg(`Updated → v${updated.agent_version}`);
                             loadData();
                             return;
                           }
                         }
                       }
-                      alert("Update timed out — check host status");
+                      setAlertMsg("Update timed out — check host status");
                     } finally {
                       setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
                     }
@@ -1040,7 +1042,7 @@ export default function AdminHostsPage() {
                         if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
                         loadData();
                       } else {
-                        alert("GC failed — check server logs");
+                        setAlertMsg("GC failed — check server logs");
                       }
                     } finally {
                       setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
@@ -1056,10 +1058,10 @@ export default function AdminHostsPage() {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
                       if (resp.ok) {
                         const data = await resp.json();
-                        alert(`Wiped: ${data.projects_destroyed} destroyed, ${data.projects_reset} reset, ${data.nft_reset?.flushed_chains || 0} nft chains flushed`);
+                        setAlertMsg(`Wiped: ${data.projects_destroyed} destroyed, ${data.projects_reset} reset, ${data.nft_reset?.flushed_chains || 0} nft chains flushed`);
                         loadData();
                       } else {
-                        alert("Wipe failed — check server logs");
+                        setAlertMsg("Wipe failed — check server logs");
                       }
                     } finally {
                       setUpdatingHosts((prev) => { const next = new Set(prev); next.delete(h.id); next.delete(`gc-${h.id}`); next.delete(`wipe-${h.id}`); return next; });
@@ -1239,6 +1241,7 @@ export default function AdminHostsPage() {
           </Card>
         ))}
       </PageSection>
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </>
   );
 }

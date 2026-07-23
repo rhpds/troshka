@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import AlertModal from "@/components/AlertModal";
 import {
   Button,
   Card,
@@ -28,6 +29,7 @@ export default function SettingsPage() {
   const [expiresDays, setExpiresDays] = useState("");
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   // Red Hat Offline Token
   const [rhTokenMasked, setRhTokenMasked] = useState("");
@@ -250,7 +252,7 @@ export default function SettingsPage() {
                   setRhTokenSaving(true);
                   const resp = await fetch("/api/v1/auth/rh-offline-token", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offline_token: rhTokenInput }) });
                   if (resp.ok) { setHasRhToken(true); setRhTokenEdit(false); setRhTokenInput(""); const data = await fetch("/api/v1/auth/rh-offline-token").then(r => r.json()); setRhTokenMasked(data.masked || ""); }
-                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
+                  else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); setAlertMsg(err.detail || "Save failed"); }
                   setRhTokenSaving(false);
                 }}>{rhTokenSaving ? "Saving..." : "Save Token"}</Button>
               </div>
@@ -358,7 +360,7 @@ export default function SettingsPage() {
                         setPtrUrl(data.pull_through_registry_url || "");
                       } else {
                         const err = await resp.json().catch(() => ({ detail: "Save failed" }));
-                        alert(err.detail || "Save failed");
+                        setAlertMsg(err.detail || "Save failed");
                       }
                       setPtrSaving(false);
                     }}
@@ -390,7 +392,7 @@ export default function SettingsPage() {
                     setPullSecretSaving(true);
                     const resp = await fetch("/api/v1/auth/ocp-pull-secret", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pull_secret: pullSecretInput }) });
                     if (resp.ok) { setHasPullSecret(true); setPullSecretEdit(false); setPullSecretInput(""); const data = await fetch("/api/v1/auth/ocp-pull-secret").then(r => r.json()); setPullSecretMasked(data.masked || ""); }
-                    else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); alert(err.detail || "Save failed"); }
+                    else { const err = await resp.json().catch(() => ({ detail: "Save failed" })); setAlertMsg(err.detail || "Save failed"); }
                     setPullSecretSaving(false);
                   }}>{pullSecretSaving ? "Saving..." : "Save Pull Secret"}</Button>
                 </div>
@@ -510,6 +512,7 @@ export default function SettingsPage() {
           </Button>
         )}
       </PageSection>
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </>
   );
 }

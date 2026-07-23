@@ -2,6 +2,7 @@
 
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
+import AlertModal from "@/components/AlertModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 
 export default function ConsolePageWrapper() {
@@ -31,6 +32,7 @@ function ConsolePage() {
   const [projectDeleted, setProjectDeleted] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [vmPasswords, setVmPasswords] = useState<{label: string; value: string}[]>([]);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const startingRef = useRef(false);
   const kbWindowRef = useRef<Window | null>(null);
@@ -284,10 +286,10 @@ function ConsolePage() {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/${action}`, { method: "POST" });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ detail: `${label} failed` }));
-        alert(err.detail || `${label} failed`);
+        setAlertMsg(err.detail || `${label} failed`);
       }
     } catch {
-      alert("Failed to connect to server");
+      setAlertMsg("Failed to connect to server");
     }
   }, [projectId, vmId]);
 
@@ -659,6 +661,7 @@ function ConsolePage() {
           zIndex: 9999,
         }}>{toast}</div>
       )}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>
   );
 }

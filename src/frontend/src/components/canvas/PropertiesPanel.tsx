@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import AlertModal from "@/components/AlertModal";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import type {
@@ -174,6 +175,7 @@ export default function PropertiesPanel() {
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
   const [containerLogs, setContainerLogs] = useState<{ containerId: string; logs: string; containerName: string } | null>(null);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -2838,7 +2840,7 @@ export default function PropertiesPanel() {
                   updateNodeData(node.id, { status: "redeploying" });
                 } else {
                   updateNodeData(node.id, { status: "stopped" });
-                  alert(`Redeploy failed: ${result.output || result.error || "unknown error"}`);
+                  setAlertMsg(`Redeploy failed: ${result.output || result.error || "unknown error"}`);
                 }
               }}
             >
@@ -2916,14 +2918,14 @@ export default function PropertiesPanel() {
                     try {
                       const resp = await fetch(`/api/v1/projects/${projectId}/containers/${containerLogs.containerId}/logs?tail=500`);
                       if (!resp.ok) {
-                        alert(`Failed to refresh logs: ${resp.statusText}`);
+                        setAlertMsg(`Failed to refresh logs: ${resp.statusText}`);
                         return;
                       }
                       const data = await resp.json();
                       setContainerLogs({ ...containerLogs, logs: data.logs });
                     } catch (err) {
                       console.error("Failed to refresh logs:", err);
-                      alert(`Error refreshing logs: ${err}`);
+                      setAlertMsg(`Error refreshing logs: ${err}`);
                     }
                   }}
                   style={{ marginBottom: 0 }}
@@ -2990,6 +2992,7 @@ export default function PropertiesPanel() {
           onClose={() => setShowLibraryPicker(null)}
         />
       )}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>
   );
 }

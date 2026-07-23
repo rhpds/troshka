@@ -13,6 +13,7 @@ import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
+import AlertModal from "@/components/AlertModal";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -47,6 +48,7 @@ export default function ProjectCanvasPage() {
   const [autoStopped, setAutoStopped] = useState(false);
   const [clockTarget, setClockTarget] = useState<string | null>(null);
   const [guestExecEnabled, setGuestExecEnabled] = useState(true);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -450,7 +452,7 @@ export default function ProjectCanvasPage() {
       setProjectState("migrating");
     } else {
       const data = await resp.json();
-      alert(data.detail || "Migration failed");
+      setAlertMsg(data.detail || "Migration failed");
     }
   };
 
@@ -461,7 +463,7 @@ export default function ProjectCanvasPage() {
 
   const handlePublish = async () => {
     if (vmCount === 0 && containerCount === 0) {
-      alert("Add at least one VM or container before publishing.");
+      setAlertMsg("Add at least one VM or container before publishing.");
       return;
     }
     const parts = [];
@@ -492,11 +494,11 @@ export default function ProjectCanvasPage() {
         showToast(`Deploying ${data.requirements.vm_count} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
       } else {
         setProjectState("draft");
-        alert(data.detail || "Deployment failed");
+        setAlertMsg(data.detail || "Deployment failed");
       }
     } catch {
       setProjectState("draft");
-      alert("Failed to connect to server");
+      setAlertMsg("Failed to connect to server");
     }
   };
 
@@ -681,7 +683,7 @@ export default function ProjectCanvasPage() {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(async (r) => {
                       if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
                     });
                 }
               }}>
@@ -726,7 +728,7 @@ export default function ProjectCanvasPage() {
                   fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
                     .then(async (r) => {
                       if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); alert(err.detail || "Redeploy failed"); }
+                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
                     });
                 }
               }}>
@@ -760,7 +762,7 @@ export default function ProjectCanvasPage() {
                   fetch(`/api/v1/projects/${projectId}/start`, { method: "POST" })
                     .then((r) => {
                       if (r.ok) { setProjectState("starting"); setDeployError(null); }
-                      else r.json().then((d) => alert(d.detail || "Start failed"));
+                      else r.json().then((d) => setAlertMsg(d.detail || "Start failed"));
                     });
                 }}>
                   ▶ Retry Start
@@ -1244,6 +1246,7 @@ export default function ProjectCanvasPage() {
           </div>
         </div>
       )}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }

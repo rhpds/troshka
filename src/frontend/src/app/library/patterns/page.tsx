@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import AlertModal from "@/components/AlertModal";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -201,6 +202,7 @@ export default function PatternsPage() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState("");
   const [exportPattern, setExportPattern] = useState<Pattern | null>(null);
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const loadPatterns = () => {
     fetch("/api/v1/patterns/")
@@ -250,10 +252,10 @@ export default function PatternsPage() {
         router.push(`/projects/${data.id}`);
       } else {
         const err = await resp.json().catch(() => ({ detail: "Deploy failed" }));
-        alert(err.detail || "Deploy failed");
+        setAlertMsg(err.detail || "Deploy failed");
       }
     } catch {
-      alert("Failed to connect to server");
+      setAlertMsg("Failed to connect to server");
     }
     setDeploying(null);
   };
@@ -554,6 +556,8 @@ export default function PatternsPage() {
         onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId, recert) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId, recert)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
+
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
 
       {exportPattern && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.6)" }}

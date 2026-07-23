@@ -4,6 +4,7 @@ import React, { memo, useState, useEffect } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
+import AlertModal from "@/components/AlertModal";
 
 function VMNodeComponent({ id, data, selected }: NodeProps) {
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
@@ -42,6 +43,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     return JSON.stringify(stable) !== deployed;
   }, [id, d, deployedNodeData]);
 
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [nicsExpanded, setNicsExpanded] = useState(false);
 
@@ -74,16 +76,16 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           if (off) {
             updateNodeData(id, { status: "stopped" });
           } else {
-            alert("Graceful shutdown sent but VM is still running. Use Force Power Off if needed.");
+            setAlertMsg("Graceful shutdown sent but VM is still running. Use Force Power Off if needed.");
           }
         } else {
-          alert(`Shutdown failed: ${result.output?.slice(-200) || "unknown error"}`);
+          setAlertMsg(`Shutdown failed: ${result.output?.slice(-200) || "unknown error"}`);
         }
       } else if (action === "forcestop") {
         if (result.success || result.output?.includes("domain is not running")) {
           updateNodeData(id, { status: "stopped" });
         } else {
-          alert(`Force stop failed: ${result.output?.slice(-200) || "unknown error"}`);
+          setAlertMsg(`Force stop failed: ${result.output?.slice(-200) || "unknown error"}`);
         }
       } else if (action === "start") {
         if (result.success || result.output?.includes("already active")) {
@@ -97,7 +99,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             }
           }
         } else {
-          alert(`Start failed: ${result.output?.slice(-200) || "unknown error"}`);
+          setAlertMsg(`Start failed: ${result.output?.slice(-200) || "unknown error"}`);
         }
       } else if (action === "restart") {
         if (result.success) {
@@ -112,11 +114,11 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             }
           }
         } else {
-          alert(`Restart failed: ${result.output?.slice(-200) || "unknown error"}`);
+          setAlertMsg(`Restart failed: ${result.output?.slice(-200) || "unknown error"}`);
         }
       }
     } catch {
-      alert("Failed to connect to server");
+      setAlertMsg("Failed to connect to server");
     }
     setActionPending(null);
   };
@@ -424,6 +426,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           </React.Fragment>
         );
       })}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>
   );
 }

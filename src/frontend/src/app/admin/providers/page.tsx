@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import AlertModal from "@/components/AlertModal";
 import {
   Button,
   Card,
@@ -63,6 +64,7 @@ export default function AdminProvidersPage() {
   const [buildStatus, setBuildStatus] = useState<Record<string, { status: string; message?: string; image?: string; elapsed_seconds?: number }>>({});
   const [buildingProvider, setBuildingProvider] = useState<string | null>(null);
   const [rhelVersion, setRhelVersion] = useState<Record<string, string>>({});
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const [name, setName] = useState("");
   const [type, setType] = useState("kubevirt");
@@ -421,7 +423,7 @@ export default function AdminProvidersPage() {
       loadProviders();
     } else {
       const data = await resp.json();
-      alert(data.detail || "Failed to delete");
+      setAlertMsg(data.detail || "Failed to delete");
     }
   };
 
@@ -1043,9 +1045,9 @@ export default function AdminProvidersPage() {
                           if (report.sg_rules_removed > 0) parts.push(`Removed ${report.sg_rules_removed} stale SG rules`);
                           if (report.stale_db_rows_deleted > 0) parts.push(`Cleaned ${report.stale_db_rows_deleted} stale DB records`);
                           if (parts.length === 0) parts.push("No orphans found");
-                          alert(parts.join("\n"));
+                          setAlertMsg(parts.join("\n"));
                         } else {
-                          alert("Provider GC failed — check server logs");
+                          setAlertMsg("Provider GC failed — check server logs");
                         }
                       }}>
                         Clean
@@ -1100,6 +1102,7 @@ export default function AdminProvidersPage() {
           </Card>
         ))}
       </PageSection>
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </>
   );
 }

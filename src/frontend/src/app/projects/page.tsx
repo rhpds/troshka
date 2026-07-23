@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import AlertModal from "@/components/AlertModal";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -73,7 +74,7 @@ interface TemplateSummary {
   bastion_image_name?: string;
 }
 
-function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[] }) {
+function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]; setAlertMsg: (msg: string | null) => void }) {
   const [mode, setMode] = useState<"choose" | "blank" | "yaml" | "pattern" | "template" | "template-picker">("choose");
   const [yamlContent, setYamlContent] = useState("");
   const [yamlFileName, setYamlFileName] = useState("");
@@ -196,7 +197,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
           onCreated(data.id);
         } else {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          alert(err.detail || "Failed to create project");
+          setAlertMsg(err.detail || "Failed to create project");
         }
       } else if (mode === "template" && selectedTemplate) {
         const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
@@ -218,7 +219,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          alert(err.detail || "Failed to create project");
+          setAlertMsg(err.detail || "Failed to create project");
         } else {
           const data = await resp.json();
           // Load topology into canvas store, auto-arrange, save back before deploying
@@ -252,7 +253,7 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
             const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
             if (!deployResp.ok) {
               const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-              alert(err.detail || "Deploy failed");
+              setAlertMsg(err.detail || "Deploy failed");
             }
           }
           onCreated(data.id);
@@ -276,16 +277,16 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts }: { onC
               });
               if (!importResp.ok) {
                 const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
-                alert(err.detail || "Template import failed");
+                setAlertMsg(err.detail || "Template import failed");
               }
             } catch {
-              alert("Invalid YAML syntax in template file");
+              setAlertMsg("Invalid YAML syntax in template file");
             }
           }
           onCreated(data.id);
         } else {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          alert(err.detail || "Failed to create project");
+          setAlertMsg(err.detail || "Failed to create project");
         }
       }
     } catch {
@@ -849,6 +850,7 @@ export default function ProjectsPage() {
   const [deployPoolId, setDeployPoolId] = useState("");
   const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
   const [deployHostId, setDeployHostId] = useState("");
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -924,8 +926,9 @@ export default function ProjectsPage() {
           </Button>
         </EmptyState>
         {showNewModal && (
-          <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} />
+          <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} setAlertMsg={setAlertMsg} />
         )}
+        <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
       </PageSection>
     );
   }
@@ -1075,7 +1078,7 @@ export default function ProjectsPage() {
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
                         background: "rgba(251,191,36,0.15)", color: "#fbbf24",
                       }}>
-                        {p.deploy_progress.detail}
+                        {p.deploy_progress.step ? `${p.deploy_progress.step}: ${p.deploy_progress.detail}` : p.deploy_progress.detail}
                       </span>
                     )}
                     {(p.state === "deploying" || p.state === "stopping" || p.state === "starting" || p.state === "deleting") && (
@@ -1158,7 +1161,7 @@ export default function ProjectsPage() {
                       const qs = params.toString() ? `?${params.toString()}` : "";
                       fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy${qs}`, { method: "POST" }).then(r => r.json()).then(d => {
                         if (d.status === "deploying") { pollUntilSettled(); }
-                        else { alert(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
+                        else { setAlertMsg(d.detail || "Deploy failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "draft" } : pr)); }
                       });
                     }}>Deploy</Button>
                   </>
@@ -1183,7 +1186,7 @@ export default function ProjectsPage() {
                     setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
                     fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
                       if (d.status === "deploying") { pollUntilSettled(); }
-                      else { alert(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
+                      else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
                     });
                   }}>Republish</Button>
                 )}
@@ -1215,8 +1218,9 @@ export default function ProjectsPage() {
         })()}
       </PageSection>
       {showNewModal && (
-        <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} />
+        <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} setAlertMsg={setAlertMsg} />
       )}
+      <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </>
   );
 }
