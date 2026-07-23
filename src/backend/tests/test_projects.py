@@ -83,7 +83,7 @@ def test_delete_project():
     )
     project_id = create_resp.json()["id"]
     resp = client.delete(f"/api/v1/projects/{project_id}", headers=HEADERS)
-    assert resp.status_code == 204
+    assert resp.status_code == 200
 
     get_resp = client.get(f"/api/v1/projects/{project_id}", headers=HEADERS)
     assert get_resp.status_code == 404
