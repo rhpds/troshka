@@ -58,8 +58,13 @@ async def _ensure_deployment_gone(apps_api, namespace, dep_name, timeout=30):
             raise
 
 
-def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
-    """Read kubeconfig from recert Job logs and create a Secret for the exec pod."""
+def _extract_kubeconfig_secret(
+    core_api, namespace, job_name, project_name
+) -> str | None:
+    """Read kubeconfig from recert Job logs and create a Secret for the exec pod.
+
+    Returns None on success, or an error message string on failure.
+    """
     import base64 as _b64
     import re
 
@@ -72,7 +77,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
             [],
         )
         if not pods:
-            return
+            return f"No pods found for recert job {job_name}"
         logs = core_api.read_namespaced_pod_log(
             name=pods[0].metadata.name,
             namespace=namespace,
@@ -82,19 +87,7 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
         logs_str = logs_str.replace("\\n", "\n")
         m = re.search(r"KUBECONFIG_B64_BEGIN\s+(\S+)\s+KUBECONFIG_B64_END", logs_str)
         if not m:
-            idx = logs_str.find("KUBECONFIG_B64_BEGIN")
-            end_idx = logs_str.find("KUBECONFIG_B64_END")
-            context = ""
-            if idx >= 0:
-                context = repr(logs_str[idx + 19 : idx + 30])
-            logger.warning(
-                f"No kubeconfig found in recert job logs "
-                f"(type={type(logs).__name__}, len={len(logs_str)}, "
-                f"has_marker={'KUBECONFIG_B64' in logs_str}, "
-                f"begin_idx={idx}, end_idx={end_idx}, "
-                f"after_begin={context})"
-            )
-            return
+            return "No kubeconfig marker found in recert job logs"
         kc_data = m.group(1).strip()
         _b64.b64decode(kc_data)
 
@@ -115,9 +108,10 @@ def _extract_kubeconfig_secret(core_api, namespace, job_name, project_name):
                 )
                 logger.info(f"Replaced kubeconfig Secret for {project_name}")
             else:
-                raise
+                return f"Failed to create kubeconfig secret: {e}"
     except Exception as e:
-        logger.warning(f"Failed to extract kubeconfig from recert logs: {e}")
+        return f"Failed to extract kubeconfig: {e}"
+    return None
 
 
 CAPTURE_ANNOTATION = "troshka.redhat.com/capture-request"
@@ -1063,13 +1057,28 @@ async def project_status_check(status, namespace, name, patch, **_):
                 )
                 if js.status.succeeded:  # type: ignore[union-attr]
                     logger.info(f"Recert completed: {recert_job_name}")
-                    _extract_kubeconfig_secret(
+                    err = _extract_kubeconfig_secret(
                         core_api, namespace, recert_job_name, name
                     )
+                    if err:
+                        logger.error(
+                            f"Recert succeeded but kubeconfig extraction failed "
+                            f"for {name}: {err}"
+                        )
+                        patch.status["phase"] = "Error"
+                        patch.status["error"] = (
+                            f"Recert completed but kubeconfig extraction failed: {err}"
+                        )
+                        return
                     patch.status["recertDone"] = True
                 elif js.status.failed:  # type: ignore[union-attr]
-                    logger.warning(f"Recert failed: {recert_job_name}")
-                    patch.status["recertDone"] = True
+                    logger.error(f"Recert job failed for {name}: {recert_job_name}")
+                    patch.status["phase"] = "Error"
+                    patch.status["error"] = (
+                        "Certificate regeneration failed — "
+                        "the SNO cannot boot with valid certificates"
+                    )
+                    return
                 else:
                     patch.status["deployProgress"] = {
                         "percent": 75,
@@ -1101,8 +1110,9 @@ async def project_status_check(status, namespace, name, patch, **_):
                 batch_api.create_namespaced_job(namespace=namespace, body=recert_job)
                 logger.info(f"Created recert job {recert_job_name}")
             except Exception as e:
-                logger.warning(f"Recert job creation failed: {e}")
-                patch.status["recertDone"] = True
+                logger.error(f"Recert job creation failed for {name}: {e}")
+                patch.status["phase"] = "Error"
+                patch.status["error"] = f"Failed to create recert job: {e}"
             return
 
         # Phase 1.5: Wait for recert Job pod to terminate and release PVCs
