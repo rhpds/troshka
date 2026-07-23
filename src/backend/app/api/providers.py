@@ -1271,7 +1271,7 @@ def test_provider(
             }
         elif provider.type == "azure":
             from azure.identity import ClientSecretCredential
-            from azure.mgmt.resource import ResourceManagementClient
+            from azure.mgmt.resource import ResourceManagementClient  # type: ignore[attr-defined]
 
             credential = ClientSecretCredential(
                 tenant_id=creds["tenant_id"],
