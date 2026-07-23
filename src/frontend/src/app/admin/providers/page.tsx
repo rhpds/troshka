@@ -976,6 +976,30 @@ export default function AdminProvidersPage() {
                         }
                       }}>{p.host_count > 0 ? "Reinstall Operator" : "Install Operator"}</Button>
                     )}
+                    {p.type === "kubevirt" && p.host_count > 0 && (
+                      <Button variant="secondary" onClick={async () => {
+                        setTestResult((prev) => ({ ...prev, [p.id]: "Checking operator..." }));
+                        const statusResp = await fetch(`/api/v1/providers/${p.id}/operator-status`);
+                        if (!statusResp.ok) {
+                          setTestResult((prev) => ({ ...prev, [p.id]: "Failed to check operator status" }));
+                          return;
+                        }
+                        const status = await statusResp.json();
+                        if (status.up_to_date) {
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Operator already up to date (${status.registry_digest})` }));
+                          return;
+                        }
+                        setTestResult((prev) => ({ ...prev, [p.id]: `Updating operator: ${status.operator_digest || "unknown"} → ${status.registry_digest}...` }));
+                        const resp = await fetch(`/api/v1/providers/${p.id}/update-operator`, { method: "POST" });
+                        if (resp.ok) {
+                          const data = await resp.json();
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Operator updated → ${data.registry_digest}` }));
+                        } else {
+                          const data = await resp.json().catch(() => ({}));
+                          setTestResult((prev) => ({ ...prev, [p.id]: `Update failed: ${data.detail || data.message || "unknown"}` }));
+                        }
+                      }}>Update Operator</Button>
+                    )}
                     {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
                       setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
                       setImageResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
