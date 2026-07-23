@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 import json
 import kopf
 import logging
@@ -133,7 +132,6 @@ async def _handle_capture(capture_config, namespace, name, patch):
     )
 
     s3_config = capture_config.get("s3Config", {})
-    pattern_id = capture_config.get("patternId", name)
     disk_manifest = capture_config.get("disks", [])
 
     patch.status["phase"] = "Capturing"
@@ -172,7 +170,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
             logger.warning(f"Failed to stop VM {kv_name}: {e}")
 
     # Wait for all VMIs to be gone (max 120s)
-    for attempt in range(40):
+    for _ in range(40):
         try:
             vmis = cast(
                 dict[str, Any],
@@ -278,7 +276,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
 
     # Poll export Jobs until all complete (max 30 min)
     patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
-    for attempt in range(180):
+    for _ in range(180):
         all_done = True
         for ej in export_jobs:
             try:
@@ -930,7 +928,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
-async def project_status_check(spec, status, namespace, name, patch, **_):
+async def project_status_check(status, namespace, name, patch, **_):
     phase = status.get("phase", "")
     if phase not in ("Deploying", "Running"):
         return
@@ -1119,7 +1117,7 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
                     namespace=namespace,
                     label_selector=f"job-name={recert_job_name}",
                 )
-                pods = pod_list.items or []  # type: ignore[union-attr]
+                pods = list(pod_list.items or [])  # type: ignore[union-attr]
                 if pods:
                     for pod in pods:
                         try:
@@ -1263,12 +1261,11 @@ async def project_status_check(spec, status, namespace, name, patch, **_):
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkaprojects")
-async def project_delete(spec, meta, namespace, name, **_):
+async def project_delete(namespace, name, **_):
     logger.info(
         f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}"
     )
     custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
 
     # Force-delete VMIs first (immediate, no graceful shutdown wait)
     try:
@@ -1432,7 +1429,7 @@ async def project_delete(spec, meta, namespace, name, **_):
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkaprojects")
-async def project_update(spec, status, meta, namespace, name, body, patch, diff, **_):
+async def project_update(status, meta, namespace, name, patch, **_):
     annotations = meta.get("annotations", {}) or {}
     capture_json = annotations.get(CAPTURE_ANNOTATION)
     if not capture_json:
