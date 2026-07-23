@@ -1084,7 +1084,7 @@ export default function ProjectsPage() {
                     {(p.state === "deploying" || p.state === "stopping" || p.state === "starting" || p.state === "deleting") && (
                       <span className="project-btn-spinner" style={{ width: 14, height: 14, marginLeft: "auto" }} />
                     )}
-                    {p.ocp_status && p.ocp_status !== "none" && (
+                    {p.state !== "deleting" && p.ocp_status && p.ocp_status !== "none" && (
                       <span style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
                         background: p.ocp_status === "ready" ? "rgba(74,222,128,0.15)" : p.ocp_status === "error" ? "rgba(248,113,113,0.15)" : "rgba(251,191,36,0.15)",
