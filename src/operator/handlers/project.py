@@ -1072,10 +1072,32 @@ async def project_status_check(status, namespace, name, patch, **_):
                         return
                     patch.status["recertDone"] = True
                 elif js.status.failed:  # type: ignore[union-attr]
-                    logger.error(f"Recert job failed for {name}: {recert_job_name}")
+                    attempts = status.get("recertAttempts", 0) + 1
+                    if attempts < 3:
+                        logger.warning(
+                            f"Recert job failed for {name} (attempt {attempts}/3), retrying"
+                        )
+                        patch.status["recertAttempts"] = attempts
+                        try:
+                            batch_api.delete_namespaced_job(
+                                name=recert_job_name,
+                                namespace=namespace,
+                                propagation_policy="Background",
+                            )
+                        except Exception:
+                            pass
+                        patch.status["deployProgress"] = {
+                            "percent": 70,
+                            "stage": "Regenerating certificates",
+                            "detail": f"retry {attempts}/3",
+                        }
+                        return
+                    logger.error(
+                        f"Recert job failed for {name} after {attempts} attempts"
+                    )
                     patch.status["phase"] = "Error"
                     patch.status["error"] = (
-                        "Certificate regeneration failed — "
+                        "Certificate regeneration failed after 3 attempts — "
                         "the SNO cannot boot with valid certificates"
                     )
                     return
