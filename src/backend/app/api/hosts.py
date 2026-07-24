@@ -351,7 +351,6 @@ def add_host(
         if pool.nfs_port:
             nfs_kwargs["nfs_port"] = pool.nfs_port
 
-    import threading
     import uuid as _uuid
 
     _disk_gb = body.disk_gb or 500
@@ -387,168 +386,201 @@ def add_host(
     _sg_id = provider.security_group_id
     _pool_id = body.storage_pool_id
 
-    def _provision_and_install():
-        from app.core.database import SessionLocal
-        from app.services.agent_deployer import (
-            deploy_agent,
-            get_provider_data_disk,
-            get_provider_ssh_user,
-            wait_for_ssh,
-        )
-        from app.services.providers import get_provider_driver
+    from app.core.redis import enqueue_job
 
-        s = SessionLocal()
-        try:
-            h = s.query(Host).filter_by(id=host_id).first()
-            if not h:
-                return
-            prov = s.query(Provider).filter_by(id=_provider_id).first()
-            if not prov:
-                return
-
-            try:
-                drv = get_provider_driver(prov)
-                result = drv.provision_host(
-                    provider=prov,
-                    host_id=host_id,
-                    instance_type=_instance_type,
-                    storage_size_gb=_disk_gb,
-                    image_id=_image_id,
-                    region=region,
-                    vpc_id=_vpc_id,
-                    subnet_id=_subnet_id,
-                    security_group_id=_sg_id,
-                    subnet_override=_subnet_id,
-                    host_type="shared",
-                    **nfs_kwargs,
-                )
-            except Exception:
-                logger.exception("Failed to provision host %s", host_id[:8])
-                h.state = "error"
-                h.agent_status = "provision_failed"
-                s.commit()
-                return
-
-            h.instance_id = result["instance_id"]
-            h.instance_type = result["instance_type"]
-            h.state = "active"
-            h.total_vcpus = result["total_vcpus"]
-            h.total_ram_mb = result["total_ram_mb"]
-            h.ip_address = result["public_ip"]
-            h.private_ip = result.get("private_ip")
-            h.key_pair_name = result.get("key_pair_name")
-            h.private_key = result.get("private_key")
-            h.storage_size_gb = result.get("storage_size_gb", 500)
-            h.max_eips = result.get("max_eips", 0)
-
-            # KubeVirt native: no SSH, no agent install — operator is deployed by provision_host
-            if provider_type == "kubevirt":
-                h.host_type = "kubevirt-cluster"
-                h.agent_status = "connected"
-                h.agent_token = prov.get_credentials().get("token", "")
-                s.commit()
-                logger.info("KubeVirt cluster host %s ready", host_id[:8])
-                return
-
-            s.commit()
-
-            ssh_host = result.get("_ssh_host") or result.get("public_ip")
-            ssh_port = result.get("_ssh_port", 22)
-
-            if not h.private_key or not (h.ip_address or ssh_host):
-                return
-            h.agent_status = "waiting_ssh"
-            s.commit()
-            _ssh_user = get_provider_ssh_user(provider_type)
-            _data_disk = get_provider_data_disk(provider_type)
-
-            if not wait_for_ssh(
-                ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user  # type: ignore[arg-type]
-            ):
-                h.agent_status = "install_failed"
-                s.commit()
-                return
-            h.agent_status = "installing"
-            s.commit()
-            _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
-            _ca_cert, _host_cert, _host_key = "", "", ""
-            if _sm == "shared" and h.storage_pool_id and h.ip_address:
-                from app.models.storage_pool import StoragePool
-                from app.services.storage_pool_service import sign_host_cert
-
-                _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
-                if _pool and _pool.ca_cert and _pool.ca_key:
-                    _host_cert, _host_key = sign_host_cert(
-                        _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""  # type: ignore[arg-type]
-                    )
-                    _ca_cert = _pool.ca_cert
-            from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
-
-            result = deploy_agent(
-                ssh_host or h.ip_address,  # type: ignore[arg-type]
-                h.private_key,  # type: ignore[arg-type]
-                h.id,
-                storage_mode=_sm,
-                nfs_server=nfs_kwargs.get("nfs_server", ""),
-                nfs_path=nfs_kwargs.get("nfs_path", ""),
-                nfs_port=nfs_kwargs.get("nfs_port", 0),
-                ssh_port=ssh_port,
-                ssh_user=_ssh_user,
-                ca_cert=_ca_cert,
-                host_cert=_host_cert,
-                host_key=_host_key,
-                console_domain=h.console_domain or "",
-                vncd_no_tls=provider_type == "ocpvirt",
-                data_disk_device=_data_disk,
-                agent_ca_cert=_get_aca(),
-            )
-            h.agent_status = "connected" if result["success"] else "install_failed"
-
-            # Store troshkad credentials
-            creds = result.get("troshkad_credentials", {})
-            if creds.get("token") and creds.get("fingerprint"):
-                h.agent_token = creds["token"]
-                h.agent_cert_fingerprint = creds["fingerprint"]
-                logger.info("Stored troshkad credentials for host %s", h.id[:8])
-
-            # Detach install ISO from ocpvirt hosts (unblocks live migration)
-            if result["success"] and provider_type == "ocpvirt" and h.instance_id:
-                _detach_install_iso(h, s)
-
-            # Create console DNS/Route record
-            if h.instance_id and h.ip_address:
-                prov_obj = s.get(Provider, h.provider_id)
-                if provider_console_domain:
-                    from app.services.console_dns import console_domain_for_host
-                    from app.services.providers import get_provider_driver
-
-                    fqdn = console_domain_for_host(
-                        h.instance_id, provider_console_domain  # type: ignore[arg-type]
-                    )
-                    try:
-                        drv = get_provider_driver(prov_obj)
-                        result = drv.create_console_record(
-                            prov_obj, h, fqdn, h.ip_address
-                        )
-                        h.console_domain = result if result else fqdn
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to create console record for %s: %s",
-                            h.id[:8],
-                            e,
-                        )
-
-            s.commit()
-        except Exception:
-            logger.exception("Auto-install failed for host %s", host.id)
-        finally:
-            s.close()
-
-    threading.Thread(
-        target=_provision_and_install, daemon=True, name=f"provision-{host_id[:8]}"
-    ).start()
+    enqueue_job(
+        _provision_and_install_bg,
+        host_id,
+        _provider_id,
+        _image_id,
+        _instance_type,
+        _vpc_id,
+        _subnet_id,
+        _sg_id,
+        _pool_id,
+        provider_type,
+        provider_console_domain,
+        _disk_gb,
+        region,
+        nfs_kwargs,
+        queue_name="provision",
+    )
 
     return host
+
+
+def _provision_and_install_bg(
+    host_id: str,
+    _provider_id: str,
+    _image_id: str,
+    _instance_type: str,
+    _vpc_id: str,
+    _subnet_id: str,
+    _sg_id: str,
+    _pool_id: str | None,
+    provider_type: str,
+    provider_console_domain: str,
+    _disk_gb: int = 500,
+    region: str = "",
+    nfs_kwargs: dict | None = None,
+):
+    if nfs_kwargs is None:
+        nfs_kwargs = {}
+    from app.core.database import SessionLocal
+    from app.services.agent_deployer import (
+        deploy_agent,
+        get_provider_data_disk,
+        get_provider_ssh_user,
+        wait_for_ssh,
+    )
+    from app.services.providers import get_provider_driver
+
+    s = SessionLocal()
+    try:
+        h = s.query(Host).filter_by(id=host_id).first()
+        if not h:
+            return
+        prov = s.query(Provider).filter_by(id=_provider_id).first()
+        if not prov:
+            return
+
+        try:
+            drv = get_provider_driver(prov)
+            result = drv.provision_host(
+                provider=prov,
+                host_id=host_id,
+                instance_type=_instance_type,
+                storage_size_gb=_disk_gb,
+                image_id=_image_id,
+                region=region,
+                vpc_id=_vpc_id,
+                subnet_id=_subnet_id,
+                security_group_id=_sg_id,
+                subnet_override=_subnet_id,  # type: ignore[arg-type]
+                host_type="shared",
+                **nfs_kwargs,
+            )
+        except Exception:
+            logger.exception("Failed to provision host %s", host_id[:8])
+            h.state = "error"
+            h.agent_status = "provision_failed"
+            s.commit()
+            return
+
+        h.instance_id = result["instance_id"]
+        h.instance_type = result["instance_type"]
+        h.state = "active"
+        h.total_vcpus = result["total_vcpus"]
+        h.total_ram_mb = result["total_ram_mb"]
+        h.ip_address = result["public_ip"]
+        h.private_ip = result.get("private_ip")
+        h.key_pair_name = result.get("key_pair_name")
+        h.private_key = result.get("private_key")
+        h.storage_size_gb = result.get("storage_size_gb", 500)
+        h.max_eips = result.get("max_eips", 0)
+
+        # KubeVirt native: no SSH, no agent install — operator is deployed by provision_host
+        if provider_type == "kubevirt":
+            h.host_type = "kubevirt-cluster"
+            h.agent_status = "connected"
+            h.agent_token = prov.get_credentials().get("token", "")
+            s.commit()
+            logger.info("KubeVirt cluster host %s ready", host_id[:8])
+            return
+
+        s.commit()
+
+        ssh_host = result.get("_ssh_host") or result.get("public_ip")
+        ssh_port = result.get("_ssh_port", 22)
+
+        if not h.private_key or not (h.ip_address or ssh_host):
+            return
+        h.agent_status = "waiting_ssh"
+        s.commit()
+        _ssh_user = get_provider_ssh_user(provider_type)
+        _data_disk = get_provider_data_disk(provider_type)
+        # type: ignore[arg-type]
+        if not wait_for_ssh(
+            ssh_host, h.private_key, port=ssh_port, ssh_user=_ssh_user  # type: ignore[arg-type]
+        ):
+            h.agent_status = "install_failed"
+            s.commit()
+            return
+        h.agent_status = "installing"  # type: ignore[arg-type]
+        s.commit()
+        _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
+        _ca_cert, _host_cert, _host_key = "", "", ""
+        if _sm == "shared" and h.storage_pool_id and h.ip_address:
+            from app.models.storage_pool import StoragePool
+            from app.services.storage_pool_service import sign_host_cert
+
+            _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+            if _pool and _pool.ca_cert and _pool.ca_key:  # type: ignore[arg-type]
+                _host_cert, _host_key = sign_host_cert(
+                    _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""  # type: ignore[arg-type]
+                )
+                _ca_cert = _pool.ca_cert
+        from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
+
+        # type: ignore[arg-type]
+        result = deploy_agent(  # type: ignore[arg-type]
+            ssh_host or h.ip_address,  # type: ignore[arg-type]
+            h.private_key,  # type: ignore[arg-type]
+            h.id,  # type: ignore[arg-type]
+            storage_mode=_sm,  # type: ignore[arg-type]
+            nfs_server=nfs_kwargs.get("nfs_server", ""),  # type: ignore[arg-type]
+            nfs_path=nfs_kwargs.get("nfs_path", ""),
+            nfs_port=nfs_kwargs.get("nfs_port", 0),
+            ssh_port=ssh_port,
+            ssh_user=_ssh_user,
+            ca_cert=_ca_cert,
+            host_cert=_host_cert,
+            host_key=_host_key,
+            console_domain=h.console_domain or "",
+            vncd_no_tls=provider_type == "ocpvirt",
+            data_disk_device=_data_disk,
+            agent_ca_cert=_get_aca(),
+        )
+        h.agent_status = "connected" if result["success"] else "install_failed"
+
+        # Store troshkad credentials
+        creds = result.get("troshkad_credentials", {})
+        if creds.get("token") and creds.get("fingerprint"):
+            h.agent_token = creds["token"]
+            h.agent_cert_fingerprint = creds["fingerprint"]
+            logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
+        # Detach install ISO from ocpvirt hosts (unblocks live migration)
+        if result["success"] and provider_type == "ocpvirt" and h.instance_id:
+            _detach_install_iso(h, s)
+
+        # Create console DNS/Route record
+        if h.instance_id and h.ip_address:
+            prov_obj = s.get(Provider, h.provider_id)
+            if provider_console_domain:
+                from app.services.console_dns import console_domain_for_host
+                from app.services.providers import get_provider_driver
+
+                # type: ignore[arg-type]
+                fqdn = console_domain_for_host(
+                    h.instance_id, provider_console_domain  # type: ignore[arg-type]
+                )
+                try:
+                    drv = get_provider_driver(prov_obj)
+                    result = drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
+                    h.console_domain = result if result else fqdn
+                except Exception as e:
+                    logger.warning(
+                        "Failed to create console record for %s: %s",
+                        h.id[:8],
+                        e,
+                    )
+
+        s.commit()
+    except Exception:
+        logger.exception("Auto-install failed for host %s", host_id[:8])
+    finally:
+        s.close()
 
 
 @router.get("/{host_id}", response_model=HostResponse)
@@ -587,196 +619,191 @@ def install_agent(
     h_ip = host.ip_address
     h_key = host.private_key
 
-    import threading
+    from app.core.redis import enqueue_job
 
-    def _install():
-        from app.core.database import SessionLocal
-        from app.services.agent_deployer import (
-            deploy_agent,
-            get_provider_data_disk,
-            get_provider_ssh_port,
-            get_provider_ssh_user,
-            wait_for_ssh,
+    enqueue_job(_install_bg, h_id, h_ip, h_key, queue_name="provision")
+    return {"status": "installing"}
+
+
+def _install_bg(h_id: str, h_ip: str, h_key: str):
+    from app.core.database import SessionLocal
+    from app.services.agent_deployer import (
+        deploy_agent,
+        get_provider_data_disk,
+        get_provider_ssh_port,
+        get_provider_ssh_user,
+        wait_for_ssh,
+    )
+
+    s = SessionLocal()
+    try:
+        h = s.query(Host).filter_by(id=h_id).first()
+        if not h:
+            return
+
+        # Determine provider type for SSH user and disk device
+        _provider_type = "ec2"  # default
+        if h.provider_id:
+            from app.models.provider import Provider as _Prov
+
+            _prov = s.get(_Prov, h.provider_id)
+            if _prov:
+                _provider_type = _prov.type
+
+        _ssh_user = get_provider_ssh_user(_provider_type)
+        _ssh_port = get_provider_ssh_port(_provider_type)
+        _data_disk = get_provider_data_disk(_provider_type)
+
+        logger.info(
+            "Install agent %s: waiting for SSH (%s@%s:%d)",
+            h_id[:8],
+            _ssh_user,
+            h_ip,
+            _ssh_port,
         )
-
-        s = SessionLocal()
-        try:
-            h = s.query(Host).filter_by(id=h_id).first()
-            if not h:
-                return
-
-            # Determine provider type for SSH user and disk device
-            _provider_type = "ec2"  # default
-            if h.provider_id:
-                from app.models.provider import Provider as _Prov
-
-                _prov = s.get(_Prov, h.provider_id)
-                if _prov:
-                    _provider_type = _prov.type
-
-            _ssh_user = get_provider_ssh_user(_provider_type)
-            _ssh_port = get_provider_ssh_port(_provider_type)
-            _data_disk = get_provider_data_disk(_provider_type)
-
-            logger.info(
-                "Install agent %s: waiting for SSH (%s@%s:%d)",
-                h_id[:8],
-                _ssh_user,
-                h_ip,
-                _ssh_port,
+        ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user, port=_ssh_port)
+        if not ssh_ok:
+            logger.warning(
+                "Install agent %s: SSH not available after timeout", h_id[:8]
             )
-            ssh_ok = wait_for_ssh(h_ip, h_key, ssh_user=_ssh_user, port=_ssh_port)
-            if not ssh_ok:
-                logger.warning(
-                    "Install agent %s: SSH not available after timeout", h_id[:8]
-                )
-                h.agent_status = "disconnected"
-                s.commit()
-                return
-            logger.info("Install agent %s: SSH ready, starting install", h_id[:8])
-            h.agent_status = "installing"
+            h.agent_status = "disconnected"
             s.commit()
+            return
+        logger.info("Install agent %s: SSH ready, starting install", h_id[:8])
+        h.agent_status = "installing"
+        s.commit()
 
-            _install_kwargs = {
-                "ssh_user": _ssh_user,
-                "ssh_port": _ssh_port,
-                "data_disk_device": _data_disk,
-                "vncd_no_tls": _provider_type == "ocpvirt",
-            }
-            if h.console_domain:
-                _install_kwargs["console_domain"] = h.console_domain
-            if h.storage_pool_id:
-                from app.models.storage_pool import StoragePool as _SP2
+        _install_kwargs = {
+            "ssh_user": _ssh_user,
+            "ssh_port": _ssh_port,
+            "data_disk_device": _data_disk,
+            "vncd_no_tls": _provider_type == "ocpvirt",
+        }
+        if h.console_domain:
+            _install_kwargs["console_domain"] = h.console_domain
+        if h.storage_pool_id:
+            from app.models.storage_pool import StoragePool as _SP2
 
-                _pool = s.get(_SP2, h.storage_pool_id)
-                if _pool and _pool.mode.startswith("shared"):
-                    _install_kwargs["storage_mode"] = "shared"
-                    if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
-                        _install_kwargs["nfs_server"] = _pool.fsx_dns_name
-                        _install_kwargs["nfs_path"] = "/fsx"
-                    elif (
-                        _pool.mode in ("shared-byo", "shared-ceph-nfs")
-                        and _pool.nfs_endpoint
-                    ):
-                        _parts = _pool.nfs_endpoint.split(":", 1)
-                        _install_kwargs["nfs_server"] = _parts[0]
-                        _install_kwargs["nfs_path"] = (
-                            _parts[1] if len(_parts) > 1 else "/"
-                        )
-                        if _pool.nfs_port:
-                            _install_kwargs["nfs_port"] = _pool.nfs_port
-                    if _pool.ca_cert and _pool.ca_key and h.ip_address:
-                        from app.services.storage_pool_service import (
-                            sign_host_cert as _shc2,
-                        )
-
-                        _hc, _hk = _shc2(
-                            _pool.ca_cert,
-                            _pool.ca_key,
-                            h.ip_address,
-                            h.private_ip or "",
-                        )
-                        _install_kwargs["ca_cert"] = _pool.ca_cert
-                        _install_kwargs["host_cert"] = _hc
-                        _install_kwargs["host_key"] = _hk
-            from app.services.agent_ca_service import get_agent_ca_cert
-
-            _install_kwargs["agent_ca_cert"] = get_agent_ca_cert()
-            result = deploy_agent(
-                host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs
-            )
-            h.agent_status = "connected" if result["success"] else "install_failed"
-
-            # Store troshkad credentials FIRST (needed for health check below)
-            creds = result.get("troshkad_credentials", {})
-            if creds.get("token") and creds.get("fingerprint"):
-                h.agent_token = creds["token"]
-                h.agent_cert_fingerprint = creds["fingerprint"]
-                logger.info("Stored troshkad credentials for host %s", h.id[:8])
-
-            # Verify agent version and push update if source changed during reinstall
-            if result["success"]:
-                try:
-                    import hashlib
-                    import time
-
-                    from app.services.troshkad_client import (
-                        check_health,
-                        push_update,
-                        troshkad_request,
+            _pool = s.get(_SP2, h.storage_pool_id)
+            if _pool and _pool.mode.startswith("shared"):
+                _install_kwargs["storage_mode"] = "shared"
+                if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
+                    _install_kwargs["nfs_server"] = _pool.fsx_dns_name
+                    _install_kwargs["nfs_path"] = "/fsx"
+                elif (
+                    _pool.mode in ("shared-byo", "shared-ceph-nfs")
+                    and _pool.nfs_endpoint
+                ):
+                    _parts = _pool.nfs_endpoint.split(":", 1)
+                    _install_kwargs["nfs_server"] = _parts[0]
+                    _install_kwargs["nfs_path"] = _parts[1] if len(_parts) > 1 else "/"
+                    if _pool.nfs_port:
+                        _install_kwargs["nfs_port"] = _pool.nfs_port
+                if _pool.ca_cert and _pool.ca_key and h.ip_address:
+                    from app.services.storage_pool_service import (
+                        sign_host_cert as _shc2,
                     )
 
-                    time.sleep(5)
-                    health = troshkad_request(h, "GET", "/health", timeout=10)
-                    if health and health.get("version"):
-                        h.agent_version = health["version"]
-                        logger.info(
-                            "Agent install verified: host %s running version %s",
-                            h.id[:8],
-                            h.agent_version,
-                        )
+                    _hc, _hk = _shc2(
+                        _pool.ca_cert,
+                        _pool.ca_key,
+                        h.ip_address,
+                        h.private_ip or "",
+                    )
+                    _install_kwargs["ca_cert"] = _pool.ca_cert
+                    _install_kwargs["host_cert"] = _hc
+                    _install_kwargs["host_key"] = _hk
+        from app.services.agent_ca_service import get_agent_ca_cert
 
-                        troshkad_path = os.path.join(
+        _install_kwargs["agent_ca_cert"] = get_agent_ca_cert()
+        result = deploy_agent(
+            host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs
+        )
+        h.agent_status = "connected" if result["success"] else "install_failed"
+
+        # Store troshkad credentials FIRST (needed for health check below)
+        creds = result.get("troshkad_credentials", {})
+        if creds.get("token") and creds.get("fingerprint"):
+            h.agent_token = creds["token"]
+            h.agent_cert_fingerprint = creds["fingerprint"]
+            logger.info("Stored troshkad credentials for host %s", h.id[:8])
+
+        # Verify agent version and push update if source changed during reinstall
+        if result["success"]:
+            try:
+                import hashlib
+                import time
+
+                from app.services.troshkad_client import (
+                    check_health,
+                    push_update,
+                    troshkad_request,
+                )
+
+                time.sleep(5)
+                health = troshkad_request(h, "GET", "/health", timeout=10)
+                if health and health.get("version"):
+                    h.agent_version = health["version"]
+                    logger.info(
+                        "Agent install verified: host %s running version %s",
+                        h.id[:8],
+                        h.agent_version,
+                    )
+
+                    troshkad_path = os.path.join(
+                        os.path.dirname(
                             os.path.dirname(
                                 os.path.dirname(
-                                    os.path.dirname(
-                                        os.path.dirname(os.path.abspath(__file__))
-                                    )
+                                    os.path.dirname(os.path.abspath(__file__))
                                 )
-                            ),
-                            "troshkad",
-                            "troshkad.py",
+                            )
+                        ),
+                        "troshkad",
+                        "troshkad.py",
+                    )
+                    with open(troshkad_path, "rb") as _f:
+                        current_hash = hashlib.sha256(_f.read()).hexdigest()[:12]
+                    if h.agent_version != current_hash:
+                        logger.info(
+                            "Agent %s version %s != source %s, pushing update",
+                            h.id[:8],
+                            h.agent_version,
+                            current_hash,
                         )
-                        with open(troshkad_path, "rb") as _f:
-                            current_hash = hashlib.sha256(_f.read()).hexdigest()[:12]
-                        if h.agent_version != current_hash:
+                        script_text = (
+                            open(troshkad_path)
+                            .read()
+                            .replace('VERSION = "dev"', f'VERSION = "{current_hash}"')
+                        )
+                        push_update(h, script_text.encode(), current_hash)
+                        time.sleep(5)
+                        health2 = check_health(h)
+                        if health2 and health2.get("version"):
+                            h.agent_version = health2["version"]
                             logger.info(
-                                "Agent %s version %s != source %s, pushing update",
+                                "Agent %s updated to %s after reinstall",
                                 h.id[:8],
                                 h.agent_version,
-                                current_hash,
                             )
-                            script_text = (
-                                open(troshkad_path)
-                                .read()
-                                .replace(
-                                    'VERSION = "dev"', f'VERSION = "{current_hash}"'
-                                )
-                            )
-                            push_update(h, script_text.encode(), current_hash)
-                            time.sleep(5)
-                            health2 = check_health(h)
-                            if health2 and health2.get("version"):
-                                h.agent_version = health2["version"]
-                                logger.info(
-                                    "Agent %s updated to %s after reinstall",
-                                    h.id[:8],
-                                    h.agent_version,
-                                )
-                except Exception as _ve:
-                    logger.warning(
-                        "Could not verify agent version after install: %s", _ve
-                    )
+            except Exception as _ve:
+                logger.warning("Could not verify agent version after install: %s", _ve)
 
-            # Detach install ISO from ocpvirt hosts (unblocks live migration)
-            if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
-                _detach_install_iso(h, s)
+        # Detach install ISO from ocpvirt hosts (unblocks live migration)
+        if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
+            _detach_install_iso(h, s)
 
+        s.commit()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("Agent install failed for %s", h_id[:8])
+        h = s.query(Host).filter_by(id=h_id).first()
+        if h:
+            h.agent_status = "install_failed"
             s.commit()
-        except Exception:
-            import logging
+    finally:
+        s.close()
 
-            logging.getLogger(__name__).exception(
-                "Agent install failed for %s", h_id[:8]
-            )
-            h = s.query(Host).filter_by(id=h_id).first()
-            if h:
-                h.agent_status = "install_failed"
-                s.commit()
-        finally:
-            s.close()
-
-    threading.Thread(target=_install, daemon=True, name=f"install-{h_id[:8]}").start()
     return {"status": "installing"}
 
 
@@ -895,28 +922,32 @@ def poweroff_host(
     sync_host_capacity(db, host)
     db.commit()
 
-    import threading
-
     _host_id = host.id
     _instance_id = host.instance_id
     _provider_id = host.provider_id
 
-    def _do_stop():
-        from app.services.providers import get_provider_driver
+    from app.core.redis import enqueue_job
 
-        try:
-            from app.core.database import SessionLocal
+    enqueue_job(
+        _do_stop_bg, _host_id, _instance_id, _provider_id, queue_name="provision"
+    )
+    return {"status": "stopped"}
 
-            s = SessionLocal()
-            prov = s.query(Provider).filter_by(id=_provider_id).first()
-            if prov:
-                drv = get_provider_driver(prov)
-                drv.stop_host(prov, _instance_id)
-            s.close()
-        except Exception:
-            logger.exception("Background stop failed for host %s", _host_id[:8])
 
-    threading.Thread(target=_do_stop, daemon=True, name=f"stop-{_host_id[:8]}").start()
+def _do_stop_bg(_host_id: str, _instance_id: str, _provider_id: str):
+    from app.services.providers import get_provider_driver
+
+    try:
+        from app.core.database import SessionLocal
+
+        s = SessionLocal()
+        prov = s.query(Provider).filter_by(id=_provider_id).first()
+        if prov:
+            drv = get_provider_driver(prov)
+            drv.stop_host(prov, _instance_id)
+        s.close()
+    except Exception:
+        logger.exception("Background stop failed for host %s", _host_id[:8])
 
     return {"status": "stopped"}
 
@@ -992,211 +1023,215 @@ def poweron_host(
     host_id = host.id
     instance_id = host.instance_id
 
-    import threading
-
     provider_id = host.provider_id
 
-    def _wait_and_reinstall():
-        import time
+    from app.core.redis import enqueue_job
 
-        from app.core.database import SessionLocal
-        from app.services.agent_deployer import (
-            deploy_agent,
-            get_provider_data_disk,
-            get_provider_ssh_port,
-            get_provider_ssh_user,
-            wait_for_ssh,
-        )
-        from app.services.providers import get_provider_driver as _get_drv
+    enqueue_job(
+        _wait_and_reinstall_bg,
+        host_id,
+        instance_id,
+        provider_id,
+        queue_name="provision",
+    )
+    return {"status": "starting"}
 
-        s = SessionLocal()
-        try:
-            _prov = s.query(Provider).filter_by(id=provider_id).first()
-            if not _prov:
-                return
-            _drv = _get_drv(_prov)
 
-            # Wait for instance to fully stop if it's still shutting down
-            state_now = "unknown"
-            for _ in range(60):
-                st_check = _drv.get_host_status(_prov, instance_id)
-                state_now = st_check["state"] if st_check else "unknown"
-                if state_now in ("stopped", "deallocated", "terminated"):
-                    break
-                if state_now == "running":
-                    break
-                logger.info(
-                    "Host %s in %s state, waiting for stop...",
-                    host_id[:8],
-                    state_now,
-                )
-                time.sleep(5)
+def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
+    import time
 
-            # Start the instance via cloud API
-            if state_now != "running":
-                try:
-                    _drv.start_host(_prov, instance_id)
-                except Exception as e:
-                    logger.warning("start_host failed for %s: %s", host_id[:8], e)
+    from app.core.database import SessionLocal
+    from app.services.agent_deployer import (
+        deploy_agent,
+        get_provider_data_disk,
+        get_provider_ssh_port,
+        get_provider_ssh_user,
+        wait_for_ssh,
+    )
+    from app.services.providers import get_provider_driver as _get_drv
 
-            # Poll until instance is running (up to 5 min)
-            deadline = time.time() + 300
-            new_ip = None
-            st: dict[str, Any] | None = None
-            while time.time() < deadline:
-                st = _drv.get_host_status(_prov, instance_id)
-                if st and st.get("state") == "running":
-                    new_ip = st.get("public_ip")
-                    break
-                time.sleep(10)
+    s = SessionLocal()
+    try:
+        _prov = s.query(Provider).filter_by(id=provider_id).first()
+        if not _prov:
+            return
+        _drv = _get_drv(_prov)
 
-            h = s.query(Host).filter_by(id=host_id).first()
-            if not h:
-                return
+        # Wait for instance to fully stop if it's still shutting down
+        state_now = "unknown"
+        for _ in range(60):
+            st_check = _drv.get_host_status(_prov, instance_id)
+            state_now = st_check["state"] if st_check else "unknown"
+            if state_now in ("stopped", "deallocated", "terminated"):
+                break
+            if state_now == "running":
+                break
+            logger.info(
+                "Host %s in %s state, waiting for stop...",
+                host_id[:8],
+                state_now,
+            )
+            time.sleep(5)
 
-            if not new_ip:
-                logger.warning(
-                    "Host %s never reached running state after power-on",
-                    host_id[:8],
-                )
-                h.state = "stopped"
-                h.agent_status = "disconnected"
-                s.commit()
-                return
+        # Start the instance via cloud API
+        if state_now != "running":
+            try:
+                _drv.start_host(_prov, instance_id)
+            except Exception as e:
+                logger.warning("start_host failed for %s: %s", host_id[:8], e)
 
-            old_ip = h.ip_address
-            h.state = "active"
-            h.ip_address = new_ip
-            h.private_ip = (st or {}).get("private_ip") or h.private_ip
-            h.agent_status = "waiting_ssh"
+        # Poll until instance is running (up to 5 min)
+        deadline = time.time() + 300
+        new_ip = None
+        st: dict[str, Any] | None = None
+        while time.time() < deadline:
+            st = _drv.get_host_status(_prov, instance_id)
+            if st and st.get("state") == "running":
+                new_ip = st.get("public_ip")
+                break
+            time.sleep(10)
+
+        h = s.query(Host).filter_by(id=host_id).first()
+        if not h:
+            return
+
+        if not new_ip:
+            logger.warning(
+                "Host %s never reached running state after power-on",
+                host_id[:8],
+            )
+            h.state = "stopped"
+            h.agent_status = "disconnected"
             s.commit()
+            return
 
-            if new_ip and new_ip != old_ip and h.console_domain:
-                try:
-                    prov = s.query(Provider).filter_by(id=h.provider_id).first()
-                    if prov:
-                        from app.services.providers import get_provider_driver
+        old_ip = h.ip_address
+        h.state = "active"
+        h.ip_address = new_ip
+        h.private_ip = (st or {}).get("private_ip") or h.private_ip
+        h.agent_status = "waiting_ssh"
+        s.commit()
 
-                        drv = get_provider_driver(prov)
-                        drv.create_console_record(prov, h, h.console_domain, new_ip)
-                        logger.info(
-                            "Updated console DNS %s -> %s", h.console_domain, new_ip
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to update console DNS for %s: %s", h.id[:8], e
+        if new_ip and new_ip != old_ip and h.console_domain:
+            try:
+                prov = s.query(Provider).filter_by(id=h.provider_id).first()
+                if prov:
+                    from app.services.providers import get_provider_driver
+
+                    drv = get_provider_driver(prov)
+                    drv.create_console_record(prov, h, h.console_domain, new_ip)
+                    logger.info(
+                        "Updated console DNS %s -> %s", h.console_domain, new_ip
+                    )
+            except Exception as e:
+                logger.warning("Failed to update console DNS for %s: %s", h.id[:8], e)
+
+        if not h.private_key or not h.ip_address:
+            return
+
+        # Determine provider type for SSH user and disk device
+        _provider_type = "ec2"  # default
+        if h.provider_id:
+            from app.models.provider import Provider as _Prov2
+
+            _prov2 = s.get(_Prov2, h.provider_id)
+            if _prov2:
+                _provider_type = _prov2.type
+
+        _ssh_user2 = get_provider_ssh_user(_provider_type)
+        _ssh_port2 = get_provider_ssh_port(_provider_type)
+        _data_disk2 = get_provider_data_disk(_provider_type)
+
+        if not wait_for_ssh(
+            h.ip_address,  # type: ignore[arg-type]
+            h.private_key,  # type: ignore[arg-type]
+            ssh_user=_ssh_user2,
+            port=_ssh_port2,
+            timeout=300,
+        ):
+            h.agent_status = "disconnected"
+            s.commit()
+            logger.warning("Host %s SSH not available after power on", host_id[:8])
+            return
+        h.agent_status = "installing"
+        s.commit()
+
+        _kwargs = {
+            "ssh_user": _ssh_user2,
+            "ssh_port": _ssh_port2,
+            "data_disk_device": _data_disk2,
+            "vncd_no_tls": _provider_type == "ocpvirt",
+        }
+        if h.console_domain:
+            _kwargs["console_domain"] = h.console_domain
+        if h.storage_pool_id:
+            from app.models.storage_pool import StoragePool as _SP
+
+            _pool = s.get(_SP, h.storage_pool_id)
+            if _pool and _pool.mode.startswith("shared"):
+                _kwargs["storage_mode"] = "shared"
+                if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
+                    _kwargs["nfs_server"] = _pool.fsx_dns_name
+                    _kwargs["nfs_path"] = "/fsx"
+                elif (
+                    _pool.mode in ("shared-byo", "shared-ceph-nfs")
+                    and _pool.nfs_endpoint
+                ):
+                    parts = _pool.nfs_endpoint.split(":", 1)
+                    _kwargs["nfs_server"] = parts[0]
+                    _kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+                    if _pool.nfs_port:
+                        _kwargs["nfs_port"] = _pool.nfs_port
+                if _pool.ca_cert and _pool.ca_key and h.ip_address:
+                    from app.services.storage_pool_service import (
+                        sign_host_cert as _shc,
                     )
 
-            if not h.private_key or not h.ip_address:
-                return
+                    _hc, _hk = _shc(
+                        _pool.ca_cert,
+                        _pool.ca_key,
+                        h.ip_address,  # type: ignore[arg-type]
+                        h.private_ip or "",
+                    )
+                    _kwargs["ca_cert"] = _pool.ca_cert
+                    _kwargs["host_cert"] = _hc
+                    _kwargs["host_key"] = _hk
+        from app.services.agent_ca_service import get_agent_ca_cert as _get_aca3
 
-            # Determine provider type for SSH user and disk device
-            _provider_type = "ec2"  # default
-            if h.provider_id:
-                from app.models.provider import Provider as _Prov2
+        _kwargs["agent_ca_cert"] = _get_aca3()
+        result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)  # type: ignore[arg-type]
+        h.agent_status = "connected" if result["success"] else "disconnected"
 
-                _prov2 = s.get(_Prov2, h.provider_id)
-                if _prov2:
-                    _provider_type = _prov2.type
+        # Store troshkad credentials
+        troshkad_creds = result.get("troshkad_credentials", {})
+        if troshkad_creds.get("token") and troshkad_creds.get("fingerprint"):
+            h.agent_token = troshkad_creds["token"]
+            h.agent_cert_fingerprint = troshkad_creds["fingerprint"]
+            logger.info("Stored troshkad credentials for host %s", h.id[:8])
 
-            _ssh_user2 = get_provider_ssh_user(_provider_type)
-            _ssh_port2 = get_provider_ssh_port(_provider_type)
-            _data_disk2 = get_provider_data_disk(_provider_type)
+        s.commit()
 
-            if not wait_for_ssh(
-                h.ip_address,  # type: ignore[arg-type]
-                h.private_key,  # type: ignore[arg-type]
-                ssh_user=_ssh_user2,
-                port=_ssh_port2,
-                timeout=300,
-            ):
+        if result["success"]:
+            from app.services.gc_service import reconcile_host
+
+            gc_report = reconcile_host(host_id)
+            logger.info(
+                "Host %s GC on connect: %s",
+                host_id[:8],
+                gc_report.get("orphans_found", 0),
+            )
+    except Exception:
+        logger.exception("Power on failed for host %s", host_id)
+        try:
+            h = s.query(Host).filter_by(id=host_id).first()
+            if h:
+                h.state = "active"
                 h.agent_status = "disconnected"
                 s.commit()
-                logger.warning("Host %s SSH not available after power on", host_id[:8])
-                return
-            h.agent_status = "installing"
-            s.commit()
-
-            _kwargs = {
-                "ssh_user": _ssh_user2,
-                "ssh_port": _ssh_port2,
-                "data_disk_device": _data_disk2,
-                "vncd_no_tls": _provider_type == "ocpvirt",
-            }
-            if h.console_domain:
-                _kwargs["console_domain"] = h.console_domain
-            if h.storage_pool_id:
-                from app.models.storage_pool import StoragePool as _SP
-
-                _pool = s.get(_SP, h.storage_pool_id)
-                if _pool and _pool.mode.startswith("shared"):
-                    _kwargs["storage_mode"] = "shared"
-                    if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
-                        _kwargs["nfs_server"] = _pool.fsx_dns_name
-                        _kwargs["nfs_path"] = "/fsx"
-                    elif (
-                        _pool.mode in ("shared-byo", "shared-ceph-nfs")
-                        and _pool.nfs_endpoint
-                    ):
-                        parts = _pool.nfs_endpoint.split(":", 1)
-                        _kwargs["nfs_server"] = parts[0]
-                        _kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
-                        if _pool.nfs_port:
-                            _kwargs["nfs_port"] = _pool.nfs_port
-                    if _pool.ca_cert and _pool.ca_key and h.ip_address:
-                        from app.services.storage_pool_service import (
-                            sign_host_cert as _shc,
-                        )
-
-                        _hc, _hk = _shc(
-                            _pool.ca_cert,
-                            _pool.ca_key,
-                            h.ip_address,  # type: ignore[arg-type]
-                            h.private_ip or "",
-                        )
-                        _kwargs["ca_cert"] = _pool.ca_cert
-                        _kwargs["host_cert"] = _hc
-                        _kwargs["host_key"] = _hk
-            from app.services.agent_ca_service import get_agent_ca_cert as _get_aca3
-
-            _kwargs["agent_ca_cert"] = _get_aca3()
-            result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)  # type: ignore[arg-type]
-            h.agent_status = "connected" if result["success"] else "disconnected"
-
-            # Store troshkad credentials
-            troshkad_creds = result.get("troshkad_credentials", {})
-            if troshkad_creds.get("token") and troshkad_creds.get("fingerprint"):
-                h.agent_token = troshkad_creds["token"]
-                h.agent_cert_fingerprint = troshkad_creds["fingerprint"]
-                logger.info("Stored troshkad credentials for host %s", h.id[:8])
-
-            s.commit()
-
-            if result["success"]:
-                from app.services.gc_service import reconcile_host
-
-                gc_report = reconcile_host(host_id)
-                logger.info(
-                    "Host %s GC on connect: %s",
-                    host_id[:8],
-                    gc_report.get("orphans_found", 0),
-                )
         except Exception:
-            logger.exception("Power on failed for host %s", host_id)
-            try:
-                h = s.query(Host).filter_by(id=host_id).first()
-                if h:
-                    h.state = "active"
-                    h.agent_status = "disconnected"
-                    s.commit()
-            except Exception:
-                pass
-        finally:
-            s.close()
-
-    threading.Thread(
-        target=_wait_and_reinstall, daemon=True, name=f"reinstall-{host_id[:8]}"
-    ).start()
+            pass
+    finally:
+        s.close()
 
     return {"status": "starting"}
 
@@ -1527,58 +1562,57 @@ def remove_host(
     # Capture values before spawning thread (avoid DetachedInstanceError)
     instance_id = host.instance_id
 
-    import threading
-
     provider_id = host.provider_id
 
-    def _wait_terminated():
-        import time
+    from app.core.redis import enqueue_job
 
-        from app.core.database import SessionLocal
+    enqueue_job(
+        _wait_terminated_bg, host_id, instance_id, provider_id, queue_name="provision"
+    )
 
-        s = SessionLocal()
-        try:
-            prov = s.get(Provider, provider_id) if provider_id else None
-            if prov:
-                from app.services.providers import get_provider_driver
 
-                drv = get_provider_driver(prov)
-            else:
-                drv = None
+def _wait_terminated_bg(host_id: str, instance_id: str, provider_id: str):
+    import time
 
-            for _ in range(60):
-                time.sleep(5)
-                status = (
-                    drv.get_host_status(prov, instance_id) if drv and prov else None
-                )
-                h = s.query(Host).filter_by(id=host_id).first()
-                if not h:
-                    return
-                if not status or status["state"] == "terminated":
-                    if h.key_pair_name and prov and drv:
-                        try:
-                            drv.delete_key_pair(prov, h.key_pair_name)
-                        except Exception:
-                            pass
-                    h.state = "terminated"
-                    s.commit()
-                    time.sleep(10)
-                    s.delete(h)
-                    s.commit()
-                    logger.info("Host %s terminated and removed", host_id)
-                    return
-                elif status["state"] == "shutting-down":
-                    h.state = "shutting_down"
-                    s.commit()
-            logger.warning("Timeout waiting for host %s to terminate", host_id)
-        except Exception:
-            logger.exception("Error tracking termination for %s", host_id)
-        finally:
-            s.close()
+    from app.core.database import SessionLocal
 
-    threading.Thread(
-        target=_wait_terminated, daemon=True, name=f"terminate-{host_id[:8]}"
-    ).start()
+    s = SessionLocal()
+    try:
+        prov = s.get(Provider, provider_id) if provider_id else None
+        if prov:
+            from app.services.providers import get_provider_driver
+
+            drv = get_provider_driver(prov)
+        else:
+            drv = None
+
+        for _ in range(60):
+            time.sleep(5)
+            status = drv.get_host_status(prov, instance_id) if drv and prov else None
+            h = s.query(Host).filter_by(id=host_id).first()
+            if not h:
+                return
+            if not status or status["state"] == "terminated":
+                if h.key_pair_name and prov and drv:
+                    try:
+                        drv.delete_key_pair(prov, h.key_pair_name)
+                    except Exception:
+                        pass
+                h.state = "terminated"
+                s.commit()
+                time.sleep(10)
+                s.delete(h)
+                s.commit()
+                logger.info("Host %s terminated and removed", host_id)
+                return
+            elif status["state"] == "shutting-down":
+                h.state = "shutting_down"
+                s.commit()
+        logger.warning("Timeout waiting for host %s to terminate", host_id)
+    except Exception:
+        logger.exception("Error tracking termination for %s", host_id)
+    finally:
+        s.close()
 
 
 @router.get("/{host_id}/gc/preview")
@@ -1781,104 +1815,100 @@ def update_agent(
     )
     script_bytes = script_text.encode()
 
-    # Push update in background thread
-    import threading
+    from app.core.redis import enqueue_job
 
-    def _push():
-        from app.core.database import SessionLocal
-        from app.services.troshkad_client import (
-            TroshkadError,
-            check_health,
-            push_update,
-            troshkad_request,
-        )
+    enqueue_job(_push_bg, host_id, script_bytes, version, force, queue_name="default")
+    return {"status": "updating", "version": version, "force": force}
 
-        s = SessionLocal()
+
+def _push_bg(host_id: str, script_bytes: bytes, version: str, force: bool):
+    from app.core.database import SessionLocal
+    from app.services.troshkad_client import (
+        TroshkadError,
+        check_health,
+        push_update,
+        troshkad_request,
+    )
+
+    s = SessionLocal()
+    try:
+        h = s.query(Host).filter_by(id=host_id).first()
+        if not h:
+            return
         try:
-            h = s.query(Host).filter_by(id=host_id).first()
-            if not h:
-                return
-            try:
-                old_version = h.agent_version
-                push_update(h, script_bytes, version, force=force)
-                import time
+            old_version = h.agent_version
+            push_update(h, script_bytes, version, force=force)
+            import time
 
-                # Wait for agent to go down (drain + restart)
-                for _ in range(10):
-                    time.sleep(2)
-                    health = check_health(h)
-                    if not health:
-                        break
-                # Wait for agent to come back with new version
-                for _ in range(30):
-                    time.sleep(5)
-                    health = check_health(h)
-                    if health:
-                        new_ver = health.get("version", "")
-                        h.agent_version = new_ver
-                        s.commit()
-                        if new_ver != old_version:
-                            logger.info(
-                                "Host %s updated troshkad %s → %s",
-                                host_id[:8],
-                                old_version,
-                                new_ver,
-                            )
-                        else:
-                            logger.info(
-                                "Host %s troshkad restarted (same version %s)",
-                                host_id[:8],
-                                new_ver,
-                            )
-                        # Also push vncd if available
-                        try:
-                            vncd_path = os.path.join(
+            # Wait for agent to go down (drain + restart)
+            for _ in range(10):
+                time.sleep(2)
+                health = check_health(h)
+                if not health:
+                    break
+            # Wait for agent to come back with new version
+            for _ in range(30):
+                time.sleep(5)
+                health = check_health(h)
+                if health:
+                    new_ver = health.get("version", "")
+                    h.agent_version = new_ver
+                    s.commit()
+                    if new_ver != old_version:
+                        logger.info(
+                            "Host %s updated troshkad %s → %s",
+                            host_id[:8],
+                            old_version,
+                            new_ver,
+                        )
+                    else:
+                        logger.info(
+                            "Host %s troshkad restarted (same version %s)",
+                            host_id[:8],
+                            new_ver,
+                        )
+                    # Also push vncd if available
+                    try:
+                        vncd_path = os.path.join(
+                            os.path.dirname(
                                 os.path.dirname(
                                     os.path.dirname(
-                                        os.path.dirname(
-                                            os.path.dirname(os.path.abspath(__file__))
-                                        )
+                                        os.path.dirname(os.path.abspath(__file__))
                                     )
-                                ),
-                                "troshka-vncd",
-                                "troshka-vncd.py",
-                            )
-                            if os.path.exists(vncd_path):
-                                import base64
-
-                                with open(vncd_path, "rb") as vf:
-                                    vncd_b64 = base64.b64encode(vf.read()).decode()
-                                prov = (
-                                    s.query(Provider)
-                                    .filter_by(id=h.provider_id)
-                                    .first()
                                 )
-                                no_tls = prov.type == "ocpvirt" if prov else False
-                                troshkad_request(
-                                    h,
-                                    "POST",
-                                    "/admin/update-vncd",
-                                    body={"script": vncd_b64, "no_tls": no_tls},
-                                )
-                                logger.info("Host %s vncd updated", host_id[:8])
-                        except Exception as ve:
-                            logger.warning(
-                                "Host %s vncd update failed: %s", host_id[:8], ve
-                            )
-                        return
-                logger.warning(
-                    "Host %s update: agent did not come back after 150s", host_id[:8]
-                )
-            except TroshkadError as e:
-                logger.error("Host %s update failed: %s", host_id[:8], e)
-        except Exception:
-            logger.exception("Update agent failed for host %s", host_id)
-        finally:
-            s.close()
+                            ),
+                            "troshka-vncd",
+                            "troshka-vncd.py",
+                        )
+                        if os.path.exists(vncd_path):
+                            import base64
 
-    threading.Thread(
-        target=_push, daemon=True, name=f"update-agent-{host_id[:8]}"
-    ).start()
+                            with open(vncd_path, "rb") as vf:
+                                vncd_b64 = base64.b64encode(vf.read()).decode()
+                            prov = s.query(Provider).filter_by(id=h.provider_id).first()
+                            no_tls = prov.type == "ocpvirt" if prov else False
+                            troshkad_request(
+                                h,
+                                "POST",
+                                "/admin/update-vncd",
+                                body={"script": vncd_b64, "no_tls": no_tls},
+                            )
+                            logger.info("Host %s vncd updated", host_id[:8])
+                    except Exception as ve:
+                        logger.warning(
+                            "Host %s vncd update failed: %s", host_id[:8], ve
+                        )
+                    return
+            logger.warning(
+                "Host %s update: agent did not come back after 150s", host_id[:8]
+            )
+        except TroshkadError as e:
+            logger.error("Host %s update failed: %s", host_id[:8], e)
+    except Exception:
+        logger.exception("Update agent failed for host %s", host_id)
+    finally:
+        s.close()
+
     return {"status": "updating", "version": version, "force": force}
 
 

@@ -193,6 +193,7 @@ def enqueue_job(
     if is_redis_available():
         try:
             from rq import Queue
+            from rq.job import Callback
 
             r = get_redis_raw()
             q = Queue(queue_name, connection=r, default_timeout=job_timeout)
@@ -203,8 +204,8 @@ def enqueue_job(
                 func,
                 *args,
                 job_timeout=job_timeout,
-                on_success=_on_job_success,
-                on_failure=_on_job_failure,
+                on_success=Callback(_on_job_success),
+                on_failure=Callback(_on_job_failure),
                 meta=meta,
                 **kwargs,
             )
