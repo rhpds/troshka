@@ -4981,18 +4981,33 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 timeout=15,
             )
 
-            # Verify bastion setup completed: CA trust + Firefox logins.json
+            # Verify bastion CA matches live ingress cert + Firefox has current OAuth URL
             _push("certs", "verifying bastion setup")
             bastion_ready = False
-            for _bv in range(12):
+            for _bv in range(18):
                 verify_result = _exec_on_bastion(
                     host,
                     project_id,
                     bastion_ip,
                     password,
-                    "test -f /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && echo 'ca:ok' || echo 'ca:missing'; "
-                    "ls /home/cloud-user/.mozilla/firefox/*/logins.json >/dev/null 2>&1 && echo 'logins:ok' || echo 'logins:missing'",
-                    timeout=10,
+                    "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+                    # Compare CA anchor fingerprint with live ingress cert
+                    "LIVE_FP=$(oc get secret -n openshift-ingress router-certs-default "
+                    "  -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+                    "  | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); "
+                    "FILE_FP=$(openssl x509 -noout -fingerprint -sha256 "
+                    "  -in /etc/pki/ca-trust/source/anchors/ocp-ingress.pem 2>/dev/null | cut -d= -f2); "
+                    'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
+                    'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
+                    'else echo "ca:stale"; fi; '
+                    # Check Firefox logins.json has the current cluster's OAuth URL
+                    "OAUTH_HOST=oauth-openshift.apps.$(oc whoami --show-server 2>/dev/null "
+                    "  | sed 's|https://api\\.||;s|:6443||'); "
+                    "LOGINS=$(cat /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null); "
+                    'if echo "$LOGINS" | grep -q "$OAUTH_HOST" 2>/dev/null; then echo "logins:ok"; '
+                    'elif [ -z "$LOGINS" ]; then echo "logins:missing"; '
+                    'else echo "logins:stale"; fi',
+                    timeout=20,
                 )
                 if (
                     verify_result
@@ -5004,19 +5019,53 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                         "OCP monitor %s: bastion setup verified", project_id[:8]
                     )
                     break
-                missing = []
-                if verify_result and "ca:missing" in verify_result:
-                    missing.append("CA trust")
-                if verify_result and "logins:missing" in verify_result:
-                    missing.append("browser credentials")
-                _push(
-                    "certs",
-                    f"waiting for bastion setup ({', '.join(missing) or 'checking'})",
-                )
+
+                needs_fix = []
+                if verify_result and "ca:stale" in verify_result:
+                    needs_fix.append("CA cert")
+                if verify_result and (
+                    "logins:stale" in verify_result or "logins:missing" in verify_result
+                ):
+                    needs_fix.append("browser credentials")
+
+                if needs_fix:
+                    _push("certs", f"bastion {', '.join(needs_fix)} stale, updating...")
+                    # Re-run CA trust update
+                    if "CA cert" in needs_fix:
+                        _exec_on_bastion(
+                            host,
+                            project_id,
+                            bastion_ip,
+                            password,
+                            "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+                            "oc get secret -n openshift-ingress router-certs-default "
+                            "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+                            "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+                            "&& sudo update-ca-trust",
+                            timeout=15,
+                        )
+                    # Re-run Firefox password stashing
+                    if "browser credentials" in needs_fix:
+                        _exec_on_bastion(
+                            host,
+                            project_id,
+                            bastion_ip,
+                            password,
+                            "CONSOLE_URL=$(export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+                            "oc whoami --show-console 2>/dev/null); "
+                            '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
+                            'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true',
+                            timeout=30,
+                        )
+                    _t.sleep(5)
+                    continue
+
+                _push("certs", "waiting for bastion setup")
                 _t.sleep(10)
             if not bastion_ready:
                 logger.warning(
-                    "OCP monitor %s: bastion setup incomplete", project_id[:8]
+                    "OCP monitor %s: bastion setup incomplete after retries",
+                    project_id[:8],
                 )
 
     elapsed_secs = int(_t.time() - start)
