@@ -461,9 +461,9 @@ def queue_status(user=Depends(require_role("admin"))):
             "message": "Redis not available — running in single-process mode",
         }
 
-    from app.core.redis import get_redis
+    from app.core.redis import get_redis, get_redis_raw
 
-    r = get_redis()
+    r = get_redis_raw()
 
     queues_info = []
     for qname in ["deploy", "provision", "default"]:
@@ -505,10 +505,11 @@ def queue_status(user=Depends(require_role("admin"))):
 
     # Per-host in-flight deploy counts
     inflight = {}
+    r_str = get_redis()
     try:
-        for key in r.scan_iter("inflight:deploys:*"):
-            host_id = key.replace("inflight:deploys:", "")
-            count = int(r.get(key) or 0)
+        for key in r_str.scan_iter("inflight:deploys:*"):
+            host_id = str(key).replace("inflight:deploys:", "")
+            count = int(r_str.get(key) or 0)
             if count > 0:
                 inflight[host_id[:8]] = count
     except Exception:
@@ -534,9 +535,9 @@ def list_failed_jobs(
     if not is_redis_available():
         return {"jobs": []}
 
-    from app.core.redis import get_redis
+    from app.core.redis import get_redis_raw
 
-    r = get_redis()
+    r = get_redis_raw()
     try:
         from rq import Queue
         from rq.job import Job
@@ -569,12 +570,12 @@ def list_failed_jobs(
 @app.post("/api/v1/admin/failed-jobs/{job_id}/retry")
 def retry_failed_job(job_id: str, user=Depends(require_role("admin"))):
     """Re-queue a failed job."""
-    from app.core.redis import get_redis, is_redis_available
+    from app.core.redis import get_redis_raw, is_redis_available
 
     if not is_redis_available():
         raise HTTPException(400, "Redis not available")
 
-    r = get_redis()
+    r = get_redis_raw()
     try:
         from rq.job import Job
 
@@ -588,12 +589,12 @@ def retry_failed_job(job_id: str, user=Depends(require_role("admin"))):
 @app.delete("/api/v1/admin/failed-jobs/{job_id}")
 def delete_failed_job(job_id: str, user=Depends(require_role("admin"))):
     """Delete a failed job permanently."""
-    from app.core.redis import get_redis, is_redis_available
+    from app.core.redis import get_redis_raw, is_redis_available
 
     if not is_redis_available():
         raise HTTPException(400, "Redis not available")
 
-    r = get_redis()
+    r = get_redis_raw()
     try:
         from rq.job import Job
 

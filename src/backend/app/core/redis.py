@@ -21,6 +21,7 @@ from app.core.config import config
 logger = logging.getLogger(__name__)
 
 _client: _redis.Redis | None = None
+_client_raw: _redis.Redis | None = None
 _redis_available = False
 _pubsub_thread: threading.Thread | None = None
 
@@ -61,6 +62,15 @@ def get_redis() -> _redis.Redis:
     return _client
 
 
+def get_redis_raw() -> _redis.Redis:
+    """Get a Redis client WITHOUT decode_responses — needed for RQ (binary pickle data)."""
+    global _client_raw
+    if _client_raw is None:
+        url = _get_redis_url()
+        _client_raw = _redis.from_url(url, decode_responses=False)
+    return _client_raw
+
+
 def is_redis_available() -> bool:
     if _client is None:
         try:
@@ -85,6 +95,62 @@ def close_redis():
 # ── Job enqueue helpers ──
 
 
+def _on_job_success(job, connection, result, *args, **kwargs):
+    """Called by RQ when a job completes successfully."""
+    project_id = job.meta.get("project_id")
+    host_id = job.meta.get("host_id")
+    if host_id:
+        try:
+            from app.services.placement import record_deploy_end
+
+            record_deploy_end(host_id)
+        except Exception:
+            pass
+    if project_id:
+        try:
+            connection.delete(f"job:project:{project_id}")
+        except Exception:
+            pass
+
+
+def _on_job_failure(job, connection, exc_type, exc_value, traceback):
+    """Called by RQ when a job fails (exception, timeout, or worker crash)."""
+    project_id = job.meta.get("project_id")
+    host_id = job.meta.get("host_id")
+    logger.error(
+        "Job %s failed: %s: %s",
+        job.id[:8],
+        exc_type.__name__ if exc_type else "unknown",
+        exc_value,
+    )
+    if host_id:
+        try:
+            from app.services.placement import record_deploy_end
+
+            record_deploy_end(host_id)
+        except Exception:
+            pass
+    if project_id:
+        try:
+            delete_progress(f"deploy:{project_id}")
+            connection.delete(f"job:project:{project_id}")
+        except Exception:
+            pass
+        try:
+            from app.core.database import SessionLocal
+            from app.models.project import Project
+
+            s = SessionLocal()
+            p = s.get(Project, project_id)
+            if p and p.state in ("deploying", "starting", "stopping", "deleting"):
+                p.state = "error"
+                p.deploy_error = f"Worker job failed: {exc_value}"
+                s.commit()
+            s.close()
+        except Exception:
+            pass
+
+
 def enqueue_job(
     func,
     *args,
@@ -102,9 +168,20 @@ def enqueue_job(
         try:
             from rq import Queue
 
-            r = get_redis()
+            r = get_redis_raw()
             q = Queue(queue_name, connection=r, default_timeout=job_timeout)
-            job = q.enqueue(func, *args, job_timeout=job_timeout, **kwargs)
+            meta = {}
+            if project_id:
+                meta["project_id"] = project_id
+            job = q.enqueue(
+                func,
+                *args,
+                job_timeout=job_timeout,
+                on_success=_on_job_success,
+                on_failure=_on_job_failure,
+                meta=meta,
+                **kwargs,
+            )
             logger.info(
                 "Enqueued job %s: %s.%s (queue=%s)",
                 job.id[:8],
@@ -113,7 +190,7 @@ def enqueue_job(
                 queue_name,
             )
             if project_id:
-                r.set(f"job:project:{project_id}", job.id, ex=7200)
+                get_redis().set(f"job:project:{project_id}", job.id, ex=7200)
             return job
         except Exception:
             logger.warning("RQ enqueue failed, falling back to thread")
@@ -129,8 +206,7 @@ def get_job_info(project_id: str) -> dict | None:
     if not _redis_available:
         return None
     try:
-        r = get_redis()
-        raw_job_id = r.get(f"job:project:{project_id}")
+        raw_job_id = get_redis().get(f"job:project:{project_id}")
         if not raw_job_id:
             return None
         job_id = str(raw_job_id)
@@ -138,13 +214,14 @@ def get_job_info(project_id: str) -> dict | None:
         from rq import Queue
         from rq.job import Job
 
-        job = Job.fetch(job_id, connection=r)
+        r_raw = get_redis_raw()
+        job = Job.fetch(job_id, connection=r_raw)
         status = job.get_status()
 
         result: dict = {"job_id": job_id, "status": status}
 
         if status == "queued":
-            q = Queue(job.origin, connection=r)
+            q = Queue(job.origin, connection=r_raw)
             job_ids = q.get_job_ids()
             try:
                 position = job_ids.index(job_id) + 1
