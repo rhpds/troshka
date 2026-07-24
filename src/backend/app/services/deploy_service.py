@@ -4884,9 +4884,33 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             parts = result.strip().split()
             co_available = parts[2] == "True" if len(parts) >= 4 else False
             if co_available:
-                _push("console", "console ready")
-                console_ready = True
-                break
+                _push("console", "console operator available, verifying route...")
+                # Verify the console route actually responds (operator reports
+                # available before the route is fully serving on pattern deploys)
+                console_url_result = _exec_on_bastion(
+                    host,
+                    project_id,
+                    bastion_ip,
+                    password,
+                    "curl -skm 10 -o /dev/null -w '%{http_code}' https://console-openshift-console.apps.$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') 2>/dev/null || echo 000",
+                    timeout=20,
+                )
+                http_code = (console_url_result or "000").strip()
+                if (
+                    http_code.startswith("2")
+                    or http_code.startswith("3")
+                    or http_code == "403"
+                ):
+                    _push("console", "console ready")
+                    console_ready = True
+                    break
+                else:
+                    _push(
+                        "console",
+                        f"console operator ready but route not serving (HTTP {http_code}), retrying...",
+                    )
+                    _t.sleep(10)
+                    continue
             else:
                 _push("console", "waiting for console operator")
         _push("console", "waiting for OpenShift console")
