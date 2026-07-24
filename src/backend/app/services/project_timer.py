@@ -149,16 +149,10 @@ def _notify(project_id, message):
 
 
 def _spawn_stop(project_id):
-    import threading
-
+    from app.core.redis import enqueue_job
     from app.services.deploy_service import stop_project_async
 
-    threading.Thread(
-        target=stop_project_async,
-        args=(project_id,),
-        daemon=True,
-        name=f"timer-stop-{project_id[:8]}",
-    ).start()
+    enqueue_job(stop_project_async, project_id)
 
 
 def _delete_project(s, project):
@@ -190,14 +184,9 @@ def _delete_project(s, project):
             "dns_provider_id": project.dns_provider_id,
             "domain": project.domain,
         }
-        import threading
+        from app.core.redis import enqueue_job
 
-        threading.Thread(
-            target=destroy_project_sync,
-            args=(destroy_ctx,),
-            daemon=True,
-            name=f"timer-destroy-{project_id[:8]}",
-        ).start()
+        enqueue_job(destroy_project_sync, destroy_ctx)
 
     from app.models.elastic_ip import ElasticIp
     from app.services.eip_service import release_eip

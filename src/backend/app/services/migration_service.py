@@ -1,5 +1,4 @@
 import logging
-import threading
 
 from sqlalchemy.orm import Session
 
@@ -88,12 +87,15 @@ def validate_migration(
 
 
 def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
-    t = threading.Thread(
-        target=_do_migrate_project,
-        args=(project_id, source_host_id, target_host_id),
-        daemon=True,
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        _do_migrate_project,
+        project_id,
+        source_host_id,
+        target_host_id,
+        queue_name="deploy",
     )
-    t.start()
 
 
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
@@ -201,8 +203,9 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
 
 
 def evacuate_host(host_id: str):
-    t = threading.Thread(target=_do_evacuate_host, args=(host_id,), daemon=True)
-    t.start()
+    from app.core.redis import enqueue_job
+
+    enqueue_job(_do_evacuate_host, host_id, queue_name="deploy")
 
 
 def _do_evacuate_host(host_id: str):

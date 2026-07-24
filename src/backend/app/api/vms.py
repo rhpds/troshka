@@ -213,15 +213,10 @@ def snapshot_vm(
     db.refresh(item)
 
     if project.state in ("active", "stopped"):
-        import threading
-
+        from app.core.redis import enqueue_job
         from app.services.snapshot_service import capture_vm_disks
 
-        threading.Thread(
-            target=capture_vm_disks,
-            args=(item.id, project.id, vm_id),
-            daemon=True,
-        ).start()
+        enqueue_job(capture_vm_disks, item.id, project.id, vm_id)
     else:
         item.state = "available"
         db.commit()

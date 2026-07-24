@@ -1,6 +1,5 @@
 import datetime
 import logging
-import threading
 from typing import Any
 
 import boto3
@@ -327,12 +326,16 @@ def provision_fsx_pool(
     finally:
         db.close()
 
-    t = threading.Thread(
-        target=_poll_fsx_until_available,
-        args=(pool_id, credentials, region, result["filesystem_id"]),
-        daemon=True,
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        _poll_fsx_until_available,
+        pool_id,
+        credentials,
+        region,
+        result["filesystem_id"],
+        queue_name="provision",
     )
-    t.start()
 
 
 def delete_fsx_filesystem(credentials: dict, region: str, filesystem_id: str):

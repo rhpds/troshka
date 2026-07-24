@@ -1236,8 +1236,6 @@ def start_vm(
         return {"action": "start", "success": True}
 
     if project.state in ("stopped", "starting"):
-        import threading
-
         project.state = "starting"
         db.commit()
         p_id = project.id
@@ -1342,16 +1340,16 @@ def start_vm(
             project_id,
             {"type": "vm-state", "states": {vm_id: "starting"}, "progress": {}},
         )
-        threading.Thread(
-            target=_start_infra_then_vm, daemon=True, name=f"start-vm-{vm_id[:8]}"
-        ).start()
+        from app.core.redis import enqueue_job
+        from app.workers.jobs import job_start_infra_then_vm
+
+        enqueue_job(job_start_infra_then_vm, p_id, h_id, target_vm_id)
         return {"action": "start", "success": True, "starting_project": True}
 
     # Start VM in background — re-cache images if needed, then virsh start
     notify_project(
         project_id, {"type": "vm-state", "states": {vm_id: "starting"}, "progress": {}}
     )
-    import threading
 
     p_id = project.id
     h_id = host.id
@@ -1383,9 +1381,10 @@ def start_vm(
         finally:
             s.close()
 
-    threading.Thread(
-        target=_cache_and_start, daemon=True, name=f"cache-start-{project.id[:8]}"
-    ).start()
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_cache_and_start_vm
+
+    enqueue_job(job_cache_and_start_vm, p_id, h_id, vm_id)
     return {"action": "start", "success": True}
 
 
@@ -3064,7 +3063,6 @@ def redeploy_project(
 
     # Capture destroy context before resetting state
     import copy
-    import threading
 
     destroy_ctx = None
     old_host_id = project.host_id
@@ -3134,12 +3132,10 @@ def redeploy_project(
 
         deploy_project_async(pid)
 
-    threading.Thread(
-        target=_redeploy_bg,
-        args=(project.id, destroy_ctx, old_host_id),
-        daemon=True,
-        name=f"redeploy-{project.id[:8]}",
-    ).start()
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_redeploy_bg
+
+    enqueue_job(job_redeploy_bg, project.id, destroy_ctx, old_host_id)
 
     return {"status": "deploying"}
 

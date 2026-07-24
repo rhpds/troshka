@@ -2,7 +2,6 @@
 
 import datetime
 import logging
-import threading
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +15,10 @@ def compute_clock_offset(clock_target: datetime.datetime) -> int:
 
 
 def adjust_clocks_async(project_id: str):
-    """Background thread: push new clock_target to all running VMs."""
-    t = threading.Thread(target=_adjust_clocks, args=(project_id,), daemon=True)
-    t.start()
+    """Enqueue clock adjustment for all running VMs in a project."""
+    from app.core.redis import enqueue_job
+
+    enqueue_job(_adjust_clocks, project_id, queue_name="default")
 
 
 def _adjust_clocks(project_id: str):

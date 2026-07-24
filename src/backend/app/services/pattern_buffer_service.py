@@ -1,7 +1,6 @@
 """Service for provisioning and managing pattern buffer worker hosts."""
 
 import logging
-import threading
 import uuid
 
 from sqlalchemy.orm import Session
@@ -45,11 +44,10 @@ def _find_ec2_provider(db: Session, pool: StoragePool) -> Provider | None:
 
 
 def provision_pattern_buffer_async(pool_id: str):
-    """Spawn a background thread to provision a pattern buffer for a pool."""
-    thread = threading.Thread(
-        target=_provision_pattern_buffer, args=(pool_id,), daemon=True
-    )
-    thread.start()
+    """Enqueue pattern buffer provisioning for a pool."""
+    from app.core.redis import enqueue_job
+
+    enqueue_job(_provision_pattern_buffer, pool_id, queue_name="provision")
 
 
 def _provision_pattern_buffer(pool_id: str):

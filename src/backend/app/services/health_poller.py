@@ -247,14 +247,14 @@ def _poll_hosts():
                             host.id[:8],
                             health.get("version"),
                         )
+                        from app.core.redis import enqueue_job
                         from app.services.gc_service import recover_host_services
 
-                        threading.Thread(
-                            target=recover_host_services,
-                            args=(host.id,),
-                            daemon=True,
-                            name=f"recover-{host.id[:8]}",
-                        ).start()
+                        enqueue_job(
+                            recover_host_services,
+                            host.id,
+                            queue_name="default",
+                        )
                 else:
                     hosts_failed += 1
                     if host.agent_status == "connected" and host.last_health_at:

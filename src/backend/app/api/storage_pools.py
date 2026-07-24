@@ -1,5 +1,4 @@
 import logging
-import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -170,20 +169,19 @@ def create_pool(
 
         storage_pool_service.add_sg_rules_for_shared_storage(credentials, region, sg_id)
 
-        t = threading.Thread(
-            target=storage_pool_service.provision_fsx_pool,
-            args=(
-                pool.id,
-                credentials,
-                region,
-                subnet_id,
-                sg_id,
-                body.fsx_storage_gb,
-                body.fsx_throughput_mbps,
-            ),
-            daemon=True,
+        from app.core.redis import enqueue_job
+
+        enqueue_job(
+            storage_pool_service.provision_fsx_pool,
+            pool.id,
+            credentials,
+            region,
+            subnet_id,
+            sg_id,
+            body.fsx_storage_gb,
+            body.fsx_throughput_mbps,
+            queue_name="provision",
         )
-        t.start()
 
     elif body.mode == "shared-byo":
         credentials = provider.get_credentials()
@@ -197,12 +195,14 @@ def create_pool(
 
     elif body.mode == "shared-ceph-nfs":
         credentials = provider.get_credentials()
-        t = threading.Thread(
-            target=storage_pool_service.provision_ceph_nfs_pool,
-            args=(pool.id, credentials),
-            daemon=True,
+        from app.core.redis import enqueue_job
+
+        enqueue_job(
+            storage_pool_service.provision_ceph_nfs_pool,
+            pool.id,
+            credentials,
+            queue_name="provision",
         )
-        t.start()
 
     elif body.mode == "shared-netapp":
         credentials = provider.get_credentials()
@@ -210,21 +210,20 @@ def create_pool(
         network = provider.gcp_network_id
         if not network:
             raise HTTPException(400, "GCP provider has no network configured")
-        t = threading.Thread(
-            target=storage_pool_service.provision_netapp_pool,
-            args=(
-                pool.id,
-                credentials,
-                provider.gcp_project_id,
-                region,
-                network,
-                body.netapp_capacity_gb,
-                "troshka",
-                body.netapp_service_level or "FLEX",
-            ),
-            daemon=True,
+        from app.core.redis import enqueue_job
+
+        enqueue_job(
+            storage_pool_service.provision_netapp_pool,
+            pool.id,
+            credentials,
+            provider.gcp_project_id,
+            region,
+            network,
+            body.netapp_capacity_gb,
+            "troshka",
+            body.netapp_service_level or "FLEX",
+            queue_name="provision",
         )
-        t.start()
 
     elif body.mode == "shared-azure-files":
         credentials = provider.get_credentials()
@@ -232,21 +231,20 @@ def create_pool(
         subnet_id = provider.azure_subnet_id
         if not subnet_id:
             raise HTTPException(400, "Azure provider has no subnet configured")
-        t = threading.Thread(
-            target=storage_pool_service.provision_azure_files_pool,
-            args=(
-                pool.id,
-                credentials,
-                provider.azure_resource_group,
-                location,
-                subnet_id,
-                body.azure_files_capacity_gb,
-                body.azure_files_iops,
-                body.azure_files_throughput,
-            ),
-            daemon=True,
+        from app.core.redis import enqueue_job
+
+        enqueue_job(
+            storage_pool_service.provision_azure_files_pool,
+            pool.id,
+            credentials,
+            provider.azure_resource_group,
+            location,
+            subnet_id,
+            body.azure_files_capacity_gb,
+            body.azure_files_iops,
+            body.azure_files_throughput,
+            queue_name="provision",
         )
-        t.start()
 
     return _pool_response(pool, db)
 
