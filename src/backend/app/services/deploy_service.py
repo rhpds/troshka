@@ -4918,7 +4918,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     ):
                         _push(
                             "console",
-                            f"console ready, waiting for OAuth (HTTP {oauth_code})...",
+                            "waiting for OAuth route"
+                            + (
+                                f" (HTTP {oauth_code})"
+                                if oauth_code not in ("000", "")
+                                else ""
+                            ),
                         )
                         _t.sleep(10)
                         continue
@@ -4928,7 +4933,12 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 else:
                     _push(
                         "console",
-                        f"console operator ready but route not serving (HTTP {http_code}), retrying...",
+                        "waiting for console route"
+                        + (
+                            f" (HTTP {http_code})"
+                            if http_code not in ("000", "")
+                            else ""
+                        ),
                     )
                     _t.sleep(10)
                     continue
