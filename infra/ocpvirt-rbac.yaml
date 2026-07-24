@@ -49,7 +49,7 @@ rules:
   # Secrets — cloud-init userdata
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "delete", "get"]
+    verbs: ["create", "delete", "get", "patch"]
   # Namespace — ensure troshka namespace exists
   - apiGroups: [""]
     resources: ["namespaces"]
