@@ -47,11 +47,11 @@ spec:
               subPath: radosgw
           resources:
             requests:
-              cpu: 500m
-              memory: 1Gi
-            limits:
-              cpu: "2"
+              cpu: "1"
               memory: 4Gi
+            limits:
+              cpu: "4"
+              memory: 16Gi
       volumes:
         - name: data
           persistentVolumeClaim:
