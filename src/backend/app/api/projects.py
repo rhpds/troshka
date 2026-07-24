@@ -146,7 +146,7 @@ def _project_response_dict(project):
 @router.get("/", response_model=list[ProjectResponse])
 def list_projects(
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 200,
     guid: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
