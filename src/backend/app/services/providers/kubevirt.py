@@ -776,7 +776,9 @@ class KubeVirtDriver(ProviderDriver):
             time.sleep(2)
 
         # Clean up VolumeAttachments — these are cluster-scoped and survive
-        # namespace deletion, blocking PV deletion indefinitely
+        # namespace deletion, blocking PV deletion indefinitely.  Only delete
+        # attachments whose CSI detach has completed (status.attached=false)
+        # to avoid confusing the attach-detach controller on RWO volumes.
         try:
             from kubernetes import client as _kc
 
@@ -787,22 +789,21 @@ class KubeVirtDriver(ProviderDriver):
                 if pvc.spec.volume_name:
                     pv_names.add(pvc.spec.volume_name)
             if pv_names:
-                vas = storage_api.list_volume_attachment()
-                for va in getattr(vas, "items", []):
-                    pv = getattr(va.spec.source, "persistent_volume_name", None)
-                    if pv and pv in pv_names:
-                        try:
-                            storage_api.delete_volume_attachment(name=va.metadata.name)
-                        except Exception:
-                            pass
-                for _ in range(15):
-                    remaining = storage_api.list_volume_attachment()
-                    still_attached = [
-                        va for va in getattr(remaining, "items", [])
+                for _ in range(30):
+                    vas = storage_api.list_volume_attachment()
+                    matching = [
+                        va for va in getattr(vas, "items", [])
                         if getattr(va.spec.source, "persistent_volume_name", None) in pv_names
                     ]
-                    if not still_attached:
+                    if not matching:
                         break
+                    for va in matching:
+                        attached = getattr(getattr(va, "status", None), "attached", True)
+                        if not attached:
+                            try:
+                                storage_api.delete_volume_attachment(name=va.metadata.name)
+                            except Exception:
+                                pass
                     time.sleep(2)
         except Exception:
             pass
