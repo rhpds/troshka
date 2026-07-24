@@ -4901,7 +4901,28 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     or http_code.startswith("3")
                     or http_code == "403"
                 ):
-                    _push("console", "console ready")
+                    # Also verify OAuth route responds (certs regenerate after console)
+                    oauth_result = _exec_on_bastion(
+                        host,
+                        project_id,
+                        bastion_ip,
+                        password,
+                        "curl -skm 10 -o /dev/null -w '%{http_code}' https://oauth-openshift.apps.$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') 2>/dev/null || echo 000",
+                        timeout=20,
+                    )
+                    oauth_code = (oauth_result or "000").strip()
+                    if not (
+                        oauth_code.startswith("2")
+                        or oauth_code.startswith("3")
+                        or oauth_code == "403"
+                    ):
+                        _push(
+                            "console",
+                            f"console ready, waiting for OAuth (HTTP {oauth_code})...",
+                        )
+                        _t.sleep(10)
+                        continue
+                    _push("console", "console and OAuth ready")
                     console_ready = True
                     break
                 else:
