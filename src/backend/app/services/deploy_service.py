@@ -4981,40 +4981,42 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                 timeout=15,
             )
 
-            # Update Firefox saved password with current kubeadmin password
-            _push("certs", "updating browser credentials")
-            _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                "KP=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password 2>/dev/null || echo ''); "
-                'if [ -n "$KP" ] && [ -f /home/cloud-user/ocp-autologin.py ]; then '
-                "  CLUSTER_URL=$(oc whoami --show-console 2>/dev/null || echo ''); "
-                '  if [ -n "$CLUSTER_URL" ]; then '
-                '    python3 /home/cloud-user/ocp-autologin.py "$CLUSTER_URL" 2>&1 || true; '
-                "    echo 'Browser credentials updated'; "
-                "  fi; "
-                "fi",
-                timeout=30,
-            )
-
-            # Verify the bastion setup completed: CA trust + logins.json exist
-            verify_result = _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                "test -f /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && echo 'ca:ok' || echo 'ca:missing'; "
-                "ls /home/cloud-user/.mozilla/firefox/*/logins.json >/dev/null 2>&1 && echo 'logins:ok' || echo 'logins:missing'",
-                timeout=10,
-            )
-            if verify_result:
-                logger.info(
-                    "OCP monitor %s: bastion verify: %s",
-                    project_id[:8],
-                    verify_result.strip().replace("\n", ", "),
+            # Verify bastion setup completed: CA trust + Firefox logins.json
+            _push("certs", "verifying bastion setup")
+            bastion_ready = False
+            for _bv in range(12):
+                verify_result = _exec_on_bastion(
+                    host,
+                    project_id,
+                    bastion_ip,
+                    password,
+                    "test -f /etc/pki/ca-trust/source/anchors/ocp-ingress.pem && echo 'ca:ok' || echo 'ca:missing'; "
+                    "ls /home/cloud-user/.mozilla/firefox/*/logins.json >/dev/null 2>&1 && echo 'logins:ok' || echo 'logins:missing'",
+                    timeout=10,
+                )
+                if (
+                    verify_result
+                    and "ca:ok" in verify_result
+                    and "logins:ok" in verify_result
+                ):
+                    bastion_ready = True
+                    logger.info(
+                        "OCP monitor %s: bastion setup verified", project_id[:8]
+                    )
+                    break
+                missing = []
+                if verify_result and "ca:missing" in verify_result:
+                    missing.append("CA trust")
+                if verify_result and "logins:missing" in verify_result:
+                    missing.append("browser credentials")
+                _push(
+                    "certs",
+                    f"waiting for bastion setup ({', '.join(missing) or 'checking'})",
+                )
+                _t.sleep(10)
+            if not bastion_ready:
+                logger.warning(
+                    "OCP monitor %s: bastion setup incomplete", project_id[:8]
                 )
 
     elapsed_secs = int(_t.time() - start)
