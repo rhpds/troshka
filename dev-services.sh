@@ -81,27 +81,45 @@ stop_redis() {
     echo "  Redis:      stopped"
 }
 
+WORKER_COUNT=3
+
 start_worker() {
-    if [ -f "$PID_DIR/worker.pid" ] && kill -0 "$(cat "$PID_DIR/worker.pid")" 2>/dev/null; then
-        echo "  Worker:     already running"
-        return
-    fi
     cd "$BACKEND_DIR"
     if [ ! -d "venv" ]; then
         echo "  Worker:     skipped (no venv — start backend first)"
         return
     fi
     source venv/bin/activate
-    python3 -m app.workers.deploy_worker >>/tmp/troshka-worker.log 2>&1 &
-    echo $! > "$PID_DIR/worker.pid"
-    echo "  Worker:     started (PID $(cat "$PID_DIR/worker.pid"))"
+    local started=0
+    for i in $(seq 1 "$WORKER_COUNT"); do
+        local pidfile="$PID_DIR/worker-${i}.pid"
+        if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+            continue
+        fi
+        python3 -m app.workers.deploy_worker >>/tmp/troshka-worker.log 2>&1 &
+        echo $! > "$pidfile"
+        started=$((started + 1))
+    done
+    local running=0
+    for i in $(seq 1 "$WORKER_COUNT"); do
+        local pidfile="$PID_DIR/worker-${i}.pid"
+        [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null && running=$((running + 1))
+    done
+    if [ "$started" -gt 0 ]; then
+        echo "  Worker:     started $started ($running total)"
+    else
+        echo "  Worker:     $running already running"
+    fi
 }
 
 stop_worker() {
-    if [ -f "$PID_DIR/worker.pid" ]; then
-        kill "$(cat "$PID_DIR/worker.pid")" 2>/dev/null || true
-        rm -f "$PID_DIR/worker.pid"
-    fi
+    for i in $(seq 1 "$WORKER_COUNT"); do
+        local pidfile="$PID_DIR/worker-${i}.pid"
+        if [ -f "$pidfile" ]; then
+            kill "$(cat "$pidfile")" 2>/dev/null || true
+            rm -f "$pidfile"
+        fi
+    done
     echo "  Worker:     stopped"
 }
 
@@ -216,8 +234,12 @@ status() {
     else
         echo "  Backend:    STOPPED"
     fi
-    if [ -f "$PID_DIR/worker.pid" ] && kill -0 "$(cat "$PID_DIR/worker.pid")" 2>/dev/null; then
-        echo "  Worker:     RUNNING (PID $(cat "$PID_DIR/worker.pid"))"
+    local running_workers=0
+    for i in $(seq 1 "$WORKER_COUNT"); do
+        [ -f "$PID_DIR/worker-${i}.pid" ] && kill -0 "$(cat "$PID_DIR/worker-${i}.pid")" 2>/dev/null && running_workers=$((running_workers + 1))
+    done
+    if [ "$running_workers" -gt 0 ]; then
+        echo "  Worker:     RUNNING ($running_workers of $WORKER_COUNT)"
     else
         echo "  Worker:     STOPPED (backend runs jobs in-process)"
     fi
