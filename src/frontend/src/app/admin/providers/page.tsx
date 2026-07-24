@@ -109,7 +109,10 @@ export default function AdminProvidersPage() {
         for (const p of (Array.isArray(data) ? data : []).filter((pr: { type: string; host_count: number }) => pr.type === "kubevirt" && pr.host_count > 0)) {
           fetch(`/api/v1/providers/${p.id}/operator-status`)
             .then((r) => r.ok ? r.json() : null)
-            .then((s) => { if (s) setOperatorStatus((prev) => ({ ...prev, [p.id]: s })); })
+            .then((s) => { if (s) setOperatorStatus((prev) => {
+              if (prev[p.id]?.rolling_out && !s.up_to_date) return prev;
+              return { ...prev, [p.id]: s };
+            }); })
             .catch(() => {});
         }
         // Load build status for GCP/Azure providers
