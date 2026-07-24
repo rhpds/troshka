@@ -27,6 +27,8 @@ from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
+_deploy_semaphore = threading.Semaphore(100)
+
 # Ordered deploy steps — used for checkpoint-based resume
 DEPLOY_STEPS = [
     "eips",
@@ -2552,6 +2554,31 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
     """Background thread: deploy a project's topology to a host."""
+    acquired = _deploy_semaphore.acquire(timeout=300)
+    if not acquired:
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        s = SessionLocal()
+        try:
+            p = s.get(Project, project_id)
+            if p:
+                p.state = "error"
+                p.deploy_error = "Too many concurrent deploys — try again shortly"
+                s.commit()
+                notify_project(project_id, {"type": "project-state", "state": "error"})
+        finally:
+            s.close()
+        return
+    try:
+        _deploy_project_inner(project_id, auto_start, resume_from)
+    finally:
+        _deploy_semaphore.release()
+
+
+def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
+    project_id: str, auto_start: bool = True, resume_from: str | None = None
+):
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
@@ -5350,8 +5377,16 @@ def _set_destroy_error(project_id: str, error: str):
 
 
 def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
-    """Synchronously destroy a project's VMs and networks.
-    ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
+    """Synchronously destroy a project's VMs and networks."""
+    _deploy_semaphore.acquire()
+    try:
+        _destroy_project_inner(ctx, delete_record=delete_record)
+    finally:
+        _deploy_semaphore.release()
+
+
+def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
+    """ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
     When delete_record is False, the DB record is preserved (used by redeploy).
     """
     from app.core.database import SessionLocal
