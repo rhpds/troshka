@@ -80,6 +80,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       "/admin/hosts": "Hosts",
       "/admin/storage-pools": "Storage Pools",
       "/admin/dns-providers": "DNS Providers",
+      "/admin/queue": "Job Queue",
       "/getting-started": "Getting Started",
     };
     const pageTitle = titleMap[pathname || ""] || "";
@@ -188,6 +189,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { label: "Hosts", path: "/admin/hosts" },
     { label: "Storage Pools", path: "/admin/storage-pools" },
     { label: "DNS Providers", path: "/admin/dns-providers" },
+    { label: "Job Queue", path: "/admin/queue" },
   ];
 
   const masthead = (
