@@ -6,14 +6,17 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 
 - **Backend**: `src/backend/` — Python 3.11, FastAPI, SQLAlchemy 2, Alembic, Dynaconf
 - **Frontend**: `src/frontend/` — Next.js 15 (App Router), PatternFly 6, React Flow, Zustand
+- **Workers**: `src/backend/app/workers/` — RQ workers for background deploy/destroy/start/stop jobs
 - **Config**: `src/backend/config/config.yaml` (overrides: `config.local.yaml`, env vars `TROSHKA_*`)
 - **Database**: PostgreSQL 16 (port 5433 in dev), SQLite for tests
+- **Redis**: Job queue + shared state + pub/sub (optional — falls back to in-memory when unavailable)
 
 ## Dev Environment
 
 ```bash
-./dev-services.sh start          # Start everything (PostgreSQL + backend + frontend)
+./dev-services.sh start          # Start everything (PostgreSQL + Redis + backend + worker + frontend)
 ./dev-services.sh restart backend # Restart backend only (frontend hot-reloads)
+./dev-services.sh restart worker  # Restart RQ worker only
 ./scripts/host-ssh.sh            # SSH into first connected host (credentials from DB)
 ./scripts/host-ssh.sh -- <cmd>   # Run command on host
 ./scripts/host-db.sh             # Interactive Python shell with DB session + models
@@ -64,9 +67,24 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 
 ### Backend Services
 - Function-based modules (not classes)
-- Background threads get fresh DB sessions: `SessionLocal()`
-- Progress tracking: module-level dicts (e.g., `_deploy_progress`)
+- Background jobs run via RQ workers: `enqueue_job(func, *args)` from `app.core.redis`
+- When Redis unavailable: falls back to daemon threads (same behavior as before RQ)
+- Progress tracking: Redis keys (`set_progress` / `get_progress` / `delete_progress`)
 - Host operations: `troshkad_client.start_job()` / `poll_job()` / `wait_for_job()` / `cancel_job()`
+
+### Redis Job Queue
+- **Client**: `src/backend/app/core/redis.py` — singleton with full in-memory fallback
+- **Workers**: `src/backend/app/workers/deploy_worker.py` — same image, different entrypoint
+- **Queues**: `deploy` (deploy/destroy/stop/start), `provision` (host/pool provisioning), `default` (misc)
+- **State helpers**: `set_progress()`, `mark_cancelled()`, `is_cancelled()`, `add_to_set()`, `get_lock()`
+- **Distributed lock**: `get_lock(name)` returns `RedisLock` (Redis) or `_InMemoryLock` (fallback)
+- **Distributed semaphore**: `RedisSemaphore(name, limit)` — replaces `threading.Semaphore`
+- **Pub/sub bridge**: `notify_project()` publishes to Redis channel, each backend pod subscribes and delivers to local WS clients
+- **In-flight tracking**: `record_deploy_start(host_id)` / `record_deploy_end(host_id)` — placement uses these to spread load across clusters
+- **Rate limiting**: per-user deploy concurrency (20) and request rate (100/min) via Redis sliding window
+- **New background job**: use `from app.core.redis import enqueue_job` then `enqueue_job(func, arg1, arg2, queue_name="deploy")`
+- **Admin endpoint**: `GET /api/v1/admin/queue-status` — queue depths, active workers, in-flight deploys
+- Dev: `./dev-services.sh start` auto-starts Redis container + RQ worker
 
 ### Group-Based Access Control
 - Groups resolved at runtime from OpenShift `user.openshift.io/v1/groups` API via `kubernetes` Python client

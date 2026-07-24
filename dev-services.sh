@@ -5,7 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/src/backend"
 FRONTEND_DIR="$SCRIPT_DIR/src/frontend"
 DB_CONTAINER="troshka-postgres"
+REDIS_CONTAINER="troshka-redis"
 DB_PORT=5433
+REDIS_PORT=6379
 DB_USER="troshka"
 DB_PASS="troshka"
 DB_NAME="troshka"
@@ -48,6 +50,59 @@ start_db() {
 stop_db() {
     podman stop "$DB_CONTAINER" 2>/dev/null || true
     echo "  PostgreSQL: stopped"
+}
+
+start_redis() {
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+        echo "  Redis:      already running (port $REDIS_PORT)"
+        return
+    fi
+    if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+        podman start "$REDIS_CONTAINER"
+    else
+        podman run -d --name "$REDIS_CONTAINER" \
+            --restart=always \
+            -p "${REDIS_PORT}:6379" \
+            docker.io/library/redis:7
+    fi
+    echo -n "  Redis:      starting..."
+    for i in $(seq 1 10); do
+        if podman exec "$REDIS_CONTAINER" redis-cli ping &>/dev/null; then
+            echo " ready (port $REDIS_PORT)"
+            return
+        fi
+        sleep 1
+    done
+    echo " FAILED (backend will use in-memory fallback)"
+}
+
+stop_redis() {
+    podman stop "$REDIS_CONTAINER" 2>/dev/null || true
+    echo "  Redis:      stopped"
+}
+
+start_worker() {
+    if [ -f "$PID_DIR/worker.pid" ] && kill -0 "$(cat "$PID_DIR/worker.pid")" 2>/dev/null; then
+        echo "  Worker:     already running"
+        return
+    fi
+    cd "$BACKEND_DIR"
+    if [ ! -d "venv" ]; then
+        echo "  Worker:     skipped (no venv — start backend first)"
+        return
+    fi
+    source venv/bin/activate
+    python3 -m app.workers.deploy_worker >>/tmp/troshka-worker.log 2>&1 &
+    echo $! > "$PID_DIR/worker.pid"
+    echo "  Worker:     started (PID $(cat "$PID_DIR/worker.pid"))"
+}
+
+stop_worker() {
+    if [ -f "$PID_DIR/worker.pid" ]; then
+        kill "$(cat "$PID_DIR/worker.pid")" 2>/dev/null || true
+        rm -f "$PID_DIR/worker.pid"
+    fi
+    echo "  Worker:     stopped"
 }
 
 start_backend() {
@@ -151,10 +206,20 @@ status() {
     else
         echo "  PostgreSQL: STOPPED"
     fi
+    if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+        echo "  Redis:      RUNNING (port $REDIS_PORT)"
+    else
+        echo "  Redis:      STOPPED (backend uses in-memory fallback)"
+    fi
     if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
         echo "  Backend:    RUNNING (port $BACKEND_PORT)"
     else
         echo "  Backend:    STOPPED"
+    fi
+    if [ -f "$PID_DIR/worker.pid" ] && kill -0 "$(cat "$PID_DIR/worker.pid")" 2>/dev/null; then
+        echo "  Worker:     RUNNING (PID $(cat "$PID_DIR/worker.pid"))"
+    else
+        echo "  Worker:     STOPPED (backend runs jobs in-process)"
     fi
     if [ -f "$PID_DIR/frontend.pid" ] && kill -0 "$(cat "$PID_DIR/frontend.pid")" 2>/dev/null; then
         echo "  Frontend:   RUNNING (port $FRONTEND_PORT)"
@@ -165,13 +230,16 @@ status() {
     echo "  Frontend:   http://localhost:$FRONTEND_PORT"
     echo "  Backend:    http://localhost:$BACKEND_PORT"
     echo "  API Docs:   http://localhost:$BACKEND_PORT/docs"
+    echo "  Queue:      http://localhost:$BACKEND_PORT/api/v1/admin/queue-status"
 }
 
 case "${1:-status}" in
     start)
         echo "=== Starting Troshka ==="
         start_db
+        start_redis
         start_backend
+        start_worker
         start_frontend
         echo ""
         echo "  Frontend:   http://localhost:$FRONTEND_PORT"
@@ -182,14 +250,18 @@ case "${1:-status}" in
         case "${2:-all}" in
             backend) echo "=== Stopping Backend ==="; stop_backend "${3:-}" ;;
             frontend) echo "=== Stopping Frontend ==="; stop_frontend ;;
+            worker) echo "=== Stopping Worker ==="; stop_worker ;;
+            redis) echo "=== Stopping Redis ==="; stop_redis ;;
             db) echo "=== Stopping PostgreSQL ==="; stop_db ;;
             all)
                 echo "=== Stopping Troshka ==="
                 stop_frontend
+                stop_worker
                 stop_backend "${3:-}"
+                stop_redis
                 stop_db
                 ;;
-            *) echo "Usage: $0 stop [backend|frontend|db]"; exit 1 ;;
+            *) echo "Usage: $0 stop [backend|frontend|worker|redis|db]"; exit 1 ;;
         esac
         ;;
     restart)
@@ -209,16 +281,25 @@ case "${1:-status}" in
                 echo ""
                 echo "  Frontend:   http://localhost:$FRONTEND_PORT"
                 ;;
+            worker)
+                echo "=== Restarting Worker ==="
+                stop_worker
+                start_worker
+                ;;
             all|--force)
                 FORCE=""
                 [ "${2:-}" = "--force" ] && FORCE="--force"
                 [ "${3:-}" = "--force" ] && FORCE="--force"
                 echo "=== Restarting Troshka ==="
                 stop_frontend
+                stop_worker
                 stop_backend "$FORCE"
+                stop_redis
                 stop_db
                 start_db
+                start_redis
                 start_backend
+                start_worker
                 start_frontend
                 echo ""
                 echo "  Frontend:   http://localhost:$FRONTEND_PORT"
@@ -251,9 +332,9 @@ case "${1:-status}" in
         ;;
     status) status ;;
     *)
-        echo "Usage: $0 {start|stop|restart [backend|frontend] [--force]|status}"
+        echo "Usage: $0 {start|stop|restart [backend|frontend|worker|redis] [--force]|status}"
         echo "       $0 backend {start|stop|restart} [--force]"
-        echo "       $0 {db|frontend} {start|stop}"
+        echo "       $0 {db|redis|frontend|worker} {start|stop}"
         exit 1
         ;;
 esac
