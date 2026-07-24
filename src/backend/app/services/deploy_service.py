@@ -2554,7 +2554,7 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
     """Background thread: deploy a project's topology to a host."""
-    acquired = _deploy_semaphore.acquire(timeout=300)
+    acquired = _deploy_semaphore.acquire(timeout=1800)
     if not acquired:
         from app.core.database import SessionLocal
         from app.models.project import Project
