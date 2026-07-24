@@ -130,33 +130,44 @@ def start_redis_listener():
 
 
 def _redis_listen_loop():
-    """Subscribe to Redis pub/sub channels and dispatch to local WS clients."""
-    try:
-        from app.core.redis import get_redis
+    """Subscribe to Redis pub/sub channels and dispatch to local WS clients.
 
-        r = get_redis()
-        ps = r.pubsub()
-        ps.psubscribe("project:*")
+    Reconnects automatically on timeout or connection loss.
+    """
+    import time as _time
 
-        for msg in ps.listen():
-            if msg["type"] not in ("pmessage",):
-                continue
-            channel = msg["channel"]
-            if isinstance(channel, bytes):
-                channel = channel.decode()
-            # Extract project_id from channel name "project:{id}"
-            if not channel.startswith("project:"):
-                continue
-            project_id = channel[8:]  # len("project:") == 8
+    import redis as _redis
 
-            try:
-                data = json.loads(msg["data"])
-            except (json.JSONDecodeError, TypeError):
-                continue
+    while True:
+        try:
+            from app.core.redis import _get_redis_url
 
-            _deliver_locally(project_id, data)
-    except Exception:
-        logger.exception("Redis pub/sub listener crashed")
+            conn = _redis.from_url(
+                _get_redis_url(), decode_responses=True, socket_timeout=None
+            )
+            ps = conn.pubsub()
+            ps.psubscribe("project:*")
+            logger.info("Redis pub/sub listener connected")
+
+            for msg in ps.listen():
+                if msg["type"] not in ("pmessage",):
+                    continue
+                channel = msg["channel"]
+                if isinstance(channel, bytes):
+                    channel = channel.decode()
+                if not channel.startswith("project:"):
+                    continue
+                project_id = channel[8:]
+
+                try:
+                    data = json.loads(msg["data"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                _deliver_locally(project_id, data)
+        except Exception:
+            logger.warning("Redis pub/sub listener disconnected, reconnecting in 5s")
+            _time.sleep(5)
 
 
 _last_states: dict[str, dict] = {}
