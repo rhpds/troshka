@@ -93,6 +93,7 @@ export default function ProjectCanvasPage() {
         setProjectHostId(data.host_id || "");
         useCanvasStore.setState({ providerType: data.provider_type || null });
         setDeployError(data.deploy_error || null);
+        if (data.deploy_progress && !deployProgress) setDeployProgress(data.deploy_progress);
         setAutoStopMinutes(data.auto_stop_minutes ?? null);
         setAutoDeleteMinutes(data.auto_delete_minutes ?? null);
         setAutoStopExpiresAt(data.auto_stop_expires_at ?? null);
@@ -201,6 +202,22 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     if (ws.deployProgress) setDeployProgress(ws.deployProgress);
   }, [ws.deployProgress]);
+
+  // REST fallback: poll deploy progress when WS isn't delivering updates
+  useEffect(() => {
+    if (!["deploying", "reconfiguring", "starting", "stopping"].includes(projectState)) return;
+    const interval = setInterval(() => {
+      fetch(`/api/v1/projects/${projectId}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.deploy_progress) setDeployProgress(data.deploy_progress);
+          if (data?.state && data.state !== projectState) setProjectState(data.state);
+          if (data?.deploy_error) setDeployError(data.deploy_error);
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [projectState, projectId]);
 
   // WebSocket → topology update from another session
   useEffect(() => {
