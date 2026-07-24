@@ -134,12 +134,18 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             "name": kv_name,
             "namespace": vm_cr["metadata"]["namespace"],
             "labels": {"app": "troshka", "troshka-vm": name},
+            "annotations": {
+                "mutatevirtualmachines.kubemacpool.io": "ignore",
+            },
         },
         "spec": {
             "running": False,
             "template": {
                 "metadata": {
                     "labels": {"app": "troshka", "troshka-vm": name},
+                    "annotations": {
+                        "mutatevirtualmachines.kubemacpool.io": "ignore",
+                    },
                 },
                 "spec": {
                     "domain": domain,
