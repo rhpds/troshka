@@ -83,7 +83,7 @@ redis:
   url: ""
 
 worker:
-  replicas: 3
+  replicas: 100
   resources:
     requests:
       cpu: 250m
