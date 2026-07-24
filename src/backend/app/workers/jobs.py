@@ -186,17 +186,10 @@ def job_redeploy_bg(project_id: str, destroy_ctx: dict | None, old_host_id: str 
 
 
 def job_bulk_deploy_projects(project_ids: list[str]):
-    """Deploy multiple projects sequentially.
+    """Place and deploy multiple projects — each deploy enqueued as a separate job."""
+    from app.api.patterns import _bulk_deploy_projects
 
-    Previously defined in patterns.py.
-    """
-    from app.services.deploy_service import deploy_project_async
-
-    for pid in project_ids:
-        try:
-            deploy_project_async(pid)
-        except Exception:
-            logger.exception("Bulk deploy failed for %s", pid[:8])
+    _bulk_deploy_projects(project_ids)
 
 
 def job_clean_pattern_cache(pattern_id: str):
