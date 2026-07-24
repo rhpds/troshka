@@ -182,6 +182,9 @@ def job_redeploy_bg(project_id: str, destroy_ctx: dict | None, old_host_id: str 
     finally:
         s.close()
 
+    from app.services.deploy_service import _clear_deploy_cancelled
+
+    _clear_deploy_cancelled(project_id)
     deploy_project_async(project_id)
 
 
