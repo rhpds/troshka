@@ -790,18 +790,24 @@ class KubeVirtDriver(ProviderDriver):
                     pv_names.add(pvc.spec.volume_name)
             if pv_names:
                 for _ in range(30):
-                    vas = storage_api.list_volume_attachment()
+                    was = storage_api.list_volume_attachment()
                     matching = [
-                        va for va in getattr(vas, "items", [])
-                        if getattr(va.spec.source, "persistent_volume_name", None) in pv_names
+                        va
+                        for va in getattr(was, "items", [])
+                        if getattr(va.spec.source, "persistent_volume_name", None)
+                        in pv_names
                     ]
                     if not matching:
                         break
                     for va in matching:
-                        attached = getattr(getattr(va, "status", None), "attached", True)
+                        attached = getattr(
+                            getattr(va, "status", None), "attached", True
+                        )
                         if not attached:
                             try:
-                                storage_api.delete_volume_attachment(name=va.metadata.name)
+                                storage_api.delete_volume_attachment(
+                                    name=va.metadata.name
+                                )
                             except Exception:
                                 pass
                     time.sleep(2)
@@ -896,7 +902,32 @@ class KubeVirtDriver(ProviderDriver):
                 name=f"project-{project_id[:8]}",
             )
             s = dict(cr).get("status", {})  # type: ignore[call-overload]
-            return s if isinstance(s, dict) else {}
+            if not isinstance(s, dict):
+                s = {}
+            # Include DataVolumes from both project and cache namespaces
+            dvs = []
+            try:
+                project_dvs = custom_api.list_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace=namespace,
+                    plural="datavolumes",
+                )
+                dvs.extend(dict(project_dvs).get("items", []))  # type: ignore[call-overload]
+            except Exception:
+                pass
+            try:
+                cache_dvs = custom_api.list_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace="troshka-cache",
+                    plural="datavolumes",
+                )
+                dvs.extend(dict(cache_dvs).get("items", []))  # type: ignore[call-overload]
+            except Exception:
+                pass
+            s["dataVolumes"] = dvs
+            return s
         except Exception:
             return {}
 
