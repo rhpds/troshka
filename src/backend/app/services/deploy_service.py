@@ -5000,12 +5000,11 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
                     'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
                     'else echo "ca:stale"; fi; '
-                    # Check Firefox logins.json has the current cluster's OAuth URL
-                    "OAUTH_HOST=oauth-openshift.apps.$(oc whoami --show-server 2>/dev/null "
-                    "  | sed 's|https://api\\.||;s|:6443||'); "
-                    "LOGINS=$(cat /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null); "
-                    'if echo "$LOGINS" | grep -q "$OAUTH_HOST" 2>/dev/null; then echo "logins:ok"; '
-                    'elif [ -z "$LOGINS" ]; then echo "logins:missing"; '
+                    # Check Firefox logins.json was written after VM boot (not stale from pattern)
+                    'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
+                    "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
+                    'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
+                    'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
                     'else echo "logins:stale"; fi',
                     timeout=20,
                 )
