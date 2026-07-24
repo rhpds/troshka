@@ -904,7 +904,7 @@ class KubeVirtDriver(ProviderDriver):
             s = dict(cr).get("status", {})  # type: ignore[call-overload]
             if not isinstance(s, dict):
                 s = {}
-            # Include DataVolumes from both project and cache namespaces
+            # Include DataVolumes from the project namespace
             dvs = []
             try:
                 project_dvs = custom_api.list_namespaced_custom_object(
@@ -916,14 +916,25 @@ class KubeVirtDriver(ProviderDriver):
                 dvs.extend(dict(project_dvs).get("items", []))  # type: ignore[call-overload]
             except Exception:
                 pass
+            # Include cache DVs only for golden PVCs this project references
             try:
-                cache_dvs = custom_api.list_namespaced_custom_object(
-                    group="cdi.kubevirt.io",
-                    version="v1beta1",
-                    namespace="troshka-cache",
-                    plural="datavolumes",
-                )
-                dvs.extend(dict(cache_dvs).get("items", []))  # type: ignore[call-overload]
+                # Build set of golden names from project's clone DVs
+                golden_refs = set()
+                for dv in dvs:
+                    source = dv.get("spec", {}).get("source", {})
+                    pvc_src = source.get("pvc", {})
+                    if pvc_src.get("namespace") == "troshka-cache":
+                        golden_refs.add(pvc_src.get("name", ""))
+                if golden_refs:
+                    cache_dvs = custom_api.list_namespaced_custom_object(
+                        group="cdi.kubevirt.io",
+                        version="v1beta1",
+                        namespace="troshka-cache",
+                        plural="datavolumes",
+                    )
+                    for cdv in dict(cache_dvs).get("items", []):  # type: ignore[call-overload]
+                        if cdv.get("metadata", {}).get("name") in golden_refs:
+                            dvs.append(cdv)
             except Exception:
                 pass
             s["dataVolumes"] = dvs
