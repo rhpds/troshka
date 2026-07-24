@@ -703,7 +703,7 @@ export default function AdminProvidersPage() {
                     <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
                       {p.type !== "ocpvirt" && p.type !== "kubevirt" && p.default_region}
                       {p.type !== "s3" && p.type !== "s3_readonly" && <span>{p.type !== "ocpvirt" && p.type !== "kubevirt" && " · "}{p.host_count} host{p.host_count !== 1 ? "s" : ""}</span>}
-                      {(p.type === "s3" || p.type === "s3_readonly") && <span> · {p.endpoint_url || "AWS S3"}</span>}
+                      {(p.type === "s3" || p.type === "s3_readonly") && <span>{p.endpoint_url || "AWS S3"}</span>}
                       {p.type === "ec2" && (
                         p.default_image
                           ? <span> · Image: <code style={{ fontSize: 11 }}>{p.default_image}</code></span>
