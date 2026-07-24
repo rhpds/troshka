@@ -177,9 +177,18 @@ def list_projects(
 
     from app.services.deploy_service import _get_deploy_progress_data
 
+    owner_ids = {p.owner_id for p in projects}
+    owners_by_id = {}
+    if owner_ids:
+        owners = db.query(User).filter(User.id.in_(owner_ids)).all()
+        owners_by_id = {u.id: u for u in owners}
+
     results = []
     for p in projects:
         resp = ProjectResponse.model_validate(p)
+        owner = owners_by_id.get(p.owner_id)
+        if owner:
+            resp.owner_email = owner.email
         h = hosts_by_id.get(p.host_id) if p.host_id else None
         if h:
             resp.host_instance_id = h.instance_id

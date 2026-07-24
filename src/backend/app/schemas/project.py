@@ -34,6 +34,7 @@ class ProjectResponse(BaseModel):
     name: str
     description: str | None = None
     owner_id: str
+    owner_email: str | None = None
     provider_id: str | None = None
     host_type: str
     state: str
