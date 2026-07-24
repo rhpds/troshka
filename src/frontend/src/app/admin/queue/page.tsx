@@ -24,6 +24,8 @@ interface WorkerInfo {
   state: string;
   queues: string[];
   current_job: string;
+  current_queue: string;
+  current_func: string;
   successful_count: number;
   failed_count: number;
   total_working_time: number;
@@ -191,7 +193,7 @@ export default function QueuePage() {
                 <tr style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
                   <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>WORKER</th>
                   <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>STATE</th>
-                  <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>QUEUES</th>
+                  <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>CURRENT JOB</th>
                   <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>OK</th>
                   <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>FAIL</th>
                 </tr>
@@ -205,7 +207,13 @@ export default function QueuePage() {
                         {w.state}
                       </Label>
                     </td>
-                    <td style={{ padding: "6px 8px", fontSize: 11, opacity: 0.7 }}>{w.queues.join(", ")}</td>
+                    <td style={{ padding: "6px 8px", fontSize: 11 }}>
+                      {w.state === "busy" && w.current_func ? (
+                        <><Label isCompact color="blue">{w.current_queue}</Label> <span style={{ opacity: 0.7 }}>{w.current_func}</span></>
+                      ) : (
+                        <span style={{ opacity: 0.4 }}>—</span>
+                      )}
+                    </td>
                     <td style={{ padding: "6px 8px", textAlign: "right" }}>{w.successful_count}</td>
                     <td style={{ padding: "6px 8px", textAlign: "right", color: w.failed_count > 0 ? "var(--pf-t--global--color--status--danger--default)" : undefined }}>{w.failed_count}</td>
                   </tr>

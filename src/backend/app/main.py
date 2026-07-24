@@ -495,6 +495,12 @@ def queue_status(user=Depends(require_role("admin"))):
                     "state": w.get_state(),
                     "queues": [q.name for q in w.queues],
                     "current_job": str(w.get_current_job_id() or ""),
+                    "current_queue": (
+                        cj.origin if (cj := w.get_current_job()) else ""  # type: ignore[assignment]
+                    ),
+                    "current_func": (
+                        cj.func_name.split(".")[-1] if (cj := w.get_current_job()) else ""  # type: ignore[assignment]
+                    ),
                     "successful_count": w.successful_job_count,
                     "failed_count": w.failed_job_count,
                     "total_working_time": w.total_working_time,
