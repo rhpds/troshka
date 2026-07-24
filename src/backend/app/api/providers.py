@@ -265,7 +265,6 @@ def create_provider(
             logger.warning("Central library auto-sync failed: %s", e)
 
     if body.type == "ocpvirt":
-        import threading
         import uuid as _uuid
 
         from app.models.host import Host
@@ -337,10 +336,17 @@ def create_provider(
             finally:
                 s.close()
 
-        threading.Thread(target=_provision_ocpvirt_host, daemon=True).start()
+        from app.core.redis import enqueue_job
+        from app.workers.jobs import job_provision_ocpvirt_host
+
+        enqueue_job(
+            job_provision_ocpvirt_host,
+            _provider_id,
+            _host_id,
+            queue_name="provision",
+        )
 
     if body.type == "kubevirt":
-        import threading
         import uuid as _uuid
 
         from app.models.host import Host
@@ -416,7 +422,10 @@ def create_provider(
             finally:
                 s.close()
 
-        threading.Thread(target=_provision_kubevirt, daemon=True).start()
+        from app.core.redis import enqueue_job
+        from app.workers.jobs import job_provision_kubevirt
+
+        enqueue_job(job_provision_kubevirt, _provider_id, queue_name="provision")
 
     return ProviderResponse(
         id=provider.id,
@@ -2049,8 +2058,6 @@ def build_image(
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    import threading
-
     from app.services import image_builder_service
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -2076,12 +2083,15 @@ def build_image(
             detail=f"Invalid RHEL version. Must be one of: {', '.join(sorted(VALID_RHEL_VERSIONS))}",
         )
 
-    threading.Thread(
-        target=image_builder_service.build_host_image,
-        args=(provider_id, user.id, rhel_version),
-        daemon=True,
-        name=f"image-build-{provider_id[:8]}",
-    ).start()
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        image_builder_service.build_host_image,
+        provider_id,
+        user.id,
+        rhel_version,
+        queue_name="provision",
+    )
 
     return {"status": "started", "message": f"Building {rhel_version} image..."}
 

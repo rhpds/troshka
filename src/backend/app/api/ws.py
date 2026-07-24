@@ -49,14 +49,14 @@ def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
 
 def _build_snapshot(project: Project, db) -> dict:
     """Build initial WS snapshot from cached poller data only."""
-    from app.services.deploy_service import _deploy_progress
+    from app.services.deploy_service import _get_deploy_progress_data
     from app.services.ws_pubsub import get_cached_vm_states
 
     snapshot: dict = {
         "type": "snapshot",
         "project_state": project.state,
         "deploy_error": project.deploy_error,
-        "deploy_progress": _deploy_progress.get(project.id),
+        "deploy_progress": _get_deploy_progress_data(project.id),
         "vm_states": {},
         "vm_progress": {},
     }

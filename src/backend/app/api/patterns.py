@@ -6,7 +6,6 @@ import copy
 import datetime
 import logging
 import random
-import threading
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -299,19 +298,16 @@ def create_pattern(
 
     # If capturing from project, kick off async disk capture
     if body.source_project_id:
+        from app.core.redis import enqueue_job
         from app.services.pattern_service import capture_pattern_disks
 
-        threading.Thread(
-            target=capture_pattern_disks,
-            args=(
-                pattern.id,
-                body.source_project_id,
-                body.restart_after,
-                body.quiesce_cluster,
-            ),
-            name=f"capture-{pattern.id[:8]}",
-            daemon=True,
-        ).start()
+        enqueue_job(
+            capture_pattern_disks,
+            pattern.id,
+            body.source_project_id,
+            body.restart_after,
+            body.quiesce_cluster,
+        )
 
     return _pattern_to_detail_dict(pattern)
 
@@ -507,11 +503,9 @@ def import_pattern(
     db.commit()
     db.refresh(pattern)
 
-    threading.Thread(
-        target=import_pattern_from_tar,
-        args=(pattern.id, file.file, user.id, name),
-        daemon=True,
-    ).start()
+    from app.core.redis import enqueue_job
+
+    enqueue_job(import_pattern_from_tar, pattern.id, file.file, user.id, name)
 
     return {"id": pattern.id, "state": "importing", "name": pattern.name}
 
@@ -580,7 +574,6 @@ def delete_pattern(
     db.commit()
 
     # Clean pattern cache on all hosts in background
-    import threading
 
     def _clean_pattern_cache(pid: str):
         from app.core.database import SessionLocal
@@ -603,9 +596,10 @@ def delete_pattern(
         finally:
             s.close()
 
-    threading.Thread(
-        target=_clean_pattern_cache, args=(pattern_id,), daemon=True
-    ).start()
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_clean_pattern_cache
+
+    enqueue_job(job_clean_pattern_cache, pattern_id, queue_name="default")
 
 
 # ---------------------------------------------------------------------------
@@ -818,12 +812,9 @@ def deploy_pattern(
         project.state = "deploying"
         project.deploy_started_at = datetime.datetime.now(datetime.UTC)
         db.commit()
-        threading.Thread(
-            target=deploy_project_async,
-            args=(project.id, body.auto_start),
-            daemon=True,
-            name=f"deploy-{project.id[:8]}",
-        ).start()
+        from app.core.redis import enqueue_job
+
+        enqueue_job(deploy_project_async, project.id, body.auto_start)
 
     return {
         "id": project.id,
@@ -874,8 +865,10 @@ def _bulk_deploy_projects(project_ids: list[str]):
     finally:
         s.close()
 
+    from app.core.redis import enqueue_job
+
     for pid in ready_ids:
-        threading.Thread(target=deploy_project_async, args=(pid,), daemon=True).start()
+        enqueue_job(deploy_project_async, pid)
 
 
 @router.post("/{pattern_id}/bulk-deploy", status_code=201)
@@ -938,11 +931,10 @@ def bulk_deploy_pattern(
 
     if body.auto_deploy:
         project_ids = [p.id for p in projects]
-        import threading
+        from app.core.redis import enqueue_job
+        from app.workers.jobs import job_bulk_deploy_projects
 
-        threading.Thread(
-            target=_bulk_deploy_projects, args=(project_ids,), daemon=True
-        ).start()
+        enqueue_job(job_bulk_deploy_projects, project_ids)
 
     return {
         "pattern_id": pattern_id,

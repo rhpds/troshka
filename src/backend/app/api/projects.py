@@ -175,7 +175,7 @@ def list_projects(
                 for pv in db.query(Provider).filter(Provider.id.in_(prov_ids)).all()
             }
 
-    from app.services.deploy_service import _deploy_progress
+    from app.services.deploy_service import _get_deploy_progress_data
 
     results = []
     for p in projects:
@@ -188,7 +188,7 @@ def list_projects(
             if prov:
                 resp.host_provider_name = prov.name
                 resp.host_provider_type = prov.type
-        dp = _deploy_progress.get(p.id)
+        dp = _get_deploy_progress_data(p.id)
         if dp:
             resp.deploy_progress = dp
         results.append(resp)
@@ -959,15 +959,10 @@ def deploy_project(
     project.vni_map = result.get("vni_map")
     db.commit()
 
-    # Deploy in background
-    import threading
+    # Deploy via job queue
+    from app.core.redis import enqueue_job
 
-    threading.Thread(
-        target=deploy_project_async,
-        args=(project.id,),
-        daemon=True,
-        name=f"deploy-{project.id[:8]}",
-    ).start()
+    enqueue_job(deploy_project_async, project.id)
 
     return {
         "status": "deploying",
@@ -999,14 +994,9 @@ def stop_project(
         project_id, {"type": "project-state", "state": "stopping", "deploy_error": None}
     )
 
-    import threading
+    from app.core.redis import enqueue_job
 
-    threading.Thread(
-        target=stop_project_async,
-        args=(project.id,),
-        daemon=True,
-        name=f"stop-{project.id[:8]}",
-    ).start()
+    enqueue_job(stop_project_async, project.id)
 
     return {"status": "stopping"}
 
@@ -1094,14 +1084,9 @@ def start_project(
         project_id, {"type": "project-state", "state": "starting", "deploy_error": None}
     )
 
-    import threading
+    from app.core.redis import enqueue_job
 
-    threading.Thread(
-        target=start_project_async,
-        args=(project.id,),
-        daemon=True,
-        name=f"start-{project.id[:8]}",
-    ).start()
+    enqueue_job(start_project_async, project.id)
 
     return {"status": "starting"}
 
@@ -1139,6 +1124,25 @@ def _get_project_and_host(
     return project, host
 
 
+def _set_redeploy_progress(dom: str, data: dict):
+    from app.core.redis import set_progress
+
+    set_progress(f"redeploy:{dom}", data)
+
+
+def _get_redeploy_progress(dom: str) -> dict | None:
+    from app.core.redis import get_progress
+
+    return get_progress(f"redeploy:{dom}")
+
+
+def _delete_redeploy_progress(dom: str):
+    from app.core.redis import delete_progress
+
+    delete_progress(f"redeploy:{dom}")
+
+
+# Legacy compatibility — ws_pubsub imports this
 _redeploy_progress: dict[str, dict] = {}
 
 
@@ -2219,8 +2223,9 @@ def reconfigure_project(
     def _do_reconfigure():
         from app.core.database import SessionLocal
         from app.services.deploy_service import (
-            _deploy_progress,
+            _delete_deploy_progress,
             _resolve_boot_devs,
+            _set_deploy_progress,
             _vm_domain_name,
         )
 
@@ -2372,7 +2377,7 @@ def reconfigure_project(
                         "EIP allocation/association failed — check server logs"
                     )
 
-            _deploy_progress[p_id] = {"step": "networking", "detail": "configuring"}
+            _set_deploy_progress(p_id, {"step": "networking", "detail": "configuring"})
 
             from app.services.deploy_service import _get_network_lock
 
@@ -2382,7 +2387,7 @@ def reconfigure_project(
                 proj.state = "error"
                 proj.deploy_error = f"Network setup failed: {net_result}"
                 s.commit()
-                _deploy_progress.pop(p_id, None)
+                _delete_deploy_progress(p_id)
                 return
 
             # Only cache images and deploy metadata when VMs changed
@@ -2393,7 +2398,7 @@ def reconfigure_project(
             )
 
             if has_vm_changes:
-                _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
                 def _reconfig_dl_progress(downloaded, total):
                     pct = (
@@ -2401,16 +2406,19 @@ def reconfigure_project(
                         if total > 0
                         else "..."
                     )
-                    _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+                    _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
 
                 cache_library_images(
                     current, h, s, progress_callback=_reconfig_dl_progress
                 )
             if has_vm_changes:
-                _deploy_progress[p_id] = {
-                    "step": "cloud-init",
-                    "detail": "deploying metadata service",
-                }
+                _set_deploy_progress(
+                    p_id,
+                    {
+                        "step": "cloud-init",
+                        "detail": "deploying metadata service",
+                    },
+                )
                 from app.services.deploy_service import _setup_metadata_via_troshkad
 
                 try:
@@ -2571,10 +2579,13 @@ def reconfigure_project(
 
                 if any_disk_changed:
                     if needs_library_download:
-                        _deploy_progress[p_id] = {
-                            "step": "checking images",
-                            "detail": "",
-                        }
+                        _set_deploy_progress(
+                            p_id,
+                            {
+                                "step": "checking images",
+                                "detail": "",
+                            },
+                        )
                         cache_library_images(current, h, s)
                     # Remove changed disk files
                     if files_to_remove:
@@ -2659,7 +2670,9 @@ def reconfigure_project(
                     current_cfg["disks"] != desired_disks,
                     sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
                 )
-                _deploy_progress[p_id] = {"step": "reconfiguring", "detail": vm["name"]}
+                _set_deploy_progress(
+                    p_id, {"step": "reconfiguring", "detail": vm["name"]}
+                )
                 disk_only_change = (
                     current_cfg["disks"] != desired_disks
                     and current_cfg["boot_devs"] == boot_devs
@@ -2691,7 +2704,7 @@ def reconfigure_project(
                     errors.append(f"Failed to reconfigure {dom}: {e}")
 
             if diff["added_vms"]:
-                _deploy_progress[p_id] = {"step": "downloading", "detail": "0%"}
+                _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
                 def _progress(downloaded, total):
                     pct = (
@@ -2699,11 +2712,11 @@ def reconfigure_project(
                         if total > 0
                         else "..."
                     )
-                    _deploy_progress[p_id] = {"step": "downloading", "detail": pct}
+                    _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
 
                 cache_library_images(current, h, s, progress_callback=_progress)
                 _create_seed_isos_via_troshkad(h, p_id, current)
-                _deploy_progress[p_id] = {"step": "creating", "detail": "VMs"}
+                _set_deploy_progress(p_id, {"step": "creating", "detail": "VMs"})
                 for vm_node in diff["added_vms"]:
                     vd = vm_node.get("data", {})
                     vm_data = {
@@ -2801,7 +2814,7 @@ def reconfigure_project(
             else:
                 proj.deploy_error = "\n".join(errors)
             s.commit()
-            _deploy_progress.pop(p_id, None)
+            _delete_deploy_progress(p_id)
             notify_project(
                 p_id,
                 {
@@ -2843,7 +2856,7 @@ def reconfigure_project(
             if proj:
                 proj.state = "error"
                 s.commit()
-            _deploy_progress.pop(p_id, None)
+            _delete_deploy_progress(p_id)
         finally:
             s.close()
 
@@ -3074,9 +3087,9 @@ def redeploy_project(
         }
 
     # Cancel any in-flight deploy thread for this project
-    from app.services.deploy_service import _deploy_cancelled
+    from app.services.deploy_service import _mark_deploy_cancelled
 
-    _deploy_cancelled.add(project.id)
+    _mark_deploy_cancelled(project.id)
 
     # Set state to deploying and return immediately
     project.state = "deploying"
@@ -3191,7 +3204,6 @@ def delete_project(
 
     if project.host_id and project.state not in ("draft",):
         import copy
-        import threading
 
         project.state = "deleting"
         project.deploy_error = None
@@ -3208,12 +3220,9 @@ def delete_project(
             "dns_provider_id": project.dns_provider_id,
             "domain": project.domain,
         }
-        threading.Thread(
-            target=destroy_project_sync,
-            args=(destroy_ctx,),
-            daemon=True,
-            name=f"destroy-{project.id[:8]}",
-        ).start()
+        from app.core.redis import enqueue_job
+
+        enqueue_job(destroy_project_sync, destroy_ctx)
         return {"status": "deleting", "id": project_id}
 
     db.delete(project)

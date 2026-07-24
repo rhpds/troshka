@@ -16,6 +16,23 @@ import time as _time
 import boto3  # noqa: F401 — eager import to prevent thread race
 import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
 
+from app.core.redis import (
+    RedisSemaphore,
+    add_to_set,
+    clear_cancelled,
+    delete_progress,
+    get_lock,
+    get_progress,
+    is_in_set,
+    remove_from_set,
+    set_progress,
+)  # noqa: F401
+from app.core.redis import (
+    is_cancelled as _redis_is_cancelled,
+)
+from app.core.redis import (
+    mark_cancelled as _redis_mark_cancelled,
+)
 from app.models.host import Host
 from app.models.pattern import Pattern
 from app.services.troshkad_client import (
@@ -27,7 +44,7 @@ from app.services.ws_pubsub import notify_project
 
 logger = logging.getLogger(__name__)
 
-_deploy_semaphore = threading.Semaphore(100)
+_deploy_semaphore = RedisSemaphore("deploy", limit=100, ttl=7200)
 
 # Ordered deploy steps — used for checkpoint-based resume
 DEPLOY_STEPS = [
@@ -44,9 +61,31 @@ DEPLOY_STEPS = [
     "done",
 ]
 
-_active_health_monitors: set = set()
-_deploy_progress: dict[str, dict] = {}
-_deploy_cancelled: set = set()
+_HEALTH_MONITORS_SET = "deploy:health_monitors"
+
+
+def _set_deploy_progress(project_id: str, data: dict):
+    set_progress(f"deploy:{project_id}", data)
+
+
+def _get_deploy_progress_data(project_id: str) -> dict | None:
+    return get_progress(f"deploy:{project_id}")
+
+
+def _delete_deploy_progress(project_id: str):
+    delete_progress(f"deploy:{project_id}")
+
+
+def _mark_deploy_cancelled(project_id: str):
+    _redis_mark_cancelled(project_id)
+
+
+def _is_deploy_cancelled(project_id: str) -> bool:
+    return _redis_is_cancelled(project_id)
+
+
+def _clear_deploy_cancelled(project_id: str):
+    clear_cancelled(project_id)
 
 
 def validate_topology_names(topology: dict) -> list[str]:
@@ -144,7 +183,7 @@ def _update_deploy_progress(
     progress: dict = {"step": step, "detail": detail}
     if items is not None:
         progress["items"] = items
-    _deploy_progress[project_id] = progress
+    _set_deploy_progress(project_id, progress)
     notify_project(project_id, {"type": "deploy-progress", "progress": progress})
     try:
         from app.core.database import SessionLocal as _DP_SL
@@ -161,9 +200,10 @@ def _update_deploy_progress(
 
 
 def get_deploy_progress(project_id: str) -> dict | None:
-    """Get deploy progress — in-memory first, fall back to DB."""
-    if project_id in _deploy_progress:
-        return _deploy_progress[project_id]
+    """Get deploy progress — Redis first, fall back to DB."""
+    cached = _get_deploy_progress_data(project_id)
+    if cached:
+        return cached
     from app.core.database import SessionLocal as _SL
     from app.models.project import Project
 
@@ -184,7 +224,7 @@ def _checkpoint(session, project_id: str, step: str):
     project = session.query(Project).filter_by(id=project_id).first()
     if project:
         project.deploy_step = step
-        progress = _deploy_progress.get(project_id)
+        progress = _get_deploy_progress_data(project_id)
         if progress:
             project.deploy_progress = progress
         session.commit()
@@ -201,16 +241,11 @@ def _should_skip(resume_from: str | None, step: str) -> bool:
 
 
 # Per-host locks for nftables-touching network setup (concurrent deploys on
-# different hosts can proceed in parallel)
-_network_locks: dict[str, threading.Lock] = {}
-_network_locks_guard = threading.Lock()
+# different hosts can proceed in parallel) — distributed via Redis
 
 
-def _get_network_lock(host_id: str) -> threading.Lock:
-    with _network_locks_guard:
-        if host_id not in _network_locks:
-            _network_locks[host_id] = threading.Lock()
-        return _network_locks[host_id]
+def _get_network_lock(host_id: str):
+    return get_lock(f"network:{host_id}", timeout=600)
 
 
 # ── Shared storage pool helpers ──
@@ -2271,9 +2306,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     for attempt in range(1440):
         if _time.time() > deploy_deadline:
             break
-        if project_id in _deploy_cancelled:
+        if _is_deploy_cancelled(project_id):
             logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
-            _deploy_cancelled.discard(project_id)
+            _clear_deploy_cancelled(project_id)
             return
         if _project_deleted(project_id):
             return
@@ -2442,7 +2477,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         op_stage = progress.get("stage", "") if progress else ""
         op_detail = progress.get("detail", "") if progress else ""
 
-        last = _deploy_progress.get(project_id, {})
+        last = _get_deploy_progress_data(project_id) or {}
         if all_disks_done and op_stage:
             step = op_stage.lower()
             vm_states = status.get("vmStates", {})
@@ -2499,7 +2534,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
             project.deploy_progress = None
             db.commit()
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             notify_project(project_id, {"type": "project-state", "state": "active"})
             logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
             return
@@ -2509,7 +2544,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             project.state = "error"
             project.deploy_error = error_msg
             db.commit()
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             notify_project(
                 project_id,
                 {"type": "project-state", "state": "error", "deploy_error": error_msg},
@@ -2523,7 +2558,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 "percent": percent,
             }
             if new_progress != last:
-                _deploy_progress[project_id] = new_progress
+                _set_deploy_progress(project_id, new_progress)
                 notify_project(
                     project_id,
                     {
@@ -2539,7 +2574,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     project.state = "error"
     project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
     db.commit()
-    _deploy_progress.pop(project_id, None)
+    _delete_deploy_progress(project_id)
     notify_project(
         project_id,
         {
@@ -2584,7 +2619,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     from app.models.project import Project
 
     # Clear cancellation flag for this deploy
-    _deploy_cancelled.discard(project_id)
+    _clear_deploy_cancelled(project_id)
 
     s = SessionLocal()
     try:
@@ -2695,7 +2730,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 project.state = "error"
                 project.deploy_error = "No provider configured for EIP allocation"
                 s.commit()
-                _deploy_progress.pop(project_id, None)
+                _delete_deploy_progress(project_id)
                 return
 
             for ext_ip in external_ips:
@@ -2798,7 +2833,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             project.state = "error"
             project.deploy_error = net_result
             s.commit()
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 1a: Set up load balancer (HAProxy) if present
@@ -2893,7 +2928,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
             )
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 1c: Inject gateway IP for NTP into VM data (before seed ISOs)
@@ -3012,7 +3047,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
             )
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 3: Cache library images on host
@@ -3149,7 +3184,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
             )
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 3d: Validate BMC configuration
@@ -3182,7 +3217,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                         "deploy_error": error_msg,
                     },
                 )
-                _deploy_progress.pop(project_id, None)
+                _delete_deploy_progress(project_id)
                 return
 
         # Create BMC bridge (before VMs so libvirt can validate the bridge name)
@@ -3214,7 +3249,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
             )
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 4: Create VM disks and definitions (parallel)
@@ -3370,13 +3405,16 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             project.state = "error"
             project.deploy_error = error_msg
             s.commit()
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
         if bmc_config:
             _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
             notify_project(
                 project_id,
-                {"type": "deploy-progress", "progress": _deploy_progress[project_id]},
+                {
+                    "type": "deploy-progress",
+                    "progress": _get_deploy_progress_data(project_id) or {},
+                },
             )
             logger.info(
                 "Deploy %s: starting BMC endpoints for %d VMs",
@@ -3391,7 +3429,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 project.state = "error"
                 project.deploy_error = f"BMC setup failed: {bmc_result}"
                 s.commit()
-                _deploy_progress.pop(project_id, None)
+                _delete_deploy_progress(project_id)
                 return
 
         # Step 4c: Create and start containers
@@ -3443,7 +3481,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
             )
-            _deploy_progress.pop(project_id, None)
+            _delete_deploy_progress(project_id)
             return
 
         # Step 5: Start VMs (unless auto_start is disabled)
@@ -3452,7 +3490,10 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             _update_deploy_progress(project_id, "starting", "VMs")
             notify_project(
                 project_id,
-                {"type": "deploy-progress", "progress": _deploy_progress[project_id]},
+                {
+                    "type": "deploy-progress",
+                    "progress": _get_deploy_progress_data(project_id) or {},
+                },
             )
             logger.info("Deploy %s: starting VMs", project_id[:8])
             start_failures = _start_vms_via_troshkad(host, project_id, topology)
@@ -3475,7 +3516,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                         "deploy_error": error_msg,
                     },
                 )
-                _deploy_progress.pop(project_id, None)
+                _delete_deploy_progress(project_id)
                 return
 
         project.state = "active" if auto_start else "stopped"
@@ -3594,7 +3635,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         notify_project(
             project_id, {"type": "vm-state", "states": vm_states, "progress": {}}
         )
-        _deploy_progress.pop(project_id, None)
+        _delete_deploy_progress(project_id)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
         if auto_start and _is_ocp_topology(topology):
@@ -3606,7 +3647,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
     except Exception as e:
         logger.exception("Deploy %s failed unexpectedly", project_id[:8])
-        _deploy_progress.pop(project_id, None)
+        _delete_deploy_progress(project_id)
         try:
             project = s.query(Project).filter_by(id=project_id).first()
             if project:
@@ -3834,7 +3875,7 @@ def _is_pattern_deploy(topology: dict) -> bool:
 
 def maybe_start_ocp_health_monitor(project_id: str):
     """Start OCP health monitor if project needs it and one isn't already running."""
-    if project_id in _active_health_monitors:
+    if is_in_set(_HEALTH_MONITORS_SET, project_id):
         return
     from app.core.database import SessionLocal
     from app.models.host import Host
@@ -3868,7 +3909,7 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 else 0
             )
         )
-        _active_health_monitors.add(project_id)
+        add_to_set(_HEALTH_MONITORS_SET, project_id, ttl=86400)
         threading.Thread(
             target=_monitor_ocp_health,
             args=(project_id, host.id, topo, deploy_start),
@@ -4152,7 +4193,7 @@ def _monitor_ocp_health(
     except Exception as e:
         logger.exception("OCP health monitor %s failed: %s", project_id[:8], e)
     finally:
-        _active_health_monitors.discard(project_id)
+        remove_from_set(_HEALTH_MONITORS_SET, project_id)
         _mon_db.close()
 
 

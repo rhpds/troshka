@@ -50,6 +50,7 @@ python-multipart==0.0.32
 PyYAML==6.0.3
 redis==8.0.0
 requests==2.34.2
+rq==2.3.2
 ruff==0.15.16
 s3transfer==0.18.0
 six==1.17.0

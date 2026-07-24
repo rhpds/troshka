@@ -32,11 +32,24 @@ init_db()
 async def lifespan(app):
     import asyncio
 
+    from app.core.redis import get_redis
     from app.services.health_poller import start_health_poller
     from app.services.project_timer import start_project_timer
-    from app.services.ws_pubsub import set_event_loop, start_state_poller
+    from app.services.ws_pubsub import (
+        set_event_loop,
+        start_redis_listener,
+        start_state_poller,
+    )
 
     set_event_loop(asyncio.get_running_loop())
+
+    # Initialize Redis connection
+    try:
+        r = get_redis()
+        r.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning("Redis not available — falling back to local-only mode: %s", e)
 
     from app.services.agent_ca_service import ensure_agent_ca
 
@@ -45,15 +58,15 @@ async def lifespan(app):
     start_health_poller()
     start_project_timer()
     start_state_poller()
+    start_redis_listener()
 
     from app.services.operator_updater import start_operator_updater
 
     start_operator_updater()
 
     # Reset projects stuck in transient states from a previous crash/restart
-    import threading
-
     from app.core.database import SessionLocal
+    from app.core.redis import enqueue_job
     from app.models.project import Project
 
     s = SessionLocal()
@@ -78,13 +91,11 @@ async def lifespan(app):
                 )
                 from app.services.deploy_service import deploy_project_async
 
-                threading.Thread(
-                    target=deploy_project_async,
-                    args=(p.id,),
-                    kwargs={"resume_from": p.deploy_step},
-                    name=f"deploy-{p.id[:8]}",
-                    daemon=True,
-                ).start()
+                enqueue_job(
+                    deploy_project_async,
+                    p.id,
+                    resume_from=p.deploy_step,
+                )
             else:
                 logger.warning(
                     "Startup: resetting stuck project %s (%s) from %s to error",
@@ -139,12 +150,7 @@ async def lifespan(app):
             )
             from app.services.pattern_service import capture_pattern_disks
 
-            threading.Thread(
-                target=capture_pattern_disks,
-                args=(pat.id, pat.source_project_id, False),
-                name=f"capture-{pat.id[:8]}",
-                daemon=True,
-            ).start()
+            enqueue_job(capture_pattern_disks, pat.id, pat.source_project_id, False)
     finally:
         s.close()
 
@@ -171,16 +177,14 @@ async def lifespan(app):
                         pool.name,
                         pool.fsx_filesystem_id,
                     )
-                    threading.Thread(
-                        target=_poll_fsx_until_available,
-                        args=(
-                            pool.id,
-                            creds,
-                            provider.default_region,
-                            pool.fsx_filesystem_id,
-                        ),
-                        daemon=True,
-                    ).start()
+                    enqueue_job(
+                        _poll_fsx_until_available,
+                        pool.id,
+                        creds,
+                        provider.default_region,
+                        pool.fsx_filesystem_id,
+                        queue_name="provision",
+                    )
             else:
                 logger.warning(
                     "Startup: pool %s stuck in creating with no FSx ID, marking error",
@@ -231,18 +235,23 @@ async def lifespan(app):
                     pb_host.id[:8],
                     pool.name,
                 )
-                threading.Thread(
-                    target=_retry_pb_agent_install,
-                    args=(pb_host.id, pool.id),
-                    name=f"pb-retry-{pb_host.id[:8]}",
-                    daemon=True,
-                ).start()
+                enqueue_job(
+                    _retry_pb_agent_install,
+                    pb_host.id,
+                    pool.id,
+                    queue_name="provision",
+                )
 
         s.commit()
     finally:
         s.close()
 
     yield
+
+    # Shutdown
+    from app.core.redis import close_redis
+
+    close_redis()
 
 
 def _retry_pb_agent_install(host_id: str, pool_id: str):

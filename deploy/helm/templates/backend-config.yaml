@@ -40,6 +40,14 @@ data:
       max_vms_per_project: {{ .Values.defaults.maxVmsPerProject }}
       max_projects_per_user: {{ .Values.defaults.maxProjectsPerUser }}
       user_library_quota_gb: {{ .Values.defaults.userLibraryQuotaGb }}
+    redis:
+      {{- if .Values.redis.url }}
+      url: {{ .Values.redis.url | quote }}
+      {{- else if .Values.redis.deploy }}
+      url: "redis://troshka-redis.{{ include "troshka.namespace" . }}.svc:6379/0"
+      {{- else }}
+      url: "redis://localhost:6379/0"
+      {{- end }}
     overcommit:
       cpu_ratio: {{ .Values.overcommit.cpuRatio }}
       ram_ratio: {{ .Values.overcommit.ramRatio }}

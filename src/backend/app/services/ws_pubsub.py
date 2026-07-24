@@ -1,12 +1,13 @@
 """
-In-memory WebSocket pub/sub + background state poller.
+Redis-backed WebSocket pub/sub + background state poller.
 
-Background services (VM state polling, OCP monitors, timers) run continuously
-against the DB regardless of connected viewers. WebSocket subscribers receive
-real-time pushes of state changes, but the poller runs independently.
+All notifications flow through Redis pub/sub so multiple backend replicas
+can deliver WebSocket updates to their respective clients. Background
+services (VM state polling, OCP monitors, timers) run continuously against
+the DB regardless of connected viewers.
 
-Sync callers (background threads, deploy service) use notify_project() which
-bridges into the async event loop via asyncio.run_coroutine_threadsafe().
+notify_project() publishes to a Redis channel. Each backend pod subscribes
+to Redis channels and delivers messages to its local WebSocket clients.
 """
 
 import asyncio
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 _subscribers: dict[str, set[WebSocket]] = {}
 _lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
+_redis_listener_started = False
 
 
 def set_event_loop(loop: asyncio.AbstractEventLoop):
@@ -72,6 +74,27 @@ async def _send_to_subscribers(project_id: str, message: dict):
 
 
 def notify_project(project_id: str, message: dict):
+    """Publish a notification via Redis pub/sub.
+
+    All backend pods receive the message and deliver to their local WS clients.
+    Also delivers locally if this pod has subscribers (for single-replica mode
+    or if Redis is unavailable).
+    """
+    # Always deliver locally (this pod's subscribers)
+    _deliver_locally(project_id, message)
+
+    # Also publish to Redis so other pods receive it
+    try:
+        from app.core.redis import is_redis_available, publish
+
+        if is_redis_available():
+            publish(f"project:{project_id}", message)
+    except Exception:
+        pass
+
+
+def _deliver_locally(project_id: str, message: dict):
+    """Deliver a message to local WebSocket subscribers on this pod."""
     if not _loop:
         return
     with _lock:
@@ -90,6 +113,50 @@ def subscribe_pattern(pattern_id: str, ws: WebSocket):
 
 def unsubscribe_pattern(pattern_id: str, ws: WebSocket):
     unsubscribe(f"pattern:{pattern_id}", ws)
+
+
+def start_redis_listener():
+    """Start a background thread that subscribes to Redis pub/sub and delivers
+    messages to local WebSocket clients. Called once from the lifespan handler."""
+    global _redis_listener_started
+    if _redis_listener_started:
+        return
+    _redis_listener_started = True
+    thread = threading.Thread(
+        target=_redis_listen_loop, daemon=True, name="redis-ws-bridge"
+    )
+    thread.start()
+    logger.info("Redis WebSocket pub/sub bridge started")
+
+
+def _redis_listen_loop():
+    """Subscribe to Redis pub/sub channels and dispatch to local WS clients."""
+    try:
+        from app.core.redis import get_redis
+
+        r = get_redis()
+        ps = r.pubsub()
+        ps.psubscribe("project:*")
+
+        for msg in ps.listen():
+            if msg["type"] not in ("pmessage",):
+                continue
+            channel = msg["channel"]
+            if isinstance(channel, bytes):
+                channel = channel.decode()
+            # Extract project_id from channel name "project:{id}"
+            if not channel.startswith("project:"):
+                continue
+            project_id = channel[8:]  # len("project:") == 8
+
+            try:
+                data = json.loads(msg["data"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            _deliver_locally(project_id, data)
+    except Exception:
+        logger.exception("Redis pub/sub listener crashed")
 
 
 _last_states: dict[str, dict] = {}
@@ -161,7 +228,7 @@ def _poll_active_projects():
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
-    from app.services.deploy_service import _deploy_progress
+    from app.services.deploy_service import _get_deploy_progress_data
     from app.services.troshkad_client import get_all_vm_states
 
     db = SessionLocal()
@@ -183,7 +250,7 @@ def _poll_active_projects():
         # Check which hosts have active deploys
         deploying_host_ids = set()
         for pid, p in projects.items():
-            if pid in _deploy_progress and p.host_id:
+            if _get_deploy_progress_data(pid) and p.host_id:
                 deploying_host_ids.add(p.host_id)
 
         # Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt)
@@ -264,7 +331,7 @@ def _poll_active_projects():
                 )
 
             # Push deploy progress if active
-            dp = _deploy_progress.get(project_id)
+            dp = _get_deploy_progress_data(project_id)
             if dp and dp != last.get("deploy_progress"):
                 notify_project(project_id, {"type": "deploy-progress", "progress": dp})
 

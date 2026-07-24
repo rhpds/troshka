@@ -104,9 +104,14 @@ def find_available_host(
     required_ram_mb: int,
     required_eips: int = 0,
     storage_pool_id: str | None = None,
+    provider_id: str | None = None,
 ) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
-    Syncs capacity from DB first to handle concurrent deployments."""
+
+    Searches across all providers/clusters to spread load. Syncs capacity from
+    DB first to handle concurrent deployments. For kubevirt-cluster hosts,
+    capacity is tracked at the cluster level.
+    """
     query = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
@@ -114,6 +119,8 @@ def find_available_host(
     )
     if storage_pool_id:
         query = query.filter(Host.storage_pool_id == storage_pool_id)
+    if provider_id:
+        query = query.filter(Host.provider_id == provider_id)
 
     hosts = query.all()
 
@@ -155,7 +162,7 @@ def find_available_host(
     if not candidates:
         return None
 
-    # Pick the host with the most free RAM (spreads load across hosts)
+    # Pick the host with the most free RAM (spreads load across clusters/hosts)
     candidates.sort(key=lambda x: x[2], reverse=True)
     return candidates[0][0]
 

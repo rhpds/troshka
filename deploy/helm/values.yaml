@@ -76,3 +76,17 @@ defaults:
 overcommit:
   cpuRatio: 4.0
   ramRatio: 1.5
+
+redis:
+  deploy: true
+  image: registry.redhat.io/rhel9/redis-7:latest
+  url: ""
+
+worker:
+  replicas: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi

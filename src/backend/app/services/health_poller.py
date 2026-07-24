@@ -424,12 +424,7 @@ def _poller_loop():
             _check_cert_renewal()
         except Exception:
             logger.exception("Health poller error")
-        try:
-            from app.core.rate_limit import cleanup as _rl_cleanup
-
-            _rl_cleanup()
-        except Exception:
-            pass
+        pass
 
 
 def start_health_poller():
