@@ -42,6 +42,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: data
+              mountPath: /var/lib/ceph/radosgw
+              subPath: radosgw
           resources:
             requests:
               cpu: 100m
@@ -167,6 +170,10 @@ spec:
                   -H "Authorization: AWS ${S3_ACCESS_KEY}:${SIG}"
                 echo "Created bucket $BUCKET"
               fi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ceph/radosgw
+              subPath: radosgw
           env:
             - name: S3_ACCESS_KEY
               valueFrom:
@@ -178,4 +185,8 @@ spec:
                 secretKeyRef:
                   name: troshka-secrets
                   key: s3-secret-key
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: troshka-s4-data
 {{- end }}
