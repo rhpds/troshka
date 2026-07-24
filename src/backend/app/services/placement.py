@@ -98,6 +98,36 @@ def sync_host_capacity(db: Session, host: Host):
     host.used_ram_mb = total_ram_mb
 
 
+def _get_inflight_deploys(host_id: str) -> int:
+    """Get count of queued/running deploys targeting a host (from Redis)."""
+    try:
+        from app.core.redis import get_counter
+
+        return get_counter(f"inflight:deploys:{host_id}")
+    except Exception:
+        return 0
+
+
+def record_deploy_start(host_id: str):
+    """Increment in-flight deploy counter for a host. Call at placement time."""
+    try:
+        from app.core.redis import increment_counter
+
+        increment_counter(f"inflight:deploys:{host_id}", ttl=7200)
+    except Exception:
+        pass
+
+
+def record_deploy_end(host_id: str):
+    """Decrement in-flight deploy counter for a host. Call when deploy completes."""
+    try:
+        from app.core.redis import decrement_counter
+
+        decrement_counter(f"inflight:deploys:{host_id}")
+    except Exception:
+        pass
+
+
 def find_available_host(
     db: Session,
     required_vcpus: int,
@@ -108,9 +138,9 @@ def find_available_host(
 ) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
 
-    Searches across all providers/clusters to spread load. Syncs capacity from
-    DB first to handle concurrent deployments. For kubevirt-cluster hosts,
-    capacity is tracked at the cluster level.
+    Searches across all providers/clusters to spread load. Accounts for both
+    DB-committed capacity AND in-flight deploys (queued but not yet reflected
+    in DB) to avoid piling jobs onto one cluster.
     """
     query = db.query(Host).filter(
         Host.state == "active",
@@ -128,7 +158,6 @@ def find_available_host(
     for host in hosts:
         sync_host_capacity(db, host)
 
-    # Sort by most free capacity (least loaded first)
     candidates = []
     for host in hosts:
         alloc_vcpus, alloc_ram = get_allocatable(host)
@@ -157,13 +186,17 @@ def find_available_host(
                         )
                         if total_provider_eips + required_eips > prov.max_eips:
                             continue
-            candidates.append((host, free_vcpus, free_ram))
+
+            inflight = _get_inflight_deploys(host.id)
+            candidates.append((host, free_vcpus, free_ram, inflight))
 
     if not candidates:
         return None
 
-    # Pick the host with the most free RAM (spreads load across clusters/hosts)
-    candidates.sort(key=lambda x: x[2], reverse=True)
+    # Sort by: fewest in-flight deploys first, then most free RAM as tiebreaker.
+    # This spreads concurrent deploys across clusters instead of piling onto
+    # the one with the most absolute free RAM.
+    candidates.sort(key=lambda x: (x[3], -x[2]))
     return candidates[0][0]
 
 

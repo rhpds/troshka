@@ -448,3 +448,76 @@ def debug_threads(user=Depends(require_role("admin"))):
     for t in threading.enumerate():
         threads.append({"name": t.name, "daemon": t.daemon, "alive": t.is_alive()})
     return {"count": len(threads), "threads": threads}
+
+
+@app.get("/api/v1/admin/queue-status")
+def queue_status(user=Depends(require_role("admin"))):
+    """Show job queue depths, active workers, and failed jobs."""
+    from app.core.redis import is_redis_available
+
+    if not is_redis_available():
+        return {
+            "redis": False,
+            "message": "Redis not available — running in single-process mode",
+        }
+
+    from app.core.redis import get_redis
+
+    r = get_redis()
+
+    queues_info = []
+    for qname in ["deploy", "provision", "default"]:
+        try:
+            from rq import Queue
+
+            q = Queue(qname, connection=r)
+            failed_reg = q.failed_job_registry
+            queues_info.append(
+                {
+                    "name": qname,
+                    "queued": q.count,
+                    "started": q.started_job_registry.count,
+                    "failed": failed_reg.count,
+                    "deferred": q.deferred_job_registry.count,
+                }
+            )
+        except Exception:
+            queues_info.append({"name": qname, "error": "could not read queue"})
+
+    workers = []
+    try:
+        from rq import Worker
+
+        for w in Worker.all(connection=r):
+            workers.append(
+                {
+                    "name": w.name,
+                    "state": w.get_state(),
+                    "queues": [q.name for q in w.queues],
+                    "current_job": str(w.get_current_job_id() or ""),
+                    "successful_count": w.successful_job_count,
+                    "failed_count": w.failed_job_count,
+                    "total_working_time": w.total_working_time,
+                }
+            )
+    except Exception:
+        pass
+
+    # Per-host in-flight deploy counts
+    inflight = {}
+    try:
+        for key in r.scan_iter("inflight:deploys:*"):
+            host_id = key.replace("inflight:deploys:", "")
+            count = int(r.get(key) or 0)
+            if count > 0:
+                inflight[host_id[:8]] = count
+    except Exception:
+        pass
+
+    return {
+        "redis": True,
+        "queues": queues_info,
+        "workers": workers,
+        "worker_count": len(workers),
+        "inflight_deploys": inflight,
+    }

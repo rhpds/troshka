@@ -2617,10 +2617,12 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
+    from app.services.placement import record_deploy_end, record_deploy_start
 
     # Clear cancellation flag for this deploy
     _clear_deploy_cancelled(project_id)
 
+    _host_id_for_inflight: str | None = None
     s = SessionLocal()
     try:
         project = s.query(Project).filter_by(id=project_id).first()
@@ -2650,6 +2652,10 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 logger.info(
                     "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
                 )
+        if host:
+            _host_id_for_inflight = host.id
+            record_deploy_start(host.id)
+
         if not host or not host.ip_address:
             if not project.host_id:
                 from app.services.placement import (
@@ -3681,6 +3687,8 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         except Exception:
             logger.exception("Deploy %s: failed to set error state", project_id[:8])
     finally:
+        if _host_id_for_inflight:
+            record_deploy_end(_host_id_for_inflight)
         s.close()
 
 
