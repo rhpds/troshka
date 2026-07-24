@@ -334,7 +334,7 @@ def provision_fsx_pool(
         credentials,
         region,
         result["filesystem_id"],
-        queue_name="provision",
+        queue_name="host_lifecycle",
     )
 
 

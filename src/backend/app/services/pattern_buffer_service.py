@@ -47,7 +47,7 @@ def provision_pattern_buffer_async(pool_id: str):
     """Enqueue pattern buffer provisioning for a pool."""
     from app.core.redis import enqueue_job
 
-    enqueue_job(_provision_pattern_buffer, pool_id, queue_name="provision")
+    enqueue_job(_provision_pattern_buffer, pool_id, queue_name="host_lifecycle")
 
 
 def _provision_pattern_buffer(pool_id: str):

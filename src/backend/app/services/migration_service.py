@@ -94,7 +94,7 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
         project_id,
         source_host_id,
         target_host_id,
-        queue_name="deploy",
+        queue_name="project_lifecycle",
     )
 
 
@@ -205,7 +205,7 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
 def evacuate_host(host_id: str):
     from app.core.redis import enqueue_job
 
-    enqueue_job(_do_evacuate_host, host_id, queue_name="deploy")
+    enqueue_job(_do_evacuate_host, host_id, queue_name="project_lifecycle")
 
 
 def _do_evacuate_host(host_id: str):

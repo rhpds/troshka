@@ -37,7 +37,7 @@ def run_worker():
         url = getattr(url, "url", "redis://localhost:6379/0")
 
     conn = Redis.from_url(url)
-    queues = ["deploy", "provision", "default"]
+    queues = ["project_lifecycle", "host_lifecycle", "default"]
 
     logger = logging.getLogger(__name__)
 

@@ -403,7 +403,7 @@ def add_host(
         _disk_gb,
         region,
         nfs_kwargs,
-        queue_name="provision",
+        queue_name="host_lifecycle",
     )
 
     return host
@@ -621,7 +621,7 @@ def install_agent(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_install_bg, h_id, h_ip, h_key, queue_name="provision")
+    enqueue_job(_install_bg, h_id, h_ip, h_key, queue_name="host_lifecycle")
     return {"status": "installing"}
 
 
@@ -929,7 +929,7 @@ def poweroff_host(
     from app.core.redis import enqueue_job
 
     enqueue_job(
-        _do_stop_bg, _host_id, _instance_id, _provider_id, queue_name="provision"
+        _do_stop_bg, _host_id, _instance_id, _provider_id, queue_name="host_lifecycle"
     )
     return {"status": "stopped"}
 
@@ -1032,7 +1032,7 @@ def poweron_host(
         host_id,
         instance_id,
         provider_id,
-        queue_name="provision",
+        queue_name="host_lifecycle",
     )
     return {"status": "starting"}
 
@@ -1567,7 +1567,11 @@ def remove_host(
     from app.core.redis import enqueue_job
 
     enqueue_job(
-        _wait_terminated_bg, host_id, instance_id, provider_id, queue_name="provision"
+        _wait_terminated_bg,
+        host_id,
+        instance_id,
+        provider_id,
+        queue_name="host_lifecycle",
     )
 
 

@@ -36,8 +36,8 @@ _mem_lock = threading.Lock()
 
 # Queue names
 QUEUE_DEFAULT = "default"
-QUEUE_DEPLOY = "deploy"
-QUEUE_PROVISION = "provision"
+QUEUE_DEPLOY = "project_lifecycle"
+QUEUE_PROVISION = "host_lifecycle"
 
 
 def _get_redis_url() -> str:

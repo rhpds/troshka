@@ -50,7 +50,7 @@ interface QueueStatus {
 export default function QueuePage() {
   const [status, setStatus] = useState<QueueStatus | null>(null);
   const [failedJobs, setFailedJobs] = useState<FailedJob[]>([]);
-  const [failedQueue, setFailedQueue] = useState("deploy");
+  const [failedQueue, setFailedQueue] = useState("project_lifecycle");
   const [failedCount, setFailedCount] = useState(0);
   const [retrying, setRetrying] = useState<string | null>(null);
 

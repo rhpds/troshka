@@ -180,7 +180,7 @@ def create_pool(
             sg_id,
             body.fsx_storage_gb,
             body.fsx_throughput_mbps,
-            queue_name="provision",
+            queue_name="host_lifecycle",
         )
 
     elif body.mode == "shared-byo":
@@ -201,7 +201,7 @@ def create_pool(
             storage_pool_service.provision_ceph_nfs_pool,
             pool.id,
             credentials,
-            queue_name="provision",
+            queue_name="host_lifecycle",
         )
 
     elif body.mode == "shared-netapp":
@@ -222,7 +222,7 @@ def create_pool(
             body.netapp_capacity_gb,
             "troshka",
             body.netapp_service_level or "FLEX",
-            queue_name="provision",
+            queue_name="host_lifecycle",
         )
 
     elif body.mode == "shared-azure-files":
@@ -243,7 +243,7 @@ def create_pool(
             body.azure_files_capacity_gb,
             body.azure_files_iops,
             body.azure_files_throughput,
-            queue_name="provision",
+            queue_name="host_lifecycle",
         )
 
     return _pool_response(pool, db)

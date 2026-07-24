@@ -343,7 +343,7 @@ def create_provider(
             job_provision_ocpvirt_host,
             _provider_id,
             _host_id,
-            queue_name="provision",
+            queue_name="host_lifecycle",
         )
 
     if body.type == "kubevirt":
@@ -425,7 +425,7 @@ def create_provider(
         from app.core.redis import enqueue_job
         from app.workers.jobs import job_provision_kubevirt
 
-        enqueue_job(job_provision_kubevirt, _provider_id, queue_name="provision")
+        enqueue_job(job_provision_kubevirt, _provider_id, queue_name="host_lifecycle")
 
     return ProviderResponse(
         id=provider.id,
@@ -2090,7 +2090,7 @@ def build_image(
         provider_id,
         user.id,
         rhel_version,
-        queue_name="provision",
+        queue_name="host_lifecycle",
     )
 
     return {"status": "started", "message": f"Building {rhel_version} image..."}

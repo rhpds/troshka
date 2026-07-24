@@ -183,7 +183,7 @@ async def lifespan(app):
                         creds,
                         provider.default_region,
                         pool.fsx_filesystem_id,
-                        queue_name="provision",
+                        queue_name="host_lifecycle",
                     )
             else:
                 logger.warning(
@@ -239,7 +239,7 @@ async def lifespan(app):
                     _retry_pb_agent_install,
                     pb_host.id,
                     pool.id,
-                    queue_name="provision",
+                    queue_name="host_lifecycle",
                 )
 
         s.commit()
@@ -466,7 +466,7 @@ def queue_status(user=Depends(require_role("admin"))):
     r = get_redis_raw()
 
     queues_info = []
-    for qname in ["deploy", "provision", "default"]:
+    for qname in ["project_lifecycle", "host_lifecycle", "default"]:
         try:
             from rq import Queue
 
