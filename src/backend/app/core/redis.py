@@ -92,6 +92,15 @@ def close_redis():
         logger.info("Redis client closed")
 
 
+def _release_stale_lock(key: str):
+    """Force-delete a lock key. Used by failure callbacks to clean up after crashes."""
+    if _redis_available:
+        try:
+            get_redis().delete(key)
+        except Exception:
+            pass
+
+
 # ── Job enqueue helpers ──
 
 
@@ -130,12 +139,29 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
             record_deploy_end(host_id)
         except Exception:
             pass
+        try:
+            _release_stale_lock(f"lock:network:{host_id}")
+        except Exception:
+            pass
     if project_id:
         try:
             delete_progress(f"deploy:{project_id}")
             connection.delete(f"job:project:{project_id}")
         except Exception:
             pass
+        # Try to find host_id from the project for lock cleanup
+        if not host_id:
+            try:
+                from app.core.database import SessionLocal
+                from app.models.project import Project as _P
+
+                _s = SessionLocal()
+                _proj = _s.get(_P, project_id)
+                if _proj and _proj.host_id:
+                    _release_stale_lock(f"lock:network:{_proj.host_id}")
+                _s.close()
+            except Exception:
+                pass
         try:
             from app.core.database import SessionLocal
             from app.models.project import Project

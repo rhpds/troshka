@@ -1,18 +1,17 @@
 """
 RQ worker entrypoint for background deploy/destroy/start/stop jobs.
 
-Run with:
-    rq worker deploy provision default --url redis://localhost:6379/0
+Uses SimpleWorker on macOS (fork() crashes the ObjC runtime) and regular
+Worker on Linux (fork isolates each job in a child process).
 
-Workers execute the same functions that previously ran in daemon threads —
-they already create their own DB sessions and run independently.
+Each job function imports what it needs and creates its own DB session.
 """
 
 import logging
 import os
+import platform
 import sys
 
-# Ensure the backend package is importable
 _backend_dir = os.path.join(os.path.dirname(__file__), "..", "..")
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
@@ -23,15 +22,11 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-from app.core.database import init_db  # noqa: E402
-
-init_db()
-
 
 def run_worker():
     """Start an RQ worker that listens on deploy, provision, and default queues."""
     from redis import Redis
-    from rq import Worker
+    from rq import SimpleWorker, Worker
 
     from app.core.config import config
 
@@ -45,9 +40,17 @@ def run_worker():
     queues = ["deploy", "provision", "default"]
 
     logger = logging.getLogger(__name__)
-    logger.info("Starting RQ worker on queues: %s", ", ".join(queues))
 
-    w = Worker(queues, connection=conn)
+    # macOS: fork() crashes the ObjC runtime — use SimpleWorker (no fork)
+    # Linux: use regular Worker (fork gives job isolation)
+    if platform.system() == "Darwin":
+        logger.info("macOS detected — using SimpleWorker (no fork)")
+        worker_class = SimpleWorker
+    else:
+        worker_class = Worker
+
+    logger.info("Starting RQ worker on queues: %s", ", ".join(queues))
+    w = worker_class(queues, connection=conn)
     w.work()
 
 

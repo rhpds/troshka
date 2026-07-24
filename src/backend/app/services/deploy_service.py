@@ -245,7 +245,7 @@ def _should_skip(resume_from: str | None, step: str) -> bool:
 
 
 def _get_network_lock(host_id: str):
-    return get_lock(f"network:{host_id}", timeout=600)
+    return get_lock(f"network:{host_id}", timeout=120)
 
 
 # ── Shared storage pool helpers ──
