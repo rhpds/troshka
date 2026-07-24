@@ -41,7 +41,7 @@ interface Project {
   ocp_status?: string | null;
   ocp_status_detail?: string | null;
   ocp_install_elapsed?: number | null;
-  deploy_progress?: { step?: string; detail?: string } | null;
+  deploy_progress?: { step?: string; detail?: string; queue_position?: number; queue_length?: number } | null;
   deploy_started_at?: string | null;
   deploy_error?: string | null;
 }
@@ -1074,7 +1074,15 @@ export default function ProjectsPage() {
                     }}>
                       {p.state === "stopped" && p.auto_stopped ? "stopped (auto)" : p.state}
                     </span>
-                    {p.state === "deploying" && p.deploy_progress?.detail && (
+                    {p.state === "deploying" && p.deploy_progress?.step === "queued" && (
+                      <span style={{
+                        fontSize: 11, padding: "1px 6px", borderRadius: 4,
+                        background: "rgba(99,102,241,0.15)", color: "#818cf8",
+                      }}>
+                        queued {p.deploy_progress.detail}
+                      </span>
+                    )}
+                    {p.state === "deploying" && p.deploy_progress?.detail && p.deploy_progress?.step !== "queued" && (
                       <span style={{
                         fontSize: 11, padding: "1px 6px", borderRadius: 4,
                         background: "rgba(251,191,36,0.15)", color: "#fbbf24",

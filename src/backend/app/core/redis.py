@@ -86,11 +86,17 @@ def close_redis():
 
 
 def enqueue_job(
-    func, *args, queue_name: str = QUEUE_DEPLOY, job_timeout: int = 7200, **kwargs
+    func,
+    *args,
+    queue_name: str = QUEUE_DEPLOY,
+    job_timeout: int = 7200,
+    project_id: str | None = None,
+    **kwargs,
 ):
     """Enqueue a function for execution by an RQ worker.
 
     Falls back to running in a daemon thread when Redis is unavailable.
+    Pass project_id to track queue position for the project.
     """
     if is_redis_available():
         try:
@@ -106,6 +112,8 @@ def enqueue_job(
                 func.__qualname__,
                 queue_name,
             )
+            if project_id:
+                r.set(f"job:project:{project_id}", job.id, ex=7200)
             return job
         except Exception:
             logger.warning("RQ enqueue failed, falling back to thread")
@@ -114,6 +122,40 @@ def enqueue_job(
     t = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
     t.start()
     return t
+
+
+def get_job_info(project_id: str) -> dict | None:
+    """Get job status and queue position for a project's active job."""
+    if not _redis_available:
+        return None
+    try:
+        r = get_redis()
+        raw_job_id = r.get(f"job:project:{project_id}")
+        if not raw_job_id:
+            return None
+        job_id = str(raw_job_id)
+
+        from rq import Queue
+        from rq.job import Job
+
+        job = Job.fetch(job_id, connection=r)
+        status = job.get_status()
+
+        result: dict = {"job_id": job_id, "status": status}
+
+        if status == "queued":
+            q = Queue(job.origin, connection=r)
+            job_ids = q.get_job_ids()
+            try:
+                position = job_ids.index(job_id) + 1
+            except ValueError:
+                position = 0
+            result["queue_position"] = position
+            result["queue_length"] = len(job_ids)
+
+        return result
+    except Exception:
+        return None
 
 
 # ── State helpers (replace in-memory dicts) ──

@@ -16,7 +16,7 @@ logging.getLogger("uvicorn.access").propagate = True
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.auth import require_role
@@ -521,3 +521,84 @@ def queue_status(user=Depends(require_role("admin"))):
         "worker_count": len(workers),
         "inflight_deploys": inflight,
     }
+
+
+@app.get("/api/v1/admin/failed-jobs")
+def list_failed_jobs(
+    queue_name: str = "deploy",
+    user=Depends(require_role("admin")),
+):
+    """List failed jobs with error details."""
+    from app.core.redis import is_redis_available
+
+    if not is_redis_available():
+        return {"jobs": []}
+
+    from app.core.redis import get_redis
+
+    r = get_redis()
+    try:
+        from rq import Queue
+        from rq.job import Job
+
+        q = Queue(queue_name, connection=r)
+        failed_ids = q.failed_job_registry.get_job_ids()
+        jobs = []
+        for jid in failed_ids[:50]:
+            try:
+                job = Job.fetch(jid, connection=r)
+                jobs.append(
+                    {
+                        "id": jid,
+                        "func": job.func_name,
+                        "args": [str(a)[:100] for a in (job.args or [])],
+                        "error": str(job.exc_info or "")[:500],
+                        "enqueued_at": (
+                            job.enqueued_at.isoformat() if job.enqueued_at else None
+                        ),
+                        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+                    }
+                )
+            except Exception:
+                jobs.append({"id": jid, "error": "could not fetch"})
+        return {"queue": queue_name, "count": len(failed_ids), "jobs": jobs}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/v1/admin/failed-jobs/{job_id}/retry")
+def retry_failed_job(job_id: str, user=Depends(require_role("admin"))):
+    """Re-queue a failed job."""
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        raise HTTPException(400, "Redis not available")
+
+    r = get_redis()
+    try:
+        from rq.job import Job
+
+        job = Job.fetch(job_id, connection=r)
+        job.requeue()
+        return {"status": "requeued", "job_id": job_id}
+    except Exception as e:
+        raise HTTPException(400, f"Failed to retry job: {e}")
+
+
+@app.delete("/api/v1/admin/failed-jobs/{job_id}")
+def delete_failed_job(job_id: str, user=Depends(require_role("admin"))):
+    """Delete a failed job permanently."""
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        raise HTTPException(400, "Redis not available")
+
+    r = get_redis()
+    try:
+        from rq.job import Job
+
+        job = Job.fetch(job_id, connection=r)
+        job.delete()
+        return {"status": "deleted", "job_id": job_id}
+    except Exception as e:
+        raise HTTPException(400, f"Failed to delete job: {e}")

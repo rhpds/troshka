@@ -191,6 +191,17 @@ def list_projects(
         dp = _get_deploy_progress_data(p.id)
         if dp:
             resp.deploy_progress = dp
+        elif p.state == "deploying":
+            from app.core.redis import get_job_info
+
+            job_info = get_job_info(p.id)
+            if job_info and job_info.get("status") == "queued":
+                resp.deploy_progress = {
+                    "step": "queued",
+                    "detail": f"#{job_info['queue_position']} of {job_info['queue_length']}",
+                    "queue_position": job_info["queue_position"],
+                    "queue_length": job_info["queue_length"],
+                }
         results.append(resp)
     return results
 
@@ -962,7 +973,7 @@ def deploy_project(
     # Deploy via job queue
     from app.core.redis import enqueue_job
 
-    enqueue_job(deploy_project_async, project.id)
+    enqueue_job(deploy_project_async, project.id, project_id=project.id)
 
     return {
         "status": "deploying",

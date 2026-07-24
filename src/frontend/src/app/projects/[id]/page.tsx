@@ -808,7 +808,13 @@ export default function ProjectCanvasPage() {
                 <><span className="project-btn-spinner" /> {projectState === "deploying" ? "Deploying..." : "Applying Changes..."}</>
               )}
             </h3>
-            {deployProgress && projectState !== "error" && (
+            {deployProgress && projectState !== "error" && deployProgress.step === "queued" && (
+              <div style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: "#818cf8", fontWeight: 500 }}>Queued</span>
+                <span style={{ opacity: 0.6 }}>position {deployProgress.detail}</span>
+              </div>
+            )}
+            {deployProgress && projectState !== "error" && deployProgress.step !== "queued" && (
               <div style={{ fontSize: 13, marginBottom: deployProgress.items ? 8 : 0, whiteSpace: "pre-line", maxHeight: 300, overflowY: "auto" }}>
                 <span style={{ opacity: 0.7 }}>{deployProgress.step}</span>
                 {deployProgress.detail ? `:\n${deployProgress.detail}` : ""}

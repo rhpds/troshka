@@ -52,11 +52,24 @@ def _build_snapshot(project: Project, db) -> dict:
     from app.services.deploy_service import _get_deploy_progress_data
     from app.services.ws_pubsub import get_cached_vm_states
 
+    dp = _get_deploy_progress_data(project.id)
+    if not dp and project.state == "deploying":
+        from app.core.redis import get_job_info
+
+        job_info = get_job_info(project.id)
+        if job_info and job_info.get("status") == "queued":
+            dp = {
+                "step": "queued",
+                "detail": f"#{job_info['queue_position']} of {job_info['queue_length']}",
+                "queue_position": job_info["queue_position"],
+                "queue_length": job_info["queue_length"],
+            }
+
     snapshot: dict = {
         "type": "snapshot",
         "project_state": project.state,
         "deploy_error": project.deploy_error,
-        "deploy_progress": _get_deploy_progress_data(project.id),
+        "deploy_progress": dp,
         "vm_states": {},
         "vm_progress": {},
     }

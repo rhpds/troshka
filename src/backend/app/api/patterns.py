@@ -814,7 +814,9 @@ def deploy_pattern(
         db.commit()
         from app.core.redis import enqueue_job
 
-        enqueue_job(deploy_project_async, project.id, body.auto_start)
+        enqueue_job(
+            deploy_project_async, project.id, body.auto_start, project_id=project.id
+        )
 
     return {
         "id": project.id,
@@ -868,7 +870,7 @@ def _bulk_deploy_projects(project_ids: list[str]):
     from app.core.redis import enqueue_job
 
     for pid in ready_ids:
-        enqueue_job(deploy_project_async, pid)
+        enqueue_job(deploy_project_async, pid, project_id=pid)
 
 
 @router.post("/{pattern_id}/bulk-deploy", status_code=201)
