@@ -64,6 +64,35 @@ async def lifespan(app):
 
     start_operator_updater()
 
+    # Clean up abandoned RQ jobs (workers killed during rollout)
+    from app.core.redis import is_redis_available
+
+    if is_redis_available():
+        try:
+            from rq import Queue
+            from rq.job import Job
+
+            from app.core.redis import get_redis_raw
+
+            r = get_redis_raw()
+            for qname in ["project_lifecycle", "host_lifecycle", "default"]:
+                q = Queue(qname, connection=r)
+                abandoned_ids = q.failed_job_registry.get_job_ids()
+                for jid in abandoned_ids:
+                    try:
+                        j = Job.fetch(jid, connection=r)
+                        if "AbandonedJobError" in str(j.exc_info or ""):
+                            logger.warning(
+                                "Startup: re-queuing abandoned job %s (%s)",
+                                jid[:8],
+                                (j.func_name or "unknown").split(".")[-1],
+                            )
+                            j.requeue()
+                    except Exception:
+                        pass
+        except Exception:
+            logger.warning("Startup: failed to check abandoned jobs")
+
     # Reset projects stuck in transient states from a previous crash/restart
     from app.core.database import SessionLocal
     from app.core.redis import enqueue_job
@@ -96,6 +125,25 @@ async def lifespan(app):
                     p.id,
                     resume_from=p.deploy_step,
                 )
+            elif is_redis_available():
+                from app.core.redis import get_job_info
+
+                job_info = get_job_info(p.id)
+                if job_info and job_info.get("status") in ("queued", "started"):
+                    logger.info(
+                        "Startup: project %s (%s) has active RQ job, skipping",
+                        p.name,
+                        p.id[:8],
+                    )
+                    continue
+                logger.warning(
+                    "Startup: resetting stuck project %s (%s) from %s to error",
+                    p.name,
+                    p.id[:8],
+                    old_state,
+                )
+                p.state = "error"
+                p.deploy_error = f"Server restarted while project was {old_state}"
             else:
                 logger.warning(
                     "Startup: resetting stuck project %s (%s) from %s to error",
