@@ -311,8 +311,9 @@ def place_project(
     # Build network config for the agent
     network_config = build_host_network_config(project.topology, vni_map, peer_ips)
 
-    # Update host capacity
+    # Update host capacity and in-flight counter (so next placement sees it)
     sync_host_capacity(db, host)
+    record_deploy_start(host.id)
     project.host_id = host.id
     project.state = "deploying"
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
