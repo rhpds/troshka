@@ -223,31 +223,37 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 )
             except client.exceptions.ApiException as e:
                 if e.status == 409:
-                    logger.info(
-                        f"DataVolume {pvc_name} exists (stale), waiting for deletion"
-                    )
-                    for _ in range(30):
-                        try:
-                            custom_api.get_namespaced_custom_object(
+                    try:
+                        existing_dv = custom_api.get_namespaced_custom_object(
+                            group="cdi.kubevirt.io",
+                            version="v1beta1",
+                            namespace=namespace,
+                            plural="datavolumes",
+                            name=pvc_name,
+                        )
+                        phase = existing_dv.get("status", {}).get("phase", "")
+                        if phase == "Succeeded":
+                            logger.info(
+                                f"DataVolume {pvc_name} already exists and succeeded, skipping"
+                            )
+                        else:
+                            logger.info(
+                                f"DataVolume {pvc_name} exists (phase={phase}), waiting"
+                            )
+                    except client.exceptions.ApiException as ge:
+                        if ge.status == 404:
+                            custom_api.create_namespaced_custom_object(
                                 group="cdi.kubevirt.io",
                                 version="v1beta1",
                                 namespace=namespace,
                                 plural="datavolumes",
-                                name=pvc_name,
+                                body=clone_dv,
                             )
-                            await asyncio.sleep(2)
-                        except client.exceptions.ApiException as ge:
-                            if ge.status == 404:
-                                break
+                            logger.info(
+                                f"Created DataVolume {pvc_name} (after 404)"
+                            )
+                        else:
                             raise
-                    custom_api.create_namespaced_custom_object(
-                        group="cdi.kubevirt.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="datavolumes",
-                        body=clone_dv,
-                    )
-                    logger.info(f"Created DataVolume {pvc_name} (after stale cleanup)")
                 else:
                     raise
 
