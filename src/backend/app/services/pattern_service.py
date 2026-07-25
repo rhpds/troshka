@@ -1082,7 +1082,8 @@ def capture_pattern_disks(
                 notify_pattern(pattern_id, {"type": "capture-progress", **progress})
                 _time.sleep(5)
 
-            # Process results
+            # Process results — save successful VMs, skip failed ones
+            direct_errors: list[str] = []
             for jinfo in all_jobs:
                 job = jinfo.get("_result")
                 if not job:
@@ -1106,9 +1107,8 @@ def capture_pattern_disks(
                             jinfo["vm_id"][:8],
                             error_msg,
                         )
-                        pattern.state = "error"
-                        db.commit()
-                        return
+                        direct_errors.append(jinfo["vm_name"])
+                        continue
 
                     disk_results = (job or {}).get("result", {}).get("disks", [])
                     for j, metadata in enumerate(jinfo["disk_metadata"]):
@@ -1142,9 +1142,18 @@ def capture_pattern_disks(
                         jinfo["vm_id"][:8],
                         str(e),
                     )
-                    pattern.state = "error"
-                    db.commit()
-                    return
+                    direct_errors.append(jinfo["vm_name"])
+
+            if direct_errors:
+                log.error(
+                    "Pattern %s: %d VM(s) failed: %s",
+                    pattern_id[:8],
+                    len(direct_errors),
+                    ", ".join(direct_errors),
+                )
+                pattern.state = "error"
+                db.commit()
+                return
 
         # Capture container images
         from app.services.deploy_service import _extract_containers
