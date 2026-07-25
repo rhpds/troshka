@@ -250,11 +250,10 @@ def create_pattern(
 
     source_project: Project | None = None
     if body.source_project_id:
-        source_project = (
-            db.query(Project)
-            .filter_by(id=body.source_project_id, owner_id=user.id)
-            .first()
-        )
+        query = db.query(Project).filter_by(id=body.source_project_id)
+        if user.role != "admin":
+            query = query.filter_by(owner_id=user.id)
+        source_project = query.first()
         if not source_project:
             raise HTTPException(status_code=404, detail="Source project not found")
         if source_project.state not in ("active", "stopped"):
