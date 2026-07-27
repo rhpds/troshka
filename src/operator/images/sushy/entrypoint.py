@@ -9,7 +9,7 @@ from kubevirt_driver import KubeVirtDriver
 driver = KubeVirtDriver()
 
 USERNAME = os.environ.get("SUSHY_USERNAME", "admin")
-PASSWORD = os.environ.get("SUSHY_PASSWORD", "redhat")  # pragma: allowlist secret
+PASSWORD = os.environ.get("SUSHY_PASSWORD", "redhat")  # NOSONAR — default overridden by env var at deploy time
 LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 
 

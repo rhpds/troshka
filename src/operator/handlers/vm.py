@@ -195,10 +195,10 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         if s3_path:
             if use_central and central_s3_config:
                 disk_s3 = central_s3_config
-                secret = "s3-central-credentials"  # pragma: allowlist secret
+                secret = "s3-central-credentials"  # pragma: allowlist secret  # NOSONAR
             else:
                 disk_s3 = s3_config
-                secret = "s3-credentials"  # pragma: allowlist secret
+                secret = "s3-credentials"  # pragma: allowlist secret  # NOSONAR
             size_gb = disk.get("sizeGb", 20)
             golden_name = await _ensure_golden_pvc(
                 custom_api,

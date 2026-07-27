@@ -61,8 +61,12 @@ async def _proxy(ws_client):
     vnc_url = _get_kubevirt_vnc_url(vm_name)
 
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
+    _ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    if os.path.exists(_ca_path):
+        ssl_ctx.load_verify_locations(_ca_path)
+    else:
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
     max_retries = 30
     for attempt in range(max_retries):

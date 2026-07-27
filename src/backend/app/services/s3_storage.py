@@ -66,45 +66,83 @@ def _bucket():
     return _get_s3_config()["bucket"]
 
 
+_cached_account_ids: dict[str, str] = {}
+
+
+def _get_account_id(s3_config: dict) -> str:
+    """Resolve AWS account ID via STS. Skipped for non-AWS endpoints (S4/MinIO)."""
+    if s3_config.get("endpoint_url"):
+        return ""
+    cache_key = s3_config.get("access_key_id", "_default")
+    if cache_key in _cached_account_ids:
+        return _cached_account_ids[cache_key]
+    try:
+        sts = boto3.client(
+            "sts",
+            region_name=s3_config.get("region", "us-east-1"),
+            aws_access_key_id=s3_config.get("access_key_id") or None,
+            aws_secret_access_key=s3_config.get("secret_access_key") or None,
+        )
+        account_id = sts.get_caller_identity()["Account"]
+        _cached_account_ids[cache_key] = account_id
+        return account_id
+    except Exception:
+        return ""
+
+
+def owner_params(s3_config: dict) -> dict:
+    """Return ``{'ExpectedBucketOwner': account_id}`` for AWS S3, empty dict otherwise."""
+    acct = _get_account_id(s3_config)
+    return {"ExpectedBucketOwner": acct} if acct else {}
+
+
 def upload_file(
     key: str, file_obj, content_type: str = "application/octet-stream"
 ) -> dict:
     """Upload a file to S3."""
+    cfg = _get_s3_config()
     client = _get_s3_client()
+    op = owner_params(cfg)
+    bucket = cfg["bucket"]
     client.upload_fileobj(
         file_obj,
-        _bucket(),
+        bucket,
         key,
-        ExtraArgs={"ContentType": content_type},
+        ExtraArgs={"ContentType": content_type, **op},
     )
-    head = client.head_object(Bucket=_bucket(), Key=key)
+    head = client.head_object(Bucket=bucket, Key=key, **op)
     logger.info("Uploaded %s (%d bytes)", key, head["ContentLength"])
     return {"key": key, "size_bytes": head["ContentLength"]}
 
 
 def download_file(key: str, local_path: str):
     """Download a file from S3 to a local path."""
+    cfg = _get_s3_config()
     client = _get_s3_client()
-    client.download_file(_bucket(), key, local_path)
+    op = owner_params(cfg)
+    client.download_file(cfg["bucket"], key, local_path, ExtraArgs=op or None)
     logger.info("Downloaded %s → %s", key, local_path)
 
 
 def delete_file(key: str):
     """Delete a file from S3."""
+    cfg = _get_s3_config()
     client = _get_s3_client()
-    client.delete_object(Bucket=_bucket(), Key=key)
+    client.delete_object(Bucket=cfg["bucket"], Key=key, **owner_params(cfg))
     logger.info("Deleted %s", key)
 
 
 def delete_prefix(prefix: str):
     """Delete all objects under an S3 prefix."""
+    cfg = _get_s3_config()
     client = _get_s3_client()
-    bucket = _bucket()
+    bucket = cfg["bucket"]
+    op = owner_params(cfg)
     paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix, **op):
         objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if objects:
-            client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+            client.delete_objects(Bucket=bucket, Delete={"Objects": objects}, **op)
             logger.info("Deleted %d objects under %s", len(objects), prefix)
 
 

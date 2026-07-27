@@ -9,7 +9,7 @@ IFS=',' read -ra ADDRS <<< "${GATEWAY_ADDRS:-}"
 idx=1
 for addr in "${ADDRS[@]}"; do
   iface="net${idx}"
-  if [ -n "$addr" ] && ip link show "$iface" >/dev/null 2>&1; then
+  if [[ -n "$addr" ]] && ip link show "$iface" >/dev/null 2>&1; then
     ip addr add "$addr" dev "$iface" 2>/dev/null || true
     ip link set "$iface" up
     echo 0 > "/proc/sys/net/ipv4/conf/$iface/rp_filter"

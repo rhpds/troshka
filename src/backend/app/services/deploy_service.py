@@ -1987,7 +1987,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
     driver = get_provider_driver(provider)
 
-    from app.services.s3_storage import _get_readonly_s3_config
+    from app.services.s3_storage import _get_readonly_s3_config, owner_params
 
     s3_config = _get_s3_config()
     central_s3_config = _get_readonly_s3_config()
@@ -2000,9 +2000,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         endpoint_url=s3_config.get("endpoint_url") or None,
     )
     bucket = s3_config.get("bucket", "troshka-images")
+    s3_op = owner_params(s3_config)
 
     central_s3_client = None
     central_bucket = ""
+    central_op: dict = {}
     if central_s3_config:
         central_s3_client = boto3.client(
             "s3",
@@ -2012,6 +2014,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             endpoint_url=central_s3_config.get("endpoint_url") or None,
         )
         central_bucket = central_s3_config.get("bucket", "")
+        central_op = owner_params(central_s3_config)
 
     def _qcow2_virtual_size_gb(s3_path, use_central=False):
         try:
@@ -2021,7 +2024,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 return 0
             import struct
 
-            resp = cl.get_object(Bucket=bk, Key=s3_path, Range="bytes=0-31")
+            _op = central_op if use_central else s3_op
+            resp = cl.get_object(Bucket=bk, Key=s3_path, Range="bytes=0-31", **_op)
             header = resp["Body"].read()
             if len(header) >= 32 and header[:4] == b"QFI\xfb":
                 vsize = struct.unpack(">Q", header[24:32])[0]
@@ -2065,11 +2069,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 use_central = False
                 if central_s3_client:
                     try:
-                        s3_client.head_object(Bucket=bucket, Key=s3_path)
+                        s3_client.head_object(Bucket=bucket, Key=s3_path, **s3_op)
                     except Exception:
                         try:
                             central_s3_client.head_object(
-                                Bucket=central_bucket, Key=s3_path
+                                Bucket=central_bucket, Key=s3_path, **central_op
                             )
                             use_central = True
                         except Exception:
@@ -2098,11 +2102,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                     use_central = False
                     if central_s3_client:
                         try:
-                            s3_client.head_object(Bucket=bucket, Key=s3_path)
+                            s3_client.head_object(Bucket=bucket, Key=s3_path, **s3_op)
                         except Exception:
                             try:
                                 central_s3_client.head_object(
-                                    Bucket=central_bucket, Key=s3_path
+                                    Bucket=central_bucket, Key=s3_path, **central_op
                                 )
                                 use_central = True
                             except Exception:
@@ -3763,7 +3767,7 @@ def _clean_kubelet_certs(
                         kubeadmin_pw = _secrets.token_urlsafe(24)
                     recert_params["common_password"] = kubeadmin_pw
                     pw_hash = bcrypt.hashpw(
-                        kubeadmin_pw.encode(), bcrypt.gensalt(rounds=10)
+                        kubeadmin_pw.encode(), bcrypt.gensalt(rounds=12)
                     ).decode()
                     recert_params["kubeadmin_password_hash"] = pw_hash
                 job_id = start_job(host, "/vms/recert", recert_params)

@@ -397,7 +397,7 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
 
     try:
         from app.services import s3_storage
-        from app.services.s3_storage import _get_s3_config
+        from app.services.s3_storage import _get_s3_config, owner_params
 
         creds = _get_s3_config()
         import boto3
@@ -409,6 +409,7 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
             aws_secret_access_key=creds.get("secret_access_key"),
         )
         bucket = s3_storage._bucket()
+        op = owner_params(creds)
     except Exception as e:
         return {"error": f"S3 not configured: {e}"}
 
@@ -425,12 +426,12 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
         ("patterns/", active_pattern_ids),
         ("snapshots/", active_library_ids),
     ]:
-        resp = s3.list_objects_v2(Bucket=bucket, Prefix=s3_prefix, Delimiter="/")
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=s3_prefix, Delimiter="/", **op)
         for cp in resp.get("CommonPrefixes", []):
             prefix = cp["Prefix"]
             item_id = prefix.strip("/").split("/")[-1]
             if item_id not in active_ids:
-                objects = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get(
+                objects = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, **op).get(
                     "Contents", []
                 )
                 if objects and not dry_run:
@@ -438,6 +439,7 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
                     s3.delete_objects(
                         Bucket=bucket,
                         Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
+                        **op,
                     )
                     deleted += len(objects)
                     log.info(
@@ -446,24 +448,25 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
 
     # library/ has extra nesting: library/{user_id}/{item_id}/...
     # Must scan two levels deep to find the item_id
-    resp = s3.list_objects_v2(Bucket=bucket, Prefix="library/", Delimiter="/")
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix="library/", Delimiter="/", **op)
     for user_cp in resp.get("CommonPrefixes", []):
         user_prefix = user_cp["Prefix"]
         items_resp = s3.list_objects_v2(
-            Bucket=bucket, Prefix=user_prefix, Delimiter="/"
+            Bucket=bucket, Prefix=user_prefix, Delimiter="/", **op
         )
         for item_cp in items_resp.get("CommonPrefixes", []):
             item_prefix = item_cp["Prefix"]
             item_id = item_prefix.strip("/").split("/")[-1]
             if item_id not in active_library_ids:
-                objects = s3.list_objects_v2(Bucket=bucket, Prefix=item_prefix).get(
-                    "Contents", []
-                )
+                objects = s3.list_objects_v2(
+                    Bucket=bucket, Prefix=item_prefix, **op
+                ).get("Contents", [])
                 if objects and not dry_run:
                     deleted_bytes += sum(o["Size"] for o in objects)
                     s3.delete_objects(
                         Bucket=bucket,
                         Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
+                        **op,
                     )
                     deleted += len(objects)
                     log.info(
@@ -476,13 +479,13 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
     aborted = 0
     all_active = active_pattern_ids | active_library_ids
     try:
-        mp_resp = s3.list_multipart_uploads(Bucket=bucket)
+        mp_resp = s3.list_multipart_uploads(Bucket=bucket, **op)
         for upload in mp_resp.get("Uploads", []):
             parts = upload["Key"].split("/")
             item_id = parts[1] if len(parts) > 1 else ""
             if item_id and item_id not in all_active and not dry_run:
                 s3.abort_multipart_upload(
-                    Bucket=bucket, Key=upload["Key"], UploadId=upload["UploadId"]
+                    Bucket=bucket, Key=upload["Key"], UploadId=upload["UploadId"], **op
                 )
                 aborted += 1
     except Exception:

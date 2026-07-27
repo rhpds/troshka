@@ -181,7 +181,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "kubectl.kubernetes.io/restartedAt": datetime.datetime.utcnow().isoformat()
+                            "kubectl.kubernetes.io/restartedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
                         }
                     }
                 }

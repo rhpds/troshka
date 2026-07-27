@@ -11,7 +11,10 @@ _DEFAULT_TEMPLATES_DIR = os.path.join(
 
 
 def load_template(name: str, templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> dict:
-    path = Path(templates_dir) / f"{name}.yaml"
+    base = Path(templates_dir).resolve()
+    path = (base / f"{name}.yaml").resolve()
+    if not path.is_relative_to(base):
+        raise ValueError(f"Invalid template name: '{name}'")
     if not path.exists():
         raise FileNotFoundError(f"Template '{name}' not found at {path}")
     with open(path) as f:

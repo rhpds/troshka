@@ -1132,13 +1132,14 @@ def test_provider(
                 aws_secret_access_key=creds.get("secret_access_key"),
             )
             identity = sts.get_caller_identity()
+            account_id = identity["Account"]
             # Then check bucket
             try:
-                s3.head_bucket(Bucket=bucket)
+                s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account_id)
                 return {
                     "status": "ok",
                     "bucket": bucket,
-                    "account": identity["Account"],
+                    "account": account_id,
                 }
             except s3.exceptions.ClientError as e:
                 code = e.response["Error"]["Code"]

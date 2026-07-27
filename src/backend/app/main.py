@@ -400,6 +400,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+from app.core.rate_limit import RateLimitMiddleware  # noqa: E402
+
+app.add_middleware(RateLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -407,10 +411,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from app.core.rate_limit import RateLimitMiddleware  # noqa: E402
-
-app.add_middleware(RateLimitMiddleware)
 
 from app.api import api_keys as api_key_routes  # noqa: E402
 from app.api import auth as auth_routes  # noqa: E402
