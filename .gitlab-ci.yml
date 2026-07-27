@@ -1,0 +1,39 @@
+---
+include:
+  - project: enterprise-pipelines/gitlab-ci/includes
+    file: SAST/sonarqube.yml
+
+stages:
+  - test
+  - static-analysis
+
+test-backend:
+  stage: test
+  image: python:3.11
+  rules:
+    - changes:
+        - src/backend/**
+        - src/troshkad/**
+        - src/operator/**
+  script:
+    - cd src/backend
+    - pip install --upgrade pip
+    - pip install ".[dev]"
+    - pytest tests/ --cov=app --cov-report=xml:../../coverage.xml -v
+    - cd ../..
+    - sed -i 's|<source>app</source>|<source>src/backend/app</source>|' coverage.xml
+  artifacts:
+    paths:
+      - coverage.xml
+    expire_in: 1 hour
+  tags:
+    - itup-alm-x86
+
+sonarqube:
+  variables:
+    SONAR_PROJECT_KEY: "com.redhat.rhpds.troshka"
+  needs:
+    - job: test-backend
+      optional: true
+  tags:
+    - itup-alm-x86
