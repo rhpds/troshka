@@ -879,7 +879,7 @@ class OCPVirtDriver(ProviderDriver):
         from kubernetes import client
 
         creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        namespace = namespace or creds.get("namespace", "troshka")
         custom_api, core_api = _get_k8s_clients(creds)
 
         label_selector = (

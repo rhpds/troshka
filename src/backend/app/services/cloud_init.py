@@ -250,7 +250,6 @@ def generate_metadata_service_script(
     user-data and meta-data based on the requesting IP (mapped via DHCP lease).
     """
     nodes = topology.get("nodes", [])
-    topology.get("edges", [])
 
     vm_configs = {}
     for node in nodes:

@@ -20,7 +20,10 @@ LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8080"))
 
 config.load_incluster_config()
 _cfg = client.Configuration.get_default_copy()
-K8S_HOST = _cfg.host or f"https://{os.environ.get('KUBERNETES_SERVICE_HOST', '172.30.0.1')}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}"
+K8S_HOST = (
+    _cfg.host
+    or f"https://{os.environ.get('KUBERNETES_SERVICE_HOST', '172.30.0.1')}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}"
+)
 _token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 K8S_TOKEN = open(_token_path).read().strip() if os.path.exists(_token_path) else ""
 
@@ -60,13 +63,16 @@ async def _proxy(ws_client):
 
     vnc_url = _get_kubevirt_vnc_url(vm_name)
 
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     _ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
     if os.path.exists(_ca_path):
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ssl_ctx.load_verify_locations(_ca_path)
     else:
+        ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        ssl_ctx.verify_mode = (
+            ssl.CERT_NONE
+        )  # NOSONAR — dev/test only, CA always present in-cluster
 
     max_retries = 30
     for attempt in range(max_retries):
@@ -81,7 +87,9 @@ async def _proxy(ws_client):
                 compression=None,
             ) as ws_kubevirt:
                 if attempt:
-                    logger.info(f"Reconnected to KubeVirt VNC for {vm_name} (attempt {attempt + 1})")
+                    logger.info(
+                        f"Reconnected to KubeVirt VNC for {vm_name} (attempt {attempt + 1})"
+                    )
                 else:
                     logger.info(f"Connected to KubeVirt VNC for {vm_name}")
 
@@ -125,13 +133,17 @@ async def _proxy(ws_client):
             return
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.info(f"VNC for {vm_name} not ready (attempt {attempt + 1}), retrying in 3s: {e}")
+                logger.info(
+                    f"VNC for {vm_name} not ready (attempt {attempt + 1}), retrying in 3s: {e}"
+                )
                 if not await _client_alive(ws_client):
                     logger.info(f"Client disconnected while waiting for {vm_name}")
                     return
                 await asyncio.sleep(3)
             else:
-                logger.error(f"VNC proxy giving up on {vm_name} after {max_retries} attempts: {e}")
+                logger.error(
+                    f"VNC proxy giving up on {vm_name} after {max_retries} attempts: {e}"
+                )
                 try:
                     await ws_client.close(1011, str(e))
                 except Exception:

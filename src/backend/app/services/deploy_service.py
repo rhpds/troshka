@@ -1176,7 +1176,6 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         return
 
     # Poll until all jobs complete
-    sum(ic["expected_size"] for ic in items_to_cache)
     completed: set[str] = set()
     failed: set[str] = set()
     stale_polls = 0
