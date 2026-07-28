@@ -481,6 +481,28 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             if e.status != 409:
                 raise
 
+        sa_ref = f"system:serviceaccount:{namespace}:troshka-bmc"
+        try:
+            scc = custom_api.get_cluster_custom_object(
+                group="security.openshift.io",
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-network-pods",
+            )
+            users = scc.get("users", []) or []
+            if sa_ref not in users:
+                users.append(sa_ref)
+                custom_api.patch_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name="troshka-network-pods",
+                    body={"users": users},
+                )
+                logger.info(f"Added {sa_ref} to troshka-network-pods SCC")
+        except Exception as e:
+            logger.warning(f"Could not patch SCC for BMC in {namespace}: {e}")
+
         rbac_api = client.RbacAuthorizationV1Api()
         try:
             rbac_api.create_namespaced_role(

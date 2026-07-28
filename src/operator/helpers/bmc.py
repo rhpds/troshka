@@ -25,6 +25,9 @@ def build_bmc_deployment(
         {"name": "SUSHY_LISTEN_PORT", "value": "8000"},
     ]
 
+    if bmc_ips:
+        env.append({"name": "SUSHY_BMC_IPS", "value": ",".join(bmc_ips)})
+
     if credentials:
         env.append(
             {
@@ -44,13 +47,8 @@ def build_bmc_deployment(
         "troshka-project": project_name,
     }
 
-    if bmc_ips:
-        net_annotation = json.dumps([{"name": bmc_network_nad, "ips": bmc_ips}])
-    else:
-        net_annotation = bmc_network_nad
-
     annotations = {
-        "k8s.v1.cni.cncf.io/networks": net_annotation,
+        "k8s.v1.cni.cncf.io/networks": bmc_network_nad,
     }
 
     return {
@@ -87,6 +85,11 @@ def build_bmc_deployment(
                                 },
                             ],
                             "env": env,
+                            "securityContext": {
+                                "capabilities": {
+                                    "add": ["NET_ADMIN"],
+                                },
+                            },
                             "resources": {
                                 "requests": {
                                     "cpu": "100m",

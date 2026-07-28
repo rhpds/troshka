@@ -192,9 +192,34 @@ def _generate_self_signed_cert(cert_path, key_path):
     )
 
 
+def _configure_network():
+    """Assign BMC IPs to net1 if SUSHY_BMC_IPS is set."""
+    import subprocess
+
+    bmc_ips = os.environ.get("SUSHY_BMC_IPS", "")
+    if not bmc_ips:
+        return
+    for ip in bmc_ips.split(","):
+        ip = ip.strip()
+        if not ip:
+            continue
+        cidr = ip if "/" in ip else f"{ip}/24"
+        try:
+            subprocess.run(
+                ["ip", "addr", "add", cidr, "dev", "net1"],
+                capture_output=True,
+                timeout=5,
+            )
+            print(f"Assigned {cidr} to net1")
+        except Exception as e:
+            print(f"Failed to assign {cidr} to net1: {e}")
+
+
 if __name__ == "__main__":
     import ssl
     import threading
+
+    _configure_network()
 
     # HTTP server on existing port (default 8000)
     http_server = HTTPServer(("0.0.0.0", LISTEN_PORT), RedfishHandler)
