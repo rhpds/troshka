@@ -31,6 +31,8 @@ metadata:
   namespace: {{ include "troshka.namespace" . }}
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 type: Opaque
 stringData:
   client-secret: {{ $clientSecret | quote }}
@@ -42,6 +44,8 @@ metadata:
   name: troshka
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 secret: {{ $clientSecret | quote }}
 redirectURIs:
   - "https://{{ .Values.route.host }}/oauth/callback"
