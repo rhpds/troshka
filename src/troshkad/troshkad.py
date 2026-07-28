@@ -2176,7 +2176,16 @@ def _handle_vm_recert(job, params):
 
         os.makedirs(mount_dir, exist_ok=True)
         _job_log(job, f"Mounting {partition}")
-        _run_cmd(job, ["mount", "-o", "nouuid", partition, mount_dir], timeout=30)
+        rc = _run_cmd(
+            job,
+            ["mount", "-o", "nouuid", partition, mount_dir],
+            timeout=30,
+            check=False,
+        )
+        if rc and rc.returncode != 0:
+            _job_log(job, "Mount failed — repairing XFS log")
+            _run_cmd(job, ["xfs_repair", "-L", partition], timeout=120)
+            _run_cmd(job, ["mount", "-o", "nouuid", partition, mount_dir], timeout=30)
         mounted = True
 
         deploy_dir = os.path.join(mount_dir, "ostree/deploy/rhcos/deploy")

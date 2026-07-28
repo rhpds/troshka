@@ -198,7 +198,12 @@ def build_cloudinit_secret(vm_cr):
 
 
 def build_datavolume_from_s3(
-    name, namespace, s3_path, size_gb, s3_config, secret_name="s3-credentials"  # pragma: allowlist secret
+    name,
+    namespace,
+    s3_path,
+    size_gb,
+    s3_config,
+    secret_name="s3-credentials",  # pragma: allowlist secret
 ):
     bucket = s3_config.get("bucket", "")
     endpoint = s3_config.get("endpoint", "")
@@ -320,7 +325,11 @@ def build_recert_job(
             "kpartx -av $BLOOP\n"
             "sleep 1\n"
             "BPART=/dev/mapper/${BLOOP_BASE}p3; [ -e $BPART ] || BPART=/dev/mapper/${BLOOP_BASE}p1\n"
-            "mkdir -p /mnt/bastion; mount $BPART /mnt/bastion 2>/dev/null || mount -o nouuid $BPART /mnt/bastion\n"
+            "mkdir -p /mnt/bastion\n"
+            "if ! mount $BPART /mnt/bastion 2>/dev/null && ! mount -o nouuid $BPART /mnt/bastion 2>/dev/null; then\n"
+            "  xfs_repair -L $BPART >/dev/null 2>&1 && echo 'Repaired XFS log on bastion disk'\n"
+            "  mount $BPART /mnt/bastion 2>/dev/null || mount -o nouuid $BPART /mnt/bastion\n"
+            "fi\n"
             'KC_SRC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
             'if [ -f "$KC_SRC" ]; then\n'
             '  KC_DST="/mnt/bastion/home/cloud-user/ocp-install/auth/kubeconfig"\n'
@@ -346,7 +355,10 @@ def build_recert_job(
         "mkdir -p /mnt/rhcos\n"
         "for p in /dev/mapper/${LOOP_BASE}p4 /dev/mapper/${LOOP_BASE}p3 /dev/mapper/${LOOP_BASE}p2 /dev/mapper/${LOOP_BASE}p1; do\n"
         "  [ -e $p ] || continue\n"
-        "  mount $p /mnt/rhcos 2>/dev/null || mount -o nouuid $p /mnt/rhcos 2>/dev/null || continue\n"
+        "  if ! mount $p /mnt/rhcos 2>/dev/null && ! mount -o nouuid $p /mnt/rhcos 2>/dev/null; then\n"
+        '    xfs_repair -L $p >/dev/null 2>&1 && echo "Repaired XFS log on $p"\n'
+        "    mount $p /mnt/rhcos 2>/dev/null || mount -o nouuid $p /mnt/rhcos 2>/dev/null || continue\n"
+        "  fi\n"
         "  if [ -d /mnt/rhcos/ostree/deploy/rhcos ]; then\n"
         "    RHCOS_PART=$p; break\n"
         "  fi; umount /mnt/rhcos\n"
