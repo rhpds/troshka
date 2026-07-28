@@ -2543,7 +2543,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             return
 
         if phase == "Error":
-            error_msg = status.get("message", "Operator reported an error")
+            error_msg = (
+                status.get("error")
+                or status.get("message")
+                or "Operator reported an error"
+            )
             project.state = "error"
             project.deploy_error = error_msg
             db.commit()

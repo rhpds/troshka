@@ -130,6 +130,47 @@ def _check_project_timers(_dry_run=False):
                 },
             )
 
+        # 5. Recover projects stuck in transitional states with no active RQ job
+        from app.core.redis import get_job_info, is_redis_available
+
+        if is_redis_available():
+            grace = now - datetime.timedelta(minutes=5)
+            stuck = (
+                s.query(Project)
+                .filter(
+                    Project.state.in_(
+                        ("deploying", "starting", "stopping", "reconfiguring")
+                    ),
+                    Project.updated_at < grace,
+                )
+                .all()
+            )
+            for p in stuck:
+                job_info = get_job_info(p.id)
+                if job_info and job_info.get("status") in ("queued", "started"):
+                    continue
+                logger.warning(
+                    "Recovering stuck project %s (%s) — state=%s, no active job",
+                    p.name,
+                    p.id[:8],
+                    p.state,
+                )
+                if _dry_run:
+                    result.setdefault("stuck_recovered", []).append(p.id)
+                    continue
+                p.state = "error"
+                p.deploy_error = f"Background job lost while {p.state} — please retry"
+                s.commit()
+                _notify(
+                    p.id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": p.deploy_error,
+                    },
+                )
+                result.setdefault("stuck_recovered", []).append(p.id)
+
     except Exception:
         logger.exception("Project timer check error")
         s.rollback()
