@@ -894,7 +894,9 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         logger.warning(f"Could not read console route hostname: {e}")
 
     # Store recert config in CR status for the timer to pick up
-    rhcos_vm = next((v for v in vms if v.get("os") == "rhcos"), None)
+    # Only run recert on SNOs (single RHCOS VM) — multi-node clusters keep their certs
+    rhcos_vms = [v for v in vms if v.get("os") == "rhcos"]
+    rhcos_vm = rhcos_vms[0] if len(rhcos_vms) == 1 else None
     is_pattern = rhcos_vm and any(
         d.get("patternImage") for d in vm_disks_map.get(rhcos_vm["id"], [])
     )
