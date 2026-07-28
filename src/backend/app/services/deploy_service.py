@@ -2566,6 +2566,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             }
             if new_progress != last:
                 _set_deploy_progress(project_id, new_progress)
+                project.deploy_progress = new_progress
+                db.commit()
                 notify_project(
                     project_id,
                     {
