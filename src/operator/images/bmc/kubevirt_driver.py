@@ -132,9 +132,7 @@ class KubeVirtDriver:
         if boot_enabled == "Once":
             self._boot_once_overrides[name] = {
                 "disks": [
-                    {d["name"]: d.get("bootOrder")}
-                    for d in disks
-                    if d.get("bootOrder")
+                    {d["name"]: d.get("bootOrder")} for d in disks if d.get("bootOrder")
                 ],
                 "interfaces": [
                     {i["name"]: i.get("bootOrder")}
