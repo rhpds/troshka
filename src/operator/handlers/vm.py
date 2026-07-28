@@ -440,8 +440,18 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     except client.exceptions.ApiException as e:
         if e.status == 409:
             logger.info(
-                f"KubeVirt VM {kv_vm_name} exists (stale), waiting for deletion"
+                f"KubeVirt VM {kv_vm_name} already exists, deleting and recreating"
             )
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=kv_vm_name,
+                )
+            except Exception:
+                pass
             for _ in range(30):
                 try:
                     custom_api.get_namespaced_custom_object(
@@ -456,14 +466,20 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                     if ge.status == 404:
                         break
                     raise
-            custom_api.create_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                body=kv_vm,
-            )
-            logger.info(f"Created KubeVirt VM {kv_vm_name} (after stale cleanup)")
+            try:
+                custom_api.create_namespaced_custom_object(
+                    group="kubevirt.io",
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    body=kv_vm,
+                )
+                logger.info(f"Created KubeVirt VM {kv_vm_name} (after cleanup)")
+            except client.exceptions.ApiException as ce:
+                if ce.status == 409:
+                    logger.info(f"KubeVirt VM {kv_vm_name} still exists, adopting")
+                else:
+                    raise
         else:
             raise
 
