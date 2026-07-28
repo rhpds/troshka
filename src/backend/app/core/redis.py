@@ -170,7 +170,10 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
             p = s.get(Project, project_id)
             if p and p.state in ("deploying", "starting", "stopping", "deleting"):
                 p.state = "error"
-                p.deploy_error = f"Worker job failed: {exc_value}"
+                err_msg = (
+                    str(exc_value) if exc_value else "worker restarted during deploy"
+                )
+                p.deploy_error = f"Deploy interrupted — {err_msg}. Please retry."
                 s.commit()
             s.close()
         except Exception:
