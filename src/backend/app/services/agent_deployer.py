@@ -474,13 +474,13 @@ PIP_ARGS="--quiet"
 # (libvirt-devel is not available on RHEL 10 so it can't compile from source)
 if /opt/troshka/venv/bin/python3 -c "import libvirt" 2>/dev/null; then
     echo "System libvirt module available, installing without libvirt-python"
-    /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps sushy-tools
+    /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz'
     # Install sushy-tools runtime deps (except libvirt-python which comes from system RPM)
     /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity bcrypt webob pbr
     /opt/troshka/venv/bin/pip install $PIP_ARGS virtualbmc
 else
     echo "No system libvirt, attempting full install"
-    /opt/troshka/venv/bin/pip install $PIP_ARGS sushy-tools virtualbmc
+    /opt/troshka/venv/bin/pip install $PIP_ARGS 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz' virtualbmc
 fi
 /opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli websockets
 echo "BMC venv ready at /opt/troshka/venv"
