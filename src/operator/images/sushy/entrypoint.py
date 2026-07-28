@@ -9,7 +9,9 @@ from kubevirt_driver import KubeVirtDriver
 driver = KubeVirtDriver()
 
 USERNAME = os.environ.get("SUSHY_USERNAME", "admin")
-PASSWORD = os.environ.get("SUSHY_PASSWORD", "redhat")  # NOSONAR — default overridden by env var at deploy time
+PASSWORD = os.environ.get(
+    "SUSHY_PASSWORD", "redhat"
+)  # NOSONAR — default overridden by env var at deploy time
 LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 
 
@@ -43,25 +45,29 @@ class RedfishHandler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
 
         if path == "/redfish/v1":
-            _send_json(self, {
-                "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
-                "Id": "RootService",
-                "Name": "Troshka Redfish Service",
-                "Systems": {"@odata.id": "/redfish/v1/Systems"},
-            })
+            _send_json(
+                self,
+                {
+                    "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
+                    "Id": "RootService",
+                    "Name": "Troshka Redfish Service",
+                    "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                },
+            )
             return
 
         if path == "/redfish/v1/Systems":
             systems = driver.get_systems()
-            members = [
-                {"@odata.id": f"/redfish/v1/Systems/{s}"} for s in systems
-            ]
-            _send_json(self, {
-                "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
-                "Name": "Computer System Collection",
-                "Members": members,
-                "Members@odata.count": len(members),
-            })
+            members = [{"@odata.id": f"/redfish/v1/Systems/{s}"} for s in systems]
+            _send_json(
+                self,
+                {
+                    "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
+                    "Name": "Computer System Collection",
+                    "Members": members,
+                    "Members@odata.count": len(members),
+                },
+            )
             return
 
         if path.startswith("/redfish/v1/Systems/"):
@@ -73,29 +79,61 @@ class RedfishHandler(BaseHTTPRequestHandler):
                 boot_mode = driver.get_boot_mode(identity)
                 mem = driver.get_total_memory(identity)
                 cpus = driver.get_total_cpus(identity)
-                _send_json(self, {
-                    "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
-                    "Id": identity,
-                    "Name": identity,
-                    "UUID": identity,
-                    "PowerState": power,
-                    "MemorySummary": {"TotalSystemMemoryGiB": mem / 1024},
-                    "ProcessorSummary": {"Count": cpus},
-                    "Boot": {
-                        "BootSourceOverrideTarget": boot_dev,
-                        "BootSourceOverrideMode": boot_mode,
+                boot_enabled = driver.get_boot_override_enabled(identity)
+                _send_json(
+                    self,
+                    {
+                        "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
+                        "Id": identity,
+                        "Name": identity,
+                        "UUID": identity,
+                        "PowerState": power,
+                        "MemorySummary": {"TotalSystemMemoryGiB": mem / 1024},
+                        "ProcessorSummary": {"Count": cpus},
+                        "Boot": {
+                            "BootSourceOverrideEnabled": boot_enabled,
+                            "BootSourceOverrideTarget": boot_dev,
+                            "BootSourceOverrideMode": boot_mode,
+                        },
+                        "Actions": {
+                            "#ComputerSystem.Reset": {
+                                "target": f"/redfish/v1/Systems/{identity}/Actions/ComputerSystem.Reset",
+                                "ResetType@Redfish.AllowableValues": [
+                                    "On",
+                                    "ForceOff",
+                                    "GracefulShutdown",
+                                    "ForceRestart",
+                                    "ForceOn",
+                                ],
+                            }
+                        },
                     },
-                    "Actions": {
-                        "#ComputerSystem.Reset": {
-                            "target": f"/redfish/v1/Systems/{identity}/Actions/ComputerSystem.Reset",
-                            "ResetType@Redfish.AllowableValues": [
-                                "On", "ForceOff", "GracefulShutdown",
-                                "ForceRestart", "ForceOn",
-                            ],
-                        }
-                    },
-                })
+                )
                 return
+
+        _send_json(self, {"error": "Not found"}, 404)
+
+    def do_PATCH(self):
+        if not _check_auth(self):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="Redfish"')
+            self.end_headers()
+            return
+
+        path = self.path.rstrip("/")
+
+        if path.startswith("/redfish/v1/Systems/"):
+            identity = path.split("/redfish/v1/Systems/")[1].split("/")[0]
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            boot = body.get("Boot", {})
+            target = boot.get("BootSourceOverrideTarget")
+            if target:
+                boot_enabled = boot.get("BootSourceOverrideEnabled", "Continuous")
+                driver.set_boot_device(identity, target, boot_enabled=boot_enabled)
+            self.send_response(204)
+            self.end_headers()
+            return
 
         _send_json(self, {"error": "Not found"}, 404)
 
@@ -114,6 +152,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length)) if length else {}
             reset_type = body.get("ResetType", "On")
             driver.set_power_state(identity, reset_type)
+            driver.revert_boot_once(identity)
             self.send_response(204)
             self.end_headers()
             return
@@ -127,14 +166,25 @@ class RedfishHandler(BaseHTTPRequestHandler):
 def _generate_self_signed_cert(cert_path, key_path):
     """Generate a self-signed TLS certificate."""
     import subprocess
+
     subprocess.run(
         [
-            "openssl", "req", "-x509",
-            "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-            "-nodes", "-days", "3650",
-            "-subj", "/CN=troshka-bmc",
-            "-keyout", key_path,
-            "-out", cert_path,
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "3650",
+            "-subj",
+            "/CN=troshka-bmc",
+            "-keyout",
+            key_path,
+            "-out",
+            cert_path,
         ],
         capture_output=True,
         timeout=10,
@@ -162,5 +212,7 @@ if __name__ == "__main__":
 
     ssl_thread = threading.Thread(target=https_server.serve_forever, daemon=True)
     ssl_thread.start()
-    print(f"Redfish emulator listening on port {LISTEN_PORT} (HTTP) and {ssl_port} (HTTPS)")
+    print(
+        f"Redfish emulator listening on port {LISTEN_PORT} (HTTP) and {ssl_port} (HTTPS)"
+    )
     http_server.serve_forever()

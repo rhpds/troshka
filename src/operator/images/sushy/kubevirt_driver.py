@@ -104,13 +104,11 @@ class KubeVirtDriver:
         interfaces = devices.get("interfaces", [])
         boot_items = []
         for d in disks:
-            order = d.get("disk", {}).get("bootOrder") or d.get(
-                "cdrom", {}
-            ).get("bootOrder")
+            order = d.get("disk", {}).get("bootOrder") or d.get("cdrom", {}).get(
+                "bootOrder"
+            )
             if order:
-                boot_items.append(
-                    (order, "Hdd" if "disk" in d else "Cd")
-                )
+                boot_items.append((order, "Hdd" if "disk" in d else "Cd"))
         for iface in interfaces:
             order = iface.get("bootOrder")
             if order:
@@ -118,8 +116,173 @@ class KubeVirtDriver:
         boot_items.sort()
         return boot_items[0][1] if boot_items else "Hdd"
 
-    def set_boot_device(self, identity, device):
-        pass
+    _boot_once_overrides = {}
+
+    def set_boot_device(self, identity, device, boot_enabled=None):
+        name = self._kv_name(identity)
+        vm = self._get_vm(identity)
+        devices = (
+            vm.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("domain", {})
+            .get("devices", {})
+        )
+        disks = devices.get("disks", [])
+        interfaces = devices.get("interfaces", [])
+
+        if boot_enabled == "Once":
+            self._boot_once_overrides[name] = {
+                "disks": [
+                    {
+                        d["name"]: d.get("disk", {}).get("bootOrder")
+                        or d.get("cdrom", {}).get("bootOrder")
+                    }
+                    for d in disks
+                    if d.get("disk", {}).get("bootOrder")
+                    or d.get("cdrom", {}).get("bootOrder")
+                ],
+                "interfaces": [
+                    {i["name"]: i.get("bootOrder")}
+                    for i in interfaces
+                    if i.get("bootOrder")
+                ],
+            }
+        else:
+            self._boot_once_overrides.pop(name, None)
+
+        DEVICE_MAP = {"Pxe": "interface", "Hdd": "disk", "Cd": "cdrom"}
+        target_type = DEVICE_MAP.get(device, "disk")
+
+        patch_disks = []
+        for d in disks:
+            d_copy = dict(d)
+            if "disk" in d_copy:
+                d_copy["disk"] = dict(d_copy["disk"])
+                d_copy["disk"].pop("bootOrder", None)
+            if "cdrom" in d_copy:
+                d_copy["cdrom"] = dict(d_copy["cdrom"])
+                d_copy["cdrom"].pop("bootOrder", None)
+            patch_disks.append(d_copy)
+
+        patch_ifaces = []
+        for i in interfaces:
+            i_copy = dict(i)
+            i_copy.pop("bootOrder", None)
+            patch_ifaces.append(i_copy)
+
+        order = 1
+        if target_type == "interface":
+            for i in patch_ifaces:
+                i["bootOrder"] = order
+                order += 1
+            for d in patch_disks:
+                if "disk" in d:
+                    d["disk"]["bootOrder"] = order
+                    order += 1
+        elif target_type == "cdrom":
+            for d in patch_disks:
+                if "cdrom" in d:
+                    d["cdrom"]["bootOrder"] = order
+                    order += 1
+            for d in patch_disks:
+                if "disk" in d:
+                    d["disk"]["bootOrder"] = order
+                    order += 1
+        else:
+            for d in patch_disks:
+                if "disk" in d:
+                    d["disk"]["bootOrder"] = order
+                    order += 1
+
+        patch = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {
+                            "devices": {
+                                "disks": patch_disks,
+                                "interfaces": patch_ifaces,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.custom_api.patch_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=self.namespace,
+            plural="virtualmachines",
+            name=name,
+            body=patch,
+        )
+
+    def get_boot_override_enabled(self, identity):
+        name = self._kv_name(identity)
+        return "Once" if name in self._boot_once_overrides else "Continuous"
+
+    def revert_boot_once(self, identity):
+        name = self._kv_name(identity)
+        saved = self._boot_once_overrides.pop(name, None)
+        if saved is None:
+            return
+
+        vm = self._get_vm(identity)
+        devices = (
+            vm.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("domain", {})
+            .get("devices", {})
+        )
+        disks = devices.get("disks", [])
+        interfaces = devices.get("interfaces", [])
+
+        for d in disks:
+            if "disk" in d:
+                d["disk"].pop("bootOrder", None)
+            if "cdrom" in d:
+                d["cdrom"].pop("bootOrder", None)
+        for i in interfaces:
+            i.pop("bootOrder", None)
+
+        for entry in saved.get("disks", []):
+            for disk_name, order in entry.items():
+                for d in disks:
+                    if d["name"] == disk_name and order:
+                        if "disk" in d:
+                            d["disk"]["bootOrder"] = order
+                        elif "cdrom" in d:
+                            d["cdrom"]["bootOrder"] = order
+        for entry in saved.get("interfaces", []):
+            for iface_name, order in entry.items():
+                for i in interfaces:
+                    if i["name"] == iface_name and order:
+                        i["bootOrder"] = order
+
+        patch = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {
+                            "devices": {
+                                "disks": disks,
+                                "interfaces": interfaces,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.custom_api.patch_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=self.namespace,
+            plural="virtualmachines",
+            name=name,
+            body=patch,
+        )
 
     def get_boot_mode(self, identity):
         vm = self._get_vm(identity)
