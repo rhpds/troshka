@@ -2167,12 +2167,18 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     )
 
     existing_cr = None
+    cr_name = f"project-{project_id[:8]}"
     try:
         existing_cr = driver.get_project_status(provider, project_id)
     except Exception:
         pass
 
-    if existing_cr and existing_cr.get("phase"):
+    _resume_poll = False
+    if existing_cr and existing_cr.get("phase") == "Deploying":
+        cr_name = f"project-{project_id[:8]}"
+        _resume_poll = True
+        logger.info("Deploy %s: CR already deploying, resuming poll", project_id[:8])
+    elif existing_cr and existing_cr.get("phase"):
         logger.info(
             "Deploy %s: replacing stale CR with fresh presigned URLs",
             project_id[:8],
@@ -2262,42 +2268,43 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 project_id[:8],
             )
 
-    logger.info(
-        "Deploy %s: creating CR with exec_ssh_key=%s",
-        project_id[:8],
-        bool(exec_privkey_pem),
-    )
-    try:
+    if not _resume_poll:
         logger.info(
-            "Deploy %s: central_s3=%s",
+            "Deploy %s: creating CR with exec_ssh_key=%s",
             project_id[:8],
-            bool(central_s3_config),
+            bool(exec_privkey_pem),
         )
-        cr_name = driver.deploy_project(
-            provider,
-            project_id,
-            topology,
-            s3_config,
-            exec_ssh_key=exec_privkey_pem,
-            central_s3_config=central_s3_config,
-        )
-    except Exception as e:
-        if "AlreadyExists" in str(e):
-            cr_name = f"project-{project_id[:8]}"
-            logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
-        else:
-            project.state = "error"
-            project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
-            db.commit()
-            notify_project(
-                project_id,
-                {
-                    "type": "project-state",
-                    "state": "error",
-                    "deploy_error": project.deploy_error,
-                },
+        try:
+            logger.info(
+                "Deploy %s: central_s3=%s",
+                project_id[:8],
+                bool(central_s3_config),
             )
-            return
+            cr_name = driver.deploy_project(
+                provider,
+                project_id,
+                topology,
+                s3_config,
+                exec_ssh_key=exec_privkey_pem,
+                central_s3_config=central_s3_config,
+            )
+        except Exception as e:
+            if "AlreadyExists" in str(e):
+                cr_name = f"project-{project_id[:8]}"
+                logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
+            else:
+                project.state = "error"
+                project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
+                db.commit()
+                notify_project(
+                    project_id,
+                    {
+                        "type": "project-state",
+                        "state": "error",
+                        "deploy_error": project.deploy_error,
+                    },
+                )
+                return
 
     logger.info(
         "Deploy %s: polling TroshkaProject CR %s",
