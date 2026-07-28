@@ -9,7 +9,7 @@ IMAGES=(
   troshka-dnsmasq
   troshka-gateway
   troshka-tools
-  troshka-sushy
+  troshka-bmc
   troshka-vnc-proxy
 )
 

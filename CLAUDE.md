@@ -615,5 +615,5 @@ ansible-playbook deploy/ansible/deploy.yaml \
 
 ### Container Images
 - Built by GitHub Actions on push to `main` or version tags
-- Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,sushy,vnc-proxy}`
+- Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,bmc,vnc-proxy}`
 - Containerfiles in `deploy/containerfiles/` (backend, frontend) and `src/operator/images/` (operator components)
