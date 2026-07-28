@@ -249,9 +249,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                                 plural="datavolumes",
                                 body=clone_dv,
                             )
-                            logger.info(
-                                f"Created DataVolume {pvc_name} (after 404)"
-                            )
+                            logger.info(f"Created DataVolume {pvc_name} (after 404)")
                         else:
                             raise
                 else:
@@ -483,6 +481,47 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
             if e.status != 409:
                 raise
 
+        rbac_api = client.RbacAuthorizationV1Api()
+        try:
+            rbac_api.create_namespaced_role(
+                namespace=namespace,
+                body=client.V1Role(
+                    metadata=client.V1ObjectMeta(name="troshka-bmc"),
+                    rules=[
+                        client.V1PolicyRule(
+                            api_groups=["kubevirt.io"],
+                            resources=["virtualmachines", "virtualmachineinstances"],
+                            verbs=["get", "list", "patch"],
+                        ),
+                    ],
+                ),
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+        try:
+            rbac_api.create_namespaced_role_binding(
+                namespace=namespace,
+                body=client.V1RoleBinding(
+                    metadata=client.V1ObjectMeta(name="troshka-bmc"),
+                    role_ref=client.V1RoleRef(
+                        api_group="rbac.authorization.k8s.io",
+                        kind="Role",
+                        name="troshka-bmc",
+                    ),
+                    subjects=[
+                        client.V1Subject(
+                            kind="ServiceAccount",
+                            name="troshka-bmc",
+                            namespace=namespace,
+                        ),
+                    ],
+                ),
+            )
+        except client.exceptions.ApiException as e:
+            if e.status != 409:
+                raise
+
         bmc_nad = None
         try:
             nets = custom_api.list_namespaced_custom_object(
@@ -507,6 +546,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
                 {
                     "vmId": spec["vmId"],
                     "smbiosUuid": spec.get("smbiosUuid", ""),
+                    "bmcIp": spec.get("bmcIp", ""),
                 }
             ]
 

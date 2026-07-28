@@ -11,10 +11,13 @@ def build_bmc_deployment(
     dep_name = f"bmc-{project_name}"
 
     vm_map = {}
+    bmc_ips = []
     for vm in bmc_vms:
         uuid = vm.get("smbiosUuid", vm.get("vmId", ""))
         kv_name = f"troshka-vm-{vm.get('vmId', '')[:8]}"
         vm_map[uuid] = kv_name
+        if vm.get("bmcIp"):
+            bmc_ips.append(vm["bmcIp"])
 
     env = [
         {"name": "SUSHY_VM_MAP", "value": json.dumps(vm_map)},
@@ -40,8 +43,14 @@ def build_bmc_deployment(
         "app": "troshka-bmc",
         "troshka-project": project_name,
     }
+
+    if bmc_ips:
+        net_annotation = json.dumps([{"name": bmc_network_nad, "ips": bmc_ips}])
+    else:
+        net_annotation = bmc_network_nad
+
     annotations = {
-        "k8s.v1.cni.cncf.io/networks": bmc_network_nad,
+        "k8s.v1.cni.cncf.io/networks": net_annotation,
     }
 
     return {

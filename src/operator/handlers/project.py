@@ -740,6 +740,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
                 "nics": nic_specs,
                 "cloudInit": vm.get("cloudInit", {}),
                 "bmcEnabled": vm.get("bmcEnabled", False),
+                "bmcIp": vm.get("bmcIp", ""),
                 "bootOrder": vm.get("bootOrder", []),
             },
         }

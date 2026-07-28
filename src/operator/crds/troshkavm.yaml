@@ -63,6 +63,8 @@ spec:
                 bmcEnabled:
                   type: boolean
                   default: false
+                bmcIp:
+                  type: string
                 cdrom:
                   type: object
                   properties:
