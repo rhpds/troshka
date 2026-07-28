@@ -104,9 +104,7 @@ class KubeVirtDriver:
         interfaces = devices.get("interfaces", [])
         boot_items = []
         for d in disks:
-            order = d.get("disk", {}).get("bootOrder") or d.get("cdrom", {}).get(
-                "bootOrder"
-            )
+            order = d.get("bootOrder")
             if order:
                 boot_items.append((order, "Hdd" if "disk" in d else "Cd"))
         for iface in interfaces:
@@ -134,13 +132,9 @@ class KubeVirtDriver:
         if boot_enabled == "Once":
             self._boot_once_overrides[name] = {
                 "disks": [
-                    {
-                        d["name"]: d.get("disk", {}).get("bootOrder")
-                        or d.get("cdrom", {}).get("bootOrder")
-                    }
+                    {d["name"]: d.get("bootOrder")}
                     for d in disks
-                    if d.get("disk", {}).get("bootOrder")
-                    or d.get("cdrom", {}).get("bootOrder")
+                    if d.get("bootOrder")
                 ],
                 "interfaces": [
                     {i["name"]: i.get("bootOrder")}
@@ -157,12 +151,7 @@ class KubeVirtDriver:
         patch_disks = []
         for d in disks:
             d_copy = dict(d)
-            if "disk" in d_copy:
-                d_copy["disk"] = dict(d_copy["disk"])
-                d_copy["disk"].pop("bootOrder", None)
-            if "cdrom" in d_copy:
-                d_copy["cdrom"] = dict(d_copy["cdrom"])
-                d_copy["cdrom"].pop("bootOrder", None)
+            d_copy.pop("bootOrder", None)
             patch_disks.append(d_copy)
 
         patch_ifaces = []
@@ -177,22 +166,22 @@ class KubeVirtDriver:
                 i["bootOrder"] = order
                 order += 1
             for d in patch_disks:
-                if "disk" in d:
-                    d["disk"]["bootOrder"] = order
+                if "disk" in d or "cdrom" in d:
+                    d["bootOrder"] = order
                     order += 1
         elif target_type == "cdrom":
             for d in patch_disks:
                 if "cdrom" in d:
-                    d["cdrom"]["bootOrder"] = order
+                    d["bootOrder"] = order
                     order += 1
             for d in patch_disks:
                 if "disk" in d:
-                    d["disk"]["bootOrder"] = order
+                    d["bootOrder"] = order
                     order += 1
         else:
             for d in patch_disks:
                 if "disk" in d:
-                    d["disk"]["bootOrder"] = order
+                    d["bootOrder"] = order
                     order += 1
 
         patch = {
@@ -240,10 +229,7 @@ class KubeVirtDriver:
         interfaces = devices.get("interfaces", [])
 
         for d in disks:
-            if "disk" in d:
-                d["disk"].pop("bootOrder", None)
-            if "cdrom" in d:
-                d["cdrom"].pop("bootOrder", None)
+            d.pop("bootOrder", None)
         for i in interfaces:
             i.pop("bootOrder", None)
 
@@ -251,10 +237,7 @@ class KubeVirtDriver:
             for disk_name, order in entry.items():
                 for d in disks:
                     if d["name"] == disk_name and order:
-                        if "disk" in d:
-                            d["disk"]["bootOrder"] = order
-                        elif "cdrom" in d:
-                            d["cdrom"]["bootOrder"] = order
+                        d["bootOrder"] = order
         for entry in saved.get("interfaces", []):
             for iface_name, order in entry.items():
                 for i in interfaces:
