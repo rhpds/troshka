@@ -20,3 +20,45 @@ def configure(settings: kopf.OperatorSettings, **_):
     settings.execution.max_workers = 100
     settings.batching.batch_window = 0.5
     logger.info("Troshka operator starting (max_workers=100)")
+
+    from kubernetes import client
+
+    custom_api = client.CustomObjectsApi()
+    batch_api = client.BatchV1Api()
+    try:
+        projects = custom_api.list_cluster_custom_object(
+            group=CRD_GROUP, version=CRD_VERSION, plural="troshkaprojects"
+        )
+        for proj in dict(projects).get("items", []):  # type: ignore[call-overload]
+            status = proj.get("status", {})
+            ns = proj.get("metadata", {}).get("namespace", "")
+            cr_name = proj.get("metadata", {}).get("name", "")
+            if status.get("phase") != "Error" or not status.get("recertConfig"):
+                continue
+            recert_cfg = status["recertConfig"]
+            rhcos_pvc = recert_cfg.get("rhcosPvc", "")
+            vm_part = rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
+            job_name = f"recert-{vm_part}"
+            try:
+                batch_api.delete_namespaced_job(
+                    name=job_name, namespace=ns, propagation_policy="Background"
+                )
+            except Exception:
+                pass
+            custom_api.patch_namespaced_custom_object_status(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=ns,
+                plural="troshkaprojects",
+                name=cr_name,
+                body={
+                    "status": {
+                        "phase": "Deploying",
+                        "error": None,
+                        "recertAttempts": 0,
+                    }
+                },
+            )
+            logger.info("Startup: retrying failed recert for %s/%s", ns, cr_name)
+    except Exception:
+        logger.exception("Startup: failed to check recert recovery")
