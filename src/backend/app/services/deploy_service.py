@@ -2166,6 +2166,26 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         },
     )
 
+    # Wait for namespace to finish terminating (race with destroy)
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    _kc_api, _kc_core, _ = _get_k8s_clients(provider)
+    _kc_ns = _project_ns(provider, project_id)
+    for _ns_wait in range(60):
+        try:
+            ns_obj = _kc_core.read_namespace(name=_kc_ns)
+            if ns_obj.status.phase == "Terminating":  # type: ignore[union-attr]
+                if _ns_wait == 0:
+                    logger.info(
+                        "Deploy %s: waiting for namespace to finish terminating",
+                        project_id[:8],
+                    )
+                _time.sleep(3)
+                continue
+            break
+        except Exception:
+            break
+
     existing_cr = None
     cr_name = f"project-{project_id[:8]}"
     try:
