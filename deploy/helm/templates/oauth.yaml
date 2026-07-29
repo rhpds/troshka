@@ -70,8 +70,6 @@ spec:
       labels:
         app.kubernetes.io/name: troshka-oauth-proxy
         app.kubernetes.io/component: auth
-      annotations:
-        checksum/args: {{ include (print $.Template.BasePath "/oauth.yaml") . | sha256sum }}
     spec:
       serviceAccountName: troshka-oauth
       containers:
