@@ -3010,7 +3010,7 @@ def redeploy_project(
     db: Session = Depends(get_db),
 ):
     """Destroy existing infrastructure and redeploy with current topology."""
-    project = db.query(Project).filter_by(id=project_id).first()
+    project = db.query(Project).filter_by(id=project_id).with_for_update().first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id != user.id and user.role != "admin":

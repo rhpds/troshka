@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import ConfirmModal from "@/components/ConfirmModal";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -853,6 +854,7 @@ export default function ProjectsPage() {
   const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
   const [deployHostId, setDeployHostId] = useState("");
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [republishTarget, setRepublishTarget] = useState<Project | null>(null);
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -1194,14 +1196,7 @@ export default function ProjectsPage() {
                   }}>Start</Button>
                 )}
                 {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
-                  <Button variant="secondary" onClick={() => {
-                    if (!window.confirm(`Republish project "${p.name}"? This will destroy and recreate all VMs.`)) return;
-                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
-                    fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
-                      if (d.status === "deploying") { pollUntilSettled(); }
-                      else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
-                    });
-                  }}>Republish</Button>
+                  <Button variant="secondary" onClick={() => setRepublishTarget(p)}>Republish</Button>
                 )}
                 {p.state !== "deleting" && <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={() => {
                   if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
@@ -1234,6 +1229,24 @@ export default function ProjectsPage() {
         <NewProjectModal onClose={() => setShowNewModal(false)} onCreated={(id) => router.push(`/projects/${id}`)} userRole={userRole} availableHosts={availableHosts} setAlertMsg={setAlertMsg} />
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
+      {republishTarget && (
+        <ConfirmModal
+          title="Republish Project"
+          message={`Republish project "${republishTarget.name}"? This will destroy and recreate all VMs.`}
+          confirmLabel="Republish"
+          variant="danger"
+          onCancel={() => setRepublishTarget(null)}
+          onConfirm={() => {
+            const p = republishTarget;
+            setRepublishTarget(null);
+            setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
+            fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }).then(r => r.json()).then(d => {
+              if (d.status === "deploying") { pollUntilSettled(); }
+              else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
+            });
+          }}
+        />
+      )}
     </>
   );
 }
