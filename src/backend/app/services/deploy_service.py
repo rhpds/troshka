@@ -3957,6 +3957,7 @@ def maybe_start_ocp_health_monitor(project_id: str):
     from app.models.host import Host
     from app.models.project import Project
 
+    logger.info("maybe_start_ocp_health_monitor called for %s", project_id[:8])
     db = SessionLocal()
     try:
         project = db.query(Project).filter_by(id=project_id).first()
@@ -3965,9 +3966,16 @@ def maybe_start_ocp_health_monitor(project_id: str):
             or project.ocp_status != "monitoring"
             or project.state != "active"
         ):
+            logger.info(
+                "OCP monitor %s: skipped (state=%s, ocp_status=%s)",
+                project_id[:8],
+                project.state if project else "missing",
+                project.ocp_status if project else "missing",
+            )
             return
         host = db.query(Host).filter_by(id=project.host_id).first()
         if not host:
+            logger.warning("OCP monitor: host not found for %s", project_id[:8])
             return
         if host.host_type != "kubevirt-cluster" and host.agent_status != "connected":
             return

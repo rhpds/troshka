@@ -228,6 +228,10 @@ def _maybe_scan_ocp_monitors():
             .filter(Project.ocp_status == "monitoring", Project.state == "active")
             .all()
         )
+        if projects:
+            logger.info(
+                "OCP monitor scan: %d project(s) need monitoring", len(projects)
+            )
         for (project_id,) in projects:
             maybe_start_ocp_health_monitor(project_id)
     finally:
