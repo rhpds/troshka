@@ -1016,7 +1016,7 @@ def stop_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(stop_project_async, project.id)
+    enqueue_job(stop_project_async, project.id, project_id=project.id)
 
     return {"status": "stopping"}
 
@@ -1106,7 +1106,7 @@ def start_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(start_project_async, project.id)
+    enqueue_job(start_project_async, project.id, project_id=project.id)
 
     return {"status": "starting"}
 
@@ -2239,7 +2239,7 @@ def reconfigure_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_do_reconfigure_bg, p_id, h_id, list(restart_vm_ids))
+    enqueue_job(_do_reconfigure_bg, p_id, h_id, list(restart_vm_ids), project_id=p_id)
     return {"status": "reconfiguring"}
 
 
@@ -2855,7 +2855,7 @@ def redeploy_vm(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_do_redeploy_bg, p_id, host_id, target_vm_id)
+    enqueue_job(_do_redeploy_bg, p_id, host_id, target_vm_id, project_id=p_id)
     return {"status": "redeploying"}
 
 
@@ -3103,7 +3103,9 @@ def redeploy_project(
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_redeploy_bg
 
-    enqueue_job(job_redeploy_bg, project.id, destroy_ctx, old_host_id)
+    enqueue_job(
+        job_redeploy_bg, project.id, destroy_ctx, old_host_id, project_id=project.id
+    )
 
     return {"status": "deploying"}
 
@@ -3186,7 +3188,7 @@ def delete_project(
         }
         from app.core.redis import enqueue_job
 
-        enqueue_job(destroy_project_sync, destroy_ctx)
+        enqueue_job(destroy_project_sync, destroy_ctx, project_id=project.id)
         return {"status": "deleting", "id": project_id}
 
     db.delete(project)

@@ -95,6 +95,7 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
         source_host_id,
         target_host_id,
         queue_name="project_lifecycle",
+        project_id=project_id,
     )
 
 

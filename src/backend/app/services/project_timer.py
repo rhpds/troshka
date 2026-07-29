@@ -193,7 +193,7 @@ def _spawn_stop(project_id):
     from app.core.redis import enqueue_job
     from app.services.deploy_service import stop_project_async
 
-    enqueue_job(stop_project_async, project_id)
+    enqueue_job(stop_project_async, project_id, project_id=project_id)
 
 
 def _delete_project(s, project):
@@ -227,7 +227,7 @@ def _delete_project(s, project):
         }
         from app.core.redis import enqueue_job
 
-        enqueue_job(destroy_project_sync, destroy_ctx)
+        enqueue_job(destroy_project_sync, destroy_ctx, project_id=project_id)
 
     from app.models.elastic_ip import ElasticIp
     from app.services.eip_service import release_eip
