@@ -49,7 +49,7 @@ jobs:
 
       - name: Build backend image
         run: |
-          podman build \
+          podman build --no-cache \
             -f deploy/containerfiles/Containerfile.backend \
             -t quay.io/redhat-gpte/troshka-backend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-backend:latest \
