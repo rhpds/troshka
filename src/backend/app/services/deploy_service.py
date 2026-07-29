@@ -2319,6 +2319,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         cr_name,
     )
 
+    _clear_deploy_cancelled(project_id)
     deploy_deadline = _time.time() + 7200
     for attempt in range(1440):
         if _time.time() > deploy_deadline:
