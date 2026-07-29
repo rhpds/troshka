@@ -117,6 +117,24 @@ def _project_response_dict(project):
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
+    if project.state in ("deploying", "reconfiguring", "starting", "stopping"):
+        from app.services.deploy_service import _get_deploy_progress_data
+
+        dp = _get_deploy_progress_data(project.id)
+        if dp:
+            result["deploy_progress"] = dp
+        elif project.deploy_progress:
+            result["deploy_progress"] = project.deploy_progress
+        if project.state == "deploying":
+            from app.core.redis import get_job_info
+
+            job_info = get_job_info(project.id)
+            if job_info and job_info.get("status") == "queued":
+                result["deploy_progress"] = {
+                    "step": "queued",
+                    "detail": f"#{job_info.get('queue_position', '?')} of {job_info.get('queue_length', '?')}",
+                }
+
     from app.services.ws_pubsub import get_cached_vm_states
 
     cached_states = get_cached_vm_states(project.id)
@@ -2245,7 +2263,11 @@ def reconfigure_project(
         raise HTTPException(status_code=400, detail="Project has no active deployment")
 
     host = db.query(Host).filter_by(id=project.host_id).first()
-    if not host or not host.private_key or not host.ip_address:
+    if not host:
+        raise HTTPException(status_code=503, detail="Host not available")
+    if host.host_type != "kubevirt-cluster" and (
+        not host.private_key or not host.ip_address
+    ):
         raise HTTPException(status_code=503, detail="Host not available")
 
     # Validate BMC network has at least one connected provisioner VM

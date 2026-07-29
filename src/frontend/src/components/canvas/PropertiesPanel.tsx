@@ -1080,15 +1080,21 @@ export default function PropertiesPanel() {
             <>
               <div className="props-divider" />
               <div className="props-section">
-                <div className="props-section-body">
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-                    <input type="checkbox" checked={!!(node.data as Record<string, any>).recertEnabled}
-                      disabled={projectState === "deploying"}
-                      onChange={(e) => updateNodeData(node.id, { recertEnabled: e.target.checked })}
-                    />
-                    Recert (regenerate OCP certificates)
-                  </label>
+                <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("ocp")}>
+                  <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("ocp") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+                  OCP
                 </div>
+                {!isCollapsed("ocp") && (
+                  <div className="props-section-body">
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!(node.data as Record<string, any>).recertEnabled}
+                        disabled={projectState === "deploying"}
+                        onChange={(e) => updateNodeData(node.id, { recertEnabled: e.target.checked })}
+                      />
+                      SNO Recert (regenerate OCP certificates)
+                    </label>
+                  </div>
+                )}
               </div>
             </>
           )}
