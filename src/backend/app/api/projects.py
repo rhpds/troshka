@@ -629,6 +629,7 @@ def import_template(
             status_code=400,
             detail="Template produces duplicate names: " + "; ".join(topo_errors),
         )
+    _enforce_single_bastion_browser(topology)
 
     project.topology = topology
 
@@ -894,6 +895,9 @@ def update_project(
         from app.services.clock_service import adjust_clocks_async
 
         adjust_clocks_async(project_id)
+
+    if "topology" in fields:
+        _enforce_single_bastion_browser(fields["topology"])
 
     db.commit()
     db.refresh(project)
@@ -1257,6 +1261,23 @@ def _delete_redeploy_progress(dom: str):
 
 # Legacy compatibility — ws_pubsub imports this
 _redeploy_progress: dict[str, dict] = {}
+
+
+def _enforce_single_bastion_browser(topology: dict):
+    """Ensure at most one VM has configureBastionBrowser enabled."""
+    if not topology or not isinstance(topology, dict):
+        return
+    count = sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("configureBastionBrowser")
+    )
+    if count > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Only one VM can have 'Configure bastion browser' enabled per project",
+        )
 
 
 def _check_library_items_ready(topology: dict, db: Session):

@@ -2554,7 +2554,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             project.deployed_topology = clean_topo
             project.topology = clean_topo
             project.deploy_error = None
-            if _is_ocp_topology(topology):
+            if _has_ocp_monitor(topology):
                 project.ocp_status = "monitoring"
                 project.ocp_status_detail = None
                 project.ocp_install_elapsed = None
@@ -3693,7 +3693,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         _delete_deploy_progress(project_id)
         logger.info("Deploy %s: complete — all VMs running", project_id[:8])
 
-        if auto_start and _is_ocp_topology(topology):
+        if auto_start and _has_ocp_monitor(topology):
             project.ocp_status = "monitoring"
             project.ocp_status_detail = None
             project.ocp_install_elapsed = None
@@ -3933,6 +3933,16 @@ def _is_ocp_topology(topology: dict) -> bool:
     )
 
 
+def _has_ocp_monitor(topology: dict) -> bool:
+    """Check if any VM in the topology has ocpMonitor or configureBastionBrowser enabled."""
+    return any(
+        n.get("data", {}).get("ocpMonitor")
+        or n.get("data", {}).get("configureBastionBrowser")
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+    )
+
+
 def _is_pattern_deploy(topology: dict) -> bool:
     return any(
         n.get("data", {}).get("patternId")
@@ -3962,7 +3972,7 @@ def maybe_start_ocp_health_monitor(project_id: str):
         if host.host_type != "kubevirt-cluster" and host.agent_status != "connected":
             return
         topo = project.deployed_topology or project.topology or {}
-        if not _is_ocp_topology(topo):
+        if not _has_ocp_monitor(topo):
             return
         if project.ocp_install_elapsed is not None:
             return
@@ -3975,17 +3985,6 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 else 0
             )
         )
-
-        # Start main cluster monitor (uses bastion or direct oc)
-        if not is_in_set(_HEALTH_MONITORS_SET, project_id):
-            add_to_set(_HEALTH_MONITORS_SET, project_id, ttl=86400)
-            threading.Thread(
-                target=_monitor_ocp_health,
-                args=(project_id, host.id, topo, deploy_start),
-                daemon=True,
-                name=f"ocp-health-{project_id[:8]}",
-            ).start()
-            logger.info("OCP health monitor started on demand for %s", project_id[:8])
 
         # Start per-VM monitors for VMs with ocpMonitor flag
         for node in topo.get("nodes", []):
@@ -5978,7 +5977,7 @@ def start_project_async(project_id: str):
             )
             project.auto_stop_warned = False
 
-        if _is_ocp_topology(topology):
+        if _has_ocp_monitor(topology):
             project.ocp_status = "monitoring"
             project.ocp_status_detail = None
             project.ocp_install_elapsed = None

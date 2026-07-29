@@ -1104,6 +1104,10 @@ export default function PropertiesPanel() {
                       <input type="checkbox" checked={!!(node.data as Record<string, any>).configureBastionBrowser}
                         disabled={projectState === "deploying"}
                         onChange={(e) => {
+                          if (e.target.checked) {
+                            nodes.filter((n) => n.id !== node.id && n.type === "vmNode" && (n.data as Record<string, any>).configureBastionBrowser)
+                              .forEach((n) => updateNodeData(n.id, { configureBastionBrowser: false }));
+                          }
                           const updates: Record<string, any> = { configureBastionBrowser: e.target.checked };
                           if (e.target.checked) updates.ocpMonitor = true;
                           updateNodeData(node.id, updates);
