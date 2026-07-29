@@ -901,15 +901,18 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
             elif node.get("type") == "networkNode":
                 removed_networks.append(node)
 
+    skip_keys = {"status", "redeployStep", "redeployDetail", "liveBootDevs"}
     for nid, node in cur_nodes.items():
         if nid in dep_nodes and node.get("type") == "vmNode":
-            cur_data = node.get("data", {})
-            dep_data = dep_nodes[nid].get("data", {})
-            if (
-                cur_data.get("vcpus") != dep_data.get("vcpus")
-                or cur_data.get("ram") != dep_data.get("ram")
-                or cur_data.get("bootDevices") != dep_data.get("bootDevices")
-            ):
+            cur_data = {
+                k: v for k, v in node.get("data", {}).items() if k not in skip_keys
+            }
+            dep_data = {
+                k: v
+                for k, v in dep_nodes[nid].get("data", {}).items()
+                if k not in skip_keys
+            }
+            if cur_data != dep_data:
                 changed_vms.append(node)
 
     return {

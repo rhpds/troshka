@@ -2393,6 +2393,19 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         from app.services.deploy_service import _extract_vms
 
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
+        cur_nodes = {
+            n["id"]: n for n in current.get("nodes", []) if n.get("type") == "vmNode"
+        }
+        dep_nodes = {
+            n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "vmNode"
+        }
+
+        # Find all VMs with any data change (broader than diff_topologies)
+        changed_vm_ids = []
+        for nid in cur_nodes:
+            if nid in dep_nodes:
+                if cur_nodes[nid].get("data") != dep_nodes[nid].get("data"):
+                    changed_vm_ids.append(nid)
 
         # Delete removed VMs
         for vm_id in diff.get("removed_vms", []):
@@ -2410,7 +2423,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 pass
 
         # Patch changed VMs — update TroshkaVM CR spec, operator handles reconciliation
-        for vm_id in diff.get("changed_vms", []):
+        for vm_id in changed_vm_ids:
             vm = current_vms.get(vm_id)
             if not vm:
                 continue
