@@ -1076,6 +1076,22 @@ export default function PropertiesPanel() {
               </div>
             )}
           </div>
+          {(node.data as Record<string, any>).os === "rhcos" && (
+            <>
+              <div className="props-divider" />
+              <div className="props-section">
+                <div className="props-section-body">
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!(node.data as Record<string, any>).recertEnabled}
+                      disabled={projectState === "deploying"}
+                      onChange={(e) => updateNodeData(node.id, { recertEnabled: e.target.checked })}
+                    />
+                    Recert (regenerate OCP certificates)
+                  </label>
+                </div>
+              </div>
+            </>
+          )}
           <div className="props-divider" />
 
           {/* Tags Section */}

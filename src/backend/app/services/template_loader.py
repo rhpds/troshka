@@ -502,6 +502,7 @@ def _generate_topology_from_vms(
             "nics": nics,
             "diskControllers": disk_controllers,
             "bmcEnabled": has_bmc,
+            "recertEnabled": vm_cfg.get("recert", False),
             "firmware": vm_cfg.get("firmware", "uefi"),
             "secureBoot": vm_cfg.get("secure_boot", False),
             "bootDevices": boot_device_ids,
@@ -1057,6 +1058,8 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
             vm_out["secure_boot"] = True
         if not d.get("powerOnAtDeploy", True):
             vm_out["power_on"] = False
+        if d.get("recertEnabled"):
+            vm_out["recert"] = True
         if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
             vm_out["bmc"] = True
         if d.get("bmcIp"):

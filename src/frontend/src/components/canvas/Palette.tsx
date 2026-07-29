@@ -464,16 +464,57 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                 </div>
               )}
               {ocpHealth.phase === "ready" && (() => {
-                const ocpVm = nodes.find((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeadminPassword);
+                const ocpVms = nodes.filter((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeadminPassword);
                 const bastionPw = passwords.find(p => p.label.includes("bastion"));
-                const kubeadminPw = (ocpVm?.data as any)?.ocpKubeadminPassword || bastionPw?.value || "";
+                if (ocpVms.length === 0 && bastionPw) {
+                  const pw = bastionPw.value || "";
+                  return (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                      <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>
+                      <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                        onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has("kubeadmin")) s.delete("kubeadmin"); else s.add("kubeadmin"); return s; })}
+                      >{revealedPasswords.has("kubeadmin") ? pw : "••••••"}</code>
+                      <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy">Copy</span>
+                    </div>
+                  );
+                }
+                return ocpVms.map((vm: any) => {
+                  const vmName = (vm.data as any)?.label || (vm.data as any)?.name || "vm";
+                  const pw = (vm.data as any)?.ocpKubeadminPassword || "";
+                  const key = `kubeadmin-${vm.id}`;
+                  const label = ocpVms.length > 1 ? `kubeadmin (${vmName})` : "kubeadmin";
+                  return (
+                    <div key={vm.id} style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                      <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>{label}</span>
+                      <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
+                        onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has(key)) s.delete(key); else s.add(key); return s; })}
+                      >{revealedPasswords.has(key) ? pw : "••••••"}</code>
+                      <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy">Copy</span>
+                    </div>
+                  );
+                });
+              })()}
+              {ocpHealth.phase === "ready" && projectId && (() => {
+                const kcVms = nodes.filter((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeconfig);
+                if (kcVms.length === 0) return null;
                 return (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                    <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>
-                    <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
-                      onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has("kubeadmin")) s.delete("kubeadmin"); else s.add("kubeadmin"); return s; })}
-                    >{revealedPasswords.has("kubeadmin") ? kubeadminPw : "••••••"}</code>
-                    <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(kubeadminPw)} title="Copy">Copy</span>
+                  <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {kcVms.map((vm: any) => {
+                      const vmName = (vm.data as any)?.label || (vm.data as any)?.name || "vm";
+                      const label = kcVms.length > 1 ? `kubeconfig (${vmName})` : "kubeconfig";
+                      return (
+                        <span key={vm.id} style={{ cursor: "pointer", fontSize: 10, opacity: 0.6, textDecoration: "underline" }}
+                          onClick={() => {
+                            const kc = (vm.data as any)?.ocpKubeconfig || "";
+                            const blob = new Blob([kc], { type: "application/x-yaml" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url; a.download = `kubeconfig-${vmName}.yaml`; a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                        >{label}</span>
+                      );
+                    })}
                   </div>
                 );
               })()}

@@ -745,6 +745,81 @@ def get_deploy_progress(
     return {"state": project.state, "progress": progress}
 
 
+@router.get("/{project_id}/kubeconfigs")
+def list_kubeconfigs(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List available kubeconfigs for a project's recerted VMs."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    topo = project.deployed_topology or project.topology or {}
+    configs = []
+    for node in topo.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if data.get("ocpKubeconfig"):
+            configs.append(
+                {
+                    "vm_name": data.get("label") or data.get("name", "vm"),
+                    "vm_id": node["id"],
+                }
+            )
+    return configs
+
+
+@router.get("/{project_id}/kubeconfig")
+def get_kubeconfig(
+    project_id: str,
+    vm: str | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download kubeconfig for a project's OCP cluster.
+
+    Reads from the deployed_topology node data (stored during recert).
+    Optional ?vm=name to get a specific VM's kubeconfig.
+    """
+    from fastapi.responses import Response
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    topo = project.deployed_topology or project.topology or {}
+    kc_content = None
+    for node in topo.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        name = data.get("label") or data.get("name", "")
+        if vm and name != vm:
+            continue
+        if data.get("ocpKubeconfig"):
+            kc_content = data["ocpKubeconfig"]
+            break
+
+    if not kc_content:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Kubeconfig not found for {vm or 'default'}",
+        )
+
+    filename = f"kubeconfig-{vm}.yaml" if vm else "kubeconfig.yaml"
+    return Response(
+        content=kc_content,
+        media_type="application/x-yaml",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.patch("/{project_id}", response_model=ProjectResponse)
 def update_project(
     project_id: str,

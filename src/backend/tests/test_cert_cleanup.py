@@ -14,7 +14,7 @@ from app.services.deploy_service import (
 def _make_ocp_topology(vm_configs, with_pattern=True):
     """Build a minimal OCP topology with the given VM configs.
 
-    vm_configs: list of dicts with keys: name, os, optional vcpus/ram
+    vm_configs: list of dicts with keys: name, os, optional vcpus/ram, recertEnabled
     Each VM gets one qcow2 storage node connected via a dp- edge.
     """
     nodes = []
@@ -23,18 +23,21 @@ def _make_ocp_topology(vm_configs, with_pattern=True):
         vm_id = f"vm-{i:04d}-0000-0000"
         disk_id = f"disk-{i:04d}-0000-0000"
         disk_ctrl_id = f"dp-{i}"
+        vm_data = {
+            "name": cfg["name"],
+            "label": cfg.get("label", cfg["name"]),
+            "os": cfg["os"],
+            "vcpus": cfg.get("vcpus", 4),
+            "ram": cfg.get("ram", 16),
+            "diskControllers": [{"id": disk_ctrl_id, "bus": "virtio"}],
+        }
+        if cfg.get("recertEnabled"):
+            vm_data["recertEnabled"] = True
         nodes.append(
             {
                 "id": vm_id,
                 "type": "vmNode",
-                "data": {
-                    "name": cfg["name"],
-                    "label": cfg.get("label", cfg["name"]),
-                    "os": cfg["os"],
-                    "vcpus": cfg.get("vcpus", 4),
-                    "ram": cfg.get("ram", 16),
-                    "diskControllers": [{"id": disk_ctrl_id, "bus": "virtio"}],
-                },
+                "data": vm_data,
             }
         )
         storage_data = {"size": 120, "format": "qcow2", "source": "blank"}
@@ -167,11 +170,11 @@ def test_clean_kubelet_certs_nonfatal_on_failure(mock_start, mock_wait):
     topo = _make_ocp_topology(
         [
             {"name": "bastion", "label": "bastion", "os": "rhel"},
-            {"name": "cp-0", "os": "rhcos"},
+            {"name": "cp-0", "os": "rhcos", "recertEnabled": True},
         ]
     )
 
-    # Should not raise — SNO tries recert (fails), falls back to guestfish (also fails)
+    # Should not raise — recert fails, falls back to guestfish (also fails)
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
     assert mock_start.call_count == 2
     assert mock_start.call_args_list[0][0][1] == "/vms/recert"
@@ -188,7 +191,7 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
     topo = _make_ocp_topology(
         [
             {"name": "bastion", "label": "bastion", "os": "rhel"},
-            {"name": "cp-0", "os": "rhcos"},
+            {"name": "cp-0", "os": "rhcos", "recertEnabled": True},
         ]
     )
 
@@ -199,7 +202,7 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
 @patch("app.services.deploy_service.wait_for_job")
 @patch("app.services.deploy_service.start_job")
 def test_clean_kubelet_certs_sno(mock_start, mock_wait):
-    """Verify SNO cert cleanup uses recert instead of guestfish."""
+    """Verify recertEnabled VM uses recert instead of guestfish."""
     mock_start.return_value = "job-001"
     mock_wait.return_value = {"status": "completed", "result": {"status": "completed"}}
     host = MagicMock()
@@ -207,13 +210,13 @@ def test_clean_kubelet_certs_sno(mock_start, mock_wait):
     topo = _make_ocp_topology(
         [
             {"name": "bastion", "label": "bastion", "os": "rhel"},
-            {"name": "cp-0", "os": "rhcos"},
+            {"name": "cp-0", "os": "rhcos", "recertEnabled": True},
         ]
     )
 
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
-    # SNO: recert succeeds, no guestfish fallback
+    # recertEnabled VM: recert succeeds, no guestfish fallback
     assert mock_start.call_count == 1
     assert mock_start.call_args[0][1] == "/vms/recert"
     assert mock_start.call_args[0][2]["extend_expiration"] is True

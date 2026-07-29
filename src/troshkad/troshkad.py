@@ -2307,23 +2307,28 @@ def _handle_vm_recert(job, params):
 
         # Save kubeconfig for direct oc access (bastion-optional)
         project_id = params.get("project_id", "")
+        vm_name = params.get("vm_name", "")
         kubeconfig_src = os.path.join(
             etc_k8s,
             "static-pod-resources/kube-apiserver-certs/secrets/"
             "node-kubeconfigs/lb-ext.kubeconfig",
         )
         if project_id and os.path.isfile(kubeconfig_src) and not force_expire:
-            kc_dest = os.path.join(
-                _config.get("vm_dir", "/var/lib/troshka/vms"),
-                project_id,
-                "kubeconfig",
+            kc_dir = os.path.join(
+                _config.get("vm_dir", "/var/lib/troshka/vms"), project_id
             )
-            os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
+            os.makedirs(kc_dir, exist_ok=True)
             with open(kubeconfig_src) as f:
                 kc_content = f.read()
+            kc_dest = os.path.join(kc_dir, "kubeconfig")
             with open(kc_dest, "w") as f:
                 f.write(kc_content)
+            if vm_name:
+                kc_named = os.path.join(kc_dir, f"kubeconfig-{vm_name}")
+                with open(kc_named, "w") as f:
+                    f.write(kc_content)
             _job_log(job, f"Saved kubeconfig to {kc_dest}")
+            job.setdefault("result", {})["kubeconfig"] = kc_content
 
         if bastion_disk and not force_expire:
             kubeconfig_src = os.path.join(

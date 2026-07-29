@@ -290,6 +290,7 @@ def build_recert_job(
     bastion_pvc=None,
     extend_expiration=True,
     kubeadmin_password_hash=None,
+    vm_name=None,
 ):
     """Build a Job that runs recert on a cloned RHCOS PVC before VM boot."""
     from helpers.k8s import TOOLS_IMAGE
@@ -332,10 +333,15 @@ def build_recert_job(
             "fi\n"
             'KC_SRC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n'
             'if [ -f "$KC_SRC" ]; then\n'
-            '  KC_DST="/mnt/bastion/home/cloud-user/ocp-install/auth/kubeconfig"\n'
-            '  mkdir -p "$(dirname $KC_DST)"; cp "$KC_SRC" "$KC_DST"\n'
-            "  rm -f /mnt/bastion/etc/pki/ca-trust/source/anchors/ocp-ingress.pem\n"
-            '  echo "Bastion kubeconfig updated"\n'
+            '  KC_DIR="/mnt/bastion/home/cloud-user/ocp-install/auth"\n'
+            '  mkdir -p "$KC_DIR"\n'
+            + (
+                f'  cp "$KC_SRC" "$KC_DIR/kubeconfig-{vm_name}"\n'
+                f'  echo "Wrote kubeconfig-{vm_name} to bastion"\n'
+                if vm_name
+                else '  cp "$KC_SRC" "$KC_DIR/kubeconfig"\n'
+            )
+            + "  rm -f /mnt/bastion/etc/pki/ca-trust/source/anchors/ocp-ingress.pem\n"
             "fi\n"
         )
         bastion_cleanup = (

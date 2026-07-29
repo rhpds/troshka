@@ -60,6 +60,9 @@ spec:
                       type: string
                     networkConfig:
                       type: string
+                recertEnabled:
+                  type: boolean
+                  default: false
                 bmcEnabled:
                   type: boolean
                   default: false

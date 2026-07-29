@@ -86,6 +86,7 @@ def extract_vms(topology):
                     or data.get("ciUserData", ""),
                     "networkConfig": data.get("ciNetworkConfig", ""),
                 },
+                "recertEnabled": data.get("recertEnabled", False),
                 "bmcEnabled": data.get("bmcEnabled", False),
                 "bootOrder": data.get("bootDevices", []),
                 "cdrom": {},

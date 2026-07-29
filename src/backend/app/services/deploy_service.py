@@ -386,6 +386,7 @@ def _extract_vms(topology: dict) -> list[dict]:
                 "video_model": data.get("videoModel", "virtio"),
                 "input_model": data.get("inputModel", "virtio"),
                 "uuid": data.get("uuid"),
+                "recertEnabled": data.get("recertEnabled", False),
             }
         )
     return vms
@@ -3349,6 +3350,22 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                         common_password = n.get("data", {}).get("ciCloudUserPassword")
                         if common_password:
                             break
+            if deploy_recert and deploy_recert is not False:
+                has_recert_vm = any(
+                    n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
+                    for n in topology.get("nodes", [])
+                )
+                if not has_recert_vm:
+                    for n in topology.get("nodes", []):
+                        if (
+                            n.get("type") == "vmNode"
+                            and n.get("data", {}).get("os") == "rhcos"
+                        ):
+                            n.setdefault("data", {})["recertEnabled"] = True
+                    logger.info(
+                        "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
+                        project_id[:8],
+                    )
             if deploy_recert is False:
                 logger.info(
                     "Deploy %s: recert disabled by user, using guestfish",
@@ -3732,112 +3749,123 @@ def _clean_kubelet_certs(
     if not rhcos_vms:
         return
 
-    is_sno = len(rhcos_vms) == 1
+    recert_vms = [vm for vm in rhcos_vms if vm.get("recertEnabled")]
 
-    if is_sno:
-        vm = rhcos_vms[0]
-        vm_disks = _find_vm_disks(vm["node_id"], topology)
-        boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
-        if boot_disk:
-            disk = _disk_path(
+    bastion_vm = next((v for v in vms if v.get("name") == "bastion"), None)
+    bastion_disk_path = None
+    if bastion_vm:
+        bastion_disks = _find_vm_disks(bastion_vm["node_id"], topology)
+        bastion_boot = next(
+            (d for d in bastion_disks if d.get("format") == "qcow2"), None
+        )
+        if bastion_boot:
+            bastion_disk_path = _disk_path(
                 project_id,
-                vm["node_id"],
-                boot_disk["node_id"],
-                boot_disk["format"],
+                bastion_vm["node_id"],
+                bastion_boot["node_id"],
+                bastion_boot["format"],
                 pool,
             )
-            bastion_vm = next((v for v in vms if v.get("name") == "bastion"), None)
-            bastion_disk_path = None
-            if bastion_vm:
-                bastion_disks = _find_vm_disks(bastion_vm["node_id"], topology)
-                bastion_boot = next(
-                    (d for d in bastion_disks if d.get("format") == "qcow2"), None
-                )
-                if bastion_boot:
-                    bastion_disk_path = _disk_path(
-                        project_id,
-                        bastion_vm["node_id"],
-                        bastion_boot["node_id"],
-                        bastion_boot["format"],
-                        pool,
-                    )
-            vm_name = vm.get("name", vm["node_id"][:8])
-            logger.info(
-                "Deploy %s: running recert on SNO disk for %s",
-                project_id[:8],
-                vm_name,
-            )
-            try:
-                recert_params = {
-                    "disk": disk,
-                    "extend_expiration": True,
-                    "project_id": project_id,
-                }
-                if bastion_disk_path:
-                    recert_params["bastion_disk"] = bastion_disk_path
-                kubeadmin_pw = ""
-                if common_password:
-                    import secrets as _secrets
 
-                    import bcrypt
+    recert_succeeded = set()
+    for i, vm in enumerate(recert_vms):
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
+        if not boot_disk:
+            continue
+        disk = _disk_path(
+            project_id,
+            vm["node_id"],
+            boot_disk["node_id"],
+            boot_disk["format"],
+            pool,
+        )
+        vm_name = vm.get("name", vm["node_id"][:8])
+        logger.info(
+            "Deploy %s: running recert on disk for %s (%d/%d)",
+            project_id[:8],
+            vm_name,
+            i + 1,
+            len(recert_vms),
+        )
+        try:
+            recert_params = {
+                "disk": disk,
+                "extend_expiration": True,
+                "project_id": project_id,
+                "vm_name": vm_name,
+            }
+            if bastion_disk_path:
+                recert_params["bastion_disk"] = bastion_disk_path
+            kubeadmin_pw = ""
+            if common_password:
+                import secrets as _secrets
 
-                    # OCP 4.22+ requires kubeadmin password >= 23 chars
-                    kubeadmin_pw = common_password
-                    if len(kubeadmin_pw) < 23:
-                        kubeadmin_pw = _secrets.token_urlsafe(24)
-                    recert_params["common_password"] = kubeadmin_pw
-                    pw_hash = bcrypt.hashpw(
-                        kubeadmin_pw.encode(), bcrypt.gensalt(rounds=12)
-                    ).decode()
-                    recert_params["kubeadmin_password_hash"] = pw_hash
-                job_id = start_job(host, "/vms/recert", recert_params)
-                job = wait_for_job(host, job_id, timeout=300)
-                if job.get("status") == "completed":
-                    logger.info(
-                        "Deploy %s: recert completed for %s",
-                        project_id[:8],
-                        vm_name,
-                    )
-                    if common_password:
-                        for n in topology.get("nodes", []):
-                            if n["id"] == vm["node_id"]:
-                                n.setdefault("data", {})[
-                                    "ocpKubeadminPassword"
-                                ] = kubeadmin_pw
-                                break
-                    return
-                else:
-                    err = job.get("result", {}).get("error", "unknown")
-                    if pattern_recert:
-                        raise RuntimeError(
-                            f"Recert required (pattern has expired certs) but failed: {err}"
-                        )
-                    logger.warning(
-                        "Deploy %s: recert failed for %s: %s — falling back to guestfish",
-                        project_id[:8],
-                        vm_name,
-                        err,
-                    )
-            except RuntimeError:
-                raise
-            except Exception:
-                if pattern_recert:
-                    raise RuntimeError(
-                        "Recert required (pattern has expired certs) but recert endpoint unavailable"
-                    )
-                logger.warning(
-                    "Deploy %s: recert error for %s — falling back to guestfish",
+                import bcrypt
+
+                kubeadmin_pw = common_password
+                if len(kubeadmin_pw) < 23:
+                    kubeadmin_pw = _secrets.token_urlsafe(24)
+                recert_params["common_password"] = kubeadmin_pw
+                pw_hash = bcrypt.hashpw(
+                    kubeadmin_pw.encode(), bcrypt.gensalt(rounds=12)
+                ).decode()
+                recert_params["kubeadmin_password_hash"] = pw_hash
+            job_id = start_job(host, "/vms/recert", recert_params)
+            job = wait_for_job(host, job_id, timeout=300)
+            if job.get("status") == "completed":
+                logger.info(
+                    "Deploy %s: recert completed for %s",
                     project_id[:8],
                     vm_name,
-                    exc_info=True,
                 )
+                recert_succeeded.add(vm["node_id"])
+                kc = job.get("result", {}).get("kubeconfig")
+                for n in topology.get("nodes", []):
+                    if n["id"] == vm["node_id"]:
+                        if common_password:
+                            n.setdefault("data", {})[
+                                "ocpKubeadminPassword"
+                            ] = kubeadmin_pw
+                        if kc:
+                            n.setdefault("data", {})["ocpKubeconfig"] = kc
+                        break
+                continue
+            else:
+                err = job.get("result", {}).get("error", "unknown")
+                if pattern_recert:
+                    raise RuntimeError(
+                        f"Recert required (pattern has expired certs) but failed for {vm_name}: {err}"
+                    )
+                logger.warning(
+                    "Deploy %s: recert failed for %s: %s — falling back to guestfish",
+                    project_id[:8],
+                    vm_name,
+                    err,
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            if pattern_recert:
+                raise RuntimeError(
+                    f"Recert required (pattern has expired certs) but recert endpoint unavailable for {vm_name}"
+                )
+            logger.warning(
+                "Deploy %s: recert error for %s — falling back to guestfish",
+                project_id[:8],
+                vm_name,
+                exc_info=True,
+            )
+    if recert_succeeded and len(recert_succeeded) == len(recert_vms):
+        return
 
     operations = [
         {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
         {"action": "rm-f", "path": "/var/lib/kubelet/kubeconfig"},
     ]
 
-    for vm in rhcos_vms:
+    guestfish_vms = [vm for vm in rhcos_vms if vm["node_id"] not in recert_succeeded]
+    for vm in guestfish_vms:
         vm_disks = _find_vm_disks(vm["node_id"], topology)
         boot_disk = next(
             (d for d in vm_disks if d.get("format") == "qcow2"),
