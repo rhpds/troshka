@@ -143,12 +143,14 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
             _release_stale_lock(f"lock:network:{host_id}")
         except Exception:
             pass
+    is_abandoned = exc_type and exc_type.__name__ == "AbandonedJobError"
     if project_id:
-        try:
-            delete_progress(f"deploy:{project_id}")
-            connection.delete(f"job:project:{project_id}")
-        except Exception:
-            pass
+        if not is_abandoned:
+            try:
+                delete_progress(f"deploy:{project_id}")
+                connection.delete(f"job:project:{project_id}")
+            except Exception:
+                pass
         # Try to find host_id from the project for lock cleanup
         if not host_id:
             try:
@@ -162,25 +164,36 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
                 _s.close()
             except Exception:
                 pass
-        try:
-            from app.core.database import SessionLocal
-            from app.models.project import Project
+        if not is_abandoned:
+            try:
+                from app.core.database import SessionLocal
+                from app.models.project import Project
 
-            s = SessionLocal()
-            p = s.get(Project, project_id)
-            if p and p.state in ("deploying", "starting", "stopping", "deleting"):
-                p.state = "error"
-                err_msg = str(exc_value).strip() if exc_value else ""
-                if err_msg:
-                    p.deploy_error = f"{err_msg}. Please retry."
-                else:
+                s = SessionLocal()
+                p = s.get(Project, project_id)
+                if p and p.state in (
+                    "deploying",
+                    "starting",
+                    "stopping",
+                    "deleting",
+                ):
+                    p.state = "error"
+                    err_msg = str(exc_value).strip() if exc_value else ""
                     p.deploy_error = (
-                        "A worker restart interrupted this deploy. Please retry."
+                        f"{err_msg}. Please retry."
+                        if err_msg
+                        else "Job failed unexpectedly. Please retry."
                     )
-                s.commit()
-            s.close()
-        except Exception:
-            pass
+                    s.commit()
+                s.close()
+            except Exception:
+                pass
+        else:
+            logger.info(
+                "Job %s abandoned by worker restart, leaving project %s in transient state for recovery",
+                job.id[:8],
+                project_id[:8],
+            )
 
 
 def enqueue_job(
