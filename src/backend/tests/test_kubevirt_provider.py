@@ -102,9 +102,17 @@ def test_destroy_project_deletes_cr_and_namespace():
     provider = _make_provider()
     driver = get_provider_driver(provider)
 
-    with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch("app.services.providers.kubevirt.time.sleep"),
+    ):
         mock_custom = MagicMock()
         mock_core = MagicMock()
+        mock_custom.list_namespaced_custom_object.return_value = {"items": []}
+        empty_list = MagicMock()
+        empty_list.items = []
+        mock_core.list_namespaced_pod.return_value = empty_list
+        mock_core.list_namespaced_persistent_volume_claim.return_value = empty_list
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         driver.destroy_project(provider, "12345678-1234-1234-1234-123456789abc")
