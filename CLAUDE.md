@@ -590,6 +590,7 @@ helm install troshka deploy/helm/ -n troshka \
 - Migration runs as Helm pre-install/pre-upgrade hook
 - Secrets auto-generated on first install, preserved on upgrade (`helm.sh/resource-policy: keep`)
 - ConfigMap changes trigger pod restart via `checksum/config` annotation
+- **OAuth proxy has NO auto-rollout** — changing `--skip-auth-regex` or other args requires a manual `oc rollout restart deployment/troshka-oauth-proxy`. Do NOT add a checksum annotation to the OAuth proxy pod template — the template contains `randAlphaNum` for secrets, so any re-render regenerates the client-secret and breaks OAuth login.
 
 ### Kustomize (`deploy/base/` + `deploy/overlays/`)
 ```bash
