@@ -1053,142 +1053,131 @@ async def project_status_check(status, namespace, name, patch, **_):
                 logger.warning(f"VM {vm_id} scheduling error: {msg}")
 
     if phase == "Deploying":
-        # Phase 1: Recert (if needed) — runs sequentially per VM
+        # Phase 1: Recert (if needed) — all Jobs run in parallel
         recert_cfgs = status.get("recertConfig")
         if isinstance(recert_cfgs, list) and not status.get("recertDone"):
-            recert_idx = status.get("recertIndex", 0)
-            if recert_idx >= len(recert_cfgs):
-                patch.status["recertDone"] = True
-            else:
-                current_cfg = recert_cfgs[recert_idx]
-                rhcos_pvc = current_cfg.get("rhcosPvc", "")
-                bastion_pvc_name = current_cfg.get("bastionPvc", "")
-                vm_label = current_cfg.get("vmName", "vm")
-                is_first = recert_idx == 0
-                core_api = client.CoreV1Api()
+            core_api = client.CoreV1Api()
+            from kubernetes import client as _kc
 
-                pvcs_ready = True
-                for pvc_name in [rhcos_pvc, bastion_pvc_name]:
-                    if not pvc_name:
-                        continue
-                    try:
-                        pvc = core_api.read_namespaced_persistent_volume_claim(
-                            name=pvc_name, namespace=namespace
-                        )
-                        if pvc.status.phase != "Bound":  # type: ignore[union-attr]
-                            pvcs_ready = False
-                    except Exception:
+            batch_api = _kc.BatchV1Api()
+            from helpers.kubevirt import build_recert_job
+
+            # Check all PVCs are ready
+            pvcs_ready = True
+            for cfg in recert_cfgs:
+                pvc_name = cfg.get("rhcosPvc", "")
+                if not pvc_name:
+                    continue
+                try:
+                    pvc = core_api.read_namespaced_persistent_volume_claim(
+                        name=pvc_name, namespace=namespace
+                    )
+                    if pvc.status.phase != "Bound":  # type: ignore[union-attr]
                         pvcs_ready = False
+                except Exception:
+                    pvcs_ready = False
+            if not pvcs_ready:
+                patch.status["deployProgress"] = {
+                    "percent": 60,
+                    "stage": "Preparing disks",
+                    "detail": "waiting for disk clones",
+                }
+                return
 
-                if not pvcs_ready:
-                    patch.status["deployProgress"] = {
-                        "percent": 60,
-                        "stage": "Preparing disks",
-                        "detail": "waiting for disk clones",
-                    }
-                    return
-
-                from kubernetes import client as _kc
-
-                batch_api = _kc.BatchV1Api()
+            # Create all recert Jobs (no bastion — kubeconfigs extracted after)
+            for cfg in recert_cfgs:
+                rhcos_pvc = cfg.get("rhcosPvc", "")
+                vm_label = cfg.get("vmName", "vm")
                 vm_part = (
                     rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
                 )
-                recert_job_name = f"recert-{vm_part}"
+                job_name = f"recert-{vm_part}"
+                try:
+                    batch_api.read_namespaced_job(
+                        name=job_name, namespace=namespace
+                    )
+                except ApiException as e:
+                    if e.status == 404:
+                        job = build_recert_job(
+                            vm_part, namespace, rhcos_pvc, vm_name=vm_label,
+                        )
+                        try:
+                            batch_api.create_namespaced_job(
+                                namespace=namespace, body=job
+                            )
+                            logger.info(f"Created recert job {job_name}")
+                        except Exception as ce:
+                            logger.error(f"Recert job creation failed for {vm_label}: {ce}")
+                            patch.status["phase"] = "Error"
+                            patch.status["error"] = f"Failed to create recert job: {ce}"
+                            return
 
+            # Poll all Jobs
+            done_count = 0
+            running_names = []
+            for i, cfg in enumerate(recert_cfgs):
+                rhcos_pvc = cfg.get("rhcosPvc", "")
+                vm_label = cfg.get("vmName", "vm")
+                vm_part = (
+                    rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
+                )
+                job_name = f"recert-{vm_part}"
                 try:
                     js = batch_api.read_namespaced_job(
-                        name=recert_job_name, namespace=namespace
+                        name=job_name, namespace=namespace
                     )
                     if js.status.succeeded:  # type: ignore[union-attr]
-                        logger.info(f"Recert completed: {recert_job_name}")
-                        err = _extract_kubeconfig_secret(
-                            core_api,
-                            namespace,
-                            recert_job_name,
-                            name,
-                            vm_name=vm_label,
-                        )
-                        if err:
-                            logger.warning(
-                                f"Kubeconfig extraction failed for {vm_label}: {err}"
-                            )
-                        _cleanup_recert_job(
-                            core_api, batch_api, namespace, recert_job_name
-                        )
-                        patch.status["recertIndex"] = recert_idx + 1
-                        if recert_idx + 1 >= len(recert_cfgs):
-                            patch.status["recertDone"] = True
-                            logger.info(
-                                f"All {len(recert_cfgs)} recert jobs done for {name}"
-                            )
+                        done_count += 1
                     elif js.status.failed:  # type: ignore[union-attr]
-                        attempts_key = f"recertAttempts_{recert_idx}"
+                        attempts_key = f"recertAttempts_{i}"
                         attempts = status.get(attempts_key, 0) + 1
                         if attempts < 3:
                             logger.warning(
-                                f"Recert job failed for {vm_label} (attempt {attempts}/3), retrying"
+                                f"Recert failed for {vm_label} (attempt {attempts}/3)"
                             )
                             patch.status[attempts_key] = attempts
                             try:
                                 batch_api.delete_namespaced_job(
-                                    name=recert_job_name,
-                                    namespace=namespace,
+                                    name=job_name, namespace=namespace,
                                     propagation_policy="Background",
                                 )
                             except Exception:
                                 pass
-                            patch.status["deployProgress"] = {
-                                "percent": 70,
-                                "stage": "Regenerating certificates",
-                                "detail": f"{vm_label}: retry {attempts}/3",
-                            }
                             return
-                        logger.error(
-                            f"Recert job failed for {vm_label} after {attempts} attempts"
-                        )
                         patch.status["phase"] = "Error"
                         patch.status["error"] = (
                             f"Certificate regeneration failed for {vm_label} after 3 attempts"
                         )
                         return
                     else:
-                        patch.status["deployProgress"] = {
-                            "percent": 70 + recert_idx,
-                            "stage": "Regenerating certificates",
-                            "detail": f"recert on {vm_label} ({recert_idx + 1}/{len(recert_cfgs)})",
-                        }
-                    return
-                except ApiException as e:
-                    if e.status != 404:
-                        return
-                except Exception:
-                    return
+                        running_names.append(vm_label)
+                except ApiException:
+                    running_names.append(vm_label)
 
+            if done_count < len(recert_cfgs):
                 patch.status["deployProgress"] = {
-                    "percent": 70,
+                    "percent": 70 + int(10 * done_count / len(recert_cfgs)),
                     "stage": "Regenerating certificates",
-                    "detail": f"starting recert on {vm_label} ({recert_idx + 1}/{len(recert_cfgs)})",
+                    "detail": f"recert {done_count}/{len(recert_cfgs)} ({', '.join(running_names)})",
                 }
-                from helpers.kubevirt import build_recert_job
-
-                recert_job = build_recert_job(
-                    vm_part,
-                    namespace,
-                    rhcos_pvc,
-                    bastion_pvc=bastion_pvc_name or None,
-                    vm_name=vm_label,
-                )
-                try:
-                    batch_api.create_namespaced_job(
-                        namespace=namespace, body=recert_job
-                    )
-                    logger.info(f"Created recert job {recert_job_name}")
-                except Exception as e:
-                    logger.error(f"Recert job creation failed for {vm_label}: {e}")
-                    patch.status["phase"] = "Error"
-                    patch.status["error"] = f"Failed to create recert job: {e}"
                 return
+
+            # All done — extract kubeconfigs and clean up
+            logger.info(f"All {len(recert_cfgs)} recert jobs done for {name}")
+            for cfg in recert_cfgs:
+                rhcos_pvc = cfg.get("rhcosPvc", "")
+                vm_label = cfg.get("vmName", "vm")
+                vm_part = (
+                    rhcos_pvc.split("-disk-")[0] if "-disk-" in rhcos_pvc else "vm"
+                )
+                job_name = f"recert-{vm_part}"
+                err = _extract_kubeconfig_secret(
+                    core_api, namespace, job_name, name, vm_name=vm_label,
+                )
+                if err:
+                    logger.warning(f"Kubeconfig extraction failed for {vm_label}: {err}")
+                _cleanup_recert_job(core_api, batch_api, namespace, job_name)
+            patch.status["recertDone"] = True
 
         # Phase 1.5: Wait for final recert cleanup (legacy compat)
         if status.get("recertDone") and not status.get("recertCleaned"):
