@@ -39,7 +39,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
     if (!deployed) return false;
-    const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = d as Record<string, unknown>;
+    const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = d as Record<string, unknown>;
     return JSON.stringify(stable) !== deployed;
   }, [id, d, deployedNodeData]);
 

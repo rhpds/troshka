@@ -211,8 +211,24 @@ export default function ProjectCanvasPage() {
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (data?.deploy_progress) setDeployProgress(data.deploy_progress);
-          if (data?.state && data.state !== projectState) setProjectState(data.state);
           if (data?.deploy_error) setDeployError(data.deploy_error);
+          if (data?.state && data.state !== projectState) {
+            const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(projectState);
+            setProjectState(data.state);
+            if (wasTransitional && data.state === "active") {
+              useCanvasStore.getState().loadProject(projectId);
+              const depData: Record<string, string> = {};
+              for (const n of (data.deployed_topology?.nodes || [])) {
+                const { status: _s, redeployStep: _rs, redeployDetail: _rd, liveBootDevs: _lb, resolvedS3Path: _rp, presignedUrl: _pu, ...stable } = (n.data || {}) as Record<string, unknown>;
+                depData[n.id] = JSON.stringify(stable);
+              }
+              const depEdge = (data.deployed_topology?.edges || [])
+                .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+                .sort().join("|");
+              useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
+              setDeployProgress(null);
+            }
+          }
         })
         .catch(() => {});
     }, 5000);
