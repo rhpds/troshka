@@ -3978,11 +3978,21 @@ def maybe_start_ocp_health_monitor(project_id: str):
             logger.warning("OCP monitor: host not found for %s", project_id[:8])
             return
         if host.host_type != "kubevirt-cluster" and host.agent_status != "connected":
+            logger.info(
+                "OCP monitor %s: skipped (host not connected: type=%s, agent=%s)",
+                project_id[:8],
+                host.host_type,
+                host.agent_status,
+            )
             return
         topo = project.deployed_topology or project.topology or {}
         if not _has_ocp_monitor(topo):
+            logger.info(
+                "OCP monitor %s: skipped (no ocpMonitor in topo)", project_id[:8]
+            )
             return
         if project.ocp_install_elapsed is not None:
+            logger.info("OCP monitor %s: skipped (already completed)", project_id[:8])
             return
         deploy_start = (
             project.deploy_started_at.timestamp()
@@ -3995,15 +4005,22 @@ def maybe_start_ocp_health_monitor(project_id: str):
         )
 
         # Start per-VM monitors for VMs with ocpMonitor flag
+        vm_candidates = 0
         for node in topo.get("nodes", []):
             if node.get("type") != "vmNode":
                 continue
             data = node.get("data", {})
             if not data.get("ocpMonitor") and not data.get("configureBastionBrowser"):
                 continue
+            vm_candidates += 1
             vm_id = node["id"]
             monitor_key = f"{project_id}:{vm_id}"
             if is_in_set(_HEALTH_MONITORS_SET, monitor_key):
+                logger.info(
+                    "OCP monitor %s: VM %s already in monitor set, skipping",
+                    project_id[:8],
+                    data.get("label", vm_id[:8]),
+                )
                 continue
             vm_name = data.get("label") or data.get("name", vm_id[:8])
             kc = data.get("ocpKubeconfig")
@@ -4015,6 +4032,10 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 name=f"ocp-vm-{project_id[:8]}-{vm_name}",
             ).start()
             logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
+        if vm_candidates == 0:
+            logger.info(
+                "OCP monitor %s: no VMs with ocpMonitor found in topo", project_id[:8]
+            )
     finally:
         db.close()
 
