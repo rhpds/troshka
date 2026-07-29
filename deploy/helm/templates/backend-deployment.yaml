@@ -24,6 +24,7 @@ spec:
       containers:
         - name: backend
           image: {{ include "troshka.backendImage" . }}
+          imagePullPolicy: Always
           ports:
             - containerPort: 8200
               name: http

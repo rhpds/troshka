@@ -25,6 +25,7 @@ spec:
       containers:
         - name: worker
           image: {{ include "troshka.backendImage" . }}
+          imagePullPolicy: Always
           command: ["python3", "-m", "app.workers.deploy_worker"]
           env:
             - name: TROSHKA_DATABASE__URL

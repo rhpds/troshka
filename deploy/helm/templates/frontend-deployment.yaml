@@ -21,6 +21,7 @@ spec:
       containers:
         - name: frontend
           image: {{ include "troshka.frontendImage" . }}
+          imagePullPolicy: Always
           ports:
             - containerPort: 3000
               name: http
