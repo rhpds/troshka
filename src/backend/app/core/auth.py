@@ -144,7 +144,7 @@ def create_jwt(user_id: str, email: str, role: str) -> str:
         "email": email,
         "role": role,
         "exp": datetime.datetime.now(datetime.UTC)
-        + datetime.timedelta(hours=config.auth.jwt_expiry_hours),
+        + datetime.timedelta(hours=getattr(config.auth, "jwt_expiry_hours", 24)),
     }
     return jwt.encode(
         payload, config.auth.jwt_secret, algorithm=config.auth.jwt_algorithm
