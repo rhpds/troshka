@@ -14,7 +14,7 @@ on:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       backend: ${{ steps.check.outputs.backend }}
       frontend: ${{ steps.check.outputs.frontend }}
@@ -33,7 +33,7 @@ jobs:
   build-backend:
     needs: changes
     if: needs.changes.outputs.backend == 'true' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
 
@@ -74,7 +74,7 @@ jobs:
   build-frontend:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
 
@@ -115,7 +115,7 @@ jobs:
   build-operator:
     needs: changes
     if: needs.changes.outputs.operator == 'true' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
 
