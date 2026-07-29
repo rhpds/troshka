@@ -65,8 +65,20 @@ async def lifespan(app):
 
     start_operator_updater()
 
-    # Clean up abandoned RQ jobs (workers killed during rollout)
+    # Clear stale OCP health monitor set entries from previous pod
     from app.core.redis import is_redis_available
+
+    if is_redis_available():
+        try:
+            from app.core.redis import get_redis
+
+            r = get_redis()
+            r.delete("deploy:health_monitors")
+            logger.info("Startup: cleared health monitor set")
+        except Exception:
+            pass
+
+    # Clean up abandoned RQ jobs (workers killed during rollout)
 
     if is_redis_available():
         try:
