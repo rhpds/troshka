@@ -158,8 +158,9 @@ def _check_project_timers(_dry_run=False):
                 if _dry_run:
                     result.setdefault("stuck_recovered", []).append(p.id)
                     continue
+                old_state = p.state
                 p.state = "error"
-                p.deploy_error = f"Background job lost while {p.state} — please retry"
+                p.deploy_error = f"Background job lost while {old_state} — please retry"
                 s.commit()
                 _notify(
                     p.id,
