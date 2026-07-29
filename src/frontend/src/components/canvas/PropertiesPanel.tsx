@@ -1082,7 +1082,7 @@ export default function PropertiesPanel() {
               <div className="props-section">
                 <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("ocp")}>
                   <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("ocp") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
-                  OCP
+                  OCP (control plane only)
                 </div>
                 {!isCollapsed("ocp") && (
                   <div className="props-section-body">
@@ -1091,14 +1091,14 @@ export default function PropertiesPanel() {
                         disabled={projectState === "deploying"}
                         onChange={(e) => updateNodeData(node.id, { recertEnabled: e.target.checked })}
                       />
-                      SNO Recert (regenerate OCP certificates)
+                      Recert (regenerate certificates, SNO only)
                     </label>
                     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={!!(node.data as Record<string, any>).ocpMonitor}
                         disabled={projectState === "deploying" || !!(node.data as Record<string, any>).configureBastionBrowser}
                         onChange={(e) => updateNodeData(node.id, { ocpMonitor: e.target.checked })}
                       />
-                      Monitor cluster health after deploy
+                      Monitor cluster health
                     </label>
                     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={!!(node.data as Record<string, any>).configureBastionBrowser}

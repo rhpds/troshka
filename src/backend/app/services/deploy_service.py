@@ -3999,13 +3999,6 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 continue
             vm_name = data.get("label") or data.get("name", vm_id[:8])
             kc = data.get("ocpKubeconfig")
-            if not kc:
-                logger.warning(
-                    "OCP VM monitor: %s/%s has ocpMonitor but no kubeconfig yet",
-                    project_id[:8],
-                    vm_name,
-                )
-                continue
             add_to_set(_HEALTH_MONITORS_SET, monitor_key, ttl=86400)
             threading.Thread(
                 target=_monitor_ocp_vm_health,
@@ -4385,19 +4378,24 @@ def _ocp_vm_health_inner(
         )
         return
 
-    # Write kubeconfig to temp file on bastion
-    kc_path = f"/tmp/troshka-kc-{vm_id[:8]}.yaml"
-    import base64
+    # Set up kubeconfig: write temp file if content provided, else use bastion default
+    kc_path = None
+    if kubeconfig_content:
+        kc_path = f"/tmp/troshka-kc-{vm_id[:8]}.yaml"
+        import base64
 
-    kc_b64 = base64.b64encode(kubeconfig_content.encode()).decode()
-    _exec_on_bastion(
-        host,
-        project_id,
-        bastion_ip,
-        password,
-        f"echo '{kc_b64}' | base64 -d > {kc_path}",
-        timeout=10,
-    )
+        kc_b64 = base64.b64encode(kubeconfig_content.encode()).decode()
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"echo '{kc_b64}' | base64 -d > {kc_path}",
+            timeout=10,
+        )
+
+    bastion_kc = "/home/cloud-user/ocp-install/auth/kubeconfig"
+    effective_kc = kc_path or bastion_kc
 
     def _oc(cmd, timeout=15):
         return _exec_on_bastion(
@@ -4405,7 +4403,7 @@ def _ocp_vm_health_inner(
             project_id,
             bastion_ip,
             password,
-            f"export KUBECONFIG={kc_path}; {cmd}",
+            f"export KUBECONFIG={effective_kc}; {cmd}",
             timeout=timeout,
         )
 
@@ -4602,20 +4600,21 @@ def _ocp_vm_health_inner(
         "configureBastionBrowser"
     )
     if configure_browser:
-        # Copy kubeconfig to bastion default locations
-        _push("browser", "setting bastion kubeconfig for this cluster")
-        _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            f"mkdir -p /home/cloud-user/ocp-install/auth /home/cloud-user/.kube;"
-            f" cp {kc_path} /home/cloud-user/ocp-install/auth/kubeconfig;"
-            f" cp {kc_path} /home/cloud-user/.kube/config;"
-            f" chown -R cloud-user:cloud-user"
-            " /home/cloud-user/ocp-install /home/cloud-user/.kube 2>/dev/null || true",
-            timeout=10,
-        )
+        # Copy kubeconfig to bastion default locations (skip if already using bastion default)
+        if kc_path:
+            _push("browser", "setting bastion kubeconfig for this cluster")
+            _exec_on_bastion(
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                f"mkdir -p /home/cloud-user/ocp-install/auth /home/cloud-user/.kube;"
+                f" cp {kc_path} /home/cloud-user/ocp-install/auth/kubeconfig;"
+                f" cp {kc_path} /home/cloud-user/.kube/config;"
+                f" chown -R cloud-user:cloud-user"
+                " /home/cloud-user/ocp-install /home/cloud-user/.kube 2>/dev/null || true",
+                timeout=10,
+            )
 
         # Refresh bastion CA trust with this cluster's ingress cert
         _push("browser", "refreshing bastion CA trust")
@@ -4688,8 +4687,8 @@ def _ocp_vm_health_inner(
                 vm_name,
             )
 
-    # Cleanup temp kubeconfig (skip if we copied it to the bastion default path)
-    if not configure_browser:
+    # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
+    if kc_path and not configure_browser:
         _exec_on_bastion(
             host, project_id, bastion_ip, password, f"rm -f {kc_path}", timeout=5
         )
