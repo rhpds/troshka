@@ -4323,12 +4323,30 @@ def _ocp_vm_health_inner(
     from app.models.host import Host as _Host3
     from app.models.project import Project as _VmProj
 
+    logger.info(
+        "OCP VM monitor %s/%s: inner started (host=%s)",
+        project_id[:8],
+        vm_name,
+        host_id[:8],
+    )
     host = db.query(_Host3).filter_by(id=host_id).first()
     if not host:
+        logger.warning(
+            "OCP VM monitor %s/%s: host %s not found",
+            project_id[:8],
+            vm_name,
+            host_id[:8],
+        )
         return
 
     project = db.query(_VmProj).filter_by(id=project_id).first()
     if not project or project.state != "active":
+        logger.warning(
+            "OCP VM monitor %s/%s: project not found or not active (state=%s)",
+            project_id[:8],
+            vm_name,
+            project.state if project else "missing",
+        )
         return
     topo = project.deployed_topology or project.topology or {}
 
