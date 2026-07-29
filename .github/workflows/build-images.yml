@@ -90,7 +90,7 @@ jobs:
 
       - name: Build frontend image
         run: |
-          podman build \
+          podman build --no-cache \
             -f deploy/containerfiles/Containerfile.frontend \
             -t quay.io/redhat-gpte/troshka-frontend:${{ steps.tags.outputs.sha_tag }} \
             -t quay.io/redhat-gpte/troshka-frontend:latest \
