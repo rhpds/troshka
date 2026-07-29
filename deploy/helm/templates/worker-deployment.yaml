@@ -20,6 +20,7 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/backend-config.yaml") . | sha256sum }}
     spec:
+      terminationGracePeriodSeconds: 7200
       serviceAccountName: troshka-backend
       containers:
         - name: worker
