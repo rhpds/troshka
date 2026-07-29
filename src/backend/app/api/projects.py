@@ -2340,6 +2340,218 @@ def reconfigure_project(
     return {"status": "reconfiguring"}
 
 
+def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict):
+    """Reconfigure a KubeVirt project by patching CRs."""
+    import copy
+    import time
+
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider as ProviderModel
+    from app.services.deploy_service import (
+        _delete_deploy_progress,
+        _set_deploy_progress,
+        diff_topologies,
+    )
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+    from app.services.ws_pubsub import notify_project
+
+    s = SessionLocal()
+    try:
+        proj = s.query(Project).filter_by(id=p_id).first()
+        h = s.query(Host).filter_by(id=h_id).first()
+        if not proj or not h:
+            return
+        provider = (
+            s.query(ProviderModel).filter_by(id=h.provider_id).first()
+            if h.provider_id
+            else None
+        )
+        if not provider:
+            proj.state = "error"
+            proj.deploy_error = "No provider found for host"
+            s.commit()
+            return
+
+        diff = (
+            diff_topologies(current, deployed)
+            if deployed
+            else {
+                "added_vms": [],
+                "removed_vms": [],
+                "changed_vms": [],
+                "has_changes": False,
+            }
+        )
+
+        custom_api, core_api, _ = _get_k8s_clients(provider)
+        ns = _project_ns(provider, p_id)
+
+        _set_deploy_progress(
+            p_id, {"step": "reconfigure", "detail": "applying changes"}
+        )
+
+        from app.services.deploy_service import _extract_vms
+
+        current_vms = {v["node_id"]: v for v in _extract_vms(current)}
+
+        # Delete removed VMs
+        for vm_id in diff.get("removed_vms", []):
+            cr_name = f"vm-{vm_id[:8]}"
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group="troshka.redhat.com",
+                    version="v1alpha1",
+                    namespace=ns,
+                    plural="troshkavms",
+                    name=cr_name,
+                )
+                logger.info("Reconfigure %s: deleted TroshkaVM %s", p_id[:8], cr_name)
+            except Exception:
+                pass
+
+        # Patch changed VMs — update TroshkaVM CR spec, operator handles reconciliation
+        for vm_id in diff.get("changed_vms", []):
+            vm = current_vms.get(vm_id)
+            if not vm:
+                continue
+            cr_name = f"vm-{vm_id[:8]}"
+
+            from app.services.deploy_service import _find_vm_disks
+
+            vm_disks = _find_vm_disks(vm_id, current)
+            disk_specs = []
+            for d in vm_disks:
+                disk_spec = {
+                    "id": d.get("node_id", d.get("id", "")),
+                    "sizeGb": int(d.get("size", 20)),
+                    "bus": "virtio",
+                    "format": d.get("format", "qcow2"),
+                }
+                if d.get("source") == "pattern" and d.get("patternId"):
+                    disk_spec["patternImage"] = {
+                        "s3Path": d.get("resolvedS3Path", ""),
+                        "format": "qcow2",
+                        "central": d.get("centralSource", False),
+                    }
+                elif d.get("source") == "library" and d.get("libraryItemId"):
+                    disk_spec["libraryImage"] = {
+                        "s3Path": d.get("resolvedS3Path", ""),
+                        "format": d.get("format", "qcow2"),
+                        "central": d.get("centralSource", False),
+                    }
+                else:
+                    disk_spec["blank"] = True
+                disk_specs.append(disk_spec)
+            vm_data = {}
+            for n in current.get("nodes", []):
+                if n.get("id") == vm_id and n.get("type") == "vmNode":
+                    vm_data = n.get("data", {})
+                    break
+            vm_spec = {
+                "vmId": vm_data.get("id", vm_id),
+                "name": vm.get("name", "vm"),
+                "cpus": vm.get("vcpus", 2),
+                "memory": vm.get("ram_gb", 4) * 1024,
+                "firmware": vm.get("firmware", "bios"),
+                "machineType": "q35",
+                "smbiosUuid": vm_data.get("domainUuid", ""),
+                "os": vm.get("os", ""),
+                "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
+                "recertEnabled": vm_data.get("recertEnabled", False),
+                "bmcEnabled": vm_data.get("bmcEnabled", False),
+                "disks": disk_specs,
+                "nics": vm_data.get("nics", []),
+                "bootOrder": vm_data.get("bootDevices", []),
+                "cloudInit": {
+                    "userData": vm_data.get("ciGeneratedUserData", "")
+                    or vm_data.get("ciUserData", ""),
+                    "networkConfig": vm_data.get("ciNetworkConfig", ""),
+                },
+            }
+            try:
+                existing = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+                    group="troshka.redhat.com",
+                    version="v1alpha1",
+                    namespace=ns,
+                    plural="troshkavms",
+                    name=cr_name,
+                )
+                existing["spec"] = vm_spec  # type: ignore[index]
+                custom_api.replace_namespaced_custom_object(
+                    group="troshka.redhat.com",
+                    version="v1alpha1",
+                    namespace=ns,
+                    plural="troshkavms",
+                    name=cr_name,
+                    body=existing,
+                )
+                logger.info("Reconfigure %s: updated TroshkaVM %s", p_id[:8], cr_name)
+            except Exception as e:
+                logger.warning(
+                    "Reconfigure %s: failed to update %s: %s", p_id[:8], cr_name, e
+                )
+
+        # Wait for all VMs to settle
+        _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            all_ready = True
+            try:
+                vms = custom_api.list_namespaced_custom_object(
+                    group="troshka.redhat.com",
+                    version="v1alpha1",
+                    namespace=ns,
+                    plural="troshkavms",
+                )
+                for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+                    state = vm.get("status", {}).get("state", "")
+                    if state in ("Creating", "Reconfiguring", ""):
+                        all_ready = False
+                    elif state == "Error":
+                        msg = vm.get("status", {}).get("message", "")
+                        proj.state = "error"
+                        proj.deploy_error = (
+                            f"VM {vm['spec'].get('name', '?')} failed: {msg}"
+                        )
+                        s.commit()
+                        _delete_deploy_progress(p_id)
+                        return
+            except Exception:
+                all_ready = False
+            if all_ready:
+                break
+            time.sleep(5)
+
+        # Finalize
+        clean_topo = copy.deepcopy(current)
+        for node in clean_topo.get("nodes", []):
+            ndata = node.get("data", {})
+            ndata.pop("resolvedS3Path", None)
+            ndata.pop("presignedUrl", None)
+            ndata.pop("ciGeneratedUserData", None)
+        proj.deployed_topology = clean_topo
+        proj.topology = clean_topo
+        proj.state = "active"
+        proj.deploy_error = None
+        s.commit()
+        _delete_deploy_progress(p_id)
+        notify_project(p_id, {"type": "project-state", "state": "active"})
+        logger.info("Reconfigure %s: kubevirt reconfigure complete", p_id[:8])
+    except Exception as e:
+        logger.error("Reconfigure %s: kubevirt error: %s", p_id[:8], e, exc_info=True)
+        try:
+            proj = s.query(Project).filter_by(id=p_id).first()
+            if proj:
+                proj.state = "error"
+                proj.deploy_error = str(e)[:500]
+                s.commit()
+        except Exception:
+            pass
+        _delete_deploy_progress(p_id)
+    finally:
+        s.close()
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -2358,6 +2570,12 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
         current = proj.topology or {}
         deployed = proj.deployed_topology or {}
+
+        if h.host_type == "kubevirt-cluster":
+            s.close()
+            _do_reconfigure_kubevirt(p_id, h_id, current, deployed)
+            return
+
         vni_map = dict(proj.vni_map or {})
         diff = (
             diff_topologies(current, deployed)

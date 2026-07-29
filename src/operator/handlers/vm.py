@@ -630,6 +630,202 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"TroshkaVM {name} reconciled")
 
 
+@kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkavms")
+async def vm_update(spec, old, new, diff, status, meta, namespace, name, body, patch, **_):
+    """Reconcile TroshkaVM spec changes by rebuilding the KubeVirt VM."""
+    old_spec = (old or {}).get("spec", {})
+    new_spec = (new or {}).get("spec", {})
+    if old_spec == new_spec:
+        return
+
+    kv_name = status.get("kubevirtVmName", f"troshka-{name}")
+    logger.info(f"TroshkaVM {name} updated — reconciling KubeVirt VM {kv_name}")
+    patch.status["state"] = "Reconfiguring"
+
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    # Stop the VM
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+            body={"spec": {"running": False}},
+        )
+    except Exception:
+        pass
+
+    # Wait for VMI to terminate
+    for _ in range(60):
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+                name=kv_name,
+            )
+            await asyncio.sleep(2)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                break
+            raise
+    logger.info(f"VM {kv_name} stopped for reconfigure")
+
+    # Handle disk changes — create new PVCs/DVs, delete removed ones
+    old_disks = {d.get("id", ""): d for d in old_spec.get("disks", [])}
+    new_disks = {d.get("id", ""): d for d in new_spec.get("disks", [])}
+
+    s3_config = _get_s3_config_from_project(namespace)
+    central_s3_config = _get_central_s3_config_from_project(namespace)
+
+    disk_pvcs = {}
+    for disk_id, disk in new_disks.items():
+        pvc_name = f"{name}-disk-{disk_id[:8]}"
+        if disk_id in old_disks:
+            disk_pvcs[disk_id] = pvc_name
+            continue
+
+        s3_path = None
+        use_central = False
+        if disk.get("libraryImage", {}).get("s3Path"):
+            s3_path = disk["libraryImage"]["s3Path"]
+            use_central = disk["libraryImage"].get("central", False)
+        elif disk.get("patternImage", {}).get("s3Path"):
+            s3_path = disk["patternImage"]["s3Path"]
+            use_central = disk["patternImage"].get("central", False)
+
+        if s3_path:
+            disk_s3 = central_s3_config if use_central and central_s3_config else s3_config
+            secret = "s3-central-credentials" if use_central and central_s3_config else "s3-credentials"  # pragma: allowlist secret
+            size_gb = disk.get("sizeGb", 20)
+            golden_name = await _ensure_golden_pvc(
+                custom_api, core_api, s3_path, size_gb, disk_s3, secret_name=secret,
+            )
+            clone_dv = build_clone_datavolume(
+                pvc_name, namespace, golden_name, CACHE_NAMESPACE, size_gb
+            )
+            clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
+            try:
+                custom_api.create_namespaced_custom_object(
+                    group="cdi.kubevirt.io", version="v1beta1",
+                    namespace=namespace, plural="datavolumes", body=clone_dv,
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            if not await _wait_for_datavolume(
+                custom_api, pvc_name, namespace, owner_name=name, owner_namespace=namespace,
+            ):
+                patch.status["state"] = "Error"
+                patch.status["message"] = f"Disk clone failed for {disk_id[:8]}"
+                raise kopf.PermanentError(f"Disk clone {pvc_name} failed")
+        elif disk.get("blank"):
+            size_gb = disk.get("sizeGb", 20)
+            pvc = build_blank_pvc(pvc_name, namespace, size_gb)
+            pvc["metadata"]["ownerReferences"] = [owner_ref(body)]
+            try:
+                core_api.create_namespaced_persistent_volume_claim(
+                    namespace=namespace, body=pvc
+                )
+            except client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+
+        disk_pvcs[disk_id] = pvc_name
+
+    # Delete removed disk PVCs/DVs
+    for disk_id in old_disks:
+        if disk_id not in new_disks:
+            old_pvc = f"{name}-disk-{disk_id[:8]}"
+            for res in ("datavolumes", "persistentvolumeclaims"):
+                try:
+                    if res == "datavolumes":
+                        custom_api.delete_namespaced_custom_object(
+                            group="cdi.kubevirt.io", version="v1beta1",
+                            namespace=namespace, plural=res, name=old_pvc,
+                        )
+                    else:
+                        core_api.delete_namespaced_persistent_volume_claim(
+                            name=old_pvc, namespace=namespace
+                        )
+                except client.exceptions.ApiException as e:
+                    if e.status != 404:
+                        logger.warning(f"Failed to delete {res}/{old_pvc}: {e}")
+
+    # Delete old KubeVirt VM
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group="kubevirt.io", version="v1", namespace=namespace,
+            plural="virtualmachines", name=kv_name,
+        )
+    except Exception:
+        pass
+    for _ in range(30):
+        try:
+            custom_api.get_namespaced_custom_object(
+                group="kubevirt.io", version="v1", namespace=namespace,
+                plural="virtualmachines", name=kv_name,
+            )
+            await asyncio.sleep(2)
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                break
+            raise
+
+    # Resolve NAD refs
+    nad_refs = {}
+    try:
+        networks = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP, version=CRD_VERSION,
+            namespace=namespace, plural="troshkanetworks",
+        )
+        for net in networks.get("items", []):
+            net_name = net["metadata"]["name"]
+            nad_name = net.get("status", {}).get("nadName", f"{net_name}-nad")
+            nad_refs[net_name] = nad_name
+    except Exception:
+        pass
+
+    # Update cloud-init secret
+    cloudinit_secret_name = None
+    ci_secret = build_cloudinit_secret(body)
+    if ci_secret:
+        ci_secret["metadata"]["ownerReferences"] = [owner_ref(body)]
+        cloudinit_secret_name = ci_secret["metadata"]["name"]
+        try:
+            core_api.replace_namespaced_secret(
+                name=cloudinit_secret_name, namespace=namespace, body=ci_secret
+            )
+        except client.exceptions.ApiException as e:
+            if e.status == 404:
+                core_api.create_namespaced_secret(namespace=namespace, body=ci_secret)
+            elif e.status != 409:
+                raise
+
+    # Rebuild and create KubeVirt VM with new spec
+    kv_vm = build_kubevirt_vm(body, disk_pvcs, nad_refs, cloudinit_secret_name)
+    kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
+    try:
+        custom_api.create_namespaced_custom_object(
+            group="kubevirt.io", version="v1", namespace=namespace,
+            plural="virtualmachines", body=kv_vm,
+        )
+        logger.info(f"Recreated KubeVirt VM {kv_name} with updated spec")
+    except client.exceptions.ApiException as e:
+        if e.status != 409:
+            raise
+        logger.info(f"KubeVirt VM {kv_name} already exists after reconfigure")
+
+    power_on = new_spec.get("powerOnAtDeploy", True)
+    patch.status["state"] = "Running" if power_on else "Stopped"
+    patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
+    logger.info(f"TroshkaVM {name} reconfigure complete")
+
+
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_delete(spec, status, meta, namespace, name, **_):
     logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
