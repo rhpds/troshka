@@ -1105,8 +1105,13 @@ export default function PropertiesPanel() {
                         disabled={projectState === "deploying"}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            nodes.filter((n) => n.id !== node.id && n.type === "vmNode" && (n.data as Record<string, any>).configureBastionBrowser)
-                              .forEach((n) => updateNodeData(n.id, { configureBastionBrowser: false }));
+                            const prev = nodes.find((n) => n.id !== node.id && n.type === "vmNode" && (n.data as Record<string, any>).configureBastionBrowser);
+                            if (prev) {
+                              const prevName = (prev.data as Record<string, any>).label || (prev.data as Record<string, any>).name || prev.id.slice(0, 8);
+                              const curName = (node.data as Record<string, any>).label || (node.data as Record<string, any>).name || node.id.slice(0, 8);
+                              if (!window.confirm(`Move "Configure bastion browser" from ${prevName} to ${curName}?`)) return;
+                              updateNodeData(prev.id, { configureBastionBrowser: false });
+                            }
                           }
                           const updates: Record<string, any> = { configureBastionBrowser: e.target.checked };
                           if (e.target.checked) updates.ocpMonitor = true;
