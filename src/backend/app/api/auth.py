@@ -84,6 +84,18 @@ def auth_me(user: User = Depends(get_current_user)):
     return UserIdentity.model_validate(user)
 
 
+@router.get("/ws-token")
+def ws_token(user: User = Depends(get_current_user)):
+    """Return a short-lived JWT for WebSocket authentication.
+
+    WebSocket connections bypass OAuth proxy (skip-auth-regex), so the
+    frontend fetches this token over a normal authenticated request and
+    passes it as ?token= on the WS URL.
+    """
+    token = create_jwt(user_id=user.id, email=user.email, role=user.role)
+    return {"token": token}
+
+
 # ── SSH Keys ──
 
 from pydantic import BaseModel

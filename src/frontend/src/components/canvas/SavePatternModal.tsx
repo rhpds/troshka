@@ -100,7 +100,12 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
         if (data.state !== "available") {
           setSavingStatus("Capturing disks...");
           const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-          const wsUrl = `${wsProto}//${window.location.host}/api/v1/patterns/${data.id}/ws`;
+          let wsToken = "";
+          try {
+            const tkResp = await fetch("/api/v1/auth/ws-token");
+            if (tkResp.ok) { const tk = await tkResp.json(); if (tk.token) wsToken = `?token=${encodeURIComponent(tk.token)}`; }
+          } catch { /* dev mode */ }
+          const wsUrl = `${wsProto}//${window.location.host}/api/v1/patterns/${data.id}/ws${wsToken}`;
           const result = await new Promise<"available" | "error" | "timeout">((resolve) => {
             const ws = new WebSocket(wsUrl);
             const timeout = setTimeout(() => { ws.close(); resolve("timeout"); }, 1800000);

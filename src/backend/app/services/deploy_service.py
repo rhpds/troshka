@@ -387,6 +387,8 @@ def _extract_vms(topology: dict) -> list[dict]:
                 "input_model": data.get("inputModel", "virtio"),
                 "uuid": data.get("uuid"),
                 "recertEnabled": data.get("recertEnabled", False),
+                "ocpMonitor": data.get("ocpMonitor", False),
+                "configureBastionBrowser": data.get("configureBastionBrowser", False),
             }
         )
     return vms
@@ -3941,8 +3943,6 @@ def _is_pattern_deploy(topology: dict) -> bool:
 
 def maybe_start_ocp_health_monitor(project_id: str):
     """Start OCP health monitor if project needs it and one isn't already running."""
-    if is_in_set(_HEALTH_MONITORS_SET, project_id):
-        return
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
@@ -3975,14 +3975,46 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 else 0
             )
         )
-        add_to_set(_HEALTH_MONITORS_SET, project_id, ttl=86400)
-        threading.Thread(
-            target=_monitor_ocp_health,
-            args=(project_id, host.id, topo, deploy_start),
-            daemon=True,
-            name=f"ocp-health-{project_id[:8]}",
-        ).start()
-        logger.info("OCP health monitor started on demand for %s", project_id[:8])
+
+        # Start main cluster monitor (uses bastion or direct oc)
+        if not is_in_set(_HEALTH_MONITORS_SET, project_id):
+            add_to_set(_HEALTH_MONITORS_SET, project_id, ttl=86400)
+            threading.Thread(
+                target=_monitor_ocp_health,
+                args=(project_id, host.id, topo, deploy_start),
+                daemon=True,
+                name=f"ocp-health-{project_id[:8]}",
+            ).start()
+            logger.info("OCP health monitor started on demand for %s", project_id[:8])
+
+        # Start per-VM monitors for VMs with ocpMonitor flag
+        for node in topo.get("nodes", []):
+            if node.get("type") != "vmNode":
+                continue
+            data = node.get("data", {})
+            if not data.get("ocpMonitor") and not data.get("configureBastionBrowser"):
+                continue
+            vm_id = node["id"]
+            monitor_key = f"{project_id}:{vm_id}"
+            if is_in_set(_HEALTH_MONITORS_SET, monitor_key):
+                continue
+            vm_name = data.get("label") or data.get("name", vm_id[:8])
+            kc = data.get("ocpKubeconfig")
+            if not kc:
+                logger.warning(
+                    "OCP VM monitor: %s/%s has ocpMonitor but no kubeconfig yet",
+                    project_id[:8],
+                    vm_name,
+                )
+                continue
+            add_to_set(_HEALTH_MONITORS_SET, monitor_key, ttl=86400)
+            threading.Thread(
+                target=_monitor_ocp_vm_health,
+                args=(project_id, host.id, vm_id, vm_name, kc, deploy_start),
+                daemon=True,
+                name=f"ocp-vm-{project_id[:8]}-{vm_name}",
+            ).start()
+            logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
     finally:
         db.close()
 
@@ -4261,6 +4293,415 @@ def _monitor_ocp_health(
     finally:
         remove_from_set(_HEALTH_MONITORS_SET, project_id)
         _mon_db.close()
+
+
+def _monitor_ocp_vm_health(
+    project_id: str,
+    host_id: str,
+    vm_id: str,
+    vm_name: str,
+    kubeconfig_content: str,
+    deploy_start: float = 0,
+):
+    """Monitor a single OCP cluster identified by its kubeconfig (e.g. a SNO).
+
+    Writes the kubeconfig to a temp file on the bastion, then monitors
+    node readiness, CSR approval, and operator availability.
+    """
+    from app.core.database import SessionLocal as _SL3
+
+    monitor_key = f"{project_id}:{vm_id}"
+    db = _SL3()
+    try:
+        _ocp_vm_health_inner(
+            project_id, host_id, vm_id, vm_name, kubeconfig_content, deploy_start, db
+        )
+    except Exception as e:
+        logger.exception("OCP VM monitor %s/%s failed: %s", project_id[:8], vm_name, e)
+    finally:
+        remove_from_set(_HEALTH_MONITORS_SET, monitor_key)
+        db.close()
+
+
+def _ocp_vm_health_inner(
+    project_id, host_id, vm_id, vm_name, kubeconfig_content, deploy_start, db
+):
+    import time as _t
+
+    from app.models.host import Host as _Host3
+    from app.models.project import Project as _VmProj
+
+    host = db.query(_Host3).filter_by(id=host_id).first()
+    if not host:
+        return
+
+    project = db.query(_VmProj).filter_by(id=project_id).first()
+    if not project or project.state != "active":
+        return
+    topo = project.deployed_topology or project.topology or {}
+
+    start = deploy_start or _t.time()
+
+    def _elapsed():
+        s = int(_t.time() - start)
+        return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+    def _push(phase, detail, items=None):
+        detail_with_time = f"{detail} ({_elapsed()})"
+        msg = {
+            "type": "ocp-health",
+            "phase": phase,
+            "detail": detail_with_time,
+            "vm_id": vm_id,
+            "vm_name": vm_name,
+        }
+        if items:
+            msg["items"] = items
+        notify_project(project_id, msg)
+
+    # Find bastion for exec
+    nodes = topo.get("nodes", [])
+    bastion = next(
+        (
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
+    bastion_ip = ""
+    password = ""
+    if bastion:
+        for nic in bastion.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                bastion_ip = nic["ip"]
+                break
+        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+
+    if not bastion_ip:
+        logger.warning(
+            "OCP VM monitor %s/%s: no bastion — cannot monitor",
+            project_id[:8],
+            vm_name,
+        )
+        return
+
+    # Write kubeconfig to temp file on bastion
+    kc_path = f"/tmp/troshka-kc-{vm_id[:8]}.yaml"
+    import base64
+
+    kc_b64 = base64.b64encode(kubeconfig_content.encode()).decode()
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        f"echo '{kc_b64}' | base64 -d > {kc_path}",
+        timeout=10,
+    )
+
+    def _oc(cmd, timeout=15):
+        return _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"export KUBECONFIG={kc_path}; {cmd}",
+            timeout=timeout,
+        )
+
+    def _approve_csrs():
+        result = _oc("oc get csr --no-headers 2>/dev/null", timeout=10)
+        if not result:
+            return 0
+        pending = [
+            l.split()[0]
+            for l in result.strip().split("\n")
+            if l.split() and len(l.split()) >= 4 and "Pending" in l
+        ]
+        for name in pending:
+            _oc(f"oc adm certificate approve {name} 2>/dev/null", timeout=10)
+        if pending:
+            logger.info(
+                "VM monitor %s/%s: approved %d CSR(s)",
+                project_id[:8],
+                vm_name,
+                len(pending),
+            )
+        return len(pending)
+
+    deadline = _t.time() + 1800
+    logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
+
+    # Phase 1: Wait for API server
+    _push("oc", "waiting for API server")
+    while _t.time() < deadline:
+        try:
+            result = _oc("oc get nodes --no-headers 2>/dev/null", timeout=10)
+            if result and "Ready" in result:
+                break
+        except Exception:
+            pass
+        _push("oc", "waiting for API server")
+        _t.sleep(10)
+    else:
+        _push("timeout", "API server not reachable")
+        return
+
+    # Phase 2: Wait for nodes Ready + approve CSRs
+    _push("nodes", "waiting for nodes to be Ready")
+    last_csr_check = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check >= 30:
+            approved = _approve_csrs()
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check = _t.time()
+
+        result = _oc("oc get nodes --no-headers 2>/dev/null", timeout=10)
+        if result and "error" not in result.lower() and "refused" not in result.lower():
+            items = []
+            ready_count = 0
+            total = 0
+            for line in result.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    total += 1
+                    name, status = parts[0], parts[1]
+                    items.append(f"{name}: {status}")
+                    if "Ready" in status and "Not" not in status:
+                        ready_count += 1
+            if total > 0:
+                _push("nodes", f"{ready_count}/{total} ready", items)
+                if ready_count >= total:
+                    break
+        else:
+            _push("nodes", "waiting for API server")
+        _t.sleep(5)
+
+    # Phase 3: Wait for cluster operators
+    _push("operators", "waiting for cluster operators")
+    last_csr_check_ops = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_ops >= 30:
+            approved = _approve_csrs()
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check_ops = _t.time()
+
+        result = _oc("oc get co --no-headers 2>/dev/null", timeout=15)
+        if result and "error" not in result.lower() and "refused" not in result.lower():
+            items = []
+            available_count = 0
+            total = 0
+            for line in result.strip().split("\n"):
+                parts = line.split()
+                if len(parts) >= 4:
+                    name = parts[0]
+                    avail = parts[2]
+                    degraded = parts[4] if len(parts) > 4 else "False"
+                    total += 1
+                    if avail == "True":
+                        available_count += 1
+                        items.append(f"{name}: available")
+                    elif degraded == "True":
+                        items.append(f"{name}: degraded")
+                    else:
+                        items.append(f"{name}: progressing")
+            if total > 0:
+                _push(
+                    "operators",
+                    f"{available_count}/{total} operators available",
+                    items,
+                )
+                if available_count >= total:
+                    break
+        else:
+            _push("operators", "waiting for API server")
+        _t.sleep(10)
+
+    # Phase 4: Restart ingress router (picks up fresh certs after pattern deploy)
+    _push("console", "restarting ingress router")
+    _oc(
+        "oc rollout restart deployment/router-default -n openshift-ingress 2>/dev/null || true",
+        timeout=15,
+    )
+    _t.sleep(10)
+
+    # Phase 5: Wait for console + OAuth routes
+    _push("console", "waiting for OpenShift console")
+    last_csr_check_console = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_console >= 30:
+            approved = _approve_csrs()
+            if approved:
+                _push("certs", f"approved {approved} certificate(s)")
+            last_csr_check_console = _t.time()
+
+        result = _oc("oc get co console --no-headers 2>/dev/null", timeout=15)
+        if result and "error" not in result.lower():
+            parts = result.strip().split()
+            co_available = parts[2] == "True" if len(parts) >= 4 else False
+            if co_available:
+                _push("console", "console operator available, verifying route...")
+                console_code = (
+                    _oc(
+                        "curl -skm 10 -o /dev/null -w '%{http_code}' "
+                        "https://console-openshift-console.apps."
+                        "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+                        "2>/dev/null || echo 000",
+                        timeout=20,
+                    )
+                    or "000"
+                ).strip()
+                if console_code.startswith(("2", "3")) or console_code == "403":
+                    oauth_code = (
+                        _oc(
+                            "curl -skm 10 -o /dev/null -w '%{http_code}' "
+                            "https://oauth-openshift.apps."
+                            "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+                            "2>/dev/null || echo 000",
+                            timeout=20,
+                        )
+                        or "000"
+                    ).strip()
+                    if oauth_code.startswith(("2", "3")) or oauth_code == "403":
+                        _push("console", "console and OAuth ready")
+                        break
+                    else:
+                        suffix = (
+                            f" (HTTP {oauth_code})"
+                            if oauth_code not in ("000", "")
+                            else ""
+                        )
+                        _push("console", f"waiting for OAuth route{suffix}")
+                        _t.sleep(10)
+                        continue
+                else:
+                    suffix = (
+                        f" (HTTP {console_code})"
+                        if console_code not in ("000", "")
+                        else ""
+                    )
+                    _push("console", f"waiting for console route{suffix}")
+                    _t.sleep(10)
+                    continue
+        _push("console", "waiting for OpenShift console")
+        _t.sleep(5)
+
+    # Final CSR sweep
+    for _ in range(6):
+        approved = _approve_csrs()
+        if not approved:
+            break
+        _push("certs", f"approved {approved} certificate(s)")
+        _t.sleep(10)
+
+    # Steps 6-8: Configure bastion browser if flag is set
+    vm_node = next((n for n in nodes if n["id"] == vm_id), None)
+    configure_browser = vm_node and vm_node.get("data", {}).get(
+        "configureBastionBrowser"
+    )
+    if configure_browser:
+        # Copy kubeconfig to bastion default locations
+        _push("browser", "setting bastion kubeconfig for this cluster")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"mkdir -p /home/cloud-user/ocp-install/auth /home/cloud-user/.kube;"
+            f" cp {kc_path} /home/cloud-user/ocp-install/auth/kubeconfig;"
+            f" cp {kc_path} /home/cloud-user/.kube/config;"
+            f" chown -R cloud-user:cloud-user"
+            " /home/cloud-user/ocp-install /home/cloud-user/.kube 2>/dev/null || true",
+            timeout=10,
+        )
+
+        # Refresh bastion CA trust with this cluster's ingress cert
+        _push("browser", "refreshing bastion CA trust")
+        _oc(
+            "oc get secret -n openshift-ingress router-certs-default "
+            "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+            "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+            "&& sudo update-ca-trust",
+            timeout=15,
+        )
+
+        # Verify CA fingerprint + run autologin with retry loop
+        _push("browser", "verifying bastion browser setup")
+        bastion_ready = False
+        for _ in range(18):
+            verify = _oc(
+                "LIVE_FP=$(oc get secret -n openshift-ingress router-certs-default "
+                "  -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+                "  | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); "
+                "FILE_FP=$(openssl x509 -noout -fingerprint -sha256 "
+                "  -in /etc/pki/ca-trust/source/anchors/ocp-ingress.pem 2>/dev/null | cut -d= -f2); "
+                'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
+                'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
+                'else echo "ca:stale"; fi; '
+                'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
+                "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
+                'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
+                'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
+                'else echo "logins:stale"; fi',
+                timeout=20,
+            )
+            if verify and "ca:ok" in verify and "logins:ok" in verify:
+                bastion_ready = True
+                break
+
+            needs_fix = []
+            if verify and "ca:stale" in verify:
+                needs_fix.append("CA cert")
+            if verify and ("logins:stale" in verify or "logins:missing" in verify):
+                needs_fix.append("browser credentials")
+
+            if needs_fix:
+                _push("browser", f"bastion {', '.join(needs_fix)} stale, updating...")
+                if "CA cert" in needs_fix:
+                    _oc(
+                        "oc get secret -n openshift-ingress router-certs-default "
+                        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+                        "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+                        "&& sudo update-ca-trust",
+                        timeout=15,
+                    )
+                if "browser credentials" in needs_fix:
+                    _oc(
+                        "CONSOLE_URL=$(oc whoami --show-console 2>/dev/null); "
+                        '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
+                        'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true',
+                        timeout=30,
+                    )
+                _t.sleep(5)
+                continue
+            _push("browser", "waiting for bastion setup")
+            _t.sleep(10)
+
+        if bastion_ready:
+            _push("browser", "bastion browser ready")
+        else:
+            logger.warning(
+                "OCP VM monitor %s/%s: bastion browser setup incomplete",
+                project_id[:8],
+                vm_name,
+            )
+
+    # Cleanup temp kubeconfig (skip if we copied it to the bastion default path)
+    if not configure_browser:
+        _exec_on_bastion(
+            host, project_id, bastion_ip, password, f"rm -f {kc_path}", timeout=5
+        )
+
+    _push("ready", f"{vm_name} cluster ready")
+    logger.info(
+        "OCP VM monitor complete for %s/%s (%s)",
+        project_id[:8],
+        vm_name,
+        _elapsed(),
+    )
 
 
 def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):

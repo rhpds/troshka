@@ -7,6 +7,8 @@ metadata:
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
     app.kubernetes.io/component: frontend
+  annotations:
+    haproxy.router.openshift.io/timeout: 3600s
 spec:
   {{- if .Values.route.host }}
   host: {{ .Values.route.host }}

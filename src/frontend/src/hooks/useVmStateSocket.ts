@@ -62,12 +62,23 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (!projectId || !mountedRef.current) return;
 
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const url = `${proto}//${host}/api/v1/projects/${projectId}/ws`;
+
+    // Fetch a short-lived JWT for WS auth (WS bypasses OAuth proxy)
+    let tokenParam = "";
+    try {
+      const resp = await fetch("/api/v1/auth/ws-token");
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.token) tokenParam = `?token=${encodeURIComponent(data.token)}`;
+      }
+    } catch { /* dev mode — no token needed */ }
+
+    const url = `${proto}//${host}/api/v1/projects/${projectId}/ws${tokenParam}`;
 
     const ws = new WebSocket(url);
     wsRef.current = ws;

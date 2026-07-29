@@ -68,6 +68,8 @@
       metadata:
         name: troshka
         namespace: "{{ troshka_namespace }}"
+        annotations:
+          haproxy.router.openshift.io/timeout: 3600s
       spec:
         host: "{{ _troshka_route_host }}"
         tls:

@@ -15,6 +15,7 @@ logging.getLogger("uvicorn.access").handlers = []
 logging.getLogger("uvicorn.access").propagate = True
 
 from contextlib import asynccontextmanager
+from datetime import UTC
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,27 +70,88 @@ async def lifespan(app):
 
     if is_redis_available():
         try:
+            from datetime import datetime
+
             from rq import Queue
             from rq.job import Job
 
+            from app.core.database import SessionLocal as _SL
             from app.core.redis import get_redis_raw
+            from app.models.project import Project as _Proj
 
             r = get_redis_raw()
-            for qname in ["project_lifecycle", "host_lifecycle", "default"]:
-                q = Queue(qname, connection=r)
-                abandoned_ids = q.failed_job_registry.get_job_ids()
-                for jid in abandoned_ids:
-                    try:
-                        j = Job.fetch(jid, connection=r)
-                        if "AbandonedJobError" in str(j.exc_info or ""):
+            _recovery_db = _SL()
+            try:
+                now_utc = datetime.now(UTC)
+                for qname in ["project_lifecycle", "host_lifecycle", "default"]:
+                    q = Queue(qname, connection=r)
+                    registry = q.failed_job_registry
+                    abandoned_ids = registry.get_job_ids()
+                    for jid in abandoned_ids:
+                        try:
+                            j = Job.fetch(jid, connection=r)
+                            if "AbandonedJobError" not in str(j.exc_info or ""):
+                                continue
+
+                            pid = j.meta.get("project_id")
+                            func_label = (j.func_name or "unknown").split(".")[-1]
+
+                            # Age out stale jobs (>1 hour since failure)
+                            job_ended = j.ended_at
+                            if job_ended:
+                                if job_ended.tzinfo is None:
+                                    job_ended = job_ended.replace(tzinfo=UTC)
+                                age_s = (now_utc - job_ended).total_seconds()
+                                if age_s > 3600:
+                                    logger.info(
+                                        "Startup: discarding stale abandoned job %s (%s, %.0fh old)",
+                                        jid[:8],
+                                        func_label,
+                                        age_s / 3600,
+                                    )
+                                    registry.remove(j)
+                                    j.delete()
+                                    continue
+
+                            # Check project state — only re-queue if still in a transient state
+                            if pid:
+                                proj = _recovery_db.get(_Proj, pid)
+                                if not proj:
+                                    logger.info(
+                                        "Startup: discarding abandoned job %s — project %s not found",
+                                        jid[:8],
+                                        pid[:8],
+                                    )
+                                    registry.remove(j)
+                                    j.delete()
+                                    continue
+                                if proj.state not in (
+                                    "deploying",
+                                    "starting",
+                                    "stopping",
+                                    "reconfiguring",
+                                ):
+                                    logger.info(
+                                        "Startup: discarding abandoned job %s — project %s already %s",
+                                        jid[:8],
+                                        pid[:8],
+                                        proj.state,
+                                    )
+                                    registry.remove(j)
+                                    j.delete()
+                                    continue
+
                             logger.warning(
                                 "Startup: re-queuing abandoned job %s (%s)",
                                 jid[:8],
-                                (j.func_name or "unknown").split(".")[-1],
+                                func_label,
                             )
+                            registry.remove(j)
                             j.requeue()
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
+            finally:
+                _recovery_db.close()
         except Exception:
             logger.warning("Startup: failed to check abandoned jobs")
 

@@ -503,6 +503,8 @@ def _generate_topology_from_vms(
             "diskControllers": disk_controllers,
             "bmcEnabled": has_bmc,
             "recertEnabled": vm_cfg.get("recert", False),
+            "ocpMonitor": vm_cfg.get("ocp_monitor", False),
+            "configureBastionBrowser": vm_cfg.get("configure_bastion_browser", False),
             "firmware": vm_cfg.get("firmware", "uefi"),
             "secureBoot": vm_cfg.get("secure_boot", False),
             "bootDevices": boot_device_ids,
@@ -1060,6 +1062,10 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
             vm_out["power_on"] = False
         if d.get("recertEnabled"):
             vm_out["recert"] = True
+        if d.get("ocpMonitor"):
+            vm_out["ocp_monitor"] = True
+        if d.get("configureBastionBrowser"):
+            vm_out["configure_bastion_browser"] = True
         if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
             vm_out["bmc"] = True
         if d.get("bmcIp"):

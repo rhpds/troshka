@@ -1093,6 +1093,24 @@ export default function PropertiesPanel() {
                       />
                       SNO Recert (regenerate OCP certificates)
                     </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+                      <input type="checkbox" checked={!!(node.data as Record<string, any>).ocpMonitor}
+                        disabled={projectState === "deploying" || !!(node.data as Record<string, any>).configureBastionBrowser}
+                        onChange={(e) => updateNodeData(node.id, { ocpMonitor: e.target.checked })}
+                      />
+                      Monitor cluster health after deploy
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+                      <input type="checkbox" checked={!!(node.data as Record<string, any>).configureBastionBrowser}
+                        disabled={projectState === "deploying"}
+                        onChange={(e) => {
+                          const updates: Record<string, any> = { configureBastionBrowser: e.target.checked };
+                          if (e.target.checked) updates.ocpMonitor = true;
+                          updateNodeData(node.id, updates);
+                        }}
+                      />
+                      Configure bastion browser for this cluster
+                    </label>
                   </div>
                 )}
               </div>

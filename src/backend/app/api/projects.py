@@ -2471,6 +2471,10 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 "os": vm.get("os", ""),
                 "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
                 "recertEnabled": vm_data.get("recertEnabled", False),
+                "ocpMonitor": vm_data.get("ocpMonitor", False),
+                "configureBastionBrowser": vm_data.get(
+                    "configureBastionBrowser", False
+                ),
                 "bmcEnabled": vm_data.get("bmcEnabled", False),
                 "disks": disk_specs,
                 "nics": vm_data.get("nics", []),

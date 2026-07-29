@@ -5,6 +5,8 @@ metadata:
   namespace: troshka
   labels:
     app.kubernetes.io/name: troshka
+  annotations:
+    haproxy.router.openshift.io/timeout: 3600s
 spec:
   tls:
     termination: edge
