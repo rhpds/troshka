@@ -428,6 +428,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
 
     kv_vm_name = kv_vm["metadata"]["name"]
+    existing_kv_name = body.get("status", {}).get("kubevirtVmName", "")
     try:
         custom_api.create_namespaced_custom_object(
             group="kubevirt.io",
@@ -439,47 +440,52 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         logger.info(f"Created KubeVirt VM {kv_vm_name}")
     except client.exceptions.ApiException as e:
         if e.status == 409:
-            logger.info(
-                f"KubeVirt VM {kv_vm_name} already exists, deleting and recreating"
-            )
-            try:
-                custom_api.delete_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_vm_name,
+            if existing_kv_name:
+                logger.info(
+                    f"KubeVirt VM {kv_vm_name} already exists (previously created), adopting"
                 )
-            except Exception:
-                pass
-            for _ in range(30):
+            else:
+                logger.info(
+                    f"KubeVirt VM {kv_vm_name} already exists, deleting and recreating"
+                )
                 try:
-                    custom_api.get_namespaced_custom_object(
+                    custom_api.delete_namespaced_custom_object(
                         group="kubevirt.io",
                         version="v1",
                         namespace=namespace,
                         plural="virtualmachines",
                         name=kv_vm_name,
                     )
-                    await asyncio.sleep(2)
-                except client.exceptions.ApiException as ge:
-                    if ge.status == 404:
-                        break
-                    raise
-            try:
-                custom_api.create_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    body=kv_vm,
-                )
-                logger.info(f"Created KubeVirt VM {kv_vm_name} (after cleanup)")
-            except client.exceptions.ApiException as ce:
-                if ce.status == 409:
-                    logger.info(f"KubeVirt VM {kv_vm_name} still exists, adopting")
-                else:
-                    raise
+                except Exception:
+                    pass
+                for _ in range(30):
+                    try:
+                        custom_api.get_namespaced_custom_object(
+                            group="kubevirt.io",
+                            version="v1",
+                            namespace=namespace,
+                            plural="virtualmachines",
+                            name=kv_vm_name,
+                        )
+                        await asyncio.sleep(2)
+                    except client.exceptions.ApiException as ge:
+                        if ge.status == 404:
+                            break
+                        raise
+                try:
+                    custom_api.create_namespaced_custom_object(
+                        group="kubevirt.io",
+                        version="v1",
+                        namespace=namespace,
+                        plural="virtualmachines",
+                        body=kv_vm,
+                    )
+                    logger.info(f"Created KubeVirt VM {kv_vm_name} (after cleanup)")
+                except client.exceptions.ApiException as ce:
+                    if ce.status == 409:
+                        logger.info(f"KubeVirt VM {kv_vm_name} still exists, adopting")
+                    else:
+                        raise
         else:
             raise
 

@@ -2033,38 +2033,25 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             pass
         return 0
 
-    pattern_disk_map = {}
-    pattern_ids_seen = set()
-    for node in topology.get("nodes", []):
-        data = node.get("data", {})
-        if node.get("type") == "storageNode" and data.get("source") == "pattern":
-            pid = data.get("patternId", "")
-            if pid:
-                pattern_ids_seen.add(pid)
-
-    if pattern_ids_seen:
-        from app.models.pattern import Pattern as PatternModel
-
-        for pid in pattern_ids_seen:
-            pat = db.query(PatternModel).filter_by(id=pid).first()
-            if pat and pat.topology:
-                for pn in pat.topology.get("nodes", []):
-                    pd = pn.get("data", {})
-                    if pn.get("type") == "storageNode":
-                        orig_id = pd.get("id", pn.get("id", ""))
-                        label = pd.get("label", "")
-                        pattern_disk_map[(pid, label)] = orig_id
+    from app.models.pattern import PatternDisk as PatternDiskModel
 
     for node in topology.get("nodes", []):
         data = node.get("data", {})
         if node.get("type") == "storageNode":
             if data.get("source") == "pattern" and data.get("patternId"):
                 pid = data["patternId"]
-                label = data.get("label", "")
-                orig_disk_id = pattern_disk_map.get(
-                    (pid, label), data.get("patternDiskId", "")
+                pattern_disk_id = data.get("patternDiskId", "")
+                pd_record = (
+                    db.query(PatternDiskModel)
+                    .filter_by(id=pattern_disk_id, pattern_id=pid)
+                    .first()
+                    if pattern_disk_id
+                    else None
                 )
-                s3_path = f"patterns/{pid}/{orig_disk_id}.qcow2"
+                if pd_record and pd_record.s3_key:
+                    s3_path = pd_record.s3_key
+                else:
+                    s3_path = f"patterns/{pid}/{pattern_disk_id}.qcow2"
                 use_central = False
                 if central_s3_client:
                     try:
@@ -2081,7 +2068,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 data["centralSource"] = use_central
                 logger.info(
                     "Deploy: disk %s s3=%s central=%s",
-                    label,
+                    data.get("label", "?"),
                     s3_path[:40],
                     use_central,
                 )
