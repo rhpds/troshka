@@ -264,6 +264,13 @@ def get_job_info(project_id: str) -> dict | None:
         job = Job.fetch(job_id, connection=r_raw)
         status = job.get_status()
 
+        if status == "started" and job.worker_name:
+            from rq import Worker
+
+            worker_names = {w.name for w in Worker.all(connection=r_raw)}
+            if job.worker_name not in worker_names:
+                return None
+
         result: dict = {"job_id": job_id, "status": status}
 
         if status == "queued":
