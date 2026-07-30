@@ -25,7 +25,7 @@ cd ../..
 
 echo "Running operator tests with coverage..."
 cd src/operator
-python3 -m pytest tests/ -q --cov=handlers --cov=helpers --cov=images --cov=operator --cov-report=xml:../../operator-coverage.xml 2>/dev/null || true
+python3 -m pytest tests/ -q --cov=. --cov-report=xml:../../operator-coverage.xml 2>/dev/null || true
 cd ../..
 
 echo "Running troshkad tests with coverage..."

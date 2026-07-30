@@ -150,3 +150,98 @@ def test_check_timers_no_double_warning():
     db.query(Project).filter_by(id=pid).delete()
     db.commit()
     db.close()
+
+
+def test_stuck_project_recovery_dry_run():
+    """Projects stuck in deploying with no active RQ job get recovered."""
+    from unittest.mock import patch
+
+    from app.services.project_timer import _check_project_timers
+
+    now = datetime.datetime.now(datetime.UTC)
+    pid = _create_project(
+        "Stuck Deploying",
+        state="deploying",
+        updated_at=now - datetime.timedelta(minutes=10),
+    )
+
+    with patch("app.core.redis.is_redis_available", return_value=True), patch(
+        "app.core.redis.get_job_info", return_value=None
+    ):
+        result = _check_project_timers(_dry_run=True)
+
+    assert pid in result.get("stuck_recovered", [])
+
+    db = TestSession()
+    db.query(Project).filter_by(id=pid).delete()
+    db.commit()
+    db.close()
+
+
+def test_stuck_project_with_active_job_skipped():
+    """Projects stuck but with an active RQ job are NOT recovered."""
+    from unittest.mock import patch
+
+    from app.services.project_timer import _check_project_timers
+
+    now = datetime.datetime.now(datetime.UTC)
+    pid = _create_project(
+        "Stuck With Job",
+        state="stopping",
+        updated_at=now - datetime.timedelta(minutes=10),
+    )
+
+    with patch("app.core.redis.is_redis_available", return_value=True), patch(
+        "app.core.redis.get_job_info", return_value={"status": "started"}
+    ):
+        result = _check_project_timers(_dry_run=True)
+
+    assert pid not in result.get("stuck_recovered", [])
+
+    db = TestSession()
+    db.query(Project).filter_by(id=pid).delete()
+    db.commit()
+    db.close()
+
+
+def test_stuck_recovery_sets_error_state():
+    """Non-dry-run stuck recovery sets project to error state."""
+    from unittest.mock import patch
+
+    from app.services.project_timer import _check_project_timers
+
+    now = datetime.datetime.now(datetime.UTC)
+    pid = _create_project(
+        "Stuck Error",
+        state="deploying",
+        updated_at=now - datetime.timedelta(minutes=10),
+    )
+
+    with patch("app.core.redis.is_redis_available", return_value=True), patch(
+        "app.core.redis.get_job_info", return_value=None
+    ), patch("app.services.project_timer._notify"):
+        result = _check_project_timers(_dry_run=False)
+
+    assert pid in result.get("stuck_recovered", [])
+
+    db = TestSession()
+    p = db.query(Project).filter_by(id=pid).first()
+    assert p.state == "error"
+    assert "Background job lost" in (p.deploy_error or "")
+    db.query(Project).filter_by(id=pid).delete()
+    db.commit()
+    db.close()
+
+
+def test_spawn_stop():
+    """_spawn_stop enqueues a stop job via Redis."""
+    from unittest.mock import patch
+
+    from app.services.project_timer import _spawn_stop
+
+    with patch("app.core.redis.enqueue_job") as mock_enqueue:
+        _spawn_stop("test-project-id")
+
+    mock_enqueue.assert_called_once()
+    args = mock_enqueue.call_args
+    assert args[0][1] == "test-project-id"

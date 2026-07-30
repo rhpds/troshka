@@ -31,6 +31,7 @@ from app.services.deploy_service import (
     _phase_icon,
     _resolve_deploy_step,
 )
+from app.services.troshkad_client import TroshkadError
 
 # ═══════════════════════════════════════════════════════════════════════
 # _cluster_init_status
@@ -8493,3 +8494,1005 @@ class TestOcpWaitForDirectOc:
 
         result = _ocp_wait_for_direct_oc(MagicMock(), "proj-1", push_fn, deadline)
         assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _build_clone_name_map — target-edge branch
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestBuildCloneNameMapTargetEdge:
+    def test_edge_with_disk_as_target(self):
+        from app.services.deploy_service import _build_clone_name_map
+
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "id": "disk-aaaa",
+                    "data": {
+                        "id": "disk-aaaa",
+                        "label": "RHEL disk",
+                        "format": "qcow2",
+                    },
+                },
+                {"type": "vmNode", "id": "vm-bbbb", "data": {"label": "master"}},
+            ],
+            "edges": [{"source": "vm-bbbb", "target": "disk-aaaa"}],
+        }
+        result = _build_clone_name_map(topology)
+        assert any("RHEL disk" in v for v in result.values())
+
+    def test_edge_unrelated_to_disk_is_skipped(self):
+        from app.services.deploy_service import _build_clone_name_map
+
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "id": "disk-aaaa",
+                    "data": {"id": "disk-aaaa", "label": "disk1"},
+                },
+                {"type": "vmNode", "id": "vm-1111", "data": {}},
+                {"type": "networkNode", "id": "net-2222", "data": {}},
+            ],
+            "edges": [
+                {"source": "vm-1111", "target": "net-2222"},
+                {"source": "vm-1111", "target": "disk-aaaa"},
+            ],
+        }
+        result = _build_clone_name_map(topology)
+        assert len(result) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _format_import_progress — ValueError on non-numeric progress
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestFormatImportProgressValueError:
+    def test_non_numeric_progress_string(self):
+        from app.services.deploy_service import _format_import_progress
+
+        dv = {"status": {"conditions": []}}
+        result = _format_import_progress("disk", dv, "invalid%")
+        assert "downloading invalid%" in result
+
+    def test_empty_percent_string(self):
+        from app.services.deploy_service import _format_import_progress
+
+        dv = {"status": {"conditions": []}}
+        result = _format_import_progress("disk", dv, "abc")
+        assert "downloading abc" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _format_dv_status_line — ImportInProgress phase
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestFormatDvStatusLineImportInProgress:
+    def test_import_in_progress_delegates(self):
+        from app.services.deploy_service import _format_dv_status_line
+
+        dv = {
+            "status": {"phase": "ImportInProgress", "progress": "50%", "conditions": []}
+        }
+        result = _format_dv_status_line("disk", dv)
+        assert "downloading 50%" in result
+
+    def test_import_in_progress_no_progress(self):
+        from app.services.deploy_service import _format_dv_status_line
+
+        dv = {
+            "status": {"phase": "ImportInProgress", "progress": "N/A", "conditions": []}
+        }
+        result = _format_dv_status_line("disk", dv)
+        assert "starting" in result
+
+    def test_import_scheduled(self):
+        from app.services.deploy_service import _format_dv_status_line
+
+        dv = {"status": {"phase": "ImportScheduled"}}
+        assert _format_dv_status_line("disk", dv) == "disk: scheduled"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _resolve_deploy_step — additional branches
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestResolveDeployStepAdditional:
+    def test_all_disks_done_no_vm_states(self):
+        step, detail = _resolve_deploy_step(
+            True, "StartingVMs", "booting", "", [], {"vmStates": {}}, {}
+        )
+        assert step == "startingvms"
+        assert detail == "booting"
+
+    def test_all_disks_done_certificate_stage(self):
+        step, detail = _resolve_deploy_step(
+            True, "Certificate renewal", "renewing", "", [], {}, {}
+        )
+        assert "certificate" in step
+        assert detail == "renewing"
+
+    def test_op_stage_only_no_disks(self):
+        step, detail = _resolve_deploy_step(
+            False, "Networking", "creating bridges", "", [], {}, {}
+        )
+        assert step == "networking"
+        assert detail == "creating bridges"
+
+    def test_fallback_to_last_progress(self):
+        step, detail = _resolve_deploy_step(
+            False, "", "", "", [], {}, {"step": "images", "detail": "waiting"}
+        )
+        assert step == "images"
+        assert detail == "waiting"
+
+    def test_fallback_empty_last(self):
+        step, detail = _resolve_deploy_step(False, "", "", "", [], {}, {})
+        assert step == "deploying"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Coverage gap tests — uncovered branches in helper functions
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestProgressWrappers:
+    """Cover thin Redis-wrapping helpers (lines 75, 79, 83, 87, 91, 95)."""
+
+    @patch("app.services.deploy_service.set_progress")
+    def test_set_deploy_progress(self, mock_sp):
+        from app.services.deploy_service import _set_deploy_progress
+
+        _set_deploy_progress("proj-1", {"step": "images"})
+        mock_sp.assert_called_once_with("deploy:proj-1", {"step": "images"})
+
+    @patch("app.services.deploy_service.get_progress", return_value={"step": "vms"})
+    def test_get_deploy_progress_data(self, mock_gp):
+        from app.services.deploy_service import _get_deploy_progress_data
+
+        result = _get_deploy_progress_data("proj-2")
+        assert result == {"step": "vms"}
+        mock_gp.assert_called_once_with("deploy:proj-2")
+
+    @patch("app.services.deploy_service.delete_progress")
+    def test_delete_deploy_progress(self, mock_dp):
+        from app.services.deploy_service import _delete_deploy_progress
+
+        _delete_deploy_progress("proj-3")
+        mock_dp.assert_called_once_with("deploy:proj-3")
+
+    @patch("app.services.deploy_service._redis_mark_cancelled")
+    def test_mark_deploy_cancelled(self, mock_mc):
+        from app.services.deploy_service import _mark_deploy_cancelled
+
+        _mark_deploy_cancelled("proj-4")
+        mock_mc.assert_called_once_with("proj-4")
+
+    @patch("app.services.deploy_service._redis_is_cancelled", return_value=True)
+    def test_is_deploy_cancelled(self, mock_ic):
+        from app.services.deploy_service import _is_deploy_cancelled
+
+        assert _is_deploy_cancelled("proj-5") is True
+        mock_ic.assert_called_once_with("proj-5")
+
+    @patch("app.services.deploy_service.clear_cancelled")
+    def test_clear_deploy_cancelled(self, mock_cc):
+        from app.services.deploy_service import _clear_deploy_cancelled
+
+        _clear_deploy_cancelled("proj-6")
+        mock_cc.assert_called_once_with("proj-6")
+
+
+class TestGetNetworkLock:
+    """Cover _get_network_lock (line 255)."""
+
+    @patch("app.services.deploy_service.get_lock")
+    def test_returns_lock_for_host(self, mock_gl):
+        from app.services.deploy_service import _get_network_lock
+
+        mock_lock = MagicMock()
+        mock_gl.return_value = mock_lock
+        result = _get_network_lock("host-abc")
+        mock_gl.assert_called_once_with("network:host-abc", timeout=120)
+        assert result is mock_lock
+
+
+class TestShouldSkipValueError:
+    """Cover _should_skip ValueError branch (line 247)."""
+
+    def test_unknown_step_returns_false(self):
+        from app.services.deploy_service import _should_skip
+
+        # Pass a step name not in DEPLOY_STEPS to trigger ValueError
+        assert _should_skip("images", "nonexistent_step") is False
+
+    def test_unknown_resume_from_returns_false(self):
+        from app.services.deploy_service import _should_skip
+
+        assert _should_skip("nonexistent_step", "images") is False
+
+
+class TestFindVmNameByIpNonVmNodes:
+    """Cover _find_vm_name_by_ip line 569 — the `continue` for non-vmNode."""
+
+    def test_skips_non_vm_nodes(self):
+        from app.services.deploy_service import _find_vm_name_by_ip
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"nics": [{"ip": "10.0.0.5"}]},
+                },
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {"name": "bastion", "nics": [{"ip": "10.0.0.5"}]},
+                },
+            ]
+        }
+        # Should find the VM node, not be confused by the networkNode
+        assert _find_vm_name_by_ip(topo, "10.0.0.5") == "bastion"
+
+    def test_only_non_vm_nodes_falls_back(self):
+        from app.services.deploy_service import _find_vm_name_by_ip
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"nics": [{"ip": "10.0.0.5"}]},
+                },
+            ]
+        }
+        # No vmNode with this IP — should fall back to IP-based name
+        assert _find_vm_name_by_ip(topo, "10.0.0.5") == "10-0-0-5"
+
+
+class TestFindVmDisksUnrelatedEdge:
+    """Cover _find_vm_disks line 594 — edge not connected to the target VM."""
+
+    def test_skips_unrelated_edges(self):
+        from app.services.deploy_service import _find_vm_disks
+
+        topo = {
+            "nodes": [
+                {"id": "vm1", "type": "vmNode", "data": {"diskControllers": []}},
+                {"id": "vm2", "type": "vmNode", "data": {"diskControllers": []}},
+                {
+                    "id": "disk1",
+                    "type": "storageNode",
+                    "data": {"name": "d1", "size": 10, "format": "qcow2"},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "vm2",
+                    "target": "disk1",
+                    "sourceHandle": "dp-ctrl1",
+                    "targetHandle": "disk-top",
+                }
+            ],
+        }
+        # vm1 has no edges to disk1, so it should find no disks
+        result = _find_vm_disks("vm1", topo)
+        assert result == []
+
+
+class TestFindContainerVolumesAltHandles:
+    """Cover _find_container_volumes lines 662-665 — alternative edge handle directions."""
+
+    def test_tgt_is_container_with_tgt_handle_mnt(self):
+        """Line 662-663: tgt == container_node_id and tgt_h.startswith('mnt-')."""
+        from app.services.deploy_service import _find_container_volumes
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "ctr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "mounts": [{"diskNodeId": "disk-1", "mountPath": "/data"}],
+                    },
+                },
+                {"id": "disk-1", "type": "storageNode", "data": {"size": 15}},
+            ],
+            "edges": [
+                {
+                    "source": "disk-1",
+                    "target": "ctr-1",
+                    "sourceHandle": "",
+                    "targetHandle": "mnt-disk-1",
+                },
+            ],
+        }
+        result = _find_container_volumes("ctr-1", topology, "proj-1234")
+        assert len(result) == 1
+        assert result[0]["mount_path"] == "/data"
+
+    def test_src_is_container_with_src_handle_mnt(self):
+        """Line 664-665: src == container_node_id and src_h.startswith('mnt-')."""
+        from app.services.deploy_service import _find_container_volumes
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "ctr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "mounts": [{"diskNodeId": "disk-1", "mountPath": "/vol"}],
+                    },
+                },
+                {"id": "disk-1", "type": "storageNode", "data": {"size": 25}},
+            ],
+            "edges": [
+                {
+                    "source": "ctr-1",
+                    "target": "disk-1",
+                    "sourceHandle": "mnt-disk-1",
+                    "targetHandle": "",
+                },
+            ],
+        }
+        result = _find_container_volumes("ctr-1", topology, "proj-5678")
+        assert len(result) == 1
+        assert result[0]["mount_path"] == "/vol"
+        assert result[0]["size_gb"] == 25
+
+    def test_edge_not_connected_to_container(self):
+        """Line 668: disk_node_id is None because edge connects other nodes."""
+        from app.services.deploy_service import _find_container_volumes
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "ctr-1",
+                    "type": "containerNode",
+                    "data": {"mounts": []},
+                },
+                {"id": "vm-1", "type": "vmNode", "data": {}},
+                {"id": "disk-1", "type": "storageNode", "data": {"size": 10}},
+            ],
+            "edges": [
+                {
+                    "source": "vm-1",
+                    "target": "disk-1",
+                    "sourceHandle": "dp-ctrl1",
+                    "targetHandle": "disk-top",
+                },
+            ],
+        }
+        result = _find_container_volumes("ctr-1", topology, "proj-1")
+        assert result == []
+
+
+class TestResolveBootDevsUnknownId:
+    """Cover _resolve_boot_devs lines 878, 884 — unknown boot dev + cdrom controller fallback."""
+
+    def test_unknown_boot_dev_id_skipped(self):
+        """Line 878: boot_devices entry not in boot_type_map or storage_nodes — skip."""
+        from app.services.deploy_service import _resolve_boot_devs
+
+        vm = {"boot_devices": ["bogus-id-999", "hd"], "disk_controllers": []}
+        disks = [{"format": "qcow2"}]
+        topo = {"nodes": []}
+        result = _resolve_boot_devs(vm, disks, topo)
+        assert result == ["hd"]
+
+    def test_cdrom_controller_fallback(self):
+        """Line 884: VM has a cdrom controller but no cdrom in explicit boot order."""
+        from app.services.deploy_service import _resolve_boot_devs
+
+        vm = {
+            "boot_devices": ["hd"],
+            "disk_controllers": [{"id": "dc-1", "bus": "sata", "name": "cdrom-1"}],
+        }
+        disks = [{"format": "qcow2"}]
+        topo = {"nodes": []}
+        result = _resolve_boot_devs(vm, disks, topo)
+        assert "cdrom" in result
+        assert "hd" in result
+
+    def test_all_unknown_boot_devs_fallback_to_hd(self):
+        """Line 885: boot_devs ends up empty, returns ['hd'] fallback."""
+        from app.services.deploy_service import _resolve_boot_devs
+
+        vm = {"boot_devices": ["zzz-123", "yyy-456"], "disk_controllers": []}
+        disks = [{"format": "qcow2"}]
+        topo = {"nodes": []}
+        result = _resolve_boot_devs(vm, disks, topo)
+        assert result == ["hd"]
+
+
+class TestAutoAssignContainerIpsTargetEdge:
+    """Cover _auto_assign_container_ips lines 1792-1793 — target-side edge match."""
+
+    def test_assigns_ip_via_target_edge(self):
+        """Lines 1792-1793: tgt == node['id'] and th matches the NIC handle."""
+        from app.services.deploy_service import _auto_assign_container_ips
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {
+                        "cidr": "192.168.0.0/24",
+                        "dhcpRangeStart": "192.168.0.10",
+                        "dhcpRangeEnd": "192.168.0.20",
+                    },
+                },
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {
+                        "name": "web",
+                        "nics": [{"id": "nic-a", "name": "eth0"}],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "net1",
+                    "target": "ctr1",
+                    "sourceHandle": "net-port",
+                    "targetHandle": "nic-nic-a-top",
+                },
+            ],
+        }
+        _auto_assign_container_ips(topology)
+        nic = topology["nodes"][1]["data"]["nics"][0]
+        assert nic["ip"] == "192.168.0.10"
+
+    def test_no_dhcp_range_skips(self):
+        """Line 1807: _get_dhcp_range returns None — container NIC left without IP."""
+        from app.services.deploy_service import _auto_assign_container_ips
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"cidr": "10.0.0.0/30"},  # only 2 hosts, < 10
+                },
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {
+                        "name": "app",
+                        "nics": [{"id": "nic-b", "name": "eth0"}],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "ctr1",
+                    "target": "net1",
+                    "sourceHandle": "nic-nic-b-top",
+                    "targetHandle": "net-port",
+                },
+            ],
+        }
+        _auto_assign_container_ips(topology)
+        nic = topology["nodes"][1]["data"]["nics"][0]
+        # /30 has only 2 hosts — no DHCP range → NIC stays without IP
+        assert nic.get("ip") is None or nic.get("ip") == ""
+
+
+class TestCollectUsedIpsInvalidCidr:
+    """Cover _collect_used_ips lines 1838-1839 — ValueError on invalid CIDR."""
+
+    def test_invalid_cidr_ignored(self):
+        from app.services.deploy_service import _collect_used_ips
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"cidr": "not-a-cidr"},
+                },
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {"nics": [{"ip": "10.0.0.5"}]},
+                },
+            ]
+        }
+        result = _collect_used_ips(topology)
+        assert "10.0.0.5" in result
+        # Gateway IP not added because CIDR was invalid
+        assert len(result) == 1
+
+
+class TestGetDhcpRangeInvalidIp:
+    """Cover _get_dhcp_range lines 1869-1870 — ValueError on invalid IP address."""
+
+    def test_invalid_range_addresses_returns_none(self):
+        from app.services.deploy_service import _get_dhcp_range
+
+        net_data = {
+            "dhcpRangeStart": "not-an-ip",
+            "dhcpRangeEnd": "also-not-an-ip",
+        }
+        assert _get_dhcp_range(net_data) is None
+
+    def test_invalid_start_only(self):
+        from app.services.deploy_service import _get_dhcp_range
+
+        net_data = {
+            "dhcpRangeStart": "invalid",
+            "dhcpRangeEnd": "10.0.0.100",
+        }
+        assert _get_dhcp_range(net_data) is None
+
+
+class TestExtractBmcConfigEdgeSrcHandle:
+    """Cover _extract_bmc_config line 754 — edge where handle doesn't start with 'nic-'."""
+
+    def test_non_nic_handle_skipped(self):
+        from app.services.deploy_service import _extract_bmc_config
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "bmc-net",
+                    "type": "networkNode",
+                    "data": {"networkType": "bmc", "cidr": "10.0.0.0/24"},
+                },
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {
+                        "name": "sno1",
+                        "bmcEnabled": True,
+                        "bmcIp": "10.0.0.10",
+                        "nics": [
+                            {
+                                "id": "nic-1",
+                                "ip": "10.0.0.11",
+                                "mac": "aa:bb:cc:dd:ee:ff",
+                            }
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "vm1",
+                    "target": "bmc-net",
+                    "sourceHandle": "dp-ctrl1",
+                    "targetHandle": "net-port",
+                },
+            ],
+        }
+        result = _extract_bmc_config(topo, "proj-12345678")
+        assert result is not None
+        assert len(result["vms"]) == 1
+        # DHCP hosts list is empty because the edge handle is "dp-ctrl1", not "nic-..."
+        assert result["dhcp_hosts"] == []
+
+
+class TestWaitForSharedCacheTimeout:
+    """Cover _wait_for_shared_cache line 366 — timeout returns False."""
+
+    @patch("time.sleep", return_value=None)
+    @patch("time.time")
+    def test_timeout_returns_false(self, mock_time_time, mock_sleep):
+        from app.services.deploy_service import _wait_for_shared_cache
+
+        mock_db = MagicMock()
+        # Always return a "downloading" entry
+        mock_entry = MagicMock()
+        mock_entry.status = "downloading"
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_entry
+
+        # deadline = time() + 600 = 1000. Loop: time() < 1000 first iteration, then > 1000
+        mock_time_time.side_effect = [400, 400, 1100]
+
+        result = _wait_for_shared_cache(
+            mock_db, "pool-1", "item-1", "pattern", timeout=600
+        )
+        assert result is False
+
+
+class TestCollectDvProgressPartialException:
+    """Cover _collect_dv_progress lines 2326-2327 — exception from one namespace."""
+
+    @patch("app.services.deploy_service._fill_missing_disk_labels")
+    @patch("app.services.deploy_service._best_dv_status")
+    @patch("app.services.deploy_service._build_clone_name_map")
+    @patch("app.services.deploy_service._format_dv_status_line")
+    def test_one_namespace_fails_other_succeeds(
+        self, mock_fmt, mock_clone, mock_best, mock_fill
+    ):
+        from app.services.deploy_service import _collect_dv_progress
+
+        mock_clone.return_value = {"vm-aaaa-disk-bbbb": "RHEL"}
+        mock_fmt.return_value = "RHEL: done"
+        mock_best.return_value = {"RHEL": "done"}
+        mock_fill.return_value = None
+
+        provider = MagicMock()
+        topology = {"nodes": []}
+
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients"
+        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+            mock_custom = MagicMock()
+            mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
+            mock_ns.return_value = "troshka-proj-1"
+
+            # First namespace raises, second succeeds
+            def list_side_effect(group, version, namespace, plural):
+                if namespace == "troshka-cache":
+                    raise Exception("cache namespace error")
+                return {
+                    "items": [
+                        {
+                            "metadata": {
+                                "namespace": "troshka-proj-1",
+                                "name": "vm-aaaa-disk-bbbb",
+                            },
+                            "status": {"phase": "Succeeded", "progress": "100%"},
+                        }
+                    ]
+                }
+
+            mock_custom.list_namespaced_custom_object.side_effect = list_side_effect
+
+            result = _collect_dv_progress("proj-1", provider, topology)
+
+        # Should still return results from the successful namespace
+        assert isinstance(result, list)
+
+    @patch("app.services.deploy_service._fill_missing_disk_labels")
+    @patch("app.services.deploy_service._best_dv_status")
+    @patch("app.services.deploy_service._build_clone_name_map")
+    @patch("app.services.deploy_service._format_dv_status_line")
+    def test_cache_vs_clone_lines_separated(
+        self, mock_fmt, mock_clone, mock_best, mock_fill
+    ):
+        """Lines 2338-2342: DVs in troshka-cache go to cache_lines, others to clone_lines."""
+        from app.services.deploy_service import _collect_dv_progress
+
+        mock_clone.return_value = {"vm-aaaa-disk-bbbb": "RHEL"}
+
+        def fmt_side_effect(friendly, dv):
+            phase = dv.get("status", {}).get("phase", "")
+            return f"{friendly}: {phase.lower()}"
+
+        mock_fmt.side_effect = fmt_side_effect
+        mock_best.return_value = {"RHEL": "succeeded"}
+        mock_fill.return_value = None
+
+        provider = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "resolvedS3Path": "patterns/xyz/disk.qcow2",
+                        "label": "RHEL",
+                    },
+                }
+            ]
+        }
+
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients"
+        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+            mock_custom = MagicMock()
+            mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
+            mock_ns.return_value = "troshka-proj-1"
+
+            def list_side_effect(group, version, namespace, plural):
+                if namespace == "troshka-cache":
+                    import hashlib
+
+                    h = hashlib.sha256(b"patterns/xyz/disk.qcow2").hexdigest()[:16]
+                    return {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "namespace": "troshka-cache",
+                                    "name": f"golden-{h}",
+                                },
+                                "status": {"phase": "Succeeded"},
+                            }
+                        ]
+                    }
+                return {
+                    "items": [
+                        {
+                            "metadata": {
+                                "namespace": "troshka-proj-1",
+                                "name": "vm-aaaa-disk-bbbb",
+                            },
+                            "status": {"phase": "CloneInProgress"},
+                        }
+                    ]
+                }
+
+            mock_custom.list_namespaced_custom_object.side_effect = list_side_effect
+
+            result = _collect_dv_progress("proj-1", provider, topology)
+
+        assert isinstance(result, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _teardown_bmc_via_troshkad (lines 805-810)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestTeardownBmcViaTroshkad:
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job", return_value="tear-1")
+    def test_success(self, mock_start, mock_wait):
+        from app.services.deploy_service import _teardown_bmc_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        _teardown_bmc_via_troshkad(host, "proj-123")
+        mock_start.assert_called_once_with(
+            host, "/bmc/teardown", {"project_id": "proj-123"}
+        )
+        mock_wait.assert_called_once_with(host, "tear-1", timeout=60)
+
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job", return_value="tear-2")
+    def test_failure_logs_warning(self, mock_start, mock_wait):
+        from app.services.deploy_service import _teardown_bmc_via_troshkad
+
+        mock_wait.return_value = {"status": "failed", "result": "bridge missing"}
+        host = MagicMock()
+        # Should not raise, just log a warning
+        _teardown_bmc_via_troshkad(host, "proj-456")
+        mock_wait.assert_called_once()
+
+
+class TestSetupBmcTeardownException:
+    """Cover _setup_bmc_via_troshkad lines 778-779 — teardown raises exception."""
+
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job", return_value="bmc-job-1")
+    @patch(
+        "app.services.deploy_service._teardown_bmc_via_troshkad",
+        side_effect=Exception("teardown error"),
+    )
+    def test_teardown_exception_swallowed(self, mock_teardown, mock_start, mock_wait):
+        from app.services.deploy_service import _setup_bmc_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        bmc_config = {
+            "bmc_network": {
+                "cidr": "192.168.100.0/24",
+                "bmcUsername": "admin",
+                "bmcPassword": "pw",
+            },
+            "vms": [{"domain_name": "troshka-proj-vm1", "bmc_ip": "192.168.100.10"}],
+        }
+        # Should succeed despite teardown exception
+        result = _setup_bmc_via_troshkad(host, "proj-1", bmc_config)
+        assert result is True
+        mock_teardown.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _start_vms_via_troshkad (lines 1688-1747)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestStartVmsViaTroshkad:
+    """Cover _start_vms_via_troshkad — ordered start, unordered start, error paths."""
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-1")
+    def test_ordered_start(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "bastion", "nics": []},
+                },
+            ],
+            "startOrder": [{"vmId": "vm-1"}],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        mock_start.assert_called_once()
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-2")
+    def test_ordered_auto_start_disabled(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "sno1", "nics": []},
+                },
+            ],
+            "startOrder": [{"vmId": "vm-1", "autoStart": False}],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        # VM skipped — start_job not called
+        mock_start.assert_not_called()
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-3")
+    @patch("app.services.deploy_service._time")
+    def test_ordered_with_delay(self, mock_time, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "master", "nics": []},
+                },
+            ],
+            "startOrder": [{"vmId": "vm-1", "delaySeconds": 5}],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        mock_time.sleep.assert_called_once_with(5)
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    def test_ordered_start_error(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_start.side_effect = TroshkadError("connection refused")
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "bastion", "nics": []},
+                },
+            ],
+            "startOrder": [{"vmId": "vm-1"}],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert len(failed) == 1
+        assert failed[0][0] == "bastion"
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-4")
+    def test_unordered_start(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "worker1", "nics": []},
+                },
+                {
+                    "id": "vm-2",
+                    "type": "vmNode",
+                    "data": {"name": "worker2", "nics": []},
+                },
+            ],
+            "startOrder": [],  # No explicit order
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        # Both VMs started
+        assert mock_start.call_count == 2
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-5")
+    def test_unordered_power_on_at_deploy_false(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {
+                        "name": "sno-target",
+                        "powerOnAtDeploy": False,
+                        "nics": [],
+                    },
+                },
+            ],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        mock_start.assert_not_called()
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    def test_unordered_start_job_error(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_start.side_effect = TroshkadError("agent down")
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "web", "nics": []},
+                },
+            ],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert len(failed) == 1
+        assert failed[0][0] == "web"
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-6")
+    def test_unordered_wait_error(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_wait.side_effect = TroshkadError("timeout waiting for job")
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "db", "nics": []},
+                },
+            ],
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert len(failed) == 1
+        assert failed[0][0] == "db"
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job", return_value="start-7")
+    def test_mixed_ordered_and_unordered(self, mock_start, mock_wait):
+        from app.services.deploy_service import _start_vms_via_troshkad
+
+        mock_wait.return_value = {"status": "completed"}
+        host = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {"name": "bastion", "nics": []},
+                },
+                {
+                    "id": "vm-2",
+                    "type": "vmNode",
+                    "data": {"name": "worker", "nics": []},
+                },
+            ],
+            "startOrder": [{"vmId": "vm-1"}],  # Only bastion in start order
+        }
+        failed = _start_vms_via_troshkad(host, "proj-12345678", topology)
+        assert failed == []
+        # Both VMs started (bastion via order, worker via unordered)
+        assert mock_start.call_count == 2

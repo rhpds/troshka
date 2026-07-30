@@ -141,9 +141,7 @@ class TestBuildDnsmasqDeployment:
         cr = self._make_network_cr(name="mynet")
         dep = build_dnsmasq_deployment(cr)
         volumes = dep["spec"]["template"]["spec"]["volumes"]
-        assert any(
-            v["configMap"]["name"] == "dnsmasq-mynet" for v in volumes
-        )
+        assert any(v["configMap"]["name"] == "dnsmasq-mynet" for v in volumes)
 
     def test_network_annotation(self):
         from helpers.k8s import build_dnsmasq_deployment
@@ -159,8 +157,7 @@ class TestBuildDnsmasqDeployment:
         cr = self._make_network_cr()
         dep = build_dnsmasq_deployment(cr)
         assert (
-            dep["spec"]["template"]["spec"]["serviceAccountName"]
-            == "troshka-network"
+            dep["spec"]["template"]["spec"]["serviceAccountName"] == "troshka-network"
         )
 
 
@@ -337,11 +334,7 @@ class TestExtractVms:
     def test_vm_defaults(self):
         from helpers.topology import extract_vms
 
-        topo = {
-            "nodes": [
-                {"id": "vm1", "type": "vmNode", "data": {"id": "vm1"}}
-            ]
-        }
+        topo = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {"id": "vm1"}}]}
         vms = extract_vms(topo)
         assert vms[0]["firmware"] == "bios"
         assert vms[0]["machineType"] == "q35"
@@ -437,9 +430,7 @@ class TestExtractContainers:
                         "id": "p1",
                         "label": "my-pod",
                         "isPod": True,
-                        "podContainers": [
-                            {"name": "app", "image": "app:1.0"}
-                        ],
+                        "podContainers": [{"name": "app", "image": "app:1.0"}],
                     },
                 }
             ]
@@ -617,7 +608,10 @@ class TestResolveVmDisks:
         }
         disks, _ = resolve_vm_disks(topo)
         assert "patternImage" in disks["vm1"][0]
-        assert "patterns/pat-001/disk-001.qcow2" in disks["vm1"][0]["patternImage"]["s3Path"]
+        assert (
+            "patterns/pat-001/disk-001.qcow2"
+            in disks["vm1"][0]["patternImage"]["s3Path"]
+        )
 
     def test_blank_disk(self):
         from helpers.topology import resolve_vm_disks
@@ -924,13 +918,11 @@ class TestCleanupCaptureResources:
             }
         ]
         core_api = MagicMock()
-        core_api.delete_namespaced_persistent_volume_claim.side_effect = (
-            Exception("PVC gone")
+        core_api.delete_namespaced_persistent_volume_claim.side_effect = Exception(
+            "PVC gone"
         )
         custom_api = MagicMock()
-        custom_api.delete_namespaced_custom_object.side_effect = Exception(
-            "Snap gone"
-        )
+        custom_api.delete_namespaced_custom_object.side_effect = Exception("Snap gone")
         batch_api = MagicMock()
         batch_api.delete_namespaced_job.side_effect = Exception("Job gone")
 
@@ -964,9 +956,7 @@ class TestCleanupCaptureResources:
         custom_api = MagicMock()
         batch_api = MagicMock()
 
-        _cleanup_capture_resources(
-            core_api, custom_api, batch_api, export_jobs, "ns"
-        )
+        _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, "ns")
 
         batch_api.delete_namespaced_job.assert_called_with(
             name="job-1",
@@ -1035,9 +1025,7 @@ class TestDeleteCustomResources:
             ]
         }
 
-        _delete_custom_resources(
-            custom_api, "group", "v1", "things", "test-ns"
-        )
+        _delete_custom_resources(custom_api, "group", "v1", "things", "test-ns")
 
         assert custom_api.delete_namespaced_custom_object.call_count == 2
 
@@ -1070,9 +1058,7 @@ class TestDeleteCustomResources:
             "items": [{"metadata": {"name": "item-1"}}]
         }
 
-        _delete_custom_resources(
-            custom_api, "group", "v1", "things", "test-ns"
-        )
+        _delete_custom_resources(custom_api, "group", "v1", "things", "test-ns")
 
         custom_api.delete_namespaced_custom_object.assert_called_once_with(
             group="group",
@@ -1095,22 +1081,16 @@ class TestDeleteCustomResources:
         )
 
         # Should not raise (404 is swallowed)
-        _delete_custom_resources(
-            custom_api, "group", "v1", "things", "test-ns"
-        )
+        _delete_custom_resources(custom_api, "group", "v1", "things", "test-ns")
 
     def test_handles_list_failure(self):
         from handlers.project import _delete_custom_resources
 
         custom_api = MagicMock()
-        custom_api.list_namespaced_custom_object.side_effect = Exception(
-            "API down"
-        )
+        custom_api.list_namespaced_custom_object.side_effect = Exception("API down")
 
         # Should not raise
-        _delete_custom_resources(
-            custom_api, "group", "v1", "things", "test-ns"
-        )
+        _delete_custom_resources(custom_api, "group", "v1", "things", "test-ns")
 
     def test_empty_items(self):
         from handlers.project import _delete_custom_resources
@@ -1118,9 +1098,7 @@ class TestDeleteCustomResources:
         custom_api = MagicMock()
         custom_api.list_namespaced_custom_object.return_value = {"items": []}
 
-        _delete_custom_resources(
-            custom_api, "group", "v1", "things", "test-ns"
-        )
+        _delete_custom_resources(custom_api, "group", "v1", "things", "test-ns")
 
         custom_api.delete_namespaced_custom_object.assert_not_called()
 
@@ -1138,9 +1116,7 @@ class TestRemoveSaFromSccs:
         _remove_sa_from_sccs(custom_api, "ns1", "my-sa", ["scc-1"])
 
         custom_api.patch_cluster_custom_object.assert_called_once()
-        patched_body = custom_api.patch_cluster_custom_object.call_args[1][
-            "body"
-        ]
+        patched_body = custom_api.patch_cluster_custom_object.call_args[1]["body"]
         assert sa_ref not in patched_body["users"]
         assert "other-user" in patched_body["users"]
 
@@ -1148,9 +1124,7 @@ class TestRemoveSaFromSccs:
         from handlers.project import _remove_sa_from_sccs
 
         custom_api = MagicMock()
-        custom_api.get_cluster_custom_object.return_value = {
-            "users": ["other-user"]
-        }
+        custom_api.get_cluster_custom_object.return_value = {"users": ["other-user"]}
 
         _remove_sa_from_sccs(custom_api, "ns1", "my-sa", ["scc-1"])
 
@@ -1170,13 +1144,9 @@ class TestRemoveSaFromSccs:
 
         sa_ref = "system:serviceaccount:ns1:my-sa"
         custom_api = MagicMock()
-        custom_api.get_cluster_custom_object.return_value = {
-            "users": [sa_ref]
-        }
+        custom_api.get_cluster_custom_object.return_value = {"users": [sa_ref]}
 
-        _remove_sa_from_sccs(
-            custom_api, "ns1", "my-sa", ["scc-1", "scc-2", "scc-3"]
-        )
+        _remove_sa_from_sccs(custom_api, "ns1", "my-sa", ["scc-1", "scc-2", "scc-3"])
 
         assert custom_api.get_cluster_custom_object.call_count == 3
 
@@ -1184,9 +1154,7 @@ class TestRemoveSaFromSccs:
         from handlers.project import _remove_sa_from_sccs
 
         custom_api = MagicMock()
-        custom_api.get_cluster_custom_object.side_effect = Exception(
-            "SCC not found"
-        )
+        custom_api.get_cluster_custom_object.side_effect = Exception("SCC not found")
 
         # Should not raise
         _remove_sa_from_sccs(custom_api, "ns1", "my-sa", ["scc-1"])
@@ -1236,9 +1204,7 @@ class TestStopAllVms:
             {"items": []},
         ]
 
-        asyncio.run(
-            _stop_all_vms(custom_api, "test-ns")
-        )
+        asyncio.run(_stop_all_vms(custom_api, "test-ns"))
 
         call_kwargs = custom_api.patch_namespaced_custom_object.call_args[1]
         assert call_kwargs["name"] == "troshka-vm-1"
@@ -1263,9 +1229,7 @@ class TestStopAllVms:
         )
 
         # Should not raise — patches are wrapped in try/except
-        asyncio.run(
-            _stop_all_vms(custom_api, "test-ns")
-        )
+        asyncio.run(_stop_all_vms(custom_api, "test-ns"))
 
 
 # ---------------------------------------------------------------------------
@@ -1284,7 +1248,7 @@ class TestVmResolveDiskS3:
         path, cfg, secret = _resolve_disk_s3(disk, s3_cfg, central_cfg)
         assert path == "library/abc.qcow2"
         assert cfg == s3_cfg
-        assert secret == "s3-credentials" # pragma: allowlist secret
+        assert secret == "s3-credentials"  # pragma: allowlist secret
 
     def test_library_image_central(self):
         from handlers.vm import _resolve_disk_s3
@@ -1301,7 +1265,7 @@ class TestVmResolveDiskS3:
         path, cfg, secret = _resolve_disk_s3(disk, s3_cfg, central_cfg)
         assert path == "library/abc.qcow2"
         assert cfg == central_cfg
-        assert secret == "s3-central-credentials" # pragma: allowlist secret
+        assert secret == "s3-central-credentials"  # pragma: allowlist secret
 
     def test_pattern_image(self):
         from handlers.vm import _resolve_disk_s3
@@ -1343,7 +1307,7 @@ class TestVmResolveDiskS3:
         # Empty central config = fall back to normal
         path, cfg, secret = _resolve_disk_s3(disk, s3_cfg, {})
         assert cfg == s3_cfg
-        assert secret == "s3-credentials" # pragma: allowlist secret
+        assert secret == "s3-credentials"  # pragma: allowlist secret
 
 
 class TestVmCleanupLegacyPod:
@@ -1390,7 +1354,14 @@ class TestGetS3ConfigFromProject:
         mock_client.CustomObjectsApi.return_value = mock_custom
         mock_custom.list_namespaced_custom_object.return_value = {
             "items": [
-                {"spec": {"s3Config": {"bucket": "my-bucket", "endpoint": "s3.example.com"}}}
+                {
+                    "spec": {
+                        "s3Config": {
+                            "bucket": "my-bucket",
+                            "endpoint": "s3.example.com",
+                        }
+                    }
+                }
             ]
         }
 
@@ -1429,7 +1400,14 @@ class TestGetCentralS3ConfigFromProject:
         mock_client.CustomObjectsApi.return_value = mock_custom
         mock_custom.list_namespaced_custom_object.return_value = {
             "items": [
-                {"spec": {"centralS3Config": {"bucket": "central", "endpoint": "s4.example.com"}}}
+                {
+                    "spec": {
+                        "centralS3Config": {
+                            "bucket": "central",
+                            "endpoint": "s4.example.com",
+                        }
+                    }
+                }
             ]
         }
 
@@ -1490,9 +1468,7 @@ class TestCreateCloneDatavolume:
             ApiException(status=409),
             None,  # second create succeeds
         ]
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         _create_clone_datavolume(
             custom_api, "test-ns", "disk-1", {"metadata": {"name": "disk-1"}}
@@ -1528,9 +1504,7 @@ class TestModifySccUsers:
         from handlers.network import _modify_scc_users
 
         custom_api = MagicMock()
-        custom_api.get_cluster_custom_object.return_value = {
-            "users": ["existing-user"]
-        }
+        custom_api.get_cluster_custom_object.return_value = {"users": ["existing-user"]}
 
         result = _modify_scc_users(
             custom_api, "my-scc", "system:serviceaccount:ns:sa", "add"
@@ -1646,9 +1620,7 @@ class TestCreateDeploymentWithStaleCleanup:
         body = {"metadata": {"name": "dep-1"}}
 
         asyncio.run(
-            _create_deployment_with_stale_cleanup(
-                apps_api, "ns", "dep-1", body
-            )
+            _create_deployment_with_stale_cleanup(apps_api, "ns", "dep-1", body)
         )
 
         apps_api.create_namespaced_deployment.assert_called_once_with(
@@ -1665,15 +1637,11 @@ class TestCreateDeploymentWithStaleCleanup:
             None,  # second create succeeds after wait
         ]
         # Simulate the deployment being already deleted
-        apps_api.read_namespaced_deployment.side_effect = ApiException(
-            status=404
-        )
+        apps_api.read_namespaced_deployment.side_effect = ApiException(status=404)
 
         body = {"metadata": {"name": "dep-1"}}
         asyncio.run(
-            _create_deployment_with_stale_cleanup(
-                apps_api, "ns", "dep-1", body
-            )
+            _create_deployment_with_stale_cleanup(apps_api, "ns", "dep-1", body)
         )
 
         assert apps_api.create_namespaced_deployment.call_count == 2
@@ -1683,15 +1651,11 @@ class TestCreateDeploymentWithStaleCleanup:
         from kubernetes.client import ApiException
 
         apps_api = MagicMock()
-        apps_api.create_namespaced_deployment.side_effect = ApiException(
-            status=500
-        )
+        apps_api.create_namespaced_deployment.side_effect = ApiException(status=500)
 
         with pytest.raises(ApiException):
             asyncio.run(
-                _create_deployment_with_stale_cleanup(
-                    apps_api, "ns", "dep-1", {}
-                )
+                _create_deployment_with_stale_cleanup(apps_api, "ns", "dep-1", {})
             )
 
 
@@ -1812,9 +1776,7 @@ class TestCreatePodGroup:
             "initContainers": [
                 {"name": "init-1", "image": "busybox", "command": "echo init"}
             ],
-            "podContainers": [
-                {"name": "app", "image": "myapp:1.0", "env": {"X": "1"}}
-            ],
+            "podContainers": [{"name": "app", "image": "myapp:1.0", "env": {"X": "1"}}],
         }
 
         _create_pod_group(core_api, "ns1", ctr, {}, {})
@@ -2016,9 +1978,7 @@ class TestBuildExecDeployment:
 
         cr = self._make_project_cr()
         dep = build_exec_deployment(cr, "cluster-nad", cidr="10.0.0.0/24")
-        init_cmd = dep["spec"]["template"]["spec"]["initContainers"][0][
-            "command"
-        ][2]
+        init_cmd = dep["spec"]["template"]["spec"]["initContainers"][0]["command"][2]
         assert "10.0.0.3/24" in init_cmd
 
     def test_dns_points_at_dot_2(self):
@@ -2034,12 +1994,17 @@ class TestBuildExecDeployment:
 
         cr = self._make_project_cr()
         dep = build_exec_deployment(
-            cr, "nad", cidr="10.0.0.0/24", ssh_key_secret="my-key" # pragma: allowlist secret
+            cr,
+            "nad",
+            cidr="10.0.0.0/24",
+            ssh_key_secret="my-key",  # pragma: allowlist secret
         )
         volumes = dep["spec"]["template"]["spec"]["volumes"]
         ssh_vol = [v for v in volumes if v["name"] == "ssh-key"]
         assert len(ssh_vol) == 1
-        assert ssh_vol[0]["secret"]["secretName"] == "my-key" # pragma: allowlist secret
+        assert (
+            ssh_vol[0]["secret"]["secretName"] == "my-key"  # pragma: allowlist secret
+        )
 
     def test_no_ssh_key_secret(self):
         from helpers.k8s import build_exec_deployment
@@ -2070,9 +2035,7 @@ class TestBuildGatewayDeployment:
             "nad-1": {"ip": "10.0.0.1", "cidr": "10.0.0.0/24"},
             "nad-2": {"ip": "192.168.1.1", "cidr": "192.168.1.0/16"},
         }
-        dep = build_gateway_deployment(
-            cr, ["nad-1", "nad-2"], gateway_ips=gateway_ips
-        )
+        dep = build_gateway_deployment(cr, ["nad-1", "nad-2"], gateway_ips=gateway_ips)
         env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
         addrs_env = [e for e in env if e["name"] == "GATEWAY_ADDRS"][0]
         assert "10.0.0.1/24" in addrs_env["value"]
@@ -2091,9 +2054,7 @@ class TestBuildGatewayDeployment:
 
         cr = self._make_project_cr()
         dep = build_gateway_deployment(cr, ["nad-1"])
-        sec = dep["spec"]["template"]["spec"]["containers"][0][
-            "securityContext"
-        ]
+        sec = dep["spec"]["template"]["spec"]["containers"][0]["securityContext"]
         assert sec["privileged"] is True
 
     def test_empty_gateway_ips(self):
@@ -2124,9 +2085,7 @@ class TestSetupRecertSa:
         core_api.create_namespaced_service_account.assert_called_once()
         custom_api.patch_cluster_custom_object.assert_called_once()
         patched = custom_api.patch_cluster_custom_object.call_args[1]["body"]
-        assert (
-            "system:serviceaccount:test-ns:troshka-recert" in patched["users"]
-        )
+        assert "system:serviceaccount:test-ns:troshka-recert" in patched["users"]
 
     def test_sa_already_exists_409(self):
         from handlers.project import _setup_recert_sa
@@ -2172,9 +2131,7 @@ class TestSetupRecertSa:
 
         core_api = MagicMock()
         custom_api = MagicMock()
-        custom_api.get_cluster_custom_object.side_effect = Exception(
-            "SCC not found"
-        )
+        custom_api.get_cluster_custom_object.side_effect = Exception("SCC not found")
 
         _setup_recert_sa(core_api, custom_api, "test-ns")
 
@@ -2448,9 +2405,7 @@ class TestSetupExecPod:
         core_api = MagicMock()
         apps_api = MagicMock()
         spec, meta, _, body = self._make_args()
-        bmc_only = [
-            {"id": "bmc1", "cidr": "10.0.1.0/24", "networkType": "bmc"}
-        ]
+        bmc_only = [{"id": "bmc1", "cidr": "10.0.1.0/24", "networkType": "bmc"}]
 
         asyncio.run(
             _setup_exec_pod(
@@ -2512,7 +2467,11 @@ class TestBuildVmCr:
         vm = self._make_vm()
         disks = {
             vm["id"]: [
-                {"id": "disk-1", "sizeGb": 50, "libraryImage": {"s3Path": "lib/a.qcow2"}}
+                {
+                    "id": "disk-1",
+                    "sizeGb": 50,
+                    "libraryImage": {"s3Path": "lib/a.qcow2"},
+                }
             ]
         }
         cr = _build_vm_cr(vm, disks, {}, {}, None, "ns1", "proj1", self._make_body())
@@ -2531,9 +2490,7 @@ class TestBuildVmCr:
     def test_cdrom_from_vm_data(self):
         from handlers.project import _build_vm_cr
 
-        vm = self._make_vm(
-            cdrom={"s3Path": "library/cd.iso", "libraryIsoId": "cd-1"}
-        )
+        vm = self._make_vm(cdrom={"s3Path": "library/cd.iso", "libraryIsoId": "cd-1"})
         cr = _build_vm_cr(vm, {}, {}, {}, None, "ns1", "proj1", self._make_body())
 
         assert cr["spec"]["cdrom"]["s3Path"] == "library/cd.iso"
@@ -3234,7 +3191,10 @@ class TestUpsertS3Secret:
         from handlers.project import _upsert_s3_secret
 
         core_api = MagicMock()
-        cfg = {"accessKeyId": "AKIA...", "secretKey": "secret"} # pragma: allowlist secret
+        cfg = {
+            "accessKeyId": "AKIA...",
+            "secretKey": "secret",  # pragma: allowlist secret
+        }
 
         _upsert_s3_secret(core_api, "ns1", "s3-creds", cfg)
 
@@ -3246,7 +3206,10 @@ class TestUpsertS3Secret:
 
         core_api = MagicMock()
         core_api.create_namespaced_secret.side_effect = ApiException(status=409)
-        cfg = {"accessKeyId": "AKIA...", "secretKey": "secret"} # pragma: allowlist secret
+        cfg = {
+            "accessKeyId": "AKIA...",
+            "secretKey": "secret",  # pragma: allowlist secret
+        }
 
         _upsert_s3_secret(core_api, "ns1", "s3-creds", cfg)
 
@@ -3307,9 +3270,7 @@ class TestWaitForDatavolume:
         from kubernetes.client import ApiException
 
         custom_api = MagicMock()
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         result = asyncio.run(_wait_for_datavolume(custom_api, "dv-1", "ns1"))
         assert result is False
@@ -3415,9 +3376,7 @@ class TestCreateOrAdoptKubevirtVm:
         kv_vm = {"metadata": {"name": "troshka-vm-abc"}}
 
         asyncio.run(
-            _create_or_adopt_kubevirt_vm(
-                custom_api, "ns1", kv_vm, "troshka-vm-abc", ""
-            )
+            _create_or_adopt_kubevirt_vm(custom_api, "ns1", kv_vm, "troshka-vm-abc", "")
         )
 
         custom_api.create_namespaced_custom_object.assert_called_once()
@@ -3453,15 +3412,11 @@ class TestCreateOrAdoptKubevirtVm:
             ApiException(status=409),
             None,
         ]
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
         kv_vm = {"metadata": {"name": "troshka-vm-abc"}}
 
         asyncio.run(
-            _create_or_adopt_kubevirt_vm(
-                custom_api, "ns1", kv_vm, "troshka-vm-abc", ""
-            )
+            _create_or_adopt_kubevirt_vm(custom_api, "ns1", kv_vm, "troshka-vm-abc", "")
         )
 
         assert custom_api.create_namespaced_custom_object.call_count == 2
@@ -3496,9 +3451,7 @@ class TestSetupBmc:
         custom_api = MagicMock()
         mock_apps = MagicMock()
         mock_apps_cls.return_value = mock_apps
-        mock_apps.read_namespaced_deployment.side_effect = (
-            ApiException(status=404)
-        )
+        mock_apps.read_namespaced_deployment.side_effect = ApiException(status=404)
 
         spec = {
             "bmcEnabled": True,
@@ -3559,9 +3512,7 @@ class TestResolveNadRefs:
 
         custom_api = MagicMock()
         custom_api.list_namespaced_custom_object.return_value = {
-            "items": [
-                {"metadata": {"name": "net-xyz"}, "status": {}}
-            ]
+            "items": [{"metadata": {"name": "net-xyz"}, "status": {}}]
         }
 
         result = _resolve_nad_refs(custom_api, "ns1")
@@ -3572,9 +3523,7 @@ class TestResolveNadRefs:
         from handlers.vm import _resolve_nad_refs
 
         custom_api = MagicMock()
-        custom_api.list_namespaced_custom_object.side_effect = Exception(
-            "fail"
-        )
+        custom_api.list_namespaced_custom_object.side_effect = Exception("fail")
 
         assert _resolve_nad_refs(custom_api, "ns1") == {}
 
@@ -3623,8 +3572,8 @@ class TestTryDeletePvc:
         from kubernetes.client import ApiException
 
         core_api = MagicMock()
-        core_api.delete_namespaced_persistent_volume_claim.side_effect = (
-            ApiException(status=404)
+        core_api.delete_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
         )
 
         _try_delete_pvc(core_api, "ns1", "pvc-1")
@@ -3634,8 +3583,8 @@ class TestTryDeletePvc:
         from kubernetes.client import ApiException
 
         core_api = MagicMock()
-        core_api.delete_namespaced_persistent_volume_claim.side_effect = (
-            ApiException(status=500)
+        core_api.delete_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=500
         )
 
         _try_delete_pvc(core_api, "ns1", "pvc-1")
@@ -3650,9 +3599,7 @@ class TestDeleteRemovedDisks:
         old_disks = {"disk-aaa": {}, "disk-bbb": {}}
         new_disks = {"disk-aaa": {}}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
 
         custom_api.delete_namespaced_custom_object.assert_called_once()
         core_api.delete_namespaced_persistent_volume_claim.assert_called_once()
@@ -3665,9 +3612,7 @@ class TestDeleteRemovedDisks:
         old_disks = {"disk-aaa": {}}
         new_disks = {"disk-aaa": {}}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
 
         custom_api.delete_namespaced_custom_object.assert_not_called()
 
@@ -3679,9 +3624,7 @@ class TestDeleteRemovedDisks:
         old_disks = {"disk-aaa": {}, "disk-bbb": {}, "disk-ccc": {}}
         new_disks = {}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
 
         assert custom_api.delete_namespaced_custom_object.call_count == 3
         assert core_api.delete_namespaced_persistent_volume_claim.call_count == 3
@@ -3709,9 +3652,7 @@ class TestRunGuestfishJob:
         }
         disk_pvcs = {"disk-1": "vm-1-disk-disk-1"}
 
-        asyncio.run(
-            _run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs)
-        )
+        asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs))
 
         mock_batch.create_namespaced_job.assert_called_once()
 
@@ -3719,9 +3660,7 @@ class TestRunGuestfishJob:
     def test_skips_when_no_commands(self, mock_client):
         from handlers.vm import _run_guestfish_job
 
-        asyncio.run(
-            _run_guestfish_job({}, "vm-1", "ns1", {}, {})
-        )
+        asyncio.run(_run_guestfish_job({}, "vm-1", "ns1", {}, {}))
 
         mock_client.BatchV1Api.assert_not_called()
 
@@ -3730,9 +3669,7 @@ class TestRunGuestfishJob:
         from handlers.vm import _run_guestfish_job
 
         spec = {"guestfishCommands": ["rm /foo"], "disks": []}
-        asyncio.run(
-            _run_guestfish_job(spec, "vm-1", "ns1", {}, {})
-        )
+        asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", {}, {}))
 
         mock_client.BatchV1Api.assert_not_called()
 
@@ -3863,9 +3800,7 @@ class TestBuildBmcDeployment:
     def test_basic_deployment(self):
         from helpers.bmc import build_bmc_deployment
 
-        bmc_vms = [
-            {"vmId": "vm12345678", "smbiosUuid": "uuid-1", "bmcIp": "10.0.1.10"}
-        ]
+        bmc_vms = [{"vmId": "vm12345678", "smbiosUuid": "uuid-1", "bmcIp": "10.0.1.10"}]
         dep = build_bmc_deployment("proj1", "ns1", bmc_vms, "bmc-nad", {})
 
         assert dep["metadata"]["name"] == "bmc-proj1"
@@ -3874,9 +3809,7 @@ class TestBuildBmcDeployment:
     def test_vm_map_env(self):
         from helpers.bmc import build_bmc_deployment
 
-        bmc_vms = [
-            {"vmId": "vm12345678", "smbiosUuid": "uuid-1", "bmcIp": "10.0.1.10"}
-        ]
+        bmc_vms = [{"vmId": "vm12345678", "smbiosUuid": "uuid-1", "bmcIp": "10.0.1.10"}]
         dep = build_bmc_deployment("proj1", "ns1", bmc_vms, "bmc-nad", {})
 
         env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
@@ -3972,9 +3905,7 @@ class TestKubeVirtDriverSetBootOrderOn:
             {"name": "b", "cdrom": {}},
         ]
 
-        next_order = KubeVirtDriver._set_boot_order_on(
-            items, lambda _: True, 1
-        )
+        next_order = KubeVirtDriver._set_boot_order_on(items, lambda _: True, 1)
 
         assert items[0]["bootOrder"] == 1
         assert items[1]["bootOrder"] == 2
@@ -3988,9 +3919,7 @@ class TestKubeVirtDriverSetBootOrderOn:
             {"name": "b", "cdrom": {}},
         ]
 
-        KubeVirtDriver._set_boot_order_on(
-            items, lambda d: "disk" in d, 1
-        )
+        KubeVirtDriver._set_boot_order_on(items, lambda d: "disk" in d, 1)
 
         assert items[0]["bootOrder"] == 1
         assert "bootOrder" not in items[1]
@@ -4100,8 +4029,8 @@ class TestKubeVirtDriverGetPowerState:
         driver.custom_api = MagicMock()
         driver.namespace = "ns1"
         driver.vm_map = {}
-        driver.custom_api.get_namespaced_custom_object.side_effect = (
-            ApiException(status=404)
+        driver.custom_api.get_namespaced_custom_object.side_effect = ApiException(
+            status=404
         )
 
         assert driver.get_power_state("vm1") == "Off"
@@ -4135,9 +4064,7 @@ class TestKubeVirtDriverSetPowerState:
         driver.set_power_state("vm1", "On")
 
         driver.custom_api.patch_namespaced_custom_object.assert_called_once()
-        body = driver.custom_api.patch_namespaced_custom_object.call_args[1][
-            "body"
-        ]
+        body = driver.custom_api.patch_namespaced_custom_object.call_args[1]["body"]
         assert body == {"spec": {"running": True}}
 
     @patch("images.bmc.kubevirt_driver.config")
@@ -4189,11 +4116,7 @@ class TestKubeVirtDriverGetSystems:
                     "metadata": {"name": "vm-1"},
                     "spec": {
                         "template": {
-                            "spec": {
-                                "domain": {
-                                    "firmware": {"uuid": "uuid-1234"}
-                                }
-                            }
+                            "spec": {"domain": {"firmware": {"uuid": "uuid-1234"}}}
                         }
                     },
                 }
@@ -4215,9 +4138,7 @@ class TestKubeVirtDriverGetSystems:
             "items": [
                 {
                     "metadata": {"name": "vm-1"},
-                    "spec": {
-                        "template": {"spec": {"domain": {"firmware": {}}}}
-                    },
+                    "spec": {"template": {"spec": {"domain": {"firmware": {}}}}},
                 }
             ]
         }
@@ -4233,9 +4154,7 @@ class TestKubeVirtDriverGetSystems:
         driver.custom_api = MagicMock()
         driver.namespace = "ns1"
         driver.vm_map = {}
-        driver.custom_api.list_namespaced_custom_object.return_value = {
-            "items": []
-        }
+        driver.custom_api.list_namespaced_custom_object.return_value = {"items": []}
 
         assert driver.get_systems() == []
 
@@ -4338,11 +4257,7 @@ class TestKubeVirtDriverGetBootMode:
                 "template": {
                     "spec": {
                         "domain": {
-                            "firmware": {
-                                "bootloader": {
-                                    "efi": {"secureBoot": False}
-                                }
-                            }
+                            "firmware": {"bootloader": {"efi": {"secureBoot": False}}}
                         }
                     }
                 }
@@ -4360,15 +4275,7 @@ class TestKubeVirtDriverGetBootMode:
         driver.namespace = "ns1"
         driver.vm_map = {}
         driver.custom_api.get_namespaced_custom_object.return_value = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "domain": {
-                            "firmware": {"bootloader": {}}
-                        }
-                    }
-                }
-            }
+            "spec": {"template": {"spec": {"domain": {"firmware": {"bootloader": {}}}}}}
         }
 
         assert driver.get_boot_mode("vm1") == "Legacy"
@@ -4387,11 +4294,7 @@ class TestKubeVirtDriverGetTotalMemory:
             "spec": {
                 "template": {
                     "spec": {
-                        "domain": {
-                            "resources": {
-                                "requests": {"memory": "4096Mi"}
-                            }
-                        }
+                        "domain": {"resources": {"requests": {"memory": "4096Mi"}}}
                     }
                 }
             }
@@ -4410,13 +4313,7 @@ class TestKubeVirtDriverGetTotalMemory:
         driver.custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
                 "template": {
-                    "spec": {
-                        "domain": {
-                            "resources": {
-                                "requests": {"memory": "8Gi"}
-                            }
-                        }
-                    }
+                    "spec": {"domain": {"resources": {"requests": {"memory": "8Gi"}}}}
                 }
             }
         }
@@ -4434,15 +4331,7 @@ class TestKubeVirtDriverGetTotalCpus:
         driver.namespace = "ns1"
         driver.vm_map = {}
         driver.custom_api.get_namespaced_custom_object.return_value = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "domain": {
-                            "cpu": {"cores": 8}
-                        }
-                    }
-                }
-            }
+            "spec": {"template": {"spec": {"domain": {"cpu": {"cores": 8}}}}}
         }
 
         assert driver.get_total_cpus("vm1") == 8
@@ -4456,13 +4345,7 @@ class TestKubeVirtDriverGetTotalCpus:
         driver.namespace = "ns1"
         driver.vm_map = {}
         driver.custom_api.get_namespaced_custom_object.return_value = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "domain": {"cpu": {}}
-                    }
-                }
-            }
+            "spec": {"template": {"spec": {"domain": {"cpu": {}}}}}
         }
 
         assert driver.get_total_cpus("vm1") == 1
@@ -4582,9 +4465,7 @@ class TestExtractKubeconfigSecret:
         core_api = MagicMock()
         core_api.list_namespaced_pod.return_value = pod_list
 
-        result = _extract_kubeconfig_secret(
-            core_api, "ns1", "recert-vm-abc", "proj1"
-        )
+        result = _extract_kubeconfig_secret(core_api, "ns1", "recert-vm-abc", "proj1")
 
         assert result is not None
         assert "No pods found" in result
@@ -4600,9 +4481,7 @@ class TestExtractKubeconfigSecret:
         core_api.list_namespaced_pod.return_value = pod_list
         core_api.read_namespaced_pod_log.return_value = "no kubeconfig here"
 
-        result = _extract_kubeconfig_secret(
-            core_api, "ns1", "recert-vm-abc", "proj1"
-        )
+        result = _extract_kubeconfig_secret(core_api, "ns1", "recert-vm-abc", "proj1")
 
         assert result is not None
         assert "No kubeconfig marker" in result
@@ -4624,9 +4503,7 @@ class TestExtractKubeconfigSecret:
         core_api.read_namespaced_pod_log.return_value = logs
         core_api.create_namespaced_secret.side_effect = ApiException(status=409)
 
-        result = _extract_kubeconfig_secret(
-            core_api, "ns1", "recert-vm-abc", "proj1"
-        )
+        result = _extract_kubeconfig_secret(core_api, "ns1", "recert-vm-abc", "proj1")
 
         assert result is None
         core_api.replace_namespaced_secret.assert_called()
@@ -4643,8 +4520,14 @@ class TestEnsureCacheNamespaceAndSecrets:
         from handlers.project import _ensure_cache_namespace_and_secrets
 
         core_api = MagicMock()
-        s3_config = {"accessKeyId": "AKIA...", "secretKey": "secret"} # pragma: allowlist secret
-        central_config = {"accessKeyId": "CENTRAL...", "secretKey": "csecret"} # pragma: allowlist secret
+        s3_config = {
+            "accessKeyId": "AKIA...",
+            "secretKey": "secret",  # pragma: allowlist secret
+        }
+        central_config = {
+            "accessKeyId": "CENTRAL...",
+            "secretKey": "csecret",  # pragma: allowlist secret
+        }
 
         _ensure_cache_namespace_and_secrets(core_api, s3_config, central_config)
 
@@ -5080,9 +4963,7 @@ class TestCreateVncRbac:
 
         mock_rbac = MagicMock()
         mock_rbac.create_namespaced_role.side_effect = ApiException(status=409)
-        mock_rbac.create_namespaced_role_binding.side_effect = ApiException(
-            status=409
-        )
+        mock_rbac.create_namespaced_role_binding.side_effect = ApiException(status=409)
         mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
 
         _create_vnc_rbac("ns1")
@@ -5173,13 +5054,9 @@ class TestDeleteAndWaitForKubevirtVm:
         from kubernetes.client import ApiException
 
         custom_api = MagicMock()
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(
-            _delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1")
-        )
+        asyncio.run(_delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
         custom_api.delete_namespaced_custom_object.assert_called_once()
 
@@ -5189,13 +5066,9 @@ class TestDeleteAndWaitForKubevirtVm:
 
         custom_api = MagicMock()
         custom_api.delete_namespaced_custom_object.side_effect = Exception("fail")
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(
-            _delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1")
-        )
+        asyncio.run(_delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
 
 class TestRecreateKubevirtVm:
@@ -5211,9 +5084,7 @@ class TestRecreateKubevirtVm:
         custom_api = MagicMock()
         kv_vm = {"metadata": {"name": "kv-vm-1"}}
 
-        asyncio.run(
-            _recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1")
-        )
+        asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
 
         mock_delete.assert_called_once()
         custom_api.create_namespaced_custom_object.assert_called_once()
@@ -5223,17 +5094,13 @@ class TestRecreateKubevirtVm:
         from kubernetes.client import ApiException
 
         custom_api = MagicMock()
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
         custom_api.create_namespaced_custom_object.side_effect = ApiException(
             status=409
         )
         kv_vm = {"metadata": {"name": "kv-vm-1"}}
 
-        asyncio.run(
-            _recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1")
-        )
+        asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
 
 
 class TestStopKubevirtVm:
@@ -5243,9 +5110,7 @@ class TestStopKubevirtVm:
 
         custom_api = MagicMock()
         # VMI disappears on first check
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
@@ -5259,9 +5124,7 @@ class TestStopKubevirtVm:
 
         custom_api = MagicMock()
         custom_api.patch_namespaced_custom_object.side_effect = Exception("fail")
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
@@ -5275,9 +5138,7 @@ class TestDeleteRemovedDisksVm:
         old_disks = {"disk-aaa12345": {}, "disk-bbb12345": {}, "disk-ccc12345": {}}
         new_disks = {"disk-aaa12345": {}}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
 
         assert custom_api.delete_namespaced_custom_object.call_count == 2
         assert core_api.delete_namespaced_persistent_volume_claim.call_count == 2
@@ -5406,9 +5267,7 @@ class TestProvisionCdrom:
         from handlers.vm import _provision_cdrom
 
         result = asyncio.run(
-            _provision_cdrom(
-                {}, "vm-1", "ns1", {}, MagicMock(), MagicMock(), {}
-            )
+            _provision_cdrom({}, "vm-1", "ns1", {}, MagicMock(), MagicMock(), {})
         )
 
         assert result is None
@@ -5424,9 +5283,7 @@ class TestProvisionCdrom:
         }
 
         result = asyncio.run(
-            _provision_cdrom(
-                spec, "vm-1", "ns1", body, MagicMock(), MagicMock(), {}
-            )
+            _provision_cdrom(spec, "vm-1", "ns1", body, MagicMock(), MagicMock(), {})
         )
 
         assert result is None
@@ -5533,11 +5390,7 @@ class TestKubeVirtDriverGetters:
                 "spec": {
                     "template": {
                         "spec": {
-                            "domain": {
-                                "resources": {
-                                    "requests": {"memory": "4Gi"}
-                                }
-                            }
+                            "domain": {"resources": {"requests": {"memory": "4Gi"}}}
                         }
                     }
                 }
@@ -5550,15 +5403,7 @@ class TestKubeVirtDriverGetters:
         d = self._make_driver()
         d._get_vm = MagicMock(
             return_value={
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "domain": {
-                                "cpu": {"cores": 8}
-                            }
-                        }
-                    }
-                }
+                "spec": {"template": {"spec": {"domain": {"cpu": {"cores": 8}}}}}
             }
         )
         cpus = d.get_total_cpus("uuid1")
@@ -5582,11 +5427,19 @@ class TestKubeVirtDriverGetters:
             "items": [
                 {
                     "metadata": {"name": "vm-1"},
-                    "spec": {"template": {"spec": {"domain": {"firmware": {"uuid": "uuid1"}}}}},
+                    "spec": {
+                        "template": {
+                            "spec": {"domain": {"firmware": {"uuid": "uuid1"}}}
+                        }
+                    },
                 },
                 {
                     "metadata": {"name": "vm-2"},
-                    "spec": {"template": {"spec": {"domain": {"firmware": {"uuid": "uuid2"}}}}},
+                    "spec": {
+                        "template": {
+                            "spec": {"domain": {"firmware": {"uuid": "uuid2"}}}
+                        }
+                    },
                 },
             ]
         }
@@ -5617,13 +5470,7 @@ class TestKubeVirtDriverGetters:
         d._get_vm = MagicMock(
             return_value={
                 "spec": {
-                    "template": {
-                        "spec": {
-                            "domain": {
-                                "firmware": {"bootloader": {}}
-                            }
-                        }
-                    }
+                    "template": {"spec": {"domain": {"firmware": {"bootloader": {}}}}}
                 }
             }
         )
@@ -5639,7 +5486,10 @@ class TestKubeVirtDriverGetters:
                             "domain": {
                                 "devices": {
                                     "interfaces": [
-                                        {"name": "nic1", "macAddress": "aa:bb:cc:dd:ee:ff"}
+                                        {
+                                            "name": "nic1",
+                                            "macAddress": "aa:bb:cc:dd:ee:ff",
+                                        }
                                     ]
                                 }
                             }
@@ -5670,9 +5520,18 @@ class TestSnapshotAndExportDisk:
             "format": "qcow2",
         }
 
-    @patch("helpers.patterns.build_export_job", return_value={"metadata": {"name": "export-myvm-1234abcd"}})
-    @patch("helpers.patterns.build_temp_pvc_from_snapshot", return_value={"metadata": {"name": "export-myvm-1234abcd"}})
-    @patch("helpers.patterns.build_volume_snapshot", return_value={"metadata": {"name": "snap-myvm-1234abcd"}})
+    @patch(
+        "helpers.patterns.build_export_job",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_temp_pvc_from_snapshot",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_volume_snapshot",
+        return_value={"metadata": {"name": "snap-myvm-1234abcd"}},
+    )
     def test_creates_snapshot_pvc_and_job(self, mock_snap, mock_pvc, mock_job):
         from handlers.project import _snapshot_and_export_disk
 
@@ -5709,9 +5568,17 @@ class TestSnapshotAndExportDisk:
         assert result["s3Key"] == "patterns/p1/disk.qcow2"
         assert result["format"] == "qcow2"
 
-    @patch("helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}})
-    @patch("helpers.patterns.build_temp_pvc_from_snapshot", return_value={"metadata": {"name": "p"}})
-    @patch("helpers.patterns.build_volume_snapshot", return_value={"metadata": {"name": "s"}})
+    @patch(
+        "helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}}
+    )
+    @patch(
+        "helpers.patterns.build_temp_pvc_from_snapshot",
+        return_value={"metadata": {"name": "p"}},
+    )
+    @patch(
+        "helpers.patterns.build_volume_snapshot",
+        return_value={"metadata": {"name": "s"}},
+    )
     def test_handles_409_conflict_on_snapshot(self, mock_snap, mock_pvc, mock_job):
         from handlers.project import _snapshot_and_export_disk
         from kubernetes.client.exceptions import ApiException
@@ -5742,9 +5609,17 @@ class TestSnapshotAndExportDisk:
         )
         assert "snapName" in result
 
-    @patch("helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}})
-    @patch("helpers.patterns.build_temp_pvc_from_snapshot", return_value={"metadata": {"name": "p"}})
-    @patch("helpers.patterns.build_volume_snapshot", return_value={"metadata": {"name": "s"}})
+    @patch(
+        "helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}}
+    )
+    @patch(
+        "helpers.patterns.build_temp_pvc_from_snapshot",
+        return_value={"metadata": {"name": "p"}},
+    )
+    @patch(
+        "helpers.patterns.build_volume_snapshot",
+        return_value={"metadata": {"name": "s"}},
+    )
     def test_returns_correct_metadata(self, mock_snap, mock_pvc, mock_job):
         from handlers.project import _snapshot_and_export_disk
 
@@ -6014,9 +5889,7 @@ class TestWaitForDatavolumeExtended:
         from kubernetes.client import ApiException
 
         custom_api = MagicMock()
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         result = asyncio.run(_wait_for_datavolume(custom_api, "dv-1", "ns1"))
         assert result is False
@@ -6027,9 +5900,7 @@ class TestWaitForDatavolumeExtended:
 
         custom_api = MagicMock()
         # First call is owner check -> 404
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         result = asyncio.run(
             _wait_for_datavolume(
@@ -6126,9 +5997,7 @@ class TestEnsureGoldenPvcExtended:
         }
 
         # Should not raise
-        asyncio.run(
-            _ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {})
-        )
+        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {}))
 
     def test_namespace_non_409_raises(self):
         from handlers.vm import _ensure_golden_pvc
@@ -6142,9 +6011,7 @@ class TestEnsureGoldenPvcExtended:
         core_api.create_namespace.side_effect = ApiException(status=500)
 
         with pytest.raises(ApiException):
-            asyncio.run(
-                _ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {})
-            )
+            asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/z.qcow2", 20, {}))
 
     def test_dv_409_is_swallowed(self):
         from handlers.vm import _ensure_golden_pvc
@@ -6164,9 +6031,7 @@ class TestEnsureGoldenPvcExtended:
             "status": {"phase": "Succeeded"}
         }
 
-        asyncio.run(
-            _ensure_golden_pvc(custom_api, core_api, "lib/a.qcow2", 20, {})
-        )
+        asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/a.qcow2", 20, {}))
 
     def test_pvc_read_non_404_raises(self):
         from handlers.vm import _ensure_golden_pvc
@@ -6179,11 +6044,7 @@ class TestEnsureGoldenPvcExtended:
         )
 
         with pytest.raises(ApiException):
-            asyncio.run(
-                _ensure_golden_pvc(
-                    custom_api, core_api, "lib/b.qcow2", 20, {}
-                )
-            )
+            asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/b.qcow2", 20, {}))
 
     def test_default_secret_name_when_none(self):
         from handlers.vm import _ensure_golden_pvc
@@ -6235,9 +6096,7 @@ class TestRunGuestfishJobExtended:
             job_mock.status = job_status
             mock_batch.read_namespaced_job.return_value = job_mock
 
-            asyncio.run(
-                _run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs)
-            )
+            asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs))
             mock_batch.create_namespaced_job.assert_called_once()
 
     def test_job_create_409_continues(self):
@@ -6266,9 +6125,7 @@ class TestRunGuestfishJobExtended:
             job_mock.status = job_status
             mock_batch.read_namespaced_job.return_value = job_mock
 
-            asyncio.run(
-                _run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs)
-            )
+            asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs))
 
 
 class TestResolveNadRefsExtended:
@@ -6500,8 +6357,8 @@ class TestTryDeleteDatavolumeAndPvc:
         from kubernetes.client import ApiException
 
         core_api = MagicMock()
-        core_api.delete_namespaced_persistent_volume_claim.side_effect = (
-            ApiException(status=404)
+        core_api.delete_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
         )
         _try_delete_pvc(core_api, "ns1", "pvc-1")
 
@@ -6517,9 +6374,7 @@ class TestDeleteRemovedDisksExtended:
         old_disks = {"disk-aaa": {}, "disk-bbb": {}}
         new_disks = {"disk-aaa": {}}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
         # Only disk-bbb was removed
         custom_api.delete_namespaced_custom_object.assert_called_once()
         core_api.delete_namespaced_persistent_volume_claim.assert_called_once()
@@ -6532,9 +6387,7 @@ class TestDeleteRemovedDisksExtended:
         old_disks = {"disk-aaa": {}}
         new_disks = {"disk-aaa": {}}
 
-        _delete_removed_disks(
-            old_disks, new_disks, "vm-1", "ns1", core_api, custom_api
-        )
+        _delete_removed_disks(old_disks, new_disks, "vm-1", "ns1", core_api, custom_api)
         custom_api.delete_namespaced_custom_object.assert_not_called()
         core_api.delete_namespaced_persistent_volume_claim.assert_not_called()
 
@@ -6547,7 +6400,9 @@ class TestUpsertCloudinitSecretExtended:
         from handlers.vm import _upsert_cloudinit_secret
 
         mock_build.return_value = None
-        result = _upsert_cloudinit_secret({}, "ns1", MagicMock())  # pragma: allowlist secret
+        result = _upsert_cloudinit_secret(
+            {}, "ns1", MagicMock()
+        )  # pragma: allowlist secret
         assert result is None
 
     @patch("handlers.vm.build_cloudinit_secret")
@@ -6602,9 +6457,7 @@ class TestStopKubevirtVmExtended:
 
         custom_api = MagicMock()
         # VMI goes 404 on first check
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
         custom_api.patch_namespaced_custom_object.assert_called_once()
@@ -6615,9 +6468,7 @@ class TestStopKubevirtVmExtended:
 
         custom_api = MagicMock()
         custom_api.patch_namespaced_custom_object.side_effect = Exception("VM gone")
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
         asyncio.run(_stop_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
@@ -6631,13 +6482,9 @@ class TestDeleteAndWaitForKubevirtVmExtended:
 
         custom_api = MagicMock()
         # Delete succeeds, wait get returns 404
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(
-            _delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1")
-        )
+        asyncio.run(_delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
         custom_api.delete_namespaced_custom_object.assert_called_once()
 
     def test_delete_exception_swallowed(self):
@@ -6646,13 +6493,9 @@ class TestDeleteAndWaitForKubevirtVmExtended:
 
         custom_api = MagicMock()
         custom_api.delete_namespaced_custom_object.side_effect = Exception("gone")
-        custom_api.get_namespaced_custom_object.side_effect = ApiException(
-            status=404
-        )
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
 
-        asyncio.run(
-            _delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1")
-        )
+        asyncio.run(_delete_and_wait_for_kubevirt_vm(custom_api, "ns1", "kv-vm-1"))
 
 
 # ---------------------------------------------------------------------------
@@ -6826,9 +6669,7 @@ class TestCheckExportJobExtended:
         job_mock.status = job_status
         batch_api.read_namespaced_job.return_value = job_mock
 
-        result = _check_export_job(
-            batch_api, {"jobName": "export-1"}, "ns1"
-        )
+        result = _check_export_job(batch_api, {"jobName": "export-1"}, "ns1")
         assert result == "done"
 
     def test_returns_failed_when_3_failures(self):
@@ -6842,9 +6683,7 @@ class TestCheckExportJobExtended:
         job_mock.status = job_status
         batch_api.read_namespaced_job.return_value = job_mock
 
-        result = _check_export_job(
-            batch_api, {"jobName": "export-1"}, "ns1"
-        )
+        result = _check_export_job(batch_api, {"jobName": "export-1"}, "ns1")
         assert result == "failed"
 
     def test_returns_pending_on_exception(self):
@@ -6853,9 +6692,7 @@ class TestCheckExportJobExtended:
         batch_api = MagicMock()
         batch_api.read_namespaced_job.side_effect = Exception("timeout")
 
-        result = _check_export_job(
-            batch_api, {"jobName": "export-1"}, "ns1"
-        )
+        result = _check_export_job(batch_api, {"jobName": "export-1"}, "ns1")
         assert result == "pending"
 
 
@@ -8640,9 +8477,7 @@ class TestKubeVirtDriverGetBootModeExtended:
                 "template": {
                     "spec": {
                         "domain": {
-                            "firmware": {
-                                "bootloader": {"efi": {"secureBoot": False}}
-                            }
+                            "firmware": {"bootloader": {"efi": {"secureBoot": False}}}
                         }
                     }
                 }
@@ -8663,11 +8498,7 @@ class TestKubeVirtDriverGetBootModeExtended:
         driver.custom_api.get_namespaced_custom_object.return_value = {
             "spec": {
                 "template": {
-                    "spec": {
-                        "domain": {
-                            "firmware": {"bootloader": {"bios": {}}}
-                        }
-                    }
+                    "spec": {"domain": {"firmware": {"bootloader": {"bios": {}}}}}
                 }
             }
         }
@@ -8684,13 +8515,7 @@ class TestKubeVirtDriverGetBootModeExtended:
         driver.vm_map = {}
 
         driver.custom_api.get_namespaced_custom_object.return_value = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "domain": {}
-                    }
-                }
-            }
+            "spec": {"template": {"spec": {"domain": {}}}}
         }
 
         assert driver.get_boot_mode("vm1") == "Legacy"
@@ -8794,3 +8619,961 @@ class TestKubeVirtDriverDeleteVmi:
 
         # Should not raise
         driver._delete_vmi("vm1")
+
+
+# ---------------------------------------------------------------------------
+# _recreate_kubevirt_vm — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRecreateVmDeleteRaises:
+    """Cover _recreate_kubevirt_vm when _delete_and_wait raises."""
+
+    @patch("handlers.vm._delete_and_wait_for_kubevirt_vm")
+    def test_delete_raises_propagates(self, mock_delete):
+        from handlers.vm import _recreate_kubevirt_vm
+
+        async def boom(*a, **k):
+            raise RuntimeError("delete timed out")
+
+        mock_delete.side_effect = boom
+
+        custom_api = MagicMock()
+        kv_vm = {"metadata": {"name": "kv-vm-1"}}
+
+        with pytest.raises(RuntimeError, match="delete timed out"):
+            asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
+
+        # create should never be called if delete fails
+        custom_api.create_namespaced_custom_object.assert_not_called()
+
+    @patch("handlers.vm._delete_and_wait_for_kubevirt_vm")
+    def test_create_non_409_raises(self, mock_delete):
+        """Non-409 ApiException on create_namespaced_custom_object propagates."""
+        from handlers.vm import _recreate_kubevirt_vm
+        from kubernetes.client import ApiException
+
+        async def noop(*a, **k):
+            pass
+
+        mock_delete.side_effect = noop
+
+        custom_api = MagicMock()
+        custom_api.create_namespaced_custom_object.side_effect = ApiException(
+            status=500
+        )
+        kv_vm = {"metadata": {"name": "kv-vm-1"}}
+
+        with pytest.raises(ApiException):
+            asyncio.run(_recreate_kubevirt_vm(custom_api, "ns1", kv_vm, "kv-vm-1"))
+
+
+# ---------------------------------------------------------------------------
+# _provision_disk_pvcs — blank disk edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestProvisionBlankDiskEdgeCases:
+    """Cover _provision_disk_pvcs blank disk path edge cases."""
+
+    def test_blank_disk_409_swallowed(self):
+        """409 on blank PVC create is silently swallowed (idempotent)."""
+        from handlers.vm import _provision_disk_pvcs
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        core_api.create_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=409
+        )
+
+        spec = {"disks": [{"id": "disk-blank1", "blank": True, "sizeGb": 50}]}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+        patch_obj = MagicMock()
+
+        result = asyncio.run(
+            _provision_disk_pvcs(
+                spec,
+                "vm-1",
+                "ns1",
+                body,
+                core_api,
+                custom_api,
+                {},
+                {},
+                patch_obj,
+            )
+        )
+
+        assert "disk-blank1" in result
+        core_api.create_namespaced_persistent_volume_claim.assert_called_once()
+
+    def test_blank_disk_non_409_raises(self):
+        """Non-409 error on blank PVC create propagates."""
+        from handlers.vm import _provision_disk_pvcs
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        core_api.create_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=500
+        )
+
+        spec = {"disks": [{"id": "disk-err", "blank": True, "sizeGb": 20}]}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+        patch_obj = MagicMock()
+
+        with pytest.raises(ApiException):
+            asyncio.run(
+                _provision_disk_pvcs(
+                    spec,
+                    "vm-1",
+                    "ns1",
+                    body,
+                    core_api,
+                    custom_api,
+                    {},
+                    {},
+                    patch_obj,
+                )
+            )
+
+    @patch("handlers.vm._ensure_golden_pvc")
+    @patch("handlers.vm._wait_for_datavolume", return_value=True)
+    def test_mixed_s3_and_blank_disks(self, mock_wait, mock_golden):
+        """One S3 disk + one blank disk provisions both correctly."""
+        from handlers.vm import _provision_disk_pvcs
+
+        mock_golden.return_value = "golden-abc123"
+        custom_api = MagicMock()
+        core_api = MagicMock()
+
+        spec = {
+            "disks": [
+                {
+                    "id": "disk-s3xx",
+                    "sizeGb": 40,
+                    "libraryImage": {"s3Path": "library/rhel.qcow2"},
+                },
+                {"id": "disk-blnk", "blank": True, "sizeGb": 100},
+            ]
+        }
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+        patch_obj = MagicMock()
+
+        result = asyncio.run(
+            _provision_disk_pvcs(
+                spec,
+                "vm-1",
+                "ns1",
+                body,
+                core_api,
+                custom_api,
+                {"bucket": "b"},
+                {},
+                patch_obj,
+            )
+        )
+
+        assert "disk-s3xx" in result
+        assert "disk-blnk" in result
+        # S3 disk creates a clone DV
+        custom_api.create_namespaced_custom_object.assert_called_once()
+        # Blank disk creates a PVC
+        core_api.create_namespaced_persistent_volume_claim.assert_called_once()
+
+    def test_blank_disk_default_size(self):
+        """Blank disk without sizeGb defaults to 20."""
+        from handlers.vm import _provision_disk_pvcs
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+
+        spec = {"disks": [{"id": "disk-dflt", "blank": True}]}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+        patch_obj = MagicMock()
+
+        result = asyncio.run(
+            _provision_disk_pvcs(
+                spec,
+                "vm-1",
+                "ns1",
+                body,
+                core_api,
+                custom_api,
+                {},
+                {},
+                patch_obj,
+            )
+        )
+
+        assert "disk-dflt" in result
+        # Verify the PVC was created (size checked inside build_blank_pvc)
+        core_api.create_namespaced_persistent_volume_claim.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _provision_cdrom — clone path edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestProvisionCdromCloneEdgeCases:
+    """Cover _provision_cdrom clone path edge cases."""
+
+    @patch("handlers.vm._ensure_golden_pvc")
+    @patch("handlers.vm._wait_for_datavolume", return_value=True)
+    def test_409_on_clone_dv_create_swallowed(self, mock_wait, mock_golden):
+        """409 on clone DV create is idempotent — returns pvc_name."""
+        from handlers.vm import _provision_cdrom
+        from kubernetes.client import ApiException
+
+        mock_golden.return_value = "golden-iso"
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        golden_pvc = MagicMock()
+        golden_pvc.spec.resources.requests = {"storage": "10Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = golden_pvc
+        custom_api.create_namespaced_custom_object.side_effect = ApiException(
+            status=409
+        )
+
+        spec = {"cdrom": {"s3Path": "library/rhel.iso"}}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+
+        result = asyncio.run(
+            _provision_cdrom(
+                spec, "vm-1", "ns1", body, core_api, custom_api, {"bucket": "b"}
+            )
+        )
+
+        assert result == "vm-1-cdrom"
+        mock_wait.assert_called_once()
+
+    @patch("handlers.vm._ensure_golden_pvc")
+    @patch("handlers.vm._wait_for_datavolume", return_value=True)
+    def test_golden_pvc_size_read_failure_defaults_10(self, mock_wait, mock_golden):
+        """When golden PVC size read fails, defaults to 10Gi."""
+        from handlers.vm import _provision_cdrom
+
+        mock_golden.return_value = "golden-iso"
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        core_api.read_namespaced_persistent_volume_claim.side_effect = Exception(
+            "PVC not found"
+        )
+
+        spec = {"cdrom": {"s3Path": "library/rhel.iso"}}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+
+        result = asyncio.run(
+            _provision_cdrom(
+                spec, "vm-1", "ns1", body, core_api, custom_api, {"bucket": "b"}
+            )
+        )
+
+        assert result == "vm-1-cdrom"
+        # The clone DV was created with default 10Gi
+        create_call = custom_api.create_namespaced_custom_object.call_args
+        assert create_call is not None
+
+    @patch("handlers.vm._ensure_golden_pvc")
+    @patch("handlers.vm._wait_for_datavolume", return_value=True)
+    def test_golden_pvc_larger_size_used(self, mock_wait, mock_golden):
+        """When golden PVC is larger than 10Gi, the larger size is used."""
+        from handlers.vm import _provision_cdrom
+
+        mock_golden.return_value = "golden-iso"
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        golden_pvc = MagicMock()
+        golden_pvc.spec.resources.requests = {"storage": "25Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = golden_pvc
+
+        spec = {"cdrom": {"s3Path": "library/big.iso"}}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+
+        result = asyncio.run(
+            _provision_cdrom(
+                spec, "vm-1", "ns1", body, core_api, custom_api, {"bucket": "b"}
+            )
+        )
+
+        assert result == "vm-1-cdrom"
+
+    @patch("handlers.vm._ensure_golden_pvc")
+    @patch("handlers.vm._wait_for_datavolume", return_value=False)
+    def test_wait_failure_returns_none(self, mock_wait, mock_golden):
+        """When _wait_for_datavolume returns False (timeout), returns None."""
+        from handlers.vm import _provision_cdrom
+
+        mock_golden.return_value = "golden-iso"
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        golden_pvc = MagicMock()
+        golden_pvc.spec.resources.requests = {"storage": "10Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = golden_pvc
+
+        # _wait_for_datavolume returns False which means it raises an exception
+        # inside the function via the owner status check
+        mock_wait.side_effect = Exception("DV wait failed")
+
+        spec = {"cdrom": {"s3Path": "library/rhel.iso"}}
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+
+        result = asyncio.run(
+            _provision_cdrom(
+                spec, "vm-1", "ns1", body, core_api, custom_api, {"bucket": "b"}
+            )
+        )
+
+        # CDROM failure is non-fatal, returns None
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _create_vnc_rbac — additional edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCreateVncRbacExtended:
+    """Additional edge-case coverage for _create_vnc_rbac."""
+
+    @patch("handlers.project.client")
+    def test_409_on_rolebinding_only(self, mock_client):
+        """Role created fine, RoleBinding already exists (409) — should not raise."""
+        from handlers.project import _create_vnc_rbac
+        from kubernetes.client import ApiException
+
+        mock_rbac = MagicMock()
+        mock_rbac.create_namespaced_role.return_value = None
+        mock_rbac.create_namespaced_role_binding.side_effect = ApiException(status=409)
+        mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
+
+        _create_vnc_rbac("ns-test")
+
+        mock_rbac.create_namespaced_role.assert_called_once()
+        mock_rbac.create_namespaced_role_binding.assert_called_once()
+
+    @patch("handlers.project.client")
+    def test_non_409_on_rolebinding_raises(self, mock_client):
+        """Role created fine, RoleBinding fails with non-409 — should raise."""
+        from handlers.project import _create_vnc_rbac
+        from kubernetes.client import ApiException
+
+        mock_rbac = MagicMock()
+        mock_rbac.create_namespaced_role.return_value = None
+        mock_rbac.create_namespaced_role_binding.side_effect = ApiException(status=403)
+        mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
+
+        with pytest.raises(ApiException) as exc_info:
+            _create_vnc_rbac("ns-test")
+        assert exc_info.value.status == 403
+
+    @patch("handlers.project.client")
+    def test_namespace_passed_to_both_calls(self, mock_client):
+        """Verify namespace is passed correctly to Role and RoleBinding."""
+        from handlers.project import _create_vnc_rbac
+
+        mock_rbac = MagicMock()
+        mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
+
+        _create_vnc_rbac("my-project-ns")
+
+        role_call = mock_rbac.create_namespaced_role.call_args
+        assert role_call.kwargs["namespace"] == "my-project-ns"
+        role_body = role_call.kwargs["body"]
+        assert role_body["metadata"]["namespace"] == "my-project-ns"
+
+        rb_call = mock_rbac.create_namespaced_role_binding.call_args
+        assert rb_call.kwargs["namespace"] == "my-project-ns"
+        rb_body = rb_call.kwargs["body"]
+        assert rb_body["metadata"]["namespace"] == "my-project-ns"
+        assert rb_body["subjects"][0]["namespace"] == "my-project-ns"
+
+    @patch("handlers.project.client")
+    def test_role_has_correct_rules(self, mock_client):
+        """Verify Role body contains expected VMI and VNC subresource rules."""
+        from handlers.project import _create_vnc_rbac
+
+        mock_rbac = MagicMock()
+        mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
+
+        _create_vnc_rbac("ns1")
+
+        role_body = mock_rbac.create_namespaced_role.call_args.kwargs["body"]
+        rules = role_body["rules"]
+        assert len(rules) == 2
+        assert rules[0]["apiGroups"] == ["kubevirt.io"]
+        assert "virtualmachineinstances" in rules[0]["resources"]
+        assert rules[1]["apiGroups"] == ["subresources.kubevirt.io"]
+        assert "virtualmachineinstances/vnc" in rules[1]["resources"]
+
+
+# ---------------------------------------------------------------------------
+# project_update handler
+# ---------------------------------------------------------------------------
+
+
+class TestProjectUpdateHandler:
+    """Cover the kopf project_update handler.
+
+    Since kopf is mocked as MagicMock in conftest, the @kopf.on.update
+    decorator wraps the function in a MagicMock.  We extract the original
+    async function from the mock's call_args to test it directly.
+    """
+
+    @staticmethod
+    def _get_project_update_fn():
+        """Extract the unwrapped project_update async function."""
+        import importlib
+
+        import kopf
+
+        importlib.import_module("handlers.project")
+
+        decorator_mock = kopf.on.update.return_value
+        for call_args in reversed(decorator_mock.call_args_list):
+            fn = call_args[0][0]
+            if asyncio.iscoroutinefunction(fn) and fn.__name__ == "project_update":
+                return fn
+        raise RuntimeError("Could not find project_update in kopf mock call args")
+
+    @pytest.mark.asyncio
+    @patch("handlers.project._handle_capture")
+    async def test_happy_path_valid_annotation(self, mock_handle_capture):
+        """Valid capture annotation triggers _handle_capture."""
+        from handlers.project import CAPTURE_ANNOTATION
+
+        fn = self._get_project_update_fn()
+
+        mock_handle_capture.return_value = None  # AsyncMock auto-created by patch
+
+        capture_config = {"s3Config": {"bucket": "test"}, "disks": []}
+        meta = {
+            "annotations": {CAPTURE_ANNOTATION: json.dumps(capture_config)},
+        }
+        status = {"phase": "Running"}
+        patch_obj = MagicMock()
+
+        await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        mock_handle_capture.assert_called_once_with(
+            capture_config, "ns1", "proj-1", patch_obj
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_annotation_is_noop(self):
+        """No capture annotation means no action."""
+        fn = self._get_project_update_fn()
+
+        meta = {"annotations": {}}
+        status = {"phase": "Running"}
+        patch_obj = MagicMock()
+
+        result = await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_none_annotations_is_noop(self):
+        """annotations=None should be treated as empty."""
+        fn = self._get_project_update_fn()
+
+        meta = {"annotations": None}
+        status = {"phase": "Running"}
+        patch_obj = MagicMock()
+
+        result = await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_annotations_key_is_noop(self):
+        """No annotations key at all should be treated as empty."""
+        fn = self._get_project_update_fn()
+
+        meta = {}
+        status = {"phase": "Running"}
+        patch_obj = MagicMock()
+
+        result = await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("handlers.project._handle_capture")
+    async def test_invalid_json_does_not_call_handle_capture(self, mock_handle_capture):
+        """Invalid JSON in annotation logs error, does not call _handle_capture."""
+        from handlers.project import CAPTURE_ANNOTATION
+
+        fn = self._get_project_update_fn()
+
+        meta = {"annotations": {CAPTURE_ANNOTATION: "not-valid-json{{"}}
+        status = {"phase": "Running"}
+        patch_obj = MagicMock()
+
+        result = await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        mock_handle_capture.assert_not_called()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("handlers.project._handle_capture")
+    async def test_capturing_phase_skips(self, mock_handle_capture):
+        """If phase is already 'Capturing', skip processing."""
+        from handlers.project import CAPTURE_ANNOTATION
+
+        fn = self._get_project_update_fn()
+
+        capture_config = {"s3Config": {"bucket": "test"}, "disks": []}
+        meta = {"annotations": {CAPTURE_ANNOTATION: json.dumps(capture_config)}}
+        status = {"phase": "Capturing"}
+        patch_obj = MagicMock()
+
+        result = await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        mock_handle_capture.assert_not_called()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("handlers.project._handle_capture")
+    async def test_empty_status_phase_proceeds(self, mock_handle_capture):
+        """Empty status (no phase key) should proceed with capture."""
+        from handlers.project import CAPTURE_ANNOTATION
+
+        fn = self._get_project_update_fn()
+
+        mock_handle_capture.return_value = None
+
+        capture_config = {"disks": []}
+        meta = {"annotations": {CAPTURE_ANNOTATION: json.dumps(capture_config)}}
+        status = {}
+        patch_obj = MagicMock()
+
+        await fn(
+            status=status,
+            meta=meta,
+            namespace="ns1",
+            name="proj-1",
+            patch=patch_obj,
+        )
+
+        mock_handle_capture.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _collect_recert_configs — remaining edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCollectRecertConfigsRemainingEdges:
+    """Cover remaining edge cases for _collect_recert_configs."""
+
+    def test_empty_vm_list(self):
+        """Empty VMs list returns empty configs."""
+        from handlers.project import _collect_recert_configs
+
+        assert _collect_recert_configs([], {}, None) == []
+        assert _collect_recert_configs([], {"vm1": []}, "bastion") == []
+
+    def test_multiple_vms_all_recert_enabled(self):
+        """All VMs have recertEnabled and pattern disks — all should be collected."""
+        from handlers.project import _collect_recert_configs
+
+        vms = [
+            {"id": "aaaaaaaa-1111", "name": "sno-1", "recertEnabled": True},
+            {"id": "bbbbbbbb-2222", "name": "sno-2", "recertEnabled": True},
+            {"id": "cccccccc-3333", "name": "sno-3", "recertEnabled": True},
+        ]
+        vm_disks_map = {
+            "aaaaaaaa-1111": [
+                {"id": "dddddddd-1111", "patternImage": {"s3Path": "p/a.qcow2"}}
+            ],
+            "bbbbbbbb-2222": [
+                {"id": "eeeeeeee-2222", "patternImage": {"s3Path": "p/b.qcow2"}}
+            ],
+            "cccccccc-3333": [
+                {"id": "ffffffff-3333", "patternImage": {"s3Path": "p/c.qcow2"}}
+            ],
+        }
+
+        configs = _collect_recert_configs(vms, vm_disks_map, "bastion-pvc")
+        assert len(configs) == 3
+        names = [c["vmName"] for c in configs]
+        assert names == ["sno-1", "sno-2", "sno-3"]
+        for c in configs:
+            assert c["bastionPvc"] == "bastion-pvc"
+
+    def test_rhcos_pvc_name_construction(self):
+        """Verify PVC name is constructed from first 8 chars of vm ID and disk ID."""
+        from handlers.project import _collect_recert_configs
+
+        vms = [
+            {"id": "abcdefgh-ijklmnop", "name": "sno", "recertEnabled": True},
+        ]
+        vm_disks_map = {
+            "abcdefgh-ijklmnop": [
+                {"id": "12345678-90abcdef", "patternImage": {"s3Path": "p/d.qcow2"}}
+            ],
+        }
+
+        configs = _collect_recert_configs(vms, vm_disks_map, None)
+        assert len(configs) == 1
+        assert configs[0]["rhcosPvc"] == "vm-abcdefgh-disk-12345678"
+
+    def test_multiple_disks_uses_first(self):
+        """When a VM has multiple disks, rhcosPvc is built from the first disk."""
+        from handlers.project import _collect_recert_configs
+
+        vms = [
+            {"id": "aaaaaaaa-1111", "name": "sno", "recertEnabled": True},
+        ]
+        vm_disks_map = {
+            "aaaaaaaa-1111": [
+                {"id": "dddddddd-first", "patternImage": {"s3Path": "p/a.qcow2"}},
+                {"id": "eeeeeeee-second", "patternImage": {"s3Path": "p/b.qcow2"}},
+            ],
+        }
+
+        configs = _collect_recert_configs(vms, vm_disks_map, None)
+        assert len(configs) == 1
+        assert configs[0]["rhcosPvc"] == "vm-aaaaaaaa-disk-dddddddd"
+
+    def test_disk_without_id_key(self):
+        """Disk entry missing 'id' key — should use empty string slice."""
+        from handlers.project import _collect_recert_configs
+
+        vms = [
+            {"id": "aaaaaaaa-1111", "name": "sno", "recertEnabled": True},
+        ]
+        vm_disks_map = {
+            "aaaaaaaa-1111": [
+                {"patternImage": {"s3Path": "p/d.qcow2"}},
+            ],
+        }
+
+        configs = _collect_recert_configs(vms, vm_disks_map, None)
+        assert len(configs) == 1
+        # disk id defaults to empty string, sliced to [:8] = ""
+        assert configs[0]["rhcosPvc"] == "vm-aaaaaaaa-disk-"
+
+
+# ---------------------------------------------------------------------------
+# operator.py — configure() startup handler
+# ---------------------------------------------------------------------------
+
+
+def _load_configure():
+    """Load the configure function from operator.py with a passthrough decorator.
+
+    The conftest mocks kopf as MagicMock, which swallows the decorated function.
+    We reload operator.py with kopf.on.startup() set as a passthrough so the
+    real configure function is preserved and callable.
+    """
+    import importlib.util
+    import os
+
+    kopf_mock = sys.modules["kopf"]
+    # Save original and set passthrough decorator
+    orig = kopf_mock.on.startup.return_value
+    kopf_mock.on.startup.return_value = lambda fn: fn
+
+    # Mock kubernetes hierarchy (configure imports it at call time)
+    k8s_mock = MagicMock()
+    old_k8s = sys.modules.get("kubernetes")
+    old_k8s_client = sys.modules.get("kubernetes.client")
+    old_k8s_exc = sys.modules.get("kubernetes.client.exceptions")
+    sys.modules["kubernetes"] = k8s_mock
+    sys.modules["kubernetes.client"] = k8s_mock.client
+    sys.modules["kubernetes.client.exceptions"] = k8s_mock.client.exceptions
+
+    # Remove any cached operator module
+    if "troshka_operator" in sys.modules:
+        del sys.modules["troshka_operator"]
+
+    op_path = os.path.join(os.path.dirname(__file__), "..", "operator.py")
+    spec = importlib.util.spec_from_file_location("troshka_operator", op_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # Restore original kopf mock behavior
+    kopf_mock.on.startup.return_value = orig
+
+    return mod.configure
+
+
+import logging
+import sys
+
+
+class TestConfigureStartup:
+    """Tests for the @kopf.on.startup() handler in operator.py."""
+
+    def _make_settings(self):
+        """Create a mock settings object with the attributes configure() sets."""
+        settings = MagicMock()
+        settings.posting = MagicMock()
+        settings.persistence = MagicMock()
+        settings.execution = MagicMock()
+        settings.batching = MagicMock()
+        return settings
+
+    def test_configure_sets_kopf_settings(self):
+        """Verify all kopf settings are configured correctly."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_custom.list_cluster_custom_object.return_value = {"items": []}
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = MagicMock()
+
+            configure(settings=settings)
+
+        assert settings.posting.level == logging.WARNING
+        assert settings.persistence.finalizer == "troshka.redhat.com/finalizer"
+        assert settings.execution.max_workers == 100
+        assert settings.batching.batch_window == 0.5
+
+    def test_configure_retries_failed_recert(self):
+        """Project in Error with recertConfig gets job deleted and status reset."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        error_project = {
+            "metadata": {"namespace": "test-ns", "name": "proj-abc"},
+            "status": {
+                "phase": "Error",
+                "recertConfig": {"rhcosPvc": "vm-aaaaaaaa-disk-dddddddd"},
+            },
+        }
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_batch = MagicMock()
+            mock_custom.list_cluster_custom_object.return_value = {
+                "items": [error_project]
+            }
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = mock_batch
+
+            configure(settings=settings)
+
+        # Should delete the recert job
+        mock_batch.delete_namespaced_job.assert_called_once_with(
+            name="recert-vm-aaaaaaaa",
+            namespace="test-ns",
+            propagation_policy="Background",
+        )
+
+        # Should patch status to Deploying
+        mock_custom.patch_namespaced_custom_object_status.assert_called_once_with(
+            group="troshka.redhat.com",
+            version="v1alpha1",
+            namespace="test-ns",
+            plural="troshkaprojects",
+            name="proj-abc",
+            body={
+                "status": {
+                    "phase": "Deploying",
+                    "error": None,
+                    "recertAttempts": 0,
+                }
+            },
+        )
+
+    def test_configure_skips_non_error_projects(self):
+        """Projects not in Error phase should not trigger any job deletion or status patch."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        running_project = {
+            "metadata": {"namespace": "test-ns", "name": "proj-running"},
+            "status": {
+                "phase": "Running",
+                "recertConfig": {"rhcosPvc": "vm-11111111-disk-22222222"},
+            },
+        }
+        deploying_project = {
+            "metadata": {"namespace": "test-ns", "name": "proj-deploying"},
+            "status": {"phase": "Deploying"},
+        }
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_batch = MagicMock()
+            mock_custom.list_cluster_custom_object.return_value = {
+                "items": [running_project, deploying_project]
+            }
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = mock_batch
+
+            configure(settings=settings)
+
+        mock_batch.delete_namespaced_job.assert_not_called()
+        mock_custom.patch_namespaced_custom_object_status.assert_not_called()
+
+    def test_configure_handles_list_exception(self):
+        """Exception from list_cluster_custom_object is caught gracefully."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_custom.list_cluster_custom_object.side_effect = Exception(
+                "API unreachable"
+            )
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = MagicMock()
+
+            # Should not raise — exception is caught internally
+            configure(settings=settings)
+
+        # Settings should still have been configured before the exception
+        assert settings.posting.level == logging.WARNING
+
+    def test_configure_handles_delete_job_exception(self):
+        """If deleting the recert job fails, status patch should still proceed."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        error_project = {
+            "metadata": {"namespace": "test-ns", "name": "proj-fail-delete"},
+            "status": {
+                "phase": "Error",
+                "recertConfig": {"rhcosPvc": "vm-bbbbbbbb-disk-cccccccc"},
+            },
+        }
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_batch = MagicMock()
+            mock_batch.delete_namespaced_job.side_effect = Exception("job not found")
+            mock_custom.list_cluster_custom_object.return_value = {
+                "items": [error_project]
+            }
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = mock_batch
+
+            configure(settings=settings)
+
+        # Job deletion failed, but status patch should still happen
+        mock_custom.patch_namespaced_custom_object_status.assert_called_once()
+        patch_body = mock_custom.patch_namespaced_custom_object_status.call_args
+        assert patch_body.kwargs["body"]["status"]["phase"] == "Deploying"
+
+    def test_configure_error_without_recert_config_skipped(self):
+        """Project in Error but without recertConfig should be skipped."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        error_no_recert = {
+            "metadata": {"namespace": "test-ns", "name": "proj-error-no-recert"},
+            "status": {"phase": "Error", "error": "something else broke"},
+        }
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_batch = MagicMock()
+            mock_custom.list_cluster_custom_object.return_value = {
+                "items": [error_no_recert]
+            }
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = mock_batch
+
+            configure(settings=settings)
+
+        mock_batch.delete_namespaced_job.assert_not_called()
+        mock_custom.patch_namespaced_custom_object_status.assert_not_called()
+
+    def test_configure_rhcos_pvc_without_disk_separator(self):
+        """When rhcosPvc doesn't contain '-disk-', job name uses 'vm' fallback."""
+        configure = _load_configure()
+        settings = self._make_settings()
+
+        error_project = {
+            "metadata": {"namespace": "test-ns", "name": "proj-no-disk-sep"},
+            "status": {
+                "phase": "Error",
+                "recertConfig": {"rhcosPvc": "some-weird-pvc-name"},
+            },
+        }
+
+        with patch("kubernetes.client") as mock_client:
+            mock_custom = MagicMock()
+            mock_batch = MagicMock()
+            mock_custom.list_cluster_custom_object.return_value = {
+                "items": [error_project]
+            }
+            mock_client.CustomObjectsApi.return_value = mock_custom
+            mock_client.BatchV1Api.return_value = mock_batch
+
+            configure(settings=settings)
+
+        # Fallback job name should be "recert-vm"
+        mock_batch.delete_namespaced_job.assert_called_once_with(
+            name="recert-vm",
+            namespace="test-ns",
+            propagation_policy="Background",
+        )
