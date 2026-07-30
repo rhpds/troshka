@@ -400,7 +400,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     _ensure_s3_secret(provider, namespace, s3_config)
 
     topology = project.deployed_topology or project.topology or {}
-    disk_nodes, vm_nodes, disk_to_vm, _ = _build_disk_to_vm_map(topology)
+    disk_nodes, _, disk_to_vm, _ = _build_disk_to_vm_map(topology)
 
     disk_manifest = []
     for disk_node in disk_nodes:
@@ -903,26 +903,55 @@ def _poll_one_capture_job(host, jinfo, completed_jobs, poll_job, troshkad_error)
     return f"{vm_name}: {last}" if last else f"{vm_name}: working..."
 
 
+def _resolve_job_result(jinfo, host):
+    """Resolve the final job result for a capture job, polling if needed."""
+    from app.services.troshkad_client import TroshkadError, poll_job
+
+    job = jinfo.get("_result")
+    if not job:
+        try:
+            job = poll_job(host, jinfo["job_id"])
+        except TroshkadError:
+            job = {"status": "failed", "result": {"error": "Job lost"}}
+    if not job:
+        job = {
+            "status": "failed",
+            "result": {"error": "Job result missing"},
+        }
+    return job
+
+
+def _save_vm_disks(job, jinfo, pattern_id, db):
+    """Create PatternDisk records from a successful capture job result."""
+    disk_results = (job or {}).get("result", {}).get("disks", [])
+    for j, metadata in enumerate(jinfo["disk_metadata"]):
+        size_bytes = (
+            disk_results[j].get("size_bytes", 0) if j < len(disk_results) else 0
+        )
+        pd = PatternDisk(
+            pattern_id=pattern_id,
+            source_disk_id=metadata["disk_id"],
+            source_vm_id=metadata["vm_id"],
+            s3_key=metadata["s3_key"],
+            format=metadata["format"],
+            size_bytes=size_bytes,
+            virtual_size_bytes=metadata["virtual_size_bytes"],
+            state="available",
+        )
+        db.add(pd)
+    db.commit()
+
+
 def _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db):
     """Process results from direct capture jobs, creating PatternDisk records.
 
     Returns True if all VMs succeeded, False if any failed (sets pattern error state).
     """
-    from app.services.troshkad_client import TroshkadError, poll_job
+    from app.services.troshkad_client import TroshkadError
 
     direct_errors: list[str] = []
     for jinfo in all_jobs:
-        job = jinfo.get("_result")
-        if not job:
-            try:
-                job = poll_job(host, jinfo["job_id"])
-            except TroshkadError:
-                job = {"status": "failed", "result": {"error": "Job lost"}}
-        if not job:
-            job = {
-                "status": "failed",
-                "result": {"error": "Job result missing"},
-            }
+        job = _resolve_job_result(jinfo, host)
         try:
             if job["status"] == "failed":
                 error_msg = job.get("result", {}).get("error", "Pattern capture failed")
@@ -935,23 +964,7 @@ def _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db):
                 direct_errors.append(jinfo["vm_name"])
                 continue
 
-            disk_results = (job or {}).get("result", {}).get("disks", [])
-            for j, metadata in enumerate(jinfo["disk_metadata"]):
-                size_bytes = (
-                    disk_results[j].get("size_bytes", 0) if j < len(disk_results) else 0
-                )
-                pd = PatternDisk(
-                    pattern_id=pattern_id,
-                    source_disk_id=metadata["disk_id"],
-                    source_vm_id=metadata["vm_id"],
-                    s3_key=metadata["s3_key"],
-                    format=metadata["format"],
-                    size_bytes=size_bytes,
-                    virtual_size_bytes=metadata["virtual_size_bytes"],
-                    state="available",
-                )
-                db.add(pd)
-            db.commit()
+            _save_vm_disks(job, jinfo, pattern_id, db)
             log.info(
                 "Pattern %s: VM %s capture done",
                 pattern_id[:8],
@@ -1305,7 +1318,7 @@ def _run_capture_pipeline(
     if project.state == "active" and quiesce_cluster:
         _quiesce_ocp_cluster(host, project_id, topology, pattern_id)
 
-    disk_nodes, vm_nodes, disk_to_vm, vm_to_disks = _build_disk_to_vm_map(topology)
+    disk_nodes, vm_nodes, _, vm_to_disks = _build_disk_to_vm_map(topology)
 
     # Skip already-captured disks (resume after partial failure)
     existing_disks = {

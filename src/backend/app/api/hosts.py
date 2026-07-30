@@ -469,6 +469,31 @@ def _setup_console_dns(
         logger.warning("Failed to create console record for %s: %s", h.id[:8], e)
 
 
+def _apply_pool_nfs_config(kwargs: dict[str, Any], pool) -> None:
+    """Add NFS server/path/port kwargs from a shared storage pool."""
+    if pool.mode == "shared-fsx" and pool.fsx_dns_name:
+        kwargs["nfs_server"] = pool.fsx_dns_name
+        kwargs["nfs_path"] = "/fsx"
+    elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
+        parts = pool.nfs_endpoint.split(":", 1)
+        kwargs["nfs_server"] = parts[0]
+        kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+        if pool.nfs_port:
+            kwargs["nfs_port"] = pool.nfs_port
+
+
+def _apply_pool_tls_config(kwargs: dict[str, Any], pool, h: Host) -> None:
+    """Sign and add TLS cert/key kwargs from a shared storage pool."""
+    if not (pool.ca_cert and pool.ca_key and h.ip_address):
+        return
+    from app.services.storage_pool_service import sign_host_cert
+
+    hc, hk = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or "")
+    kwargs["ca_cert"] = pool.ca_cert
+    kwargs["host_cert"] = hc
+    kwargs["host_key"] = hk
+
+
 def _build_pool_install_kwargs(h: Host, s: Session, provider_type: str) -> dict:
     """Build deploy_agent kwargs including pool/storage/console config.
 
@@ -491,34 +516,22 @@ def _build_pool_install_kwargs(h: Host, s: Session, provider_type: str) -> dict:
     }
     if h.console_domain:
         kwargs["console_domain"] = h.console_domain
-    if h.storage_pool_id:
-        from app.models.storage_pool import StoragePool
+    if not h.storage_pool_id:
+        return kwargs
 
-        pool = s.get(StoragePool, h.storage_pool_id)
-        if pool and pool.mode.startswith("shared"):
-            kwargs["storage_mode"] = "shared"
-            if pool.mode == "shared-fsx" and pool.fsx_dns_name:
-                kwargs["nfs_server"] = pool.fsx_dns_name
-                kwargs["nfs_path"] = "/fsx"
-            elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
-                parts = pool.nfs_endpoint.split(":", 1)
-                kwargs["nfs_server"] = parts[0]
-                kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
-                if pool.nfs_port:
-                    kwargs["nfs_port"] = pool.nfs_port
-            if pool.ca_cert and pool.ca_key and h.ip_address:
-                from app.services.storage_pool_service import sign_host_cert
+    from app.models.storage_pool import StoragePool
 
-                hc, hk = sign_host_cert(
-                    pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or ""
-                )
-                kwargs["ca_cert"] = pool.ca_cert
-                kwargs["host_cert"] = hc
-                kwargs["host_key"] = hk
+    pool = s.get(StoragePool, h.storage_pool_id)
+    if not pool or not pool.mode.startswith("shared"):
+        return kwargs
+
+    kwargs["storage_mode"] = "shared"
+    _apply_pool_nfs_config(kwargs, pool)
+    _apply_pool_tls_config(kwargs, pool, h)
     return kwargs
 
 
-def _verify_and_update_agent_version(h: Host, s: Session) -> None:
+def _verify_and_update_agent_version(h: Host) -> None:
     """Check installed agent version and push an update if source has changed."""
     import hashlib
     import time
@@ -913,7 +926,7 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
 
         # Verify agent version and push update if source changed during reinstall
         if result["success"]:
-            _verify_and_update_agent_version(h, s)
+            _verify_and_update_agent_version(h)
 
         # Detach install ISO from ocpvirt hosts (unblocks live migration)
         if result["success"] and _provider_type == "ocpvirt" and h.instance_id:

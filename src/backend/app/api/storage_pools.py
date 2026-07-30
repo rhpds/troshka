@@ -65,7 +65,11 @@ def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
     return resp
 
 
-@router.get("/", response_model=list[StoragePoolResponse])
+@router.get(
+    "/",
+    response_model=list[StoragePoolResponse],
+    responses={403: {"description": "Forbidden"}},
+)
 def list_pools(
     user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
 ):
@@ -99,31 +103,51 @@ _VALID_POOL_MODES = (
 )
 
 
+def _validate_fsx(body: StoragePoolCreate) -> None:
+    if not body.az:
+        raise HTTPException(400, "AZ is required for shared-fsx pools")
+    if not body.fsx_throughput_mbps or not body.fsx_storage_gb:
+        raise HTTPException(400, "fsx_throughput_mbps and fsx_storage_gb are required")
+
+
+def _validate_byo(body: StoragePoolCreate) -> None:
+    if not body.nfs_endpoint:
+        raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
+
+
+def _validate_ceph_nfs(provider: Provider) -> None:
+    if provider.type != "ocpvirt":
+        raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
+
+
+def _validate_netapp(body: StoragePoolCreate, provider: Provider) -> None:
+    if provider.type != "gcp":
+        raise HTTPException(400, "NetApp Volumes pools require a GCP provider")
+    if not body.netapp_capacity_gb:
+        raise HTTPException(400, "netapp_capacity_gb is required")
+
+
+def _validate_azure_files(body: StoragePoolCreate, provider: Provider) -> None:
+    if provider.type != "azure":
+        raise HTTPException(400, "Azure Files pools require an Azure provider")
+    if not body.azure_files_capacity_gb:
+        raise HTTPException(400, "azure_files_capacity_gb is required")
+
+
+_MODE_VALIDATORS = {
+    "shared-fsx": lambda body, provider: _validate_fsx(body),
+    "shared-byo": lambda body, provider: _validate_byo(body),
+    "shared-ceph-nfs": lambda body, provider: _validate_ceph_nfs(provider),
+    "shared-netapp": _validate_netapp,
+    "shared-azure-files": _validate_azure_files,
+}
+
+
 def _validate_pool_mode(body: StoragePoolCreate, provider: Provider) -> None:
     """Validate mode-specific required fields; raises HTTPException on error."""
-    if body.mode == "shared-fsx":
-        if not body.az:
-            raise HTTPException(400, "AZ is required for shared-fsx pools")
-        if not body.fsx_throughput_mbps or not body.fsx_storage_gb:
-            raise HTTPException(
-                400, "fsx_throughput_mbps and fsx_storage_gb are required"
-            )
-    elif body.mode == "shared-byo":
-        if not body.nfs_endpoint:
-            raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
-    elif body.mode == "shared-ceph-nfs":
-        if provider.type != "ocpvirt":
-            raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
-    elif body.mode == "shared-netapp":
-        if provider.type != "gcp":
-            raise HTTPException(400, "NetApp Volumes pools require a GCP provider")
-        if not body.netapp_capacity_gb:
-            raise HTTPException(400, "netapp_capacity_gb is required")
-    elif body.mode == "shared-azure-files":
-        if provider.type != "azure":
-            raise HTTPException(400, "Azure Files pools require an Azure provider")
-        if not body.azure_files_capacity_gb:
-            raise HTTPException(400, "azure_files_capacity_gb is required")
+    validator = _MODE_VALIDATORS.get(body.mode)
+    if validator:
+        validator(body, provider)
 
 
 def _provision_fsx(
@@ -349,7 +373,10 @@ def _apply_auto_extend_fields(pool: StoragePool, body: StoragePoolUpdate) -> Non
 @router.patch(
     "/{pool_id}",
     response_model=StoragePoolResponse,
-    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_POOL_NOT_FOUND},
+    },
 )
 def update_pool(
     pool_id: str,
@@ -454,7 +481,10 @@ def _cleanup_pool_storage(pool: StoragePool, db: Session) -> None:
 @router.delete(
     "/{pool_id}",
     status_code=204,
-    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_POOL_NOT_FOUND},
+    },
 )
 def delete_pool(
     pool_id: str,
@@ -505,7 +535,11 @@ def list_cache(
     return [SharedCacheEntryResponse.model_validate(e) for e in entries]
 
 
-@router.delete("/{pool_id}/cache/{entry_id}", status_code=204)
+@router.delete(
+    "/{pool_id}/cache/{entry_id}",
+    status_code=204,
+    responses={404: {"description": "Cache entry not found"}},
+)
 def evict_cache_entry(
     pool_id: str,
     entry_id: str,
@@ -529,7 +563,10 @@ def evict_cache_entry(
 @router.post(
     "/{pool_id}/probe-azs",
     response_model=AzProbeResponse,
-    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_POOL_NOT_FOUND},
+    },
 )
 def probe_azs(
     pool_id: str,
@@ -589,7 +626,13 @@ def run_pool_gc(
     return result
 
 
-@router.post("/{pool_id}/pattern-buffer")
+@router.post(
+    "/{pool_id}/pattern-buffer",
+    responses={
+        404: {"description": "Pool not found"},
+        409: {"description": "Pattern buffer operation conflict"},
+    },
+)
 def provision_or_replace_pattern_buffer(
     pool_id: str,
     body: dict | None = None,
@@ -615,7 +658,10 @@ def provision_or_replace_pattern_buffer(
     return {"status": "provisioning", "pool_id": pool_id}
 
 
-@router.delete("/{pool_id}/pattern-buffer")
+@router.delete(
+    "/{pool_id}/pattern-buffer",
+    responses={404: {"description": "Pool or pattern buffer not found"}},
+)
 def delete_pattern_buffer(
     pool_id: str,
     user: User = Depends(require_role("admin")),
@@ -646,7 +692,13 @@ def delete_pattern_buffer(
     return {"status": "deleted", "pool_id": pool_id}
 
 
-@router.post("/{pool_id}/pattern-buffer/stop")
+@router.post(
+    "/{pool_id}/pattern-buffer/stop",
+    responses={
+        404: {"description": "Pool not found"},
+        409: {"description": "Pattern buffer operation conflict"},
+    },
+)
 def stop_pool_pattern_buffer(
     pool_id: str,
     user: User = Depends(require_role("admin")),
@@ -666,7 +718,13 @@ def stop_pool_pattern_buffer(
     return {"status": "stopped", "pool_id": pool_id}
 
 
-@router.post("/{pool_id}/pattern-buffer/wake")
+@router.post(
+    "/{pool_id}/pattern-buffer/wake",
+    responses={
+        404: {"description": "Pool not found"},
+        503: {"description": "Pattern buffer failed to wake"},
+    },
+)
 def wake_pool_pattern_buffer(
     pool_id: str,
     user: User = Depends(require_role("admin")),

@@ -10,11 +10,6 @@ stages:
 test-backend:
   stage: test
   image: python:3.11
-  rules:
-    - changes:
-        - src/backend/**
-        - src/troshkad/**
-        - src/operator/**
   script:
     - cd src/backend
     - pip install --upgrade pip
@@ -29,11 +24,48 @@ test-backend:
   tags:
     - itup-alm-x86
 
+test-operator:
+  stage: test
+  image: python:3.11
+  script:
+    - cd src/operator
+    - pip install --upgrade pip
+    - pip install kubernetes pytest pytest-cov
+    - pytest tests/ --cov=handlers --cov=helpers --cov-report=xml:../../operator-coverage.xml -v || true
+    - cd ../..
+    - sed -i 's|<source>handlers</source>|<source>src/operator/handlers</source>|' operator-coverage.xml || true
+    - sed -i 's|<source>helpers</source>|<source>src/operator/helpers</source>|' operator-coverage.xml || true
+  artifacts:
+    paths:
+      - operator-coverage.xml
+    expire_in: 1 hour
+  tags:
+    - itup-alm-x86
+
+test-troshkad:
+  stage: test
+  image: python:3.11
+  script:
+    - cd src/troshkad
+    - pip install pytest pytest-cov
+    - pytest tests/ --cov=troshkad --cov-report=xml:../../troshkad-coverage.xml -v || true
+    - cd ../..
+    - sed -i 's|<source>troshkad</source>|<source>src/troshkad</source>|' troshkad-coverage.xml || true
+  artifacts:
+    paths:
+      - troshkad-coverage.xml
+    expire_in: 1 hour
+  tags:
+    - itup-alm-x86
+
 sonarqube:
   variables:
     SONAR_PROJECT_KEY: "com.redhat.rhpds.troshka"
   needs:
     - job: test-backend
+    - job: test-operator
+      optional: true
+    - job: test-troshkad
       optional: true
   tags:
     - itup-alm-x86

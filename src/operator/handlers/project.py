@@ -289,6 +289,25 @@ async def _snapshot_and_export_disk(
     }
 
 
+def _check_export_job(batch_api, ej, namespace):
+    """Check a single export Job status.
+
+    Returns: "done" if succeeded, "failed" if permanently failed, "pending" otherwise.
+    """
+    try:
+        job = batch_api.read_namespaced_job(
+            name=ej["jobName"],
+            namespace=namespace,
+        )
+        if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
+            return "done"
+        if job.status.failed and job.status.failed >= 3:  # type: ignore[union-attr]
+            return "failed"
+        return "pending"
+    except Exception:
+        return "pending"
+
+
 async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
     """Poll export Jobs until all complete (max 30 min).
 
@@ -298,21 +317,15 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
     for _ in range(180):
         all_done = True
         for ej in export_jobs:
-            try:
-                job = batch_api.read_namespaced_job(
-                    name=ej["jobName"],
-                    namespace=namespace,
-                )
-                if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
-                    continue
-                if job.status.failed and job.status.failed >= 3:  # type: ignore[union-attr]
-                    logger.error(f"Export job {ej['jobName']} failed")
-                    patch.status["phase"] = "CaptureError"
-                    patch.status["captureError"] = f"Export job {ej['jobName']} failed"
-                    return f"Export job {ej['jobName']} failed"
-                all_done = False
-            except Exception:
-                all_done = False
+            result = _check_export_job(batch_api, ej, namespace)
+            if result == "done":
+                continue
+            if result == "failed":
+                logger.error(f"Export job {ej['jobName']} failed")
+                patch.status["phase"] = "CaptureError"
+                patch.status["captureError"] = f"Export job {ej['jobName']} failed"
+                return f"Export job {ej['jobName']} failed"
+            all_done = False
         if all_done:
             break
         await asyncio.sleep(10)
@@ -607,13 +620,9 @@ async def _setup_exec_pod(
     logger.info(f"Created exec deployment for {name}")
 
 
-def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch):
-    """Pre-create golden PVCs for parallel image downloads."""
-    from helpers.kubevirt import build_datavolume_from_s3, CACHE_NAMESPACE
-    from helpers.k8s import golden_pvc_name
-
-    s3_config = spec.get("s3Config", {})
-    central_s3_config = spec.get("centralS3Config", {})
+def _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config):
+    """Ensure cache namespace exists and S3 credential secrets are up to date."""
+    from helpers.kubevirt import CACHE_NAMESPACE
 
     try:
         core_api.create_namespace(
@@ -628,38 +637,97 @@ def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch):
         if e.status != 409:
             raise
 
-    # Create S3 credential secrets in cache namespace for CDI source.s3
     for secret_name, cfg in [
         ("s3-credentials", s3_config),
         ("s3-central-credentials", central_s3_config),
     ]:
         if not cfg.get("accessKeyId"):
             continue
-        try:
-            core_api.create_namespaced_secret(
-                namespace=CACHE_NAMESPACE,
-                body=client.V1Secret(
-                    metadata=client.V1ObjectMeta(name=secret_name),
-                    string_data={
-                        "accessKeyId": cfg.get("accessKeyId", ""),
-                        "secretKey": cfg.get("secretKey", ""),
-                    },
-                ),
+        _upsert_s3_secret(core_api, CACHE_NAMESPACE, secret_name, cfg)
+
+
+def _upsert_s3_secret(core_api, namespace, secret_name, cfg):
+    """Create or update an S3 credential secret."""
+    string_data = {
+        "accessKeyId": cfg.get("accessKeyId", ""),
+        "secretKey": cfg.get("secretKey", ""),
+    }
+    try:
+        core_api.create_namespaced_secret(
+            namespace=namespace,
+            body=client.V1Secret(
+                metadata=client.V1ObjectMeta(name=secret_name),
+                string_data=string_data,
+            ),
+        )
+    except ApiException as e:
+        if e.status == 409:
+            core_api.patch_namespaced_secret(
+                name=secret_name,
+                namespace=namespace,
+                body=client.V1Secret(string_data=string_data),
             )
-        except ApiException as e:
-            if e.status == 409:
-                core_api.patch_namespaced_secret(
-                    name=secret_name,
-                    namespace=CACHE_NAMESPACE,
-                    body=client.V1Secret(
-                        string_data={
-                            "accessKeyId": cfg.get("accessKeyId", ""),
-                            "secretKey": cfg.get("secretKey", ""),
-                        },
-                    ),
-                )
-            else:
-                raise
+        else:
+            raise
+
+
+def _create_golden_pvc_for_disk(
+    custom_api, core_api, disk, s3_config, central_s3_config
+):
+    """Create a single golden PVC for a disk if it doesn't already exist."""
+    from helpers.kubevirt import build_datavolume_from_s3, CACHE_NAMESPACE
+    from helpers.k8s import golden_pvc_name
+
+    s3_path, use_central = _resolve_disk_s3_path(disk)
+    if not s3_path:
+        return
+
+    if use_central and central_s3_config:
+        disk_s3_config = central_s3_config
+        secret_name = "s3-central-credentials"  # pragma: allowlist secret
+    else:
+        disk_s3_config = s3_config
+        secret_name = "s3-credentials"  # pragma: allowlist secret
+
+    pvc_name = golden_pvc_name(s3_path)
+    try:
+        core_api.read_namespaced_persistent_volume_claim(
+            name=pvc_name, namespace=CACHE_NAMESPACE
+        )
+        return
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+    size_gb = disk.get("sizeGb", 20)
+    dv = build_datavolume_from_s3(
+        pvc_name,
+        CACHE_NAMESPACE,
+        s3_path,
+        size_gb,
+        disk_s3_config,
+        secret_name=secret_name,
+    )
+    try:
+        custom_api.create_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=CACHE_NAMESPACE,
+            plural="datavolumes",
+            body=dv,
+        )
+        logger.info(f"Pre-created golden PVC {pvc_name} for parallel download")
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+
+def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch):
+    """Pre-create golden PVCs for parallel image downloads."""
+    s3_config = spec.get("s3Config", {})
+    central_s3_config = spec.get("centralS3Config", {})
+
+    _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config)
 
     patch.status["deployProgress"] = {
         "percent": 30,
@@ -668,48 +736,9 @@ def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch):
     }
 
     for disk in all_disks:
-        s3_path, use_central = _resolve_disk_s3_path(disk)
-        if not s3_path:
-            continue
-
-        if use_central and central_s3_config:
-            disk_s3_config = central_s3_config
-            secret_name = "s3-central-credentials"  # pragma: allowlist secret
-        else:
-            disk_s3_config = s3_config
-            secret_name = "s3-credentials"  # pragma: allowlist secret
-
-        pvc_name = golden_pvc_name(s3_path)
-        try:
-            core_api.read_namespaced_persistent_volume_claim(
-                name=pvc_name, namespace=CACHE_NAMESPACE
-            )
-            continue
-        except ApiException as e:
-            if e.status != 404:
-                raise
-
-        size_gb = disk.get("sizeGb", 20)
-        dv = build_datavolume_from_s3(
-            pvc_name,
-            CACHE_NAMESPACE,
-            s3_path,
-            size_gb,
-            disk_s3_config,
-            secret_name=secret_name,
+        _create_golden_pvc_for_disk(
+            custom_api, core_api, disk, s3_config, central_s3_config
         )
-        try:
-            custom_api.create_namespaced_custom_object(
-                group="cdi.kubevirt.io",
-                version="v1beta1",
-                namespace=CACHE_NAMESPACE,
-                plural="datavolumes",
-                body=dv,
-            )
-            logger.info(f"Pre-created golden PVC {pvc_name} for parallel download")
-        except ApiException as e:
-            if e.status != 409:
-                raise
 
 
 def _resolve_disk_s3_path(disk):
@@ -1083,7 +1112,7 @@ def _resolve_vm_state(vm, vmi_states):
     return state
 
 
-def _detect_scheduling_error(core_api, namespace, vm_id, kv_name):
+def _detect_scheduling_error(core_api, namespace, kv_name):
     """Check if a Scheduling VM has unschedulable pods or volume attach failures.
 
     Returns error message string or None.
@@ -1123,7 +1152,7 @@ def _collect_vm_states(vm_items, vmi_states, core_api, namespace):
         state = _resolve_vm_state(vm, vmi_states)
 
         if state == "Scheduling" and kv_name:
-            err = _detect_scheduling_error(core_api, namespace, vm_id, kv_name)
+            err = _detect_scheduling_error(core_api, namespace, kv_name)
             if err:
                 scheduling_errors[vm_id] = err
                 state = "error"

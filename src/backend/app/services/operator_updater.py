@@ -72,6 +72,20 @@ def _read_deployment_info(apps_api, operator_ns: str) -> tuple[bool, str]:
     return rolling_out, tag
 
 
+def _extract_digest_from_pod(pod) -> str | None:
+    """Extract the image digest from a running pod's container statuses."""
+    phase = pod.status.phase  # type: ignore[union-attr]
+    if phase != "Running":
+        return None
+    for cs in pod.status.container_statuses or []:  # type: ignore[union-attr]
+        if not (cs.ready and cs.started):  # type: ignore[union-attr]
+            continue
+        image_id = cs.image_id or ""
+        if "@sha256:" in image_id:
+            return "sha256:" + image_id.split("@sha256:")[-1]
+    return None
+
+
 def _read_pod_digest(core_api, operator_ns: str) -> str | None:
     """Find the running operator pod's image digest.
 
@@ -83,15 +97,9 @@ def _read_pod_digest(core_api, operator_ns: str) -> str | None:
             label_selector="app=troshka-operator",
         )
         for pod in pods.items or []:  # type: ignore[union-attr]
-            phase = pod.status.phase  # type: ignore[union-attr]
-            if phase != "Running":
-                continue
-            for cs in pod.status.container_statuses or []:  # type: ignore[union-attr]
-                if not (cs.ready and cs.started):  # type: ignore[union-attr]
-                    continue
-                image_id = cs.image_id or ""
-                if "@sha256:" in image_id:
-                    return "sha256:" + image_id.split("@sha256:")[-1]
+            digest = _extract_digest_from_pod(pod)
+            if digest:
+                return digest
     except Exception:
         pass
     return None

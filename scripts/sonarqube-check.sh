@@ -18,8 +18,19 @@ fi
 
 cd "$(git rev-parse --show-toplevel)"
 
+echo "Running backend tests with coverage..."
 cd src/backend
-./venv/bin/python3 -m pytest tests/ -q --cov=app --cov-report=xml:../../coverage.xml 2>/dev/null
+./venv/bin/python3 -m pytest tests/ -q --cov=app --cov-report=xml:../../coverage.xml
+cd ../..
+
+echo "Running operator tests with coverage..."
+cd src/operator
+python3 -m pytest tests/ -q --cov=handlers --cov=helpers --cov=images --cov=operator --cov-report=xml:../../operator-coverage.xml 2>/dev/null || true
+cd ../..
+
+echo "Running troshkad tests with coverage..."
+cd src/troshkad
+python3 -m pytest tests/ -q --cov=troshkad --cov-report=xml:../../troshkad-coverage.xml 2>/dev/null || true
 cd ../..
 
 sonar-scanner \

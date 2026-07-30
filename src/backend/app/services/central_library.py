@@ -129,14 +129,86 @@ def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
     }
 
 
+def _process_s3_object(s3_client, bucket, key, size, groups, pid):
+    """Process a single S3 object into the pattern groups dict."""
+    import json
+
+    if key.endswith("/metadata.json"):
+        try:
+            resp = s3_client.get_object(Bucket=bucket, Key=key)
+            groups[pid]["metadata"] = json.loads(resp["Body"].read())
+        except Exception:
+            pass
+    else:
+        groups[pid]["files"].append({"key": key, "size": size})
+
+
+def _scan_s3_pattern_groups(s3_client, bucket):
+    """Scan S3 patterns/ prefix and group objects by pattern ID."""
+    groups: dict[str, dict] = {}
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix="patterns/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            parts = key.split("/")
+            if len(parts) < 3:
+                continue
+            pid = parts[1]
+            if pid not in groups:
+                groups[pid] = {"metadata": None, "files": []}
+            _process_s3_object(s3_client, bucket, key, obj.get("Size", 0), groups, pid)
+    return groups
+
+
+def _create_pattern_record(db, pid, meta, owner_id, provider_id):
+    """Create a Pattern + PatternDisk records from metadata."""
+    import uuid as _uuid
+
+    from app.models.pattern import Pattern, PatternDisk
+
+    topology = meta.get("topology", {"nodes": [], "edges": []})
+    _remap_library_refs(topology, db)
+
+    pattern = Pattern(
+        id=pid,
+        name=meta.get("name", f"pattern-{pid[:8]}"),
+        description=meta.get("description"),
+        owner_id=owner_id or meta.get("owner_id", "system"),
+        visibility="public",
+        topology=topology,
+        state="available",
+        total_size_bytes=meta.get("total_size_bytes", 0),
+        tags={
+            **(meta.get("tags") or {}),
+            "source": "central",
+            "source_provider_id": provider_id,
+        },
+    )
+    db.add(pattern)
+    db.flush()
+
+    for disk in meta.get("disks", []):
+        db.add(
+            PatternDisk(
+                id=disk.get("id", str(_uuid.uuid4())),
+                pattern_id=pid,
+                source_disk_id=disk.get("source_disk_id", ""),
+                source_vm_id=disk.get("source_vm_id", ""),
+                s3_key=disk["s3_key"],
+                format=disk.get("format", "qcow2"),
+                size_bytes=disk.get("size_bytes", 0),
+                virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                checksum_sha256=disk.get("checksum_sha256"),
+                state="available",
+            )
+        )
+
+
 def sync_central_patterns(
     db: Session, client=None, cfg: dict | None = None, owner_id: str | None = None
 ) -> dict:
     """Scan central S4 for patterns and create local Pattern + PatternDisk records."""
-    import json
-    import uuid as _uuid
-
-    from app.models.pattern import Pattern, PatternDisk
+    from app.models.pattern import Pattern
     from app.services import s3_storage
 
     if not cfg:
@@ -150,28 +222,7 @@ def sync_central_patterns(
 
     bucket = cfg["bucket"]
     provider_id = cfg["provider_id"]
-
-    pattern_groups: dict[str, dict] = {}
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix="patterns/"):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            parts = key.split("/")
-            if len(parts) < 3:
-                continue
-            pid = parts[1]
-            if pid not in pattern_groups:
-                pattern_groups[pid] = {"metadata": None, "files": []}
-            if key.endswith("/metadata.json"):
-                try:
-                    resp = client.get_object(Bucket=bucket, Key=key)
-                    pattern_groups[pid]["metadata"] = json.loads(resp["Body"].read())
-                except Exception:
-                    pass
-            else:
-                pattern_groups[pid]["files"].append(
-                    {"key": key, "size": obj.get("Size", 0)}
-                )
+    pattern_groups = _scan_s3_pattern_groups(client, bucket)
 
     created = 0
     skipped = 0
@@ -180,48 +231,12 @@ def sync_central_patterns(
         if db.query(Pattern).filter_by(id=pid).first():
             skipped += 1
             continue
-
         meta = group["metadata"]
         if not meta:
             skipped += 1
             continue
 
-        topology = meta.get("topology", {"nodes": [], "edges": []})
-        _remap_library_refs(topology, db)
-
-        pattern = Pattern(
-            id=pid,
-            name=meta.get("name", f"pattern-{pid[:8]}"),
-            description=meta.get("description"),
-            owner_id=owner_id or meta.get("owner_id", "system"),
-            visibility="public",
-            topology=topology,
-            state="available",
-            total_size_bytes=meta.get("total_size_bytes", 0),
-            tags={
-                **(meta.get("tags") or {}),
-                "source": "central",
-                "source_provider_id": provider_id,
-            },
-        )
-        db.add(pattern)
-        db.flush()
-
-        for disk in meta.get("disks", []):
-            db.add(
-                PatternDisk(
-                    id=disk.get("id", str(_uuid.uuid4())),
-                    pattern_id=pid,
-                    source_disk_id=disk.get("source_disk_id", ""),
-                    source_vm_id=disk.get("source_vm_id", ""),
-                    s3_key=disk["s3_key"],
-                    format=disk.get("format", "qcow2"),
-                    size_bytes=disk.get("size_bytes", 0),
-                    virtual_size_bytes=disk.get("virtual_size_bytes", 0),
-                    checksum_sha256=disk.get("checksum_sha256"),
-                    state="available",
-                )
-            )
+        _create_pattern_record(db, pid, meta, owner_id, provider_id)
         created += 1
 
     if created:

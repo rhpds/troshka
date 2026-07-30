@@ -64,6 +64,7 @@ from app.services.ws_pubsub import notify_project
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 _VMS_START_PATH = "/vms/start"
+_FILES_REMOVE_PATH = "/files/remove"
 _TROSHKA_DOMAIN = "troshka.redhat.com"
 
 
@@ -985,7 +986,10 @@ def extend_timer(
     return _project_response_dict(project)
 
 
-@router.post("/{project_id}/deploy")
+@router.post(
+    "/{project_id}/deploy",
+    responses={400: {"description": "Bad request"}},
+)
 def deploy_project(
     project_id: str,
     storage_pool_id: str | None = None,
@@ -2513,6 +2517,77 @@ def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
     return None
 
 
+def _apply_kubevirt_vm_changes(
+    custom_api,
+    ns,
+    p_id,
+    diff,
+    changed_vm_ids,
+    current_vms,
+    current,
+):
+    """Delete removed VMs and patch changed VMs on KubeVirt."""
+    # Delete removed VMs
+    for vm_id in diff.get("removed_vms", []):
+        cr_name = f"vm-{vm_id[:8]}"
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+            )
+            logger.info("Reconfigure %s: deleted TroshkaVM %s", p_id[:8], cr_name)
+        except Exception:
+            pass
+
+    # Patch changed VMs — update TroshkaVM CR spec, operator handles reconciliation
+    for vm_id in changed_vm_ids:
+        vm = current_vms.get(vm_id)
+        if not vm:
+            continue
+        cr_name = f"vm-{vm_id[:8]}"
+        vm_spec = _build_kubevirt_vm_spec(vm_id, vm, current)
+        try:
+            existing = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+                group=_TROSHKA_DOMAIN,
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+            )
+            existing["spec"] = vm_spec  # type: ignore[index]
+            custom_api.replace_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+                body=existing,
+            )
+            logger.info("Reconfigure %s: updated TroshkaVM %s", p_id[:8], cr_name)
+        except Exception as e:
+            logger.warning(
+                "Reconfigure %s: failed to update %s: %s", p_id[:8], cr_name, e
+            )
+
+
+def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
+    """Find VM node IDs with any data change between current and deployed topologies."""
+    cur_nodes = {
+        n["id"]: n for n in current.get("nodes", []) if n.get("type") == "vmNode"
+    }
+    dep_nodes = {
+        n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "vmNode"
+    }
+    return [
+        nid
+        for nid in cur_nodes
+        if nid in dep_nodes and cur_nodes[nid].get("data") != dep_nodes[nid].get("data")
+    ]
+
+
 def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict):
     """Reconfigure a KubeVirt project by patching CRs."""
     import copy
@@ -2555,7 +2630,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             }
         )
 
-        custom_api, core_api, _ = _get_k8s_clients(provider)
+        custom_api, _, _ = _get_k8s_clients(provider)
         ns = _project_ns(provider, p_id)
 
         _set_deploy_progress(
@@ -2565,64 +2640,17 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         from app.services.deploy_service import _extract_vms
 
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
-        cur_nodes = {
-            n["id"]: n for n in current.get("nodes", []) if n.get("type") == "vmNode"
-        }
-        dep_nodes = {
-            n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "vmNode"
-        }
+        changed_vm_ids = _find_changed_kubevirt_vms(current, deployed)
 
-        # Find all VMs with any data change (broader than diff_topologies)
-        changed_vm_ids = []
-        for nid in cur_nodes:
-            if nid in dep_nodes:
-                if cur_nodes[nid].get("data") != dep_nodes[nid].get("data"):
-                    changed_vm_ids.append(nid)
-
-        # Delete removed VMs
-        for vm_id in diff.get("removed_vms", []):
-            cr_name = f"vm-{vm_id[:8]}"
-            try:
-                custom_api.delete_namespaced_custom_object(
-                    group=_TROSHKA_DOMAIN,
-                    version="v1alpha1",
-                    namespace=ns,
-                    plural="troshkavms",
-                    name=cr_name,
-                )
-                logger.info("Reconfigure %s: deleted TroshkaVM %s", p_id[:8], cr_name)
-            except Exception:
-                pass
-
-        # Patch changed VMs — update TroshkaVM CR spec, operator handles reconciliation
-        for vm_id in changed_vm_ids:
-            vm = current_vms.get(vm_id)
-            if not vm:
-                continue
-            cr_name = f"vm-{vm_id[:8]}"
-            vm_spec = _build_kubevirt_vm_spec(vm_id, vm, current)
-            try:
-                existing = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
-                    group=_TROSHKA_DOMAIN,
-                    version="v1alpha1",
-                    namespace=ns,
-                    plural="troshkavms",
-                    name=cr_name,
-                )
-                existing["spec"] = vm_spec  # type: ignore[index]
-                custom_api.replace_namespaced_custom_object(
-                    group=_TROSHKA_DOMAIN,
-                    version="v1alpha1",
-                    namespace=ns,
-                    plural="troshkavms",
-                    name=cr_name,
-                    body=existing,
-                )
-                logger.info("Reconfigure %s: updated TroshkaVM %s", p_id[:8], cr_name)
-            except Exception as e:
-                logger.warning(
-                    "Reconfigure %s: failed to update %s: %s", p_id[:8], cr_name, e
-                )
+        _apply_kubevirt_vm_changes(
+            custom_api,
+            ns,
+            p_id,
+            diff,
+            changed_vm_ids,
+            current_vms,
+            current,
+        )
 
         # Wait for all VMs to settle
         err = _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s)
@@ -2630,20 +2658,8 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             return
 
         # Finalize
-        clean_topo = copy.deepcopy(current)
-        for node in clean_topo.get("nodes", []):
-            ndata = node.get("data", {})
-            ndata.pop("resolvedS3Path", None)
-            ndata.pop("presignedUrl", None)
-            ndata.pop("ciGeneratedUserData", None)
-        proj.deployed_topology = clean_topo
-        proj.topology = clean_topo
-        proj.state = "active"
-        proj.deploy_error = None
-        s.commit()
+        _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         _delete_deploy_progress(p_id)
-        notify_project(p_id, {"type": "project-state", "state": "active"})
-        logger.info("Reconfigure %s: kubevirt reconfigure complete", p_id[:8])
     except Exception as e:
         logger.error("Reconfigure %s: kubevirt error: %s", p_id[:8], e, exc_info=True)
         try:
@@ -2657,6 +2673,76 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         _delete_deploy_progress(p_id)
     finally:
         s.close()
+
+
+def _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project):
+    """Commit the reconfigured topology and mark the project active."""
+    clean_topo = copy.deepcopy(current)
+    for node in clean_topo.get("nodes", []):
+        ndata = node.get("data", {})
+        ndata.pop("resolvedS3Path", None)
+        ndata.pop("presignedUrl", None)
+        ndata.pop("ciGeneratedUserData", None)
+    proj.deployed_topology = clean_topo
+    proj.topology = clean_topo
+    proj.state = "active"
+    proj.deploy_error = None
+    s.commit()
+    notify_project(p_id, {"type": "project-state", "state": "active"})
+    logger.info("Reconfigure %s: kubevirt reconfigure complete", p_id[:8])
+
+
+def _find_gateway_node(topology):
+    """Find the NAT port-forward gateway node in a topology."""
+    return next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+            and n.get("data", {}).get("gatewayMode") == "nat-portforward"
+        ),
+        None,
+    )
+
+
+def _sync_transit_ports(s, provider, h, p_id, gw_node):
+    """Allocate transit ports and update EIP LB ports for non-EC2 providers."""
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import allocate_transit_ports
+    from app.services.providers import get_provider_driver
+
+    driver = get_provider_driver(provider)
+    pf_list = gw_node.get("data", {}).get("portForwards", [])
+    eip_map = {}
+    for eip_obj in s.query(ElasticIp).filter_by(project_id=p_id):
+        eip_map[eip_obj.canvas_eip_id] = eip_obj
+
+    for canvas_id, eip_obj in eip_map.items():
+        pf_for_eip = [pf for pf in pf_list if pf.get("extIpId") == canvas_id]
+        if not pf_for_eip:
+            continue
+        eip_obj.port_map = None
+        s.commit()
+        port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
+        driver.update_eip_ports(
+            provider,
+            h,
+            eip_obj.allocation_id,
+            [
+                {
+                    "port": int(ep),
+                    "targetPort": tp,
+                    "name": f"pf-{i}",
+                }
+                for i, (ep, tp) in enumerate(port_map.items())
+            ],
+        )
+        logger.info(
+            "Reconfigure %s: updated EIP LB ports %s",
+            p_id[:8],
+            port_map,
+        )
 
 
 def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
@@ -2707,16 +2793,7 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
         s.commit()
         s.refresh(proj)
 
-        gw_node = next(
-            (
-                n
-                for n in current.get("nodes", [])
-                if n.get("type") == "networkNode"
-                and n.get("data", {}).get("subtype") == "gateway"
-                and n.get("data", {}).get("gatewayMode") == "nat-portforward"
-            ),
-            None,
-        )
+        gw_node = _find_gateway_node(current)
         if gw_node:
             desired_sg = [
                 {
@@ -2730,46 +2807,13 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
             sync_security_group_rules(s, provider, desired_sg)
 
         if provider.type != "ec2" and gw_node:
-            from app.services.eip_service import allocate_transit_ports
-            from app.services.providers import get_provider_driver
-
-            driver = get_provider_driver(provider)
-            pf_list = gw_node.get("data", {}).get("portForwards", [])
-            eip_map = {}
-            for eip_obj in s.query(ElasticIp).filter_by(project_id=p_id):
-                eip_map[eip_obj.canvas_eip_id] = eip_obj
-
-            for canvas_id, eip_obj in eip_map.items():
-                pf_for_eip = [pf for pf in pf_list if pf.get("extIpId") == canvas_id]
-                if not pf_for_eip:
-                    continue
-                eip_obj.port_map = None
-                s.commit()
-                port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
-                driver.update_eip_ports(
-                    provider,
-                    h,
-                    eip_obj.allocation_id,
-                    [
-                        {
-                            "port": int(ep),
-                            "targetPort": tp,
-                            "name": f"pf-{i}",
-                        }
-                        for i, (ep, tp) in enumerate(port_map.items())
-                    ],
-                )
-                logger.info(
-                    "Reconfigure %s: updated EIP LB ports %s",
-                    p_id[:8],
-                    port_map,
-                )
+            _sync_transit_ports(s, provider, h, p_id, gw_node)
     except Exception:
         logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
         errors.append("EIP allocation/association failed — check server logs")
 
 
-def _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors):
+def _reconfigure_bmc(h, p_id, deployed, bmc_config, errors):
     """Teardown old BMC and set up new BMC during reconfigure."""
     from app.services.deploy_service import (
         _setup_bmc_via_troshkad,
@@ -2855,22 +2899,19 @@ def _broadcast_vm_states(h, p_id, current):
                 continue
             dom = _vm_domain_name(p_id, node["id"])
             raw = batch.get(dom, "unknown")
-            vm_states[node["id"]] = (
-                "running"
-                if raw == "running"
-                else "stopped"
-                if raw == "shut_off"
-                else raw
-            )
+            if raw == "running":
+                vm_states[node["id"]] = "running"
+            elif raw == "shut_off":
+                vm_states[node["id"]] = "stopped"
+            else:
+                vm_states[node["id"]] = raw
         notify_project(p_id, {"type": "vm-state", "states": vm_states, "progress": {}})
     except Exception:
         pass
 
 
-def _detect_disk_changes(p_id, vm_node_id, vm_disks, deployed, pool):
-    """Build disk/cdrom lists and detect changes for a single VM."""
-    from app.services.deploy_service import _image_cache_path
-
+def _get_deployed_disk_info(vm_node_id, deployed):
+    """Extract library item IDs and sizes from deployed topology disks."""
     dep_disk_libs = {}
     dep_disk_sizes = {}
     dep_vm_node = next(
@@ -2882,61 +2923,105 @@ def _detect_disk_changes(p_id, vm_node_id, vm_disks, deployed, pool):
         for dd in dep_disks:
             dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
             dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
+    return dep_disk_libs, dep_disk_sizes
 
-    disk_list = []
-    cdrom_list = []
-    any_disk_changed = False
-    needs_library_download = False
-    files_to_remove = []
-    disks_to_create = []
-    disks_to_resize = []
+
+def _resolve_disk_backing(d, pool):
+    """Resolve the backing file path for a disk entry."""
+    from app.services.deploy_service import _image_cache_path
+
+    if d.get("source") == "library" and d.get("library_item_id"):
+        return _image_cache_path(d["library_item_id"], d["format"], pool=pool), True
+    if d.get("source") == "pattern" and d.get("patternId"):
+        backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
+        return backing, False
+    return None, False
+
+
+def _classify_single_disk(d, p_id, vm_node_id, dep_disk_libs, dep_disk_sizes, pool):
+    """Classify a single disk entry: detect image/size changes and resolve backing."""
+    path = _disk_path(p_id, vm_node_id, d["node_id"], d["format"], pool=pool)
+
+    old_lib = dep_disk_libs.get(d["node_id"])
+    new_lib = d.get("library_item_id")
+    image_changed = old_lib != new_lib and (old_lib or new_lib)
+    old_size = dep_disk_sizes.get(d["node_id"], 0)
+    size_grew = d["size_gb"] > old_size and old_size > 0
+    is_new_disk = (
+        d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
+    )
+
+    backing, is_library = _resolve_disk_backing(d, pool)
+    return {
+        "path": path,
+        "format": d["format"],
+        "bus": d["bus"],
+        "size_gb": d["size_gb"],
+        "backing_file": backing,
+        "image_changed": image_changed,
+        "size_grew": size_grew,
+        "is_new": is_new_disk,
+        "is_library": is_library,
+    }
+
+
+def _accumulate_disk_info(info, result):
+    """Accumulate a single classified disk into the result dict."""
+    result["disk_list"].append(
+        {"path": info["path"], "format": info["format"], "bus": info["bus"]}
+    )
+    if info["image_changed"] or info["size_grew"] or info["is_new"]:
+        result["any_disk_changed"] = True
+    if info["image_changed"]:
+        result["files_to_remove"].append(info["path"])
+    if info["is_library"]:
+        result["needs_library_download"] = True
+    result["disks_to_create"].append(
+        {
+            "path": info["path"],
+            "size_gb": info["size_gb"],
+            "format": info["format"],
+            "backing_file": info["backing_file"],
+        }
+    )
+    if info["size_grew"] and not info["image_changed"]:
+        result["disks_to_resize"].append(
+            {"path": info["path"], "new_size_gb": info["size_gb"]}
+        )
+
+
+def _detect_disk_changes(p_id, vm_node_id, vm_disks, deployed, pool):
+    """Build disk/cdrom lists and detect changes for a single VM."""
+    result = {
+        "disk_list": [],
+        "cdrom_list": [],
+        "any_disk_changed": False,
+        "needs_library_download": False,
+        "files_to_remove": [],
+        "disks_to_create": [],
+        "disks_to_resize": [],
+    }
+    if not vm_disks:
+        return result
+
+    from app.services.deploy_service import _image_cache_path
+
+    dep_disk_libs, dep_disk_sizes = _get_deployed_disk_info(vm_node_id, deployed)
+
     for d in vm_disks:
         if d["format"] == "iso":
             if d.get("library_item_id"):
-                cdrom_list.append(
+                result["cdrom_list"].append(
                     _image_cache_path(d["library_item_id"], "iso", pool=pool)
                 )
             continue
-        path = _disk_path(p_id, vm_node_id, d["node_id"], d["format"], pool=pool)
-        disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
-        old_lib = dep_disk_libs.get(d["node_id"])
-        new_lib = d.get("library_item_id")
-        image_changed = old_lib != new_lib and (old_lib or new_lib)
-        old_size = dep_disk_sizes.get(d["node_id"], 0)
-        size_grew = d["size_gb"] > old_size and old_size > 0
-        is_new_disk = (
-            d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
-        )
-        if image_changed or size_grew or is_new_disk:
-            any_disk_changed = True
-        if image_changed:
-            files_to_remove.append(path)
-        backing = None
-        if d.get("source") == "library" and d.get("library_item_id"):
-            needs_library_download = True
-            backing = _image_cache_path(d["library_item_id"], d["format"], pool=pool)
-        elif d.get("source") == "pattern" and d.get("patternId"):
-            backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
-        disks_to_create.append(
-            {
-                "path": path,
-                "size_gb": d["size_gb"],
-                "format": d["format"],
-                "backing_file": backing,
-            }
-        )
-        if size_grew and not image_changed:
-            disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
 
-    return {
-        "disk_list": disk_list,
-        "cdrom_list": cdrom_list,
-        "any_disk_changed": any_disk_changed,
-        "needs_library_download": needs_library_download,
-        "files_to_remove": files_to_remove,
-        "disks_to_create": disks_to_create,
-        "disks_to_resize": disks_to_resize,
-    }
+        info = _classify_single_disk(
+            d, p_id, vm_node_id, dep_disk_libs, dep_disk_sizes, pool
+        )
+        _accumulate_disk_info(info, result)
+
+    return result
 
 
 def _apply_disk_changes(h, p_id, s, current, changes):
@@ -2952,7 +3037,7 @@ def _apply_disk_changes(h, p_id, s, current, changes):
     if changes["files_to_remove"]:
         try:
             job_id = start_job(
-                h, "/files/remove", {"paths": changes["files_to_remove"]}
+                h, _FILES_REMOVE_PATH, {"paths": changes["files_to_remove"]}
             )
             wait_for_job(h, job_id, timeout=30)
         except TroshkadError as e:
@@ -3096,7 +3181,7 @@ def _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors):
     sync_host_capacity(s, h)
 
     bmc_config = _extract_bmc_config(current, p_id)
-    _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors)
+    _reconfigure_bmc(h, p_id, deployed, bmc_config, errors)
 
     s.refresh(proj)
     final_topo = proj.topology or {}
@@ -3270,7 +3355,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             try:
                 job_id = start_job(
                     h,
-                    "/files/remove",
+                    _FILES_REMOVE_PATH,
                     {
                         "paths": [
                             f"{vm_dir_path}/{node['id'][:8]}-{suffix}"
@@ -3319,7 +3404,10 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         s.close()
 
 
-@router.post("/{project_id}/vms/{vm_id}/redeploy")
+@router.post(
+    "/{project_id}/vms/{vm_id}/redeploy",
+    responses={400: {"description": "Library item not ready"}},
+)
 def redeploy_vm(
     project_id: str,
     vm_id: str,
@@ -3351,7 +3439,7 @@ def _cleanup_old_vm_files(h, p_id, target_vm_id, topology):
             )
     paths_to_remove.append(_seed_path(p_id, target_vm_id))
     try:
-        job_id = start_job(h, "/files/remove", {"paths": paths_to_remove})
+        job_id = start_job(h, _FILES_REMOVE_PATH, {"paths": paths_to_remove})
         wait_for_job(h, job_id, timeout=15)
     except TroshkadError as e:
         from app.services.deploy_service import _vm_domain_name

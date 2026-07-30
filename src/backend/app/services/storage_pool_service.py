@@ -238,6 +238,28 @@ def create_fsx_filesystem(
     }
 
 
+def _resolve_fsx_mount_ip(fs, region, credentials):
+    """Resolve the private IP of the FSx filesystem's first ENI."""
+    if not fs.get("NetworkInterfaceIds"):
+        return None
+    enis = _boto_client("ec2", region, credentials)
+    eni_resp = enis.describe_network_interfaces(
+        NetworkInterfaceIds=fs["NetworkInterfaceIds"][:1]
+    )
+    if eni_resp["NetworkInterfaces"]:
+        return eni_resp["NetworkInterfaces"][0]["PrivateIpAddress"]
+    return None
+
+
+def _set_pool_status(db, pool_id, status):
+    """Set pool status and commit; returns False if pool not found."""
+    pool = db.get(StoragePool, pool_id)
+    if not pool:
+        return False
+    pool.status = status
+    return True
+
+
 def _poll_fsx_until_available(
     pool_id: str, credentials: dict, region: str, filesystem_id: str
 ):
@@ -257,34 +279,20 @@ def _poll_fsx_until_available(
                     return
                 pool.status = "available"
                 pool.fsx_dns_name = fs.get("DNSName")
-                if fs.get("NetworkInterfaceIds"):
-                    enis = _boto_client("ec2", region, credentials)
-                    eni_resp = enis.describe_network_interfaces(
-                        NetworkInterfaceIds=fs["NetworkInterfaceIds"][:1]
-                    )
-                    if eni_resp["NetworkInterfaces"]:
-                        pool.fsx_mount_ip = eni_resp["NetworkInterfaces"][0][
-                            "PrivateIpAddress"
-                        ]
+                pool.fsx_mount_ip = _resolve_fsx_mount_ip(fs, region, credentials)
                 db.commit()
                 logger.info("FSx %s is available for pool %s", filesystem_id, pool_id)
                 return
-            elif status in ("FAILED", "DELETING"):
-                pool = db.get(StoragePool, pool_id)
-                if not pool:
-                    return
-                pool.status = "error"
-                db.commit()
+            if status in ("FAILED", "DELETING"):
+                if _set_pool_status(db, pool_id, "error"):
+                    db.commit()
                 logger.error(
                     "FSx %s failed for pool %s: %s", filesystem_id, pool_id, status
                 )
                 return
 
-        pool = db.get(StoragePool, pool_id)
-        if not pool:
-            return
-        pool.status = "error"
-        db.commit()
+        if _set_pool_status(db, pool_id, "error"):
+            db.commit()
         logger.error("FSx %s timed out for pool %s", filesystem_id, pool_id)
     finally:
         db.close()

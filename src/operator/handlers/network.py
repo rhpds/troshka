@@ -14,50 +14,70 @@ from helpers.dnsmasq import generate_dnsmasq_config
 logger = logging.getLogger(__name__)
 
 
+def _modify_scc_users(custom_api, scc_name, sa_ref, action):
+    """Modify a single SCC's users list. Returns True if a patch was applied."""
+    scc = custom_api.get_cluster_custom_object(
+        group="security.openshift.io",
+        version="v1",
+        plural="securitycontextconstraints",
+        name=scc_name,
+    )
+    users = scc.get("users", []) or []
+
+    if action == "add" and sa_ref not in users:
+        users.append(sa_ref)
+    elif action == "remove" and sa_ref in users:
+        users.remove(sa_ref)
+    else:
+        return False
+
+    custom_api.patch_cluster_custom_object(
+        group="security.openshift.io",
+        version="v1",
+        plural="securitycontextconstraints",
+        name=scc_name,
+        body={"users": users},
+    )
+    verb = "Added" if action == "add" else "Removed"
+    preposition = "to" if action == "add" else "from"
+    logger.info(f"{verb} {sa_ref} {preposition} {scc_name} SCC")
+    return True
+
+
+async def _patch_single_scc(custom_api, scc_name, sa_ref, action, namespace):
+    """Patch a single SCC with retry on 409 conflict."""
+    verb = "patch" if action == "add" else "clean"
+    for attempt in range(5):
+        try:
+            _modify_scc_users(custom_api, scc_name, sa_ref, action)
+            return
+        except client.ApiException as e:
+            if e.status == 409 and attempt < 4:
+                await asyncio.sleep(0.2 * (attempt + 1))
+                continue
+            logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
+            return
+        except Exception as e:
+            logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
+            return
+
+
 async def _patch_scc_users(custom_api, sa_ref, scc_names, action, namespace):
     """Add or remove a service account ref from SCC users lists with retry on 409."""
     for scc_name in scc_names:
-        for attempt in range(5):
-            try:
-                scc = custom_api.get_cluster_custom_object(
-                    group="security.openshift.io",
-                    version="v1",
-                    plural="securitycontextconstraints",
-                    name=scc_name,
-                )
-                users = scc.get("users", []) or []
-                if action == "add" and sa_ref not in users:
-                    users.append(sa_ref)
-                    custom_api.patch_cluster_custom_object(
-                        group="security.openshift.io",
-                        version="v1",
-                        plural="securitycontextconstraints",
-                        name=scc_name,
-                        body={"users": users},
-                    )
-                    logger.info(f"Added {sa_ref} to {scc_name} SCC")
-                elif action == "remove" and sa_ref in users:
-                    users.remove(sa_ref)
-                    custom_api.patch_cluster_custom_object(
-                        group="security.openshift.io",
-                        version="v1",
-                        plural="securitycontextconstraints",
-                        name=scc_name,
-                        body={"users": users},
-                    )
-                    logger.info(f"Removed {sa_ref} from {scc_name} SCC")
-                break
-            except client.ApiException as e:
-                if e.status == 409 and attempt < 4:
-                    await asyncio.sleep(0.2 * (attempt + 1))
-                    continue
-                verb = "patch" if action == "add" else "clean"
-                logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
-                break
-            except Exception as e:
-                verb = "patch" if action == "add" else "clean"
-                logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
-                break
+        await _patch_single_scc(custom_api, scc_name, sa_ref, action, namespace)
+
+
+async def _wait_for_deployment_deletion(apps_api, namespace, dep_name):
+    """Poll until a deployment is fully deleted (up to 60s)."""
+    for _ in range(30):
+        try:
+            apps_api.read_namespaced_deployment(name=dep_name, namespace=namespace)
+            await asyncio.sleep(2)
+        except client.ApiException as e:
+            if e.status == 404:
+                return
+            raise
 
 
 async def _create_deployment_with_stale_cleanup(
@@ -67,25 +87,15 @@ async def _create_deployment_with_stale_cleanup(
     try:
         apps_api.create_namespaced_deployment(namespace=namespace, body=deployment_body)
         logger.info(f"Created deployment {dep_name}")
+        return
     except client.ApiException as e:
-        if e.status == 409:
-            logger.info(f"Deployment {dep_name} exists (stale), waiting for deletion")
-            for _ in range(30):
-                try:
-                    apps_api.read_namespaced_deployment(
-                        name=dep_name, namespace=namespace
-                    )
-                    await asyncio.sleep(2)
-                except client.ApiException as ge:
-                    if ge.status == 404:
-                        break
-                    raise
-            apps_api.create_namespaced_deployment(
-                namespace=namespace, body=deployment_body
-            )
-            logger.info(f"Created deployment {dep_name} (after stale cleanup)")
-        else:
+        if e.status != 409:
             raise
+
+    logger.info(f"Deployment {dep_name} exists (stale), waiting for deletion")
+    await _wait_for_deployment_deletion(apps_api, namespace, dep_name)
+    apps_api.create_namespaced_deployment(namespace=namespace, body=deployment_body)
+    logger.info(f"Created deployment {dep_name} (after stale cleanup)")
 
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):

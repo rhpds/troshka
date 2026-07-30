@@ -284,6 +284,20 @@ def _fetch_kubevirt_vm_states(project, host, db):
         return None
 
 
+_STOPPED_STATES = frozenset(
+    ("shut_off", "shutting_down", "crashed", "suspended", "paused", "Stopped")
+)
+
+
+def _normalize_vm_state(state: str) -> str:
+    """Normalize a raw VM state to a canonical display state."""
+    if state in _STOPPED_STATES:
+        return "stopped"
+    if state == "Running":
+        return "running"
+    return state
+
+
 def _map_vm_states_for_project(project, host_batch, kv_batch):
     """Map batch VM states to per-project node states.
 
@@ -315,20 +329,29 @@ def _map_vm_states_for_project(project, host_batch, kv_batch):
             state = batch.get(dom_name, "not_found")
         if state == "not_found":
             continue
-        if state in (
-            "shut_off",
-            "shutting_down",
-            "crashed",
-            "suspended",
-            "paused",
-            "Stopped",
-        ):
-            state = "stopped"
-        elif state == "Running":
-            state = "running"
-        vm_states[node_id] = state
+        vm_states[node_id] = _normalize_vm_state(state)
 
     return vm_states, vm_progress, vm_boot_devs
+
+
+def _log_vm_state_changes(project, vm_states, prev_vm_states):
+    """Log individual VM state transitions for debugging."""
+    for vm_id, new_state in vm_states.items():
+        old_state = prev_vm_states.get(vm_id)
+        if not old_state or old_state == new_state:
+            continue
+        vm_label = ""
+        for node in (project.topology or {}).get("nodes", []):
+            if node["id"] == vm_id:
+                vm_label = node.get("data", {}).get("label", vm_id[:8])
+                break
+        logger.info(
+            "VM state change: %s/%s %s → %s",
+            project.name[:30],
+            vm_label,
+            old_state,
+            new_state,
+        )
 
 
 def _check_and_notify_project_changes(
@@ -360,25 +383,10 @@ def _check_and_notify_project_changes(
     if dp and dp != last.get("deploy_progress"):
         notify_project(project_id, {"type": "deploy-progress", "progress": dp})
 
-    # Log VM state changes
+    # Log and notify VM state changes
     prev_vm_states = last.get("vm_states", {})
-    for vm_id, new_state in vm_states.items():
-        old_state = prev_vm_states.get(vm_id)
-        if old_state and old_state != new_state:
-            vm_label = ""
-            for node in (project.topology or {}).get("nodes", []):
-                if node["id"] == vm_id:
-                    vm_label = node.get("data", {}).get("label", vm_id[:8])
-                    break
-            logger.info(
-                "VM state change: %s/%s %s → %s",
-                project.name[:30],
-                vm_label,
-                old_state,
-                new_state,
-            )
+    _log_vm_state_changes(project, vm_states, prev_vm_states)
 
-    # Notify if VM states changed
     if vm_states and (
         vm_states != prev_vm_states
         or vm_progress != last.get("vm_progress")
@@ -405,13 +413,28 @@ def _check_and_notify_project_changes(
     }
 
 
+def _fetch_troshkad_host_states(host, host_batch_states):
+    """Fetch VM states from a troshkad host if not already cached."""
+    if host.agent_status != "connected":
+        return
+    if host.id in host_batch_states:
+        return
+    from app.services.troshkad_client import get_all_vm_states
+
+    try:
+        batch = get_all_vm_states(host)
+        if batch is not None:
+            host_batch_states[host.id] = batch
+    except Exception:
+        pass
+
+
 def _batch_fetch_vm_states(projects, deploying_host_ids, db):
     """Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt).
 
     Returns (host_batch_states, project_batch_states).
     """
     from app.models.host import Host
-    from app.services.troshkad_client import get_all_vm_states
 
     host_batch_states: dict = {}
     project_batch_states: dict = {}
@@ -426,15 +449,7 @@ def _batch_fetch_vm_states(projects, deploying_host_ids, db):
             if kv_states:
                 project_batch_states[project.id] = kv_states
             continue
-        if host.agent_status != "connected":
-            continue
-        if project.host_id not in host_batch_states:
-            try:
-                batch = get_all_vm_states(host)
-                if batch is not None:
-                    host_batch_states[project.host_id] = batch
-            except Exception:
-                pass
+        _fetch_troshkad_host_states(host, host_batch_states)
     return host_batch_states, project_batch_states
 
 

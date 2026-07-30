@@ -104,20 +104,20 @@ class ProviderResponse(BaseModel):
     model_config = {"from_attributes": False}
 
 
-def _build_provider_credentials(
+def _build_cluster_credentials(
     body: ProviderCreate, provider: Provider
 ) -> dict[str, Any]:
-    """Build credentials dict and update provider fields based on type.
+    """Build credentials for OCP Virt and KubeVirt cluster providers."""
+    if not body.api_url or not body.token:
+        label = "OCP Virt" if body.type == "ocpvirt" else "KubeVirt"
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} providers require api_url and token",
+        )
+    api_host = body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+    provider.console_base_domain = api_host.replace("api.", "apps.", 1)
 
-    Returns the credentials dict to be stored on the provider.
-    Raises HTTPException on validation errors.
-    """
     if body.type == "ocpvirt":
-        if not body.api_url or not body.token:
-            raise HTTPException(
-                status_code=400,
-                detail="OCP Virt providers require api_url and token",
-            )
         creds: dict[str, Any] = {
             "api_url": body.api_url,
             "token": body.token,
@@ -127,12 +127,25 @@ def _build_provider_credentials(
         if body.iso_pvc is not None:
             creds["iso_pvc"] = body.iso_pvc
         provider.default_region = body.namespace or "troshka"
-        api_host = (
-            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
-        )
-        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
         return creds
 
+    # kubevirt
+    op_ns = body.namespace or "troshka-operator"
+    provider.default_region = op_ns
+    return {
+        "api_url": body.api_url,
+        "token": body.token,
+        "namespace": op_ns,
+        "verify_ssl": body.verify_ssl,
+        "cache_namespace": body.cache_namespace or "troshka-cache",
+        "project_prefix": body.project_prefix or "troshka-",
+    }
+
+
+def _build_cloud_credentials(
+    body: ProviderCreate, provider: Provider
+) -> dict[str, Any]:
+    """Build credentials for GCP and Azure cloud providers."""
     if body.type == "gcp":
         if not body.gcp_project_id or not body.service_account_json:
             raise HTTPException(
@@ -148,51 +161,45 @@ def _build_provider_credentials(
         provider.gcp_project_id = body.gcp_project_id
         return {"service_account_json": sa_json}
 
-    if body.type == "azure":
-        if not all(
-            [
-                body.azure_tenant_id,
-                body.azure_client_id,
-                body.azure_client_secret,
-                body.azure_subscription_id,
-            ]
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Azure providers require tenant_id, client_id, client_secret, subscription_id",
-            )
-        provider.azure_subscription_id = body.azure_subscription_id
-        provider.azure_location = body.azure_location or body.default_region or None
-        return {
-            "tenant_id": body.azure_tenant_id,
-            "client_id": body.azure_client_id,
-            "client_secret": body.azure_client_secret,
-            "subscription_id": body.azure_subscription_id,
-        }
-
-    if body.type == "kubevirt":
-        if not body.api_url or not body.token:
-            raise HTTPException(
-                status_code=400,
-                detail="KubeVirt providers require api_url and token",
-            )
-        op_ns = body.namespace or "troshka-operator"
-        provider.default_region = op_ns
-        api_host = (
-            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+    # azure
+    if not all(
+        [
+            body.azure_tenant_id,
+            body.azure_client_id,
+            body.azure_client_secret,
+            body.azure_subscription_id,
+        ]
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Azure providers require tenant_id, client_id, client_secret, subscription_id",
         )
-        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
-        return {
-            "api_url": body.api_url,
-            "token": body.token,
-            "namespace": op_ns,
-            "verify_ssl": body.verify_ssl,
-            "cache_namespace": body.cache_namespace or "troshka-cache",
-            "project_prefix": body.project_prefix or "troshka-",
-        }
+    provider.azure_subscription_id = body.azure_subscription_id
+    provider.azure_location = body.azure_location or body.default_region or None
+    return {
+        "tenant_id": body.azure_tenant_id,
+        "client_id": body.azure_client_id,
+        "client_secret": body.azure_client_secret,
+        "subscription_id": body.azure_subscription_id,
+    }
+
+
+def _build_provider_credentials(
+    body: ProviderCreate, provider: Provider
+) -> dict[str, Any]:
+    """Build credentials dict and update provider fields based on type.
+
+    Returns the credentials dict to be stored on the provider.
+    Raises HTTPException on validation errors.
+    """
+    if body.type in ("ocpvirt", "kubevirt"):
+        return _build_cluster_credentials(body, provider)
+
+    if body.type in ("gcp", "azure"):
+        return _build_cloud_credentials(body, provider)
 
     if body.type in ("ec2", "s3", "s3_readonly"):
-        creds = {
+        creds: dict[str, Any] = {
             "access_key_id": body.access_key_id,
             "secret_access_key": body.secret_access_key,
         }
@@ -349,7 +356,11 @@ def create_provider(
     )
 
 
-@router.patch("/{provider_id}", response_model=ProviderResponse)
+@router.patch(
+    "/{provider_id}",
+    response_model=ProviderResponse,
+    responses={404: {"description": "Provider not found"}},
+)
 def update_provider(
     provider_id: str,
     body: ProviderUpdate,
@@ -491,7 +502,14 @@ def _cleanup_kubevirt_db_resources(
         db.delete(host)
 
 
-@router.delete("/{provider_id}", status_code=204)
+@router.delete(
+    "/{provider_id}",
+    status_code=204,
+    responses={
+        404: {"description": "Provider not found"},
+        409: {"description": "Provider has hosts"},
+    },
+)
 def delete_provider(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -618,7 +636,10 @@ def discover_images(
 
 
 # Backward-compatible alias for old endpoint name
-@router.get("/{provider_id}/discover-ami")
+@router.get(
+    "/{provider_id}/discover-ami",
+    responses={404: {"description": "Provider not found"}},
+)
 def list_available_amis(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -628,7 +649,10 @@ def list_available_amis(
     return discover_images(provider_id, user, db)
 
 
-@router.get("/{provider_id}/discover-vpcs")
+@router.get(
+    "/{provider_id}/discover-vpcs",
+    responses={404: {"description": "Provider not found"}},
+)
 def discover_vpcs(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -692,7 +716,10 @@ def discover_vpcs(
         )
 
 
-@router.post("/{provider_id}/create-vpc")
+@router.post(
+    "/{provider_id}/create-vpc",
+    responses={404: {"description": "Provider not found"}},
+)
 def create_vpc(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -827,7 +854,10 @@ def create_vpc(
         )
 
 
-@router.post("/{provider_id}/setup-infra")
+@router.post(
+    "/{provider_id}/setup-infra",
+    responses={404: {"description": "Provider not found"}},
+)
 def setup_infrastructure(
     provider_id: str,
     vpc_id: str,
@@ -864,7 +894,10 @@ def setup_infrastructure(
         )
 
 
-@router.post("/{provider_id}/set-image")
+@router.post(
+    "/{provider_id}/set-image",
+    responses={404: {"description": "Provider not found"}},
+)
 def set_image(
     provider_id: str,
     image_id: str,
@@ -881,7 +914,10 @@ def set_image(
 
 
 # Backward-compatible alias for old endpoint name
-@router.post("/{provider_id}/set-ami")
+@router.post(
+    "/{provider_id}/set-ami",
+    responses={404: {"description": "Provider not found"}},
+)
 def set_ami(
     provider_id: str,
     ami_id: str,
@@ -892,7 +928,10 @@ def set_ami(
     return set_image(provider_id, ami_id, user, db)
 
 
-@router.post("/{provider_id}/set-iso")
+@router.post(
+    "/{provider_id}/set-iso",
+    responses={404: {"description": "Provider not found"}},
+)
 def set_iso(
     provider_id: str,
     iso_pvc: str,
@@ -912,7 +951,10 @@ def set_iso(
 
 @router.get(
     "/{provider_id}/discover-isos",
-    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+    },
 )
 def discover_isos(
     provider_id: str,
@@ -950,7 +992,13 @@ def discover_isos(
         raise HTTPException(status_code=400, detail="Failed to list ISOs")
 
 
-@router.get("/{provider_id}/discover-datasources")
+@router.get(
+    "/{provider_id}/discover-datasources",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def discover_datasources(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1129,7 +1177,13 @@ def _ensure_namespaces(
     return ns_checks
 
 
-@router.post("/{provider_id}/test")
+@router.post(
+    "/{provider_id}/test",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def test_provider(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1147,7 +1201,7 @@ def test_provider(
         if provider.type == "ocpvirt":
             from app.services.providers.ocpvirt import _get_k8s_clients
 
-            custom_api, core_api = _get_k8s_clients(creds)
+            _, core_api = _get_k8s_clients(creds)
             ns = creds.get("namespace", "troshka")
             core_api.read_namespace(ns)
             nodes: Any = core_api.list_node()
@@ -1214,7 +1268,13 @@ def test_provider(
         raise HTTPException(status_code=400, detail="Credentials test failed")
 
 
-@router.post("/{provider_id}/create-bucket")
+@router.post(
+    "/{provider_id}/create-bucket",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def create_s3_bucket(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1257,7 +1317,14 @@ def create_s3_bucket(
         raise HTTPException(status_code=500, detail=f"Failed to create bucket: {e}")
 
 
-@router.post("/{provider_id}/install-operator")
+@router.post(
+    "/{provider_id}/install-operator",
+    responses={
+        400: {"description": "Bad request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Provider not found"},
+    },
+)
 def install_operator(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1344,7 +1411,13 @@ def install_operator(
     return {"status": "ok", "message": "Operator installed successfully"}
 
 
-@router.get("/{provider_id}/availability-zones")
+@router.get(
+    "/{provider_id}/availability-zones",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def list_availability_zones(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1378,7 +1451,13 @@ class ConsoleSetupRequest(BaseModel):
     base_domain: str
 
 
-@router.post("/{provider_id}/setup-console")
+@router.post(
+    "/{provider_id}/setup-console",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def setup_console(
     provider_id: str,
     req: ConsoleSetupRequest,
@@ -1520,7 +1599,13 @@ def setup_console(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{provider_id}/console")
+@router.delete(
+    "/{provider_id}/console",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+    },
+)
 def delete_console(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1596,7 +1681,10 @@ def delete_console(
     return {"status": "removed"}
 
 
-@router.post("/{provider_id}/create-network-gcp")
+@router.post(
+    "/{provider_id}/create-network-gcp",
+    responses={404: {"description": "GCP provider not found"}},
+)
 def create_network_gcp(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1680,7 +1768,10 @@ def create_network_gcp(
     }
 
 
-@router.get("/{provider_id}/discover-images-gcp")
+@router.get(
+    "/{provider_id}/discover-images-gcp",
+    responses={404: {"description": "GCP provider not found"}},
+)
 def discover_images_gcp(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1742,7 +1833,10 @@ def discover_images_gcp(
     return results
 
 
-@router.post("/{provider_id}/create-network-azure")
+@router.post(
+    "/{provider_id}/create-network-azure",
+    responses={404: {"description": "Azure provider not found"}},
+)
 def create_network_azure(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1865,7 +1959,10 @@ def create_network_azure(
     }
 
 
-@router.get("/{provider_id}/discover-images-azure")
+@router.get(
+    "/{provider_id}/discover-images-azure",
+    responses={404: {"description": "Azure provider not found"}},
+)
 def discover_images_azure(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -1949,7 +2046,14 @@ def discover_images_azure(
     return results
 
 
-@router.post("/{provider_id}/build-image")
+@router.post(
+    "/{provider_id}/build-image",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Provider not found"},
+        409: {"description": "Build already in progress"},
+    },
+)
 def build_image(
     provider_id: str,
     body: dict[str, Any] | None = None,

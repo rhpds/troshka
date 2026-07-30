@@ -293,6 +293,42 @@ def _wait_for_virt_launchers_gone(custom_api, core_api, namespace):
         time.sleep(2)
 
 
+def _collect_pv_names(core_api, namespace):
+    """Collect PersistentVolume names bound to PVCs in the given namespace."""
+    pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    pv_names = set()
+    for pvc in getattr(pvcs, "items", []):
+        if pvc.spec.volume_name:
+            pv_names.add(pvc.spec.volume_name)
+    return pv_names
+
+
+def _delete_detached_volume_attachments(storage_api, matching):
+    """Delete VolumeAttachments that have completed CSI detach (attached=false)."""
+    for va in matching:
+        attached = getattr(getattr(va, "status", None), "attached", True)
+        if not attached:
+            try:
+                storage_api.delete_volume_attachment(name=va.metadata.name)
+            except Exception:
+                pass
+
+
+def _poll_and_cleanup_attachments(storage_api, pv_names):
+    """Poll for VolumeAttachments matching the given PV names and clean up detached ones."""
+    for _ in range(30):
+        was = storage_api.list_volume_attachment()
+        matching = [
+            va
+            for va in getattr(was, "items", [])
+            if getattr(va.spec.source, "persistent_volume_name", None) in pv_names
+        ]
+        if not matching:
+            break
+        _delete_detached_volume_attachments(storage_api, matching)
+        time.sleep(2)
+
+
 def _cleanup_volume_attachments(core_api, namespace):
     """Clean up cluster-scoped VolumeAttachments that survive namespace deletion.
 
@@ -303,30 +339,9 @@ def _cleanup_volume_attachments(core_api, namespace):
         from kubernetes import client as _kc
 
         storage_api = _kc.StorageV1Api(core_api.api_client)
-        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
-        pv_names = set()
-        for pvc in getattr(pvcs, "items", []):
-            if pvc.spec.volume_name:
-                pv_names.add(pvc.spec.volume_name)
+        pv_names = _collect_pv_names(core_api, namespace)
         if pv_names:
-            for _ in range(30):
-                was = storage_api.list_volume_attachment()
-                matching = [
-                    va
-                    for va in getattr(was, "items", [])
-                    if getattr(va.spec.source, "persistent_volume_name", None)
-                    in pv_names
-                ]
-                if not matching:
-                    break
-                for va in matching:
-                    attached = getattr(getattr(va, "status", None), "attached", True)
-                    if not attached:
-                        try:
-                            storage_api.delete_volume_attachment(name=va.metadata.name)
-                        except Exception:
-                            pass
-                time.sleep(2)
+            _poll_and_cleanup_attachments(storage_api, pv_names)
     except Exception:
         pass
 

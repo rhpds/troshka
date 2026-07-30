@@ -22,9 +22,9 @@ class KubeVirtDriver:
         identity = identity.strip("/")
         return self.vm_map.get(identity, identity)
 
-    def _get_vm(self, identity):
+    def _get_vm(self, identity) -> dict:
         name = self._kv_name(identity)
-        return self.custom_api.get_namespaced_custom_object(
+        return self.custom_api.get_namespaced_custom_object(  # type: ignore[return-value]
             group=_KUBEVIRT_API_GROUP,
             version=_KUBEVIRT_API_VERSION,
             namespace=self.namespace,
@@ -32,17 +32,17 @@ class KubeVirtDriver:
             name=name,
         )
 
-    def _get_vmi(self, identity):
+    def _get_vmi(self, identity) -> dict | None:
         name = self._kv_name(identity)
         try:
-            return self.custom_api.get_namespaced_custom_object(
+            return self.custom_api.get_namespaced_custom_object(  # type: ignore[return-value]
                 group=_KUBEVIRT_API_GROUP,
                 version=_KUBEVIRT_API_VERSION,
                 namespace=self.namespace,
                 plural=_VMI_PLURAL,
                 name=name,
             )
-        except client.exceptions.ApiException as e:
+        except client.ApiException as e:
             if e.status == 404:
                 return None
             raise
@@ -51,7 +51,7 @@ class KubeVirtDriver:
         """Extract the devices dict from a VM spec."""
         vm = self._get_vm(identity)
         return (
-            vm.get("spec", {})
+            vm.get("spec", {})  # type: ignore[union-attr]  # type: ignore[union-attr]
             .get("template", {})
             .get("spec", {})
             .get("domain", {})
@@ -88,7 +88,7 @@ class KubeVirtDriver:
         vmi = self._get_vmi(identity)
         if not vmi:
             return "Off"
-        phase = vmi.get("status", {}).get("phase", "")
+        phase = vmi.get("status", {}).get("phase", "")  # type: ignore[union-attr]
         return "On" if phase == "Running" else "Off"
 
     def _delete_vmi(self, identity):
@@ -102,7 +102,7 @@ class KubeVirtDriver:
                 plural=_VMI_PLURAL,
                 name=name,
             )
-        except client.exceptions.ApiException:
+        except client.ApiException:
             pass
 
     def _patch_vm_running(self, identity, running):
@@ -160,31 +160,30 @@ class KubeVirtDriver:
         return clean_disks, clean_ifaces
 
     @staticmethod
+    def _set_boot_order_on(items, predicate, start_order):
+        """Assign incrementing bootOrder to items matching predicate.
+
+        Returns the next available order number.
+        """
+        order = start_order
+        for item in items:
+            if predicate(item):
+                item["bootOrder"] = order
+                order += 1
+        return order
+
+    @staticmethod
     def _assign_boot_orders(patch_disks, patch_ifaces, target_type):
         """Assign boot order numbers based on the target boot device type."""
-        order = 1
+        assign = KubeVirtDriver._set_boot_order_on
         if target_type == "interface":
-            for i in patch_ifaces:
-                i["bootOrder"] = order
-                order += 1
-            for d in patch_disks:
-                if "disk" in d or "cdrom" in d:
-                    d["bootOrder"] = order
-                    order += 1
+            order = assign(patch_ifaces, lambda _: True, 1)
+            assign(patch_disks, lambda d: "disk" in d or "cdrom" in d, order)
         elif target_type == "cdrom":
-            for d in patch_disks:
-                if "cdrom" in d:
-                    d["bootOrder"] = order
-                    order += 1
-            for d in patch_disks:
-                if "disk" in d:
-                    d["bootOrder"] = order
-                    order += 1
+            order = assign(patch_disks, lambda d: "cdrom" in d, 1)
+            assign(patch_disks, lambda d: "disk" in d, order)
         else:
-            for d in patch_disks:
-                if "disk" in d:
-                    d["bootOrder"] = order
-                    order += 1
+            assign(patch_disks, lambda d: "disk" in d, 1)
 
     _DEVICE_MAP = {"Pxe": "interface", "Hdd": "disk", "Cd": "cdrom"}
 
@@ -250,7 +249,7 @@ class KubeVirtDriver:
     def get_boot_mode(self, identity):
         vm = self._get_vm(identity)
         fw = (
-            vm.get("spec", {})
+            vm.get("spec", {})  # type: ignore[union-attr]
             .get("template", {})
             .get("spec", {})
             .get("domain", {})
@@ -266,7 +265,7 @@ class KubeVirtDriver:
     def get_total_memory(self, identity):
         vm = self._get_vm(identity)
         res = (
-            vm.get("spec", {})
+            vm.get("spec", {})  # type: ignore[union-attr]
             .get("template", {})
             .get("spec", {})
             .get("domain", {})
@@ -282,7 +281,7 @@ class KubeVirtDriver:
     def get_total_cpus(self, identity):
         vm = self._get_vm(identity)
         cpu = (
-            vm.get("spec", {})
+            vm.get("spec", {})  # type: ignore[union-attr]
             .get("template", {})
             .get("spec", {})
             .get("domain", {})
@@ -293,7 +292,7 @@ class KubeVirtDriver:
     def get_nics(self, identity):
         vm = self._get_vm(identity)
         interfaces = (
-            vm.get("spec", {})
+            vm.get("spec", {})  # type: ignore[union-attr]
             .get("template", {})
             .get("spec", {})
             .get("domain", {})
@@ -309,7 +308,7 @@ class KubeVirtDriver:
         return "KubeVirt BIOS"
 
     def get_systems(self):
-        vms = self.custom_api.list_namespaced_custom_object(
+        vms: dict = self.custom_api.list_namespaced_custom_object(  # type: ignore[assignment]
             group=_KUBEVIRT_API_GROUP,
             version=_KUBEVIRT_API_VERSION,
             namespace=self.namespace,
@@ -317,9 +316,9 @@ class KubeVirtDriver:
             label_selector="app=troshka",
         )
         systems = []
-        for vm in vms.get("items", []):
+        for vm in vms.get("items", []):  # type: ignore[union-attr]
             uuid = (
-                vm.get("spec", {})
+                vm.get("spec", {})  # type: ignore[union-attr]
                 .get("template", {})
                 .get("spec", {})
                 .get("domain", {})

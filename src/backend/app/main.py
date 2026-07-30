@@ -263,95 +263,111 @@ def _startup_resume_pattern_captures():
         db.close()
 
 
+def _resume_creating_pools(db, enqueue_job, provider_model):
+    """Resume FSx pollers for pools stuck in 'creating' state."""
+    from app.models.storage_pool import StoragePool
+
+    creating_pools = (
+        db.query(StoragePool).filter(StoragePool.status == "creating").all()
+    )
+    for pool in creating_pools:
+        if not pool.fsx_filesystem_id:
+            logger.warning(
+                "Startup: pool %s stuck in creating with no FSx ID, marking error",
+                pool.name,
+            )
+            pool.status = "error"
+            continue
+        provider = db.get(provider_model, pool.provider_id)
+        if not provider:
+            continue
+        creds = provider.get_credentials()
+        from app.services.storage_pool_service import (
+            _poll_fsx_until_available,
+        )
+
+        logger.info(
+            "Startup: resuming FSx poller for pool %s (%s)",
+            pool.name,
+            pool.fsx_filesystem_id,
+        )
+        enqueue_job(
+            _poll_fsx_until_available,
+            pool.id,
+            creds,
+            provider.default_region,
+            pool.fsx_filesystem_id,
+            queue_name="host_lifecycle",
+        )
+
+
+def _sync_shared_pool_sg_rules(db, provider_model):
+    """Ensure SG rules are up-to-date for all available shared-fsx pools."""
+    from app.models.storage_pool import StoragePool
+    from app.services.storage_pool_service import add_sg_rules_for_shared_storage
+
+    available_pools = (
+        db.query(StoragePool)
+        .filter(StoragePool.status == "available", StoragePool.mode == "shared-fsx")
+        .all()
+    )
+    for pool in available_pools:
+        provider = db.get(provider_model, pool.provider_id)
+        if not provider or not provider.security_group_id:
+            continue
+        try:
+            creds = provider.get_credentials()
+            add_sg_rules_for_shared_storage(
+                creds,
+                provider.default_region or "",
+                provider.security_group_id,
+            )
+            logger.info("Startup: synced SG rules for pool %s", pool.name)
+        except Exception as e:
+            logger.warning(
+                "Startup: failed to sync SG rules for pool %s: %s", pool.name, e
+            )
+
+
+def _retry_stuck_pattern_buffer_installs(db, enqueue_job, host_model):
+    """Retry agent install on pattern buffer hosts that are active but disconnected."""
+    from app.models.storage_pool import StoragePool
+
+    pb_pools = (
+        db.query(StoragePool).filter(StoragePool.worker_host_id.isnot(None)).all()
+    )
+    for pool in pb_pools:
+        pb_host = db.query(host_model).filter_by(id=pool.worker_host_id).first()
+        if (
+            pb_host
+            and pb_host.state == "active"
+            and pb_host.agent_status != "connected"
+        ):
+            logger.info(
+                "Startup: retrying agent install on pattern buffer %s for pool %s",
+                pb_host.id[:8],
+                pool.name,
+            )
+            enqueue_job(
+                _retry_pb_agent_install,
+                pb_host.id,
+                pool.id,
+                queue_name="host_lifecycle",
+            )
+
+
 def _startup_resume_storage_pools():
     """Resume storage pool operations, sync SG rules, and retry pattern buffer installs."""
     from app.core.database import SessionLocal
     from app.core.redis import enqueue_job
     from app.models.host import Host
     from app.models.provider import Provider
-    from app.models.storage_pool import StoragePool
 
     db = SessionLocal()
     try:
-        creating_pools = (
-            db.query(StoragePool).filter(StoragePool.status == "creating").all()
-        )
-        for pool in creating_pools:
-            if pool.fsx_filesystem_id:
-                provider = db.get(Provider, pool.provider_id)
-                if provider:
-                    creds = provider.get_credentials()
-                    from app.services.storage_pool_service import (
-                        _poll_fsx_until_available,
-                    )
-
-                    logger.info(
-                        "Startup: resuming FSx poller for pool %s (%s)",
-                        pool.name,
-                        pool.fsx_filesystem_id,
-                    )
-                    enqueue_job(
-                        _poll_fsx_until_available,
-                        pool.id,
-                        creds,
-                        provider.default_region,
-                        pool.fsx_filesystem_id,
-                        queue_name="host_lifecycle",
-                    )
-            else:
-                logger.warning(
-                    "Startup: pool %s stuck in creating with no FSx ID, marking error",
-                    pool.name,
-                )
-                pool.status = "error"
-
-        # Ensure SG rules are up-to-date for all available shared pools
-        from app.services.storage_pool_service import add_sg_rules_for_shared_storage
-
-        available_pools = (
-            db.query(StoragePool)
-            .filter(StoragePool.status == "available", StoragePool.mode == "shared-fsx")
-            .all()
-        )
-        for pool in available_pools:
-            provider = db.get(Provider, pool.provider_id)
-            if provider and provider.security_group_id:
-                try:
-                    creds = provider.get_credentials()
-                    add_sg_rules_for_shared_storage(
-                        creds,
-                        provider.default_region or "",
-                        provider.security_group_id,
-                    )
-                    logger.info("Startup: synced SG rules for pool %s", pool.name)
-                except Exception as e:
-                    logger.warning(
-                        "Startup: failed to sync SG rules for pool %s: %s", pool.name, e
-                    )
-
-        # Resume stuck pattern buffer installs (agent disconnected but host active)
-        pb_pools = (
-            db.query(StoragePool).filter(StoragePool.worker_host_id.isnot(None)).all()
-        )
-        for pool in pb_pools:
-            pb_host = db.query(Host).filter_by(id=pool.worker_host_id).first()
-            if (
-                pb_host
-                and pb_host.state == "active"
-                and pb_host.agent_status != "connected"
-            ):
-                logger.info(
-                    "Startup: retrying agent install on pattern buffer %s for pool %s",
-                    pb_host.id[:8],
-                    pool.name,
-                )
-                enqueue_job(
-                    _retry_pb_agent_install,
-                    pb_host.id,
-                    pool.id,
-                    queue_name="host_lifecycle",
-                )
-
+        _resume_creating_pools(db, enqueue_job, Provider)
+        _sync_shared_pool_sg_rules(db, Provider)
+        _retry_stuck_pattern_buffer_installs(db, enqueue_job, Host)
         db.commit()
     finally:
         db.close()
@@ -606,6 +622,68 @@ def debug_threads(user: AdminUser):
     return {"count": len(threads), "threads": threads}
 
 
+def _collect_queue_info(r):
+    """Collect depth/status info for each RQ queue."""
+    from rq import Queue
+
+    queues_info = []
+    for qname in ["project_lifecycle", "host_lifecycle", "default"]:
+        try:
+            q = Queue(qname, connection=r)
+            queues_info.append(
+                {
+                    "name": qname,
+                    "queued": q.count,
+                    "started": q.started_job_registry.count,
+                    "failed": q.failed_job_registry.count,
+                    "deferred": q.deferred_job_registry.count,
+                }
+            )
+        except Exception:
+            queues_info.append({"name": qname, "error": "could not read queue"})
+    return queues_info
+
+
+def _collect_worker_info(r):
+    """Collect status info for all RQ workers."""
+    from rq import Worker
+
+    workers = []
+    try:
+        for w in Worker.all(connection=r):
+            cj = w.get_current_job()
+            workers.append(
+                {
+                    "name": w.name,
+                    "state": w.get_state(),
+                    "queues": [q.name for q in w.queues],
+                    "current_job": str(w.get_current_job_id() or ""),
+                    "current_queue": cj.origin if cj else "",
+                    "current_func": ((cj.func_name or "").split(".")[-1] if cj else ""),
+                    "successful_count": w.successful_job_count,
+                    "failed_count": w.failed_job_count,
+                    "total_working_time": w.total_working_time,
+                }
+            )
+    except Exception:
+        pass
+    return workers
+
+
+def _collect_inflight_deploys(r_str):
+    """Collect per-host in-flight deploy counts from Redis."""
+    inflight = {}
+    try:
+        for key in r_str.scan_iter("inflight:deploys:*"):
+            host_id = str(key).replace("inflight:deploys:", "")
+            count = int(r_str.get(key) or 0)
+            if count > 0:
+                inflight[host_id[:8]] = count
+    except Exception:
+        pass
+    return inflight
+
+
 @app.get("/api/v1/admin/queue-status")
 def queue_status(user: AdminUser):
     """Show job queue depths, active workers, and failed jobs."""
@@ -620,69 +698,14 @@ def queue_status(user: AdminUser):
     from app.core.redis import get_redis, get_redis_raw
 
     r = get_redis_raw()
-
-    queues_info = []
-    for qname in ["project_lifecycle", "host_lifecycle", "default"]:
-        try:
-            from rq import Queue
-
-            q = Queue(qname, connection=r)
-            failed_reg = q.failed_job_registry
-            queues_info.append(
-                {
-                    "name": qname,
-                    "queued": q.count,
-                    "started": q.started_job_registry.count,
-                    "failed": failed_reg.count,
-                    "deferred": q.deferred_job_registry.count,
-                }
-            )
-        except Exception:
-            queues_info.append({"name": qname, "error": "could not read queue"})
-
-    workers = []
-    try:
-        from rq import Worker
-
-        for w in Worker.all(connection=r):
-            workers.append(
-                {
-                    "name": w.name,
-                    "state": w.get_state(),
-                    "queues": [q.name for q in w.queues],
-                    "current_job": str(w.get_current_job_id() or ""),
-                    "current_queue": (
-                        cj.origin if (cj := w.get_current_job()) else ""  # type: ignore[assignment]
-                    ),
-                    "current_func": (
-                        cj.func_name.split(".")[-1] if (cj := w.get_current_job()) else ""  # type: ignore[assignment]
-                    ),
-                    "successful_count": w.successful_job_count,
-                    "failed_count": w.failed_job_count,
-                    "total_working_time": w.total_working_time,
-                }
-            )
-    except Exception:
-        pass
-
-    # Per-host in-flight deploy counts
-    inflight = {}
-    r_str = get_redis()
-    try:
-        for key in r_str.scan_iter("inflight:deploys:*"):
-            host_id = str(key).replace("inflight:deploys:", "")
-            count = int(r_str.get(key) or 0)
-            if count > 0:
-                inflight[host_id[:8]] = count
-    except Exception:
-        pass
+    workers = _collect_worker_info(r)
 
     return {
         "redis": True,
-        "queues": queues_info,
+        "queues": _collect_queue_info(r),
         "workers": workers,
         "worker_count": len(workers),
-        "inflight_deploys": inflight,
+        "inflight_deploys": _collect_inflight_deploys(get_redis()),
     }
 
 

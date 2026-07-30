@@ -253,7 +253,17 @@ def _resolve_pattern_source(body, user, db):
     raise HTTPException(status_code=400, detail="Provide source_project_id or topology")
 
 
-@router.post("/", status_code=201)
+@router.post(
+    "/",
+    status_code=201,
+    responses={
+        400: {
+            "description": "Invalid request — project not deployed or missing source"
+        },
+        404: {"description": "Source project not found"},
+        409: {"description": "Pattern with this name already exists"},
+    },
+)
 def create_pattern(
     body: PatternCreate,
     user: User = Depends(get_current_user),

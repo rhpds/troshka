@@ -3,6 +3,8 @@ from kubernetes import client
 
 logger = logging.getLogger(__name__)
 
+_SHELL = "/bin/sh"
+
 
 def create_container_pods(namespace, containers, nad_refs, owner_reference):
     core_api = client.CoreV1Api()
@@ -48,7 +50,7 @@ def _create_single_container(
         },
     }
     if ctr.get("command"):
-        container_spec["command"] = ["/bin/sh", "-c", ctr["command"]]
+        container_spec["command"] = [_SHELL, "-c", ctr["command"]]
     if ctr.get("ports"):
         container_spec["ports"] = [
             {
@@ -88,7 +90,7 @@ def _create_single_container(
             namespace=namespace, body=pod_body
         )
         logger.info(f"Created container pod {pod_name}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 409:
             raise
 
@@ -106,7 +108,7 @@ def _create_pod_group(
             "image": ic.get("image", ""),
         }
         if ic.get("command"):
-            init_spec["command"] = ["/bin/sh", "-c", ic["command"]]
+            init_spec["command"] = [_SHELL, "-c", ic["command"]]
         init_containers.append(init_spec)
 
     containers = []
@@ -116,7 +118,7 @@ def _create_pod_group(
             "image": pc.get("image", ""),
         }
         if pc.get("command"):
-            c_spec["command"] = ["/bin/sh", "-c", pc["command"]]
+            c_spec["command"] = [_SHELL, "-c", pc["command"]]
         if pc.get("ports"):
             c_spec["ports"] = [
                 {
@@ -174,6 +176,6 @@ def _create_pod_group(
             namespace=namespace, body=pod_body
         )
         logger.info(f"Created pod group {pod_name}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 409:
             raise
