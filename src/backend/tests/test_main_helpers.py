@@ -166,6 +166,14 @@ class TestStartupResetStuckProjects:
     def test_deploying_with_deploy_step_resumes(self):
         """A project in 'deploying' with deploy_step is resumed, not reset."""
         db = TestSession()
+        db.query(Project).filter(
+            Project.state.in_(("deploying", "stopping", "starting")),
+            Project.owner_id != OWNER_ID,
+        ).delete(synchronize_session="fetch")
+        db.commit()
+        db.close()
+
+        db = TestSession()
         proj = Project(
             name="deploying-with-step",
             owner_id=OWNER_ID,
