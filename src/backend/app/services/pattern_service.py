@@ -693,33 +693,14 @@ def _build_disk_to_vm_map(topology):
     return disk_nodes, vm_nodes, disk_to_vm, vm_to_disks
 
 
-def _capture_via_nbd(
-    host,
-    worker_host,
-    vm_to_disks,
-    vm_nodes,
-    project_id,
-    pattern_id,
-    creds,
-    pool,
-    pattern,
-    db,
-):
-    """Capture disks via NBD export (VM host) + pull-flatten (pattern buffer).
+def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool):
+    """Build the per-VM task list for NBD capture.
 
-    Returns True on success, False on error (pattern.state set to 'error').
+    Returns a list of dicts, each with vm_id, vm_name, domain_name,
+    disks_params, and disk_metadata.
     """
-    import threading as _threading
-
     from app.services import s3_storage
     from app.services.deploy_service import _disk_path
-    from app.services.ws_pubsub import notify_pattern
-
-    log.info(
-        "Pattern %s: using pattern buffer %s for NBD capture",
-        pattern_id[:8],
-        worker_host.id[:8],
-    )
 
     vm_tasks = []
     for vm_id, vm_disk_nodes in vm_to_disks.items():
@@ -768,6 +749,36 @@ def _capture_via_nbd(
                 "disk_metadata": disk_metadata,
             }
         )
+    return vm_tasks
+
+
+def _capture_via_nbd(
+    host,
+    worker_host,
+    vm_to_disks,
+    vm_nodes,
+    project_id,
+    pattern_id,
+    creds,
+    pool,
+    pattern,
+    db,
+):
+    """Capture disks via NBD export (VM host) + pull-flatten (pattern buffer).
+
+    Returns True on success, False on error (pattern.state set to 'error').
+    """
+    import threading as _threading
+
+    from app.services.ws_pubsub import notify_pattern
+
+    log.info(
+        "Pattern %s: using pattern buffer %s for NBD capture",
+        pattern_id[:8],
+        worker_host.id[:8],
+    )
+
+    vm_tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool)
 
     vm_count = len(vm_tasks)
     vm_status = {t["vm_id"]: "waiting" for t in vm_tasks}
@@ -856,6 +867,116 @@ def _capture_via_nbd(
             db.add(pd)
         db.commit()
         log.info("Pattern %s: VM %s NBD capture done", pattern_id[:8], vid[:8])
+
+    return True
+
+
+_PROGRESS_KEYWORDS = ("Flatten", "Upload", "Commit", "Snapshot", "Trim", "Cach")
+
+
+def _poll_one_capture_job(host, jinfo, completed_jobs, poll_job, troshkad_error):
+    """Poll a single capture job and return a status line string.
+
+    If the job is already completed, returns immediately. On poll error,
+    returns a 'polling...' status. For running jobs, extracts the last
+    progress keyword from output.
+    """
+    vm_name = jinfo["vm_name"]
+    if jinfo["job_id"] in completed_jobs:
+        return f"{vm_name}: done"
+    try:
+        job = poll_job(host, jinfo["job_id"])
+    except troshkad_error:
+        return f"{vm_name}: polling..."
+    if job["status"] in ("completed", "failed", "cancelled"):
+        completed_jobs.add(jinfo["job_id"])
+        jinfo["_result"] = job
+        if job["status"] in ("failed", "cancelled"):
+            return f"{vm_name}: {job['status'].upper()}"
+        return f"{vm_name}: done"
+    # Still running — find last progress keyword in output
+    last = ""
+    for line in reversed(job.get("output", [])):
+        if any(kw in line for kw in _PROGRESS_KEYWORDS):
+            last = line
+            break
+    return f"{vm_name}: {last}" if last else f"{vm_name}: working..."
+
+
+def _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db):
+    """Process results from direct capture jobs, creating PatternDisk records.
+
+    Returns True if all VMs succeeded, False if any failed (sets pattern error state).
+    """
+    from app.services.troshkad_client import TroshkadError, poll_job
+
+    direct_errors: list[str] = []
+    for jinfo in all_jobs:
+        job = jinfo.get("_result")
+        if not job:
+            try:
+                job = poll_job(host, jinfo["job_id"])
+            except TroshkadError:
+                job = {"status": "failed", "result": {"error": "Job lost"}}
+        if not job:
+            job = {
+                "status": "failed",
+                "result": {"error": "Job result missing"},
+            }
+        try:
+            if job["status"] == "failed":
+                error_msg = job.get("result", {}).get("error", "Pattern capture failed")
+                log.error(
+                    "Failed to capture pattern %s VM %s: %s",
+                    pattern_id[:8],
+                    jinfo["vm_id"][:8],
+                    error_msg,
+                )
+                direct_errors.append(jinfo["vm_name"])
+                continue
+
+            disk_results = (job or {}).get("result", {}).get("disks", [])
+            for j, metadata in enumerate(jinfo["disk_metadata"]):
+                size_bytes = (
+                    disk_results[j].get("size_bytes", 0) if j < len(disk_results) else 0
+                )
+                pd = PatternDisk(
+                    pattern_id=pattern_id,
+                    source_disk_id=metadata["disk_id"],
+                    source_vm_id=metadata["vm_id"],
+                    s3_key=metadata["s3_key"],
+                    format=metadata["format"],
+                    size_bytes=size_bytes,
+                    virtual_size_bytes=metadata["virtual_size_bytes"],
+                    state="available",
+                )
+                db.add(pd)
+            db.commit()
+            log.info(
+                "Pattern %s: VM %s capture done",
+                pattern_id[:8],
+                jinfo["vm_id"][:8],
+            )
+
+        except TroshkadError as e:
+            log.error(
+                "Troshkad error capturing pattern %s VM %s: %s",
+                pattern_id[:8],
+                jinfo["vm_id"][:8],
+                str(e),
+            )
+            direct_errors.append(jinfo["vm_name"])
+
+    if direct_errors:
+        log.error(
+            "Pattern %s: %d VM(s) failed: %s",
+            pattern_id[:8],
+            len(direct_errors),
+            ", ".join(direct_errors),
+        )
+        pattern.state = "error"
+        db.commit()
+        return False
 
     return True
 
@@ -986,42 +1107,10 @@ def _capture_direct(
                 pattern_id[:8],
             )
             return False
-        lines = []
-        for idx, jinfo in enumerate(all_jobs):
-            if jinfo["job_id"] in completed_jobs:
-                lines.append(f"{jinfo['vm_name']}: done")
-                continue
-            try:
-                job = poll_job(host, jinfo["job_id"])
-            except TroshkadError:
-                lines.append(f"{jinfo['vm_name']}: polling...")
-                continue
-            if job["status"] in ("completed", "failed", "cancelled"):
-                completed_jobs.add(jinfo["job_id"])
-                jinfo["_result"] = job
-                if job["status"] in ("failed", "cancelled"):
-                    lines.append(f"{jinfo['vm_name']}: {job['status'].upper()}")
-                else:
-                    lines.append(f"{jinfo['vm_name']}: done")
-            else:
-                output = job.get("output", [])
-                last = ""
-                for line in reversed(output):
-                    if (
-                        "Flatten" in line
-                        or "Upload" in line
-                        or "Commit" in line
-                        or "Snapshot" in line
-                        or "Trim" in line
-                        or "Cach" in line
-                    ):
-                        last = line
-                        break
-                lines.append(
-                    f"{jinfo['vm_name']}: {last}"
-                    if last
-                    else f"{jinfo['vm_name']}: working..."
-                )
+        lines = [
+            _poll_one_capture_job(host, jinfo, completed_jobs, poll_job, TroshkadError)
+            for jinfo in all_jobs
+        ]
         progress = {
             "step": "capturing",
             "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
@@ -1032,75 +1121,7 @@ def _capture_direct(
         _time.sleep(5)
 
     # Process results — save successful VMs, skip failed ones
-    direct_errors: list[str] = []
-    for jinfo in all_jobs:
-        job = jinfo.get("_result")
-        if not job:
-            try:
-                job = poll_job(host, jinfo["job_id"])
-            except TroshkadError:
-                job = {"status": "failed", "result": {"error": "Job lost"}}
-        if not job:
-            job = {
-                "status": "failed",
-                "result": {"error": "Job result missing"},
-            }
-        try:
-            if job["status"] == "failed":
-                error_msg = job.get("result", {}).get("error", "Pattern capture failed")
-                log.error(
-                    "Failed to capture pattern %s VM %s: %s",
-                    pattern_id[:8],
-                    jinfo["vm_id"][:8],
-                    error_msg,
-                )
-                direct_errors.append(jinfo["vm_name"])
-                continue
-
-            disk_results = (job or {}).get("result", {}).get("disks", [])
-            for j, metadata in enumerate(jinfo["disk_metadata"]):
-                size_bytes = (
-                    disk_results[j].get("size_bytes", 0) if j < len(disk_results) else 0
-                )
-                pd = PatternDisk(
-                    pattern_id=pattern_id,
-                    source_disk_id=metadata["disk_id"],
-                    source_vm_id=metadata["vm_id"],
-                    s3_key=metadata["s3_key"],
-                    format=metadata["format"],
-                    size_bytes=size_bytes,
-                    virtual_size_bytes=metadata["virtual_size_bytes"],
-                    state="available",
-                )
-                db.add(pd)
-            db.commit()
-            log.info(
-                "Pattern %s: VM %s capture done",
-                pattern_id[:8],
-                jinfo["vm_id"][:8],
-            )
-
-        except TroshkadError as e:
-            log.error(
-                "Troshkad error capturing pattern %s VM %s: %s",
-                pattern_id[:8],
-                jinfo["vm_id"][:8],
-                str(e),
-            )
-            direct_errors.append(jinfo["vm_name"])
-
-    if direct_errors:
-        log.error(
-            "Pattern %s: %d VM(s) failed: %s",
-            pattern_id[:8],
-            len(direct_errors),
-            ", ".join(direct_errors),
-        )
-        pattern.state = "error"
-        db.commit()
-        return False
-
-    return True
+    return _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db)
 
 
 def _capture_container_images(host, topology, pattern_id, creds, pattern, db):
@@ -1267,6 +1288,103 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
 
 
+def _run_capture_pipeline(
+    db, pattern, host, worker_host, project, project_id, pattern_id, quiesce_cluster
+):
+    """Run the full disk + container capture pipeline.
+
+    Returns True on success, False on failure (pattern state set to 'error'
+    by the individual capture functions).
+    """
+    from app.services.s3_storage import _get_s3_config
+
+    topology = (
+        project.deployed_topology or project.topology or {"nodes": [], "edges": []}
+    )
+
+    if project.state == "active" and quiesce_cluster:
+        _quiesce_ocp_cluster(host, project_id, topology, pattern_id)
+
+    disk_nodes, vm_nodes, disk_to_vm, vm_to_disks = _build_disk_to_vm_map(topology)
+
+    # Skip already-captured disks (resume after partial failure)
+    existing_disks = {
+        pd.source_disk_id
+        for pd in db.query(PatternDisk).filter_by(pattern_id=pattern_id).all()
+    }
+    if existing_disks:
+        log.info(
+            "Pattern %s: %d disk(s) already captured, skipping",
+            pattern_id[:8],
+            len(existing_disks),
+        )
+        disk_nodes = [d for d in disk_nodes if d["id"] not in existing_disks]
+
+    pool = None
+    if host.storage_pool_id:
+        from app.models.storage_pool import StoragePool
+
+        pool = db.query(StoragePool).filter_by(id=host.storage_pool_id).first()
+
+    creds = _get_s3_config()
+
+    # Capture VM disks via NBD (pattern buffer) or direct (on-host)
+    if worker_host:
+        success = _capture_via_nbd(
+            host,
+            worker_host,
+            vm_to_disks,
+            vm_nodes,
+            project_id,
+            pattern_id,
+            creds,
+            pool,
+            pattern,
+            db,
+        )
+    else:
+        success = _capture_direct(
+            host,
+            vm_to_disks,
+            vm_nodes,
+            project_id,
+            pattern_id,
+            creds,
+            pool,
+            pattern,
+            db,
+        )
+    if not success:
+        return False
+
+    # Capture container images
+    if not _capture_container_images(host, topology, pattern_id, creds, pattern, db):
+        return False
+
+    # Finalize: update topology, recert, save metadata, notify
+    _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db)
+    return True
+
+
+def _mark_capture_error(db, pattern_id):
+    """Mark pattern as error and notify frontend. Best-effort, swallows exceptions."""
+    try:
+        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+        if pattern:
+            pattern.state = "error"
+            db.commit()
+            _capture_progress[pattern_id] = {
+                "step": "error",
+                "detail": "Capture failed",
+                "vms": [],
+            }
+            from app.services.ws_pubsub import notify_pattern
+
+            notify_pattern(pattern_id, {"type": "capture-complete", "state": "error"})
+    except Exception:
+        pass
+
+
 def capture_pattern_disks(
     pattern_id: str,
     project_id: str,
@@ -1280,7 +1398,6 @@ def capture_pattern_disks(
     """
     from app.models.host import Host
     from app.models.project import Project
-    from app.services.s3_storage import _get_s3_config
 
     db = SessionLocal()
     try:
@@ -1302,93 +1419,21 @@ def capture_pattern_disks(
             return
 
         worker_host = _get_pattern_buffer(db, host)
-        topology = (
-            project.deployed_topology or project.topology or {"nodes": [], "edges": []}
+
+        _run_capture_pipeline(
+            db,
+            pattern,
+            host,
+            worker_host,
+            project,
+            project_id,
+            pattern_id,
+            quiesce_cluster,
         )
-
-        if project.state == "active" and quiesce_cluster:
-            _quiesce_ocp_cluster(host, project_id, topology, pattern_id)
-
-        disk_nodes, vm_nodes, disk_to_vm, vm_to_disks = _build_disk_to_vm_map(topology)
-
-        # Skip already-captured disks (resume after partial failure)
-        existing_disks = {
-            pd.source_disk_id
-            for pd in db.query(PatternDisk).filter_by(pattern_id=pattern_id).all()
-        }
-        if existing_disks:
-            log.info(
-                "Pattern %s: %d disk(s) already captured, skipping",
-                pattern_id[:8],
-                len(existing_disks),
-            )
-            disk_nodes = [d for d in disk_nodes if d["id"] not in existing_disks]
-
-        pool = None
-        if host.storage_pool_id:
-            from app.models.storage_pool import StoragePool
-
-            pool = db.query(StoragePool).filter_by(id=host.storage_pool_id).first()
-
-        creds = _get_s3_config()
-
-        # Capture VM disks via NBD (pattern buffer) or direct (on-host)
-        if worker_host:
-            success = _capture_via_nbd(
-                host,
-                worker_host,
-                vm_to_disks,
-                vm_nodes,
-                project_id,
-                pattern_id,
-                creds,
-                pool,
-                pattern,
-                db,
-            )
-        else:
-            success = _capture_direct(
-                host,
-                vm_to_disks,
-                vm_nodes,
-                project_id,
-                pattern_id,
-                creds,
-                pool,
-                pattern,
-                db,
-            )
-        if not success:
-            return
-
-        # Capture container images
-        if not _capture_container_images(
-            host, topology, pattern_id, creds, pattern, db
-        ):
-            return
-
-        # Finalize: update topology, recert, save metadata, notify
-        _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db)
 
     except Exception as e:
         log.exception("Pattern capture failed for %s: %s", pattern_id, e)
-        try:
-            pattern = db.query(Pattern).filter_by(id=pattern_id).first()
-            if pattern:
-                pattern.state = "error"
-                db.commit()
-                _capture_progress[pattern_id] = {
-                    "step": "error",
-                    "detail": "Capture failed",
-                    "vms": [],
-                }
-                from app.services.ws_pubsub import notify_pattern
-
-                notify_pattern(
-                    pattern_id, {"type": "capture-complete", "state": "error"}
-                )
-        except Exception:
-            pass
+        _mark_capture_error(db, pattern_id)
     finally:
         import time
 

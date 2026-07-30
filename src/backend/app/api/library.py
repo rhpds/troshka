@@ -510,6 +510,84 @@ class ImportUrlRequest(BaseModel):
     url: str
 
 
+def _find_import_host(sess, item_id_short):
+    """Find an active connected host with enough disk space for import."""
+    from app.models.host import Host
+    from app.services.troshkad_client import check_disk_usage
+
+    host = sess.query(Host).filter_by(state="active", agent_status="connected").first()
+    if not host:
+        logger.error("Import %s: no active host available", item_id_short[:8])
+        return None
+
+    disk = check_disk_usage(host) or {}
+    if disk.get("used_pct", 100) >= 90:
+        free_gb = disk.get("free_bytes", 0) / (1024**3)
+        logger.error(
+            "Import %s: host storage %d%% full (%.1f GB free)",
+            item_id_short[:8],
+            disk.get("used_pct", 100),
+            free_gb,
+        )
+        return None
+
+    return host
+
+
+def _run_import_job(host, it, sess, item_id, s3_key, download_url):
+    """Run import-via-troshkad and update item state on completion."""
+    from app.services.s3_storage import _bucket, _get_s3_client, _get_s3_config
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    bucket = _bucket()
+    cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
+    s3_upload_url = f"s3://{bucket}/{s3_key}"
+    s3_creds = _get_s3_config()
+
+    try:
+        job_id = start_job(
+            host,
+            "/library/import",
+            {
+                "download_url": download_url,
+                "cache_path": cache_path,
+                "s3_upload_url": s3_upload_url,
+                "aws_access_key_id": s3_creds.get("access_key_id", ""),
+                "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
+                "aws_region": s3_creds.get("region", "us-east-1"),
+                "aws_endpoint_url": s3_creds.get("endpoint_url", ""),
+            },
+        )
+        job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)
+
+        if job["status"] == "failed":
+            logger.error(
+                "Import %s: troshkad job failed: %s",
+                item_id[:8],
+                job.get("error", "unknown"),
+            )
+            it.state = "error"
+            sess.commit()
+            return
+
+        client = _get_s3_client()
+        head = client.head_object(Bucket=bucket, Key=s3_key)
+        it.size_bytes = head["ContentLength"]
+        it.state = "ready"
+        it.tags = None
+        sess.commit()
+        logger.info(
+            "Import %s complete via troshkad: %d bytes",
+            item_id[:8],
+            it.size_bytes,
+        )
+
+    except TroshkadError as e:
+        logger.error("Import %s: troshkad error: %s", item_id[:8], e)
+        it.state = "error"
+        sess.commit()
+
+
 @router.post("/{item_id}/import-url")
 def import_from_url(
     item_id: str,
@@ -538,14 +616,6 @@ def import_from_url(
 
     def _host_download():
         from app.core.database import SessionLocal as SL
-        from app.models.host import Host
-        from app.services.s3_storage import _bucket, _get_s3_client
-        from app.services.troshkad_client import (
-            TroshkadError,
-            check_disk_usage,
-            start_job,
-            wait_for_job,
-        )
 
         sess = SL()
         try:
@@ -553,28 +623,8 @@ def import_from_url(
             if not it:
                 return
 
-            host = (
-                sess.query(Host)
-                .filter_by(state="active", agent_status="connected")
-                .first()
-            )
+            host = _find_import_host(sess, item_id)
             if not host:
-                logger.error("Import %s: no active host available", item_id[:8])
-                it.state = "error"
-                sess.commit()
-                return
-
-            bucket = _bucket()
-
-            disk = check_disk_usage(host) or {}
-            if disk.get("used_pct", 100) >= 90:
-                free_gb = disk.get("free_bytes", 0) / (1024**3)
-                logger.error(
-                    "Import %s: host storage %d%% full (%.1f GB free)",
-                    item_id[:8],
-                    disk.get("used_pct", 100),
-                    free_gb,
-                )
                 it.state = "error"
                 sess.commit()
                 return
@@ -582,54 +632,7 @@ def import_from_url(
             it.state = "importing"
             sess.commit()
 
-            cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
-            s3_upload_url = f"s3://{bucket}/{s3_key}"
-            from app.services.s3_storage import _get_s3_config
-
-            s3_creds = _get_s3_config()
-
-            try:
-                job_id = start_job(
-                    host,
-                    "/library/import",
-                    {
-                        "download_url": body.url,
-                        "cache_path": cache_path,
-                        "s3_upload_url": s3_upload_url,
-                        "aws_access_key_id": s3_creds.get("access_key_id", ""),
-                        "aws_secret_access_key": s3_creds.get("secret_access_key", ""),
-                        "aws_region": s3_creds.get("region", "us-east-1"),
-                        "aws_endpoint_url": s3_creds.get("endpoint_url", ""),
-                    },
-                )
-                job = wait_for_job(host, job_id, timeout=7200, poll_interval=10)
-
-                if job["status"] == "failed":
-                    logger.error(
-                        "Import %s: troshkad job failed: %s",
-                        item_id[:8],
-                        job.get("error", "unknown"),
-                    )
-                    it.state = "error"
-                    sess.commit()
-                    return
-
-                client = _get_s3_client()
-                head = client.head_object(Bucket=bucket, Key=s3_key)
-                it.size_bytes = head["ContentLength"]
-                it.state = "ready"
-                it.tags = None
-                sess.commit()
-                logger.info(
-                    "Import %s complete via troshkad: %d bytes",
-                    item_id[:8],
-                    it.size_bytes,
-                )
-
-            except TroshkadError as e:
-                logger.error("Import %s: troshkad error: %s", item_id[:8], e)
-                it.state = "error"
-                sess.commit()
+            _run_import_job(host, it, sess, item_id, s3_key, body.url)
 
         except Exception:
             logger.exception("Import failed for %s", item_id[:8])

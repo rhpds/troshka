@@ -129,6 +129,24 @@ def start_redis_listener():
     logger.info("Redis WebSocket pub/sub bridge started")
 
 
+def _dispatch_pubsub_message(msg: dict) -> None:
+    """Parse a single Redis pub/sub message and deliver to local WS clients."""
+    if msg["type"] != "pmessage":
+        return
+    channel = msg["channel"]
+    if isinstance(channel, bytes):
+        channel = channel.decode()
+    prefix = "project:"
+    if not channel.startswith(prefix):
+        return
+    project_id = channel[len(prefix) :]
+    try:
+        data = json.loads(msg["data"])
+    except (json.JSONDecodeError, TypeError):
+        return
+    _deliver_locally(project_id, data)
+
+
 def _redis_listen_loop():
     """Subscribe to Redis pub/sub channels and dispatch to local WS clients.
 
@@ -150,20 +168,7 @@ def _redis_listen_loop():
             logger.info("Redis pub/sub listener connected")
 
             for msg in ps.listen():
-                if msg["type"] != "pmessage":
-                    continue
-                channel = msg["channel"]
-                if isinstance(channel, bytes):
-                    channel = channel.decode()
-                prefix = "project:"
-                if not channel.startswith(prefix):
-                    continue
-                project_id = channel[len(prefix) :]
-                try:
-                    data = json.loads(msg["data"])
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                _deliver_locally(project_id, data)
+                _dispatch_pubsub_message(msg)
         except Exception:
             logger.warning("Redis pub/sub listener disconnected, reconnecting in 5s")
             _time.sleep(5)
@@ -400,16 +405,70 @@ def _check_and_notify_project_changes(
     }
 
 
+def _batch_fetch_vm_states(projects, deploying_host_ids, db):
+    """Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt).
+
+    Returns (host_batch_states, project_batch_states).
+    """
+    from app.models.host import Host
+    from app.services.troshkad_client import get_all_vm_states
+
+    host_batch_states: dict = {}
+    project_batch_states: dict = {}
+    for project in projects.values():
+        if project.host_id in deploying_host_ids:
+            continue
+        host = db.query(Host).filter_by(id=project.host_id).first()
+        if not host or not host.ip_address:
+            continue
+        if host.host_type == "kubevirt-cluster":
+            kv_states = _fetch_kubevirt_vm_states(project, host, db)
+            if kv_states:
+                project_batch_states[project.id] = kv_states
+            continue
+        if host.agent_status != "connected":
+            continue
+        if project.host_id not in host_batch_states:
+            try:
+                batch = get_all_vm_states(host)
+                if batch is not None:
+                    host_batch_states[project.host_id] = batch
+            except Exception:
+                pass
+    return host_batch_states, project_batch_states
+
+
+def _notify_all_projects(projects, host_batch_states, project_batch_states):
+    """Send WS notifications for all projects based on fetched VM states."""
+    from app.services.deploy_service import _get_deploy_progress_data
+
+    for project_id, project in projects.items():
+        dp = _get_deploy_progress_data(project_id)
+        kv_batch = project_batch_states.get(project_id)
+        host_batch = host_batch_states.get(project.host_id) if project.host_id else None
+        if project.state in ("active", "stopped"):
+            vm_states, vm_progress, vm_boot_devs = _map_vm_states_for_project(
+                project, host_batch, kv_batch
+            )
+        else:
+            vm_states, vm_progress, vm_boot_devs = {}, {}, {}
+        _check_and_notify_project_changes(
+            project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+        )
+
+    # Evict stale cache entries for projects no longer active/stopped
+    stale = [k for k in _last_states if k not in projects]
+    for k in stale:
+        del _last_states[k]
+
+
 def _poll_active_projects():
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.project import Project
     from app.services.deploy_service import _get_deploy_progress_data
-    from app.services.troshkad_client import get_all_vm_states
 
     db = SessionLocal()
     try:
-        # Poll ALL projects with a host in active/stopped state
         all_projects = (
             db.query(Project)
             .filter(
@@ -423,59 +482,15 @@ def _poll_active_projects():
 
         projects = {p.id: p for p in all_projects}
 
-        # Check which hosts have active deploys
         deploying_host_ids = set()
         for pid, p in projects.items():
             if _get_deploy_progress_data(pid) and p.host_id:
                 deploying_host_ids.add(p.host_id)
 
-        # Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt)
-        host_batch_states: dict = {}
-        project_batch_states: dict = {}
-        for project in projects.values():
-            if project.host_id in deploying_host_ids:
-                continue
-            host = db.query(Host).filter_by(id=project.host_id).first()
-            if not host or not host.ip_address:
-                continue
-            if host.host_type == "kubevirt-cluster":
-                kv_states = _fetch_kubevirt_vm_states(project, host, db)
-                if kv_states:
-                    project_batch_states[project.id] = kv_states
-                continue
-            if host.agent_status != "connected":
-                continue
-            if project.host_id not in host_batch_states:
-                try:
-                    batch = get_all_vm_states(host)
-                    if batch is not None:
-                        host_batch_states[project.host_id] = batch
-                except Exception:
-                    pass
-
-        for project_id, project in projects.items():
-            dp = _get_deploy_progress_data(project_id)
-
-            # Map batch VM states to this project's nodes
-            kv_batch = project_batch_states.get(project_id)
-            host_batch = (
-                host_batch_states.get(project.host_id) if project.host_id else None
-            )
-            if project.state in ("active", "stopped"):
-                vm_states, vm_progress, vm_boot_devs = _map_vm_states_for_project(
-                    project, host_batch, kv_batch
-                )
-            else:
-                vm_states, vm_progress, vm_boot_devs = {}, {}, {}
-
-            _check_and_notify_project_changes(
-                project_id, project, dp, vm_states, vm_progress, vm_boot_devs
-            )
-
-        # Evict stale cache entries for projects no longer active/stopped
-        stale = [k for k in _last_states if k not in projects]
-        for k in stale:
-            del _last_states[k]
+        host_batch_states, project_batch_states = _batch_fetch_vm_states(
+            projects, deploying_host_ids, db
+        )
+        _notify_all_projects(projects, host_batch_states, project_batch_states)
     finally:
         db.close()
 

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
+_KUBEVIRT_API_GROUP = "kubevirt.io"
 
 OPERATOR_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "operator"
@@ -182,6 +183,198 @@ def _deploy_operator(provider):
                 raise
 
     logger.info("Operator deployed successfully")
+
+
+def _stop_vms_gracefully(custom_api, namespace):
+    """Set running=False on all VMs so QEMU flushes I/O and releases RBD watchers."""
+    try:
+        vms = custom_api.list_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+        )
+        for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group=_KUBEVIRT_API_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=vm["metadata"]["name"],
+                    body={"spec": {"running": False}},
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _wait_for_vmis_terminated(custom_api, namespace):
+    """Wait up to 90s for VMIs to terminate gracefully."""
+    for _ in range(45):
+        try:
+            vmis = custom_api.list_namespaced_custom_object(
+                group=_KUBEVIRT_API_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            )
+            if not dict(vmis).get("items", []):  # type: ignore[call-overload]
+                break
+        except Exception:
+            break
+        time.sleep(2)
+
+
+def _force_delete_vmis(custom_api, namespace):
+    """Force-delete any remaining VMIs that didn't stop gracefully."""
+    try:
+        vmis = custom_api.list_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+        )
+        for vmi in dict(vmis).get("items", []):  # type: ignore[call-overload]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group=_KUBEVIRT_API_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=vmi["metadata"]["name"],
+                    grace_period_seconds=0,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _force_delete_virt_launcher_pods(core_api, namespace):
+    """Force-delete virt-launcher pods directly."""
+    try:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector="kubevirt.io=virt-launcher",
+        )
+        for pod in getattr(pods, "items", []):
+            try:
+                core_api.delete_namespaced_pod(
+                    name=pod.metadata.name,
+                    namespace=namespace,
+                    grace_period_seconds=0,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _wait_for_virt_launchers_gone(custom_api, core_api, namespace):
+    """Wait for virt-launcher pods and VMIs to be fully gone."""
+    for _ in range(30):
+        try:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector="kubevirt.io=virt-launcher",
+            )
+            vmis = custom_api.list_namespaced_custom_object(
+                group=_KUBEVIRT_API_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            )
+            if not getattr(pods, "items", []) and not dict(vmis).get("items", []):  # type: ignore[call-overload]
+                break
+        except Exception:
+            break
+        time.sleep(2)
+
+
+def _cleanup_volume_attachments(core_api, namespace):
+    """Clean up cluster-scoped VolumeAttachments that survive namespace deletion.
+
+    Only deletes attachments whose CSI detach has completed (status.attached=false)
+    to avoid confusing the attach-detach controller on RWO volumes.
+    """
+    try:
+        from kubernetes import client as _kc
+
+        storage_api = _kc.StorageV1Api(core_api.api_client)
+        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+        pv_names = set()
+        for pvc in getattr(pvcs, "items", []):
+            if pvc.spec.volume_name:
+                pv_names.add(pvc.spec.volume_name)
+        if pv_names:
+            for _ in range(30):
+                was = storage_api.list_volume_attachment()
+                matching = [
+                    va
+                    for va in getattr(was, "items", [])
+                    if getattr(va.spec.source, "persistent_volume_name", None)
+                    in pv_names
+                ]
+                if not matching:
+                    break
+                for va in matching:
+                    attached = getattr(getattr(va, "status", None), "attached", True)
+                    if not attached:
+                        try:
+                            storage_api.delete_volume_attachment(name=va.metadata.name)
+                        except Exception:
+                            pass
+                time.sleep(2)
+    except Exception:
+        pass
+
+
+def _delete_vm_crs(custom_api, namespace):
+    """Delete VirtualMachine custom resources."""
+    try:
+        vms = custom_api.list_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+        )
+        for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+            try:
+                custom_api.delete_namespaced_custom_object(
+                    group=_KUBEVIRT_API_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=vm["metadata"]["name"],
+                    grace_period_seconds=0,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _delete_namespace_jobs(provider, namespace):
+    """Delete all Jobs (recert, guestfish, export) in the namespace."""
+    try:
+        from kubernetes import client as _kc
+
+        _, _, api_client = _get_k8s_clients(provider)
+        batch_api = _kc.BatchV1Api(api_client)
+        jobs = batch_api.list_namespaced_job(namespace=namespace)
+        for job in getattr(jobs, "items", []):
+            try:
+                batch_api.delete_namespaced_job(
+                    name=job.metadata.name,
+                    namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 class KubeVirtDriver(ProviderDriver):
@@ -676,189 +869,16 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
-        # Gracefully stop VMs first — allows QEMU to flush I/O and release
-        # RBD watchers cleanly, preventing stuck PVs after namespace deletion
-        try:
-            vms = custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-            )
-            for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
-                try:
-                    custom_api.patch_namespaced_custom_object(
-                        group="kubevirt.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachines",
-                        name=vm["metadata"]["name"],
-                        body={"spec": {"running": False}},
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        _stop_vms_gracefully(custom_api, namespace)
+        _wait_for_vmis_terminated(custom_api, namespace)
+        _force_delete_vmis(custom_api, namespace)
+        _force_delete_virt_launcher_pods(core_api, namespace)
+        _wait_for_virt_launchers_gone(custom_api, core_api, namespace)
+        _cleanup_volume_attachments(core_api, namespace)
+        _delete_vm_crs(custom_api, namespace)
+        _delete_namespace_jobs(provider, namespace)
 
-        # Wait for VMIs to terminate gracefully (up to 90s)
-        for _ in range(45):
-            try:
-                vmis = custom_api.list_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachineinstances",
-                )
-                if not dict(vmis).get("items", []):  # type: ignore[call-overload]
-                    break
-            except Exception:
-                break
-            time.sleep(2)
-
-        # Force-delete any remaining VMIs that didn't stop gracefully
-        try:
-            vmis = custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-            )
-            for vmi in dict(vmis).get("items", []):  # type: ignore[call-overload]
-                try:
-                    custom_api.delete_namespaced_custom_object(
-                        group="kubevirt.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachineinstances",
-                        name=vmi["metadata"]["name"],
-                        grace_period_seconds=0,
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Force-delete virt-launcher pods directly
-        try:
-            pods = core_api.list_namespaced_pod(
-                namespace=namespace,
-                label_selector="kubevirt.io=virt-launcher",
-            )
-            for pod in getattr(pods, "items", []):
-                try:
-                    core_api.delete_namespaced_pod(
-                        name=pod.metadata.name,
-                        namespace=namespace,
-                        grace_period_seconds=0,
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Wait for virt-launcher pods and VMIs to be fully gone
-        for _ in range(30):
-            try:
-                pods = core_api.list_namespaced_pod(
-                    namespace=namespace,
-                    label_selector="kubevirt.io=virt-launcher",
-                )
-                vmis = custom_api.list_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachineinstances",
-                )
-                if not getattr(pods, "items", []) and not dict(vmis).get("items", []):  # type: ignore[call-overload]
-                    break
-            except Exception:
-                break
-            time.sleep(2)
-
-        # Clean up VolumeAttachments — these are cluster-scoped and survive
-        # namespace deletion, blocking PV deletion indefinitely.  Only delete
-        # attachments whose CSI detach has completed (status.attached=false)
-        # to avoid confusing the attach-detach controller on RWO volumes.
-        try:
-            from kubernetes import client as _kc
-
-            storage_api = _kc.StorageV1Api(core_api.api_client)
-            pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
-            pv_names = set()
-            for pvc in getattr(pvcs, "items", []):
-                if pvc.spec.volume_name:
-                    pv_names.add(pvc.spec.volume_name)
-            if pv_names:
-                for _ in range(30):
-                    was = storage_api.list_volume_attachment()
-                    matching = [
-                        va
-                        for va in getattr(was, "items", [])
-                        if getattr(va.spec.source, "persistent_volume_name", None)
-                        in pv_names
-                    ]
-                    if not matching:
-                        break
-                    for va in matching:
-                        attached = getattr(
-                            getattr(va, "status", None), "attached", True
-                        )
-                        if not attached:
-                            try:
-                                storage_api.delete_volume_attachment(
-                                    name=va.metadata.name
-                                )
-                            except Exception:
-                                pass
-                    time.sleep(2)
-        except Exception:
-            pass
-
-        # Delete VM CRs
-        try:
-            vms = custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-            )
-            for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
-                try:
-                    custom_api.delete_namespaced_custom_object(
-                        group="kubevirt.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachines",
-                        name=vm["metadata"]["name"],
-                        grace_period_seconds=0,
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Delete all Jobs (recert, guestfish, export)
-        try:
-            from kubernetes import client as _kc
-
-            batch_api = _kc.BatchV1Api(_kc.ApiClient(_kc.Configuration()))
-            # Reuse the same api_client
-            _, _, api_client = _get_k8s_clients(provider)
-            batch_api = _kc.BatchV1Api(api_client)
-            jobs = batch_api.list_namespaced_job(namespace=namespace)
-            for job in getattr(jobs, "items", []):
-                try:
-                    batch_api.delete_namespaced_job(
-                        name=job.metadata.name,
-                        namespace=namespace,
-                        propagation_policy="Background",
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Delete TroshkaProject CR
+        # Delete TroshkaProject CR and wait for finalizers
         cr_name = f"project-{project_id[:8]}"
         try:
             custom_api.delete_namespaced_custom_object(
@@ -871,7 +891,6 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-        # Wait for TroshkaProject CR to be fully deleted (finalizers may take time)
         for _ in range(30):
             try:
                 custom_api.get_namespaced_custom_object(

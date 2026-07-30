@@ -182,6 +182,38 @@ def _project_response_dict(project):
     return result
 
 
+def _enrich_project_response(p, hosts_by_id, provs_by_id, owners_by_id):
+    """Build a ProjectResponse with owner/host/provider/progress data."""
+    from app.core.redis import get_job_info
+    from app.services.deploy_service import _get_deploy_progress_data
+
+    resp = ProjectResponse.model_validate(p)
+    owner = owners_by_id.get(p.owner_id)
+    if owner:
+        resp.owner_email = owner.email
+    h = hosts_by_id.get(p.host_id) if p.host_id else None
+    if h:
+        resp.host_instance_id = h.instance_id
+        resp.host_ip = h.ip_address
+        prov = provs_by_id.get(h.provider_id) if h.provider_id else None
+        if prov:
+            resp.host_provider_name = prov.name
+            resp.host_provider_type = prov.type
+    dp = _get_deploy_progress_data(p.id)
+    if dp:
+        resp.deploy_progress = dp
+    elif p.state == "deploying":
+        job_info = get_job_info(p.id)
+        if job_info and job_info.get("status") == "queued":
+            resp.deploy_progress = {
+                "step": "queued",
+                "detail": f"#{job_info['queue_position']} of {job_info['queue_length']}",
+                "queue_position": job_info["queue_position"],
+                "queue_length": job_info["queue_length"],
+            }
+    return resp
+
+
 @router.get("/", response_model=list[ProjectResponse])
 def list_projects(
     skip: int = 0,
@@ -214,44 +246,16 @@ def list_projects(
                 for pv in db.query(Provider).filter(Provider.id.in_(prov_ids)).all()
             }
 
-    from app.services.deploy_service import _get_deploy_progress_data
-
     owner_ids = {p.owner_id for p in projects}
     owners_by_id = {}
     if owner_ids:
         owners = db.query(User).filter(User.id.in_(owner_ids)).all()
         owners_by_id = {u.id: u for u in owners}
 
-    results = []
-    for p in projects:
-        resp = ProjectResponse.model_validate(p)
-        owner = owners_by_id.get(p.owner_id)
-        if owner:
-            resp.owner_email = owner.email
-        h = hosts_by_id.get(p.host_id) if p.host_id else None
-        if h:
-            resp.host_instance_id = h.instance_id
-            resp.host_ip = h.ip_address
-            prov = provs_by_id.get(h.provider_id) if h.provider_id else None
-            if prov:
-                resp.host_provider_name = prov.name
-                resp.host_provider_type = prov.type
-        dp = _get_deploy_progress_data(p.id)
-        if dp:
-            resp.deploy_progress = dp
-        elif p.state == "deploying":
-            from app.core.redis import get_job_info
-
-            job_info = get_job_info(p.id)
-            if job_info and job_info.get("status") == "queued":
-                resp.deploy_progress = {
-                    "step": "queued",
-                    "detail": f"#{job_info['queue_position']} of {job_info['queue_length']}",
-                    "queue_position": job_info["queue_position"],
-                    "queue_length": job_info["queue_length"],
-                }
-        results.append(resp)
-    return results
+    return [
+        _enrich_project_response(p, hosts_by_id, provs_by_id, owners_by_id)
+        for p in projects
+    ]
 
 
 @router.post("/", response_model=ProjectResponse, status_code=201)
@@ -863,6 +867,42 @@ def get_kubeconfig(
     )
 
 
+def _recompute_auto_stop_timer(project, fields):
+    """Recompute auto-stop expiry when auto_stop_minutes changes."""
+    if fields["auto_stop_minutes"] is None:
+        project.auto_stop_started_at = None
+        project.auto_stop_expires_at = None
+        project.auto_stop_warned = False
+        return
+    now = datetime.datetime.now(datetime.UTC)
+    if not project.auto_stop_started_at and project.state == "active":
+        project.auto_stop_started_at = now
+    if project.auto_stop_started_at:
+        project.auto_stop_expires_at = (
+            project.auto_stop_started_at
+            + datetime.timedelta(minutes=project.auto_stop_minutes or 0)
+        )
+    project.auto_stop_warned = False
+
+
+def _recompute_auto_delete_timer(project, fields):
+    """Recompute auto-delete expiry when auto_delete_minutes changes."""
+    if fields["auto_delete_minutes"] is None:
+        project.auto_delete_started_at = None
+        project.lifetime_expires_at = None
+        project.auto_delete_warned = False
+        return
+    now = datetime.datetime.now(datetime.UTC)
+    if not project.auto_delete_started_at and project.state != "draft":
+        project.auto_delete_started_at = now
+    if project.auto_delete_started_at:
+        project.lifetime_expires_at = (
+            project.auto_delete_started_at
+            + datetime.timedelta(minutes=project.auto_delete_minutes or 0)
+        )
+    project.auto_delete_warned = False
+
+
 @router.patch(
     "/{project_id}", response_model=ProjectResponse, responses={403: {}, 404: {}}
 )
@@ -882,39 +922,10 @@ def update_project(
     for field, value in fields.items():
         setattr(project, field, value)
 
-    # Auto-stop timer recomputation
     if "auto_stop_minutes" in fields:
-        if fields["auto_stop_minutes"] is None:
-            project.auto_stop_started_at = None
-            project.auto_stop_expires_at = None
-            project.auto_stop_warned = False
-        else:
-            now = datetime.datetime.now(datetime.UTC)
-            if not project.auto_stop_started_at and project.state == "active":
-                project.auto_stop_started_at = now
-            if project.auto_stop_started_at:
-                project.auto_stop_expires_at = (
-                    project.auto_stop_started_at
-                    + datetime.timedelta(minutes=project.auto_stop_minutes or 0)
-                )
-            project.auto_stop_warned = False
-
-    # Auto-delete timer recomputation
+        _recompute_auto_stop_timer(project, fields)
     if "auto_delete_minutes" in fields:
-        if fields["auto_delete_minutes"] is None:
-            project.auto_delete_started_at = None
-            project.lifetime_expires_at = None
-            project.auto_delete_warned = False
-        else:
-            now = datetime.datetime.now(datetime.UTC)
-            if not project.auto_delete_started_at and project.state != "draft":
-                project.auto_delete_started_at = now
-            if project.auto_delete_started_at:
-                project.lifetime_expires_at = (
-                    project.auto_delete_started_at
-                    + datetime.timedelta(minutes=project.auto_delete_minutes or 0)
-                )
-            project.auto_delete_warned = False
+        _recompute_auto_delete_timer(project, fields)
 
     # Live clock adjustment
     if "clock_target" in fields and project.state == "active":
@@ -2461,10 +2472,50 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     }
 
 
+def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
+    """Poll TroshkaVM CRs until all are ready. Returns error string or None."""
+    import time
+
+    from app.services.deploy_service import (
+        _delete_deploy_progress,
+        _set_deploy_progress,
+    )
+
+    _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
+    deadline = time.time() + deadline_secs
+    while time.time() < deadline:
+        all_ready = True
+        try:
+            vms = custom_api.list_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkavms",
+            )
+            for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+                state = vm.get("status", {}).get("state", "")
+                if state in ("Creating", "Reconfiguring", ""):
+                    all_ready = False
+                elif state == "Error":
+                    msg = vm.get("status", {}).get("message", "")
+                    proj.state = "error"
+                    proj.deploy_error = (
+                        f"VM {vm['spec'].get('name', '?')} failed: {msg}"
+                    )
+                    s.commit()
+                    _delete_deploy_progress(p_id)
+                    return "vm_error"
+        except Exception:
+            all_ready = False
+        if all_ready:
+            break
+        time.sleep(5)
+    return None
+
+
 def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict):
     """Reconfigure a KubeVirt project by patching CRs."""
     import copy
-    import time
 
     from app.core.database import SessionLocal
     from app.models.provider import Provider as ProviderModel
@@ -2574,35 +2625,9 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 )
 
         # Wait for all VMs to settle
-        _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            all_ready = True
-            try:
-                vms = custom_api.list_namespaced_custom_object(
-                    group=_TROSHKA_DOMAIN,
-                    version="v1alpha1",
-                    namespace=ns,
-                    plural="troshkavms",
-                )
-                for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
-                    state = vm.get("status", {}).get("state", "")
-                    if state in ("Creating", "Reconfiguring", ""):
-                        all_ready = False
-                    elif state == "Error":
-                        msg = vm.get("status", {}).get("message", "")
-                        proj.state = "error"
-                        proj.deploy_error = (
-                            f"VM {vm['spec'].get('name', '?')} failed: {msg}"
-                        )
-                        s.commit()
-                        _delete_deploy_progress(p_id)
-                        return
-            except Exception:
-                all_ready = False
-            if all_ready:
-                break
-            time.sleep(5)
+        err = _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s)
+        if err:
+            return
 
         # Finalize
         clean_topo = copy.deepcopy(current)
@@ -2842,11 +2867,282 @@ def _broadcast_vm_states(h, p_id, current):
         pass
 
 
+def _detect_disk_changes(p_id, vm_node_id, vm_disks, deployed, pool):
+    """Build disk/cdrom lists and detect changes for a single VM."""
+    from app.services.deploy_service import _image_cache_path
+
+    dep_disk_libs = {}
+    dep_disk_sizes = {}
+    dep_vm_node = next(
+        (n for n in deployed.get("nodes", []) if n["id"] == vm_node_id),
+        None,
+    )
+    if dep_vm_node:
+        dep_disks = _find_vm_disks(vm_node_id, deployed)
+        for dd in dep_disks:
+            dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
+            dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
+
+    disk_list = []
+    cdrom_list = []
+    any_disk_changed = False
+    needs_library_download = False
+    files_to_remove = []
+    disks_to_create = []
+    disks_to_resize = []
+    for d in vm_disks:
+        if d["format"] == "iso":
+            if d.get("library_item_id"):
+                cdrom_list.append(
+                    _image_cache_path(d["library_item_id"], "iso", pool=pool)
+                )
+            continue
+        path = _disk_path(p_id, vm_node_id, d["node_id"], d["format"], pool=pool)
+        disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
+        old_lib = dep_disk_libs.get(d["node_id"])
+        new_lib = d.get("library_item_id")
+        image_changed = old_lib != new_lib and (old_lib or new_lib)
+        old_size = dep_disk_sizes.get(d["node_id"], 0)
+        size_grew = d["size_gb"] > old_size and old_size > 0
+        is_new_disk = (
+            d["node_id"] not in dep_disk_libs and d["node_id"] not in dep_disk_sizes
+        )
+        if image_changed or size_grew or is_new_disk:
+            any_disk_changed = True
+        if image_changed:
+            files_to_remove.append(path)
+        backing = None
+        if d.get("source") == "library" and d.get("library_item_id"):
+            needs_library_download = True
+            backing = _image_cache_path(d["library_item_id"], d["format"], pool=pool)
+        elif d.get("source") == "pattern" and d.get("patternId"):
+            backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
+        disks_to_create.append(
+            {
+                "path": path,
+                "size_gb": d["size_gb"],
+                "format": d["format"],
+                "backing_file": backing,
+            }
+        )
+        if size_grew and not image_changed:
+            disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
+
+    return {
+        "disk_list": disk_list,
+        "cdrom_list": cdrom_list,
+        "any_disk_changed": any_disk_changed,
+        "needs_library_download": needs_library_download,
+        "files_to_remove": files_to_remove,
+        "disks_to_create": disks_to_create,
+        "disks_to_resize": disks_to_resize,
+    }
+
+
+def _apply_disk_changes(h, p_id, s, current, changes):
+    """Remove old disk files, create new disks, and resize as needed."""
+    from app.services.deploy_service import _set_deploy_progress
+
+    if changes["needs_library_download"]:
+        _set_deploy_progress(
+            p_id,
+            {"step": "checking images", "detail": ""},
+        )
+        cache_library_images(current, h, s)
+    if changes["files_to_remove"]:
+        try:
+            job_id = start_job(
+                h, "/files/remove", {"paths": changes["files_to_remove"]}
+            )
+            wait_for_job(h, job_id, timeout=30)
+        except TroshkadError as e:
+            logger.warning("Failed to remove old disk files: %s", e)
+    for dc in changes["disks_to_create"]:
+        params = {
+            "path": dc["path"],
+            "size_gb": dc["size_gb"],
+            "format": dc["format"],
+        }
+        if dc["backing_file"]:
+            params["backing_file"] = dc["backing_file"]
+        try:
+            job_id = start_job(h, "/disks/create", params)
+            wait_for_job(h, job_id, timeout=300)
+        except TroshkadError as e:
+            logger.warning("Failed to create disk %s: %s", dc["path"], e)
+    for dr in changes["disks_to_resize"]:
+        try:
+            job_id = start_job(h, "/disks/resize", dr)
+            wait_for_job(h, job_id, timeout=60)
+        except TroshkadError as e:
+            logger.warning("Failed to resize disk %s: %s", dr["path"], e)
+
+
+def _reconfigure_existing_vm(
+    h, p_id, s, current, deployed, vm, vni_map, restart_vm_ids, pool, diff, errors
+):
+    """Handle reconfiguration of a single existing VM."""
+    from app.services.deploy_service import (
+        _resolve_boot_devs,
+        _set_deploy_progress,
+        _vm_domain_name,
+    )
+
+    dom = _vm_domain_name(p_id, vm["node_id"])
+    vm_disks = _find_vm_disks(vm["node_id"], current)
+    boot_devs = _resolve_boot_devs(vm, vm_disks, current)
+    vm_networks = _find_vm_networks(vm["node_id"], current, vni_map, p_id)
+    nics = [
+        {"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks
+    ] or None
+
+    changes = _detect_disk_changes(p_id, vm["node_id"], vm_disks, deployed, pool)
+    disk_list = changes["disk_list"]
+    cdrom_list = changes["cdrom_list"]
+
+    if vm.get("cloud_init"):
+        cdrom_list.append(_seed_path(p_id, vm["node_id"], pool=pool))
+
+    if changes["any_disk_changed"]:
+        _apply_disk_changes(h, p_id, s, current, changes)
+
+    current_cfg = troshkad_get_vm_config(h, dom)
+    if not current_cfg:
+        vm_node = next(
+            (n for n in current.get("nodes", []) if n["id"] == vm["node_id"]),
+            None,
+        )
+        if vm_node:
+            diff["added_vms"].append(vm_node)
+        return
+
+    desired_nics = (
+        [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks]
+        if vm_networks
+        else []
+    )
+    current_bridges = sorted(n["bridge"] for n in current_cfg["nics"])
+    desired_bridges = sorted(n["bridge"] for n in desired_nics)
+    desired_disks = [d["path"] for d in disk_list]
+    if (
+        current_cfg["boot_devs"] == boot_devs
+        and current_cfg["vcpus"] == vm["vcpus"]
+        and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
+        and current_bridges == desired_bridges
+        and current_cfg["disks"] == desired_disks
+        and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+    ):
+        logger.debug(
+            "Reconfigure %s: VM %s unchanged, skipping",
+            p_id[:8],
+            vm["name"],
+        )
+        return
+
+    logger.info(
+        "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s bridges:%s disks:%s cdroms:%s",
+        p_id[:8],
+        vm["name"],
+        current_cfg["boot_devs"] != boot_devs,
+        current_cfg["vcpus"] != vm["vcpus"],
+        current_cfg["ram_mb"] != vm["ram_gb"] * 1024,
+        current_bridges != desired_bridges,
+        current_cfg["disks"] != desired_disks,
+        sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
+    )
+    _set_deploy_progress(p_id, {"step": "reconfiguring", "detail": vm["name"]})
+    disk_only_change = (
+        current_cfg["disks"] != desired_disks
+        and current_cfg["boot_devs"] == boot_devs
+        and current_cfg["vcpus"] == vm["vcpus"]
+        and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
+        and current_bridges == desired_bridges
+        and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
+    )
+    needs_restart = (
+        vm["node_id"] in restart_vm_ids
+        or current_cfg["boot_devs"] != boot_devs
+        or current_cfg["vcpus"] != vm["vcpus"]
+        or current_cfg["ram_mb"] != vm["ram_gb"] * 1024
+        or current_bridges != desired_bridges
+    ) and not disk_only_change
+    try:
+        troshkad_reconfigure_vm(
+            h,
+            dom,
+            boot_devs=boot_devs,
+            vcpus=vm["vcpus"],
+            ram_mb=vm["ram_gb"] * 1024,
+            nics=nics,
+            disks=disk_list,
+            cdroms=cdrom_list,
+            restart=needs_restart,
+        )
+    except TroshkadError as e:
+        errors.append(f"Failed to reconfigure {dom}: {e}")
+
+
+def _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors):
+    """Commit final reconfigure state: BMC, topology, notifications."""
+    import copy
+
+    from app.services.deploy_service import (
+        _delete_deploy_progress,
+        _extract_bmc_config,
+    )
+    from app.services.placement import sync_host_capacity
+    from app.services.ws_pubsub import notify_project
+
+    sync_host_capacity(s, h)
+
+    bmc_config = _extract_bmc_config(current, p_id)
+    _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors)
+
+    s.refresh(proj)
+    final_topo = proj.topology or {}
+
+    proj.state = "active"
+    if not errors:
+        deployed_topo = copy.deepcopy(final_topo)
+        if bmc_config:
+            deployed_topo["bmc"] = {
+                "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+                "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+                "vms": {
+                    vm["node_id"]: {
+                        "ip": vm["bmc_ip"],
+                        "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['domain_name']}",
+                        "ipmi_address": f"{vm['bmc_ip']}:623",
+                    }
+                    for vm in bmc_config["vms"]
+                },
+            }
+        proj.deployed_topology = deployed_topo
+        proj.deploy_error = None
+    else:
+        proj.deploy_error = "\n".join(errors)
+    s.commit()
+    _delete_deploy_progress(p_id)
+    notify_project(
+        p_id,
+        {
+            "type": "project-state",
+            "state": "active",
+            "deploy_error": proj.deploy_error,
+        },
+    )
+    _broadcast_vm_states(h, p_id, current)
+    logger.info(
+        "Reconfigure %s complete%s",
+        p_id[:8],
+        f" with errors: {errors}" if errors else "",
+    )
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
         _delete_deploy_progress,
-        _resolve_boot_devs,
         _set_deploy_progress,
         _vm_domain_name,
     )
@@ -2994,256 +3290,24 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         for vm in vms:
             if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
                 continue
-            dom = _vm_domain_name(p_id, vm["node_id"])
-            vm_disks = _find_vm_disks(vm["node_id"], current)
-            boot_devs = _resolve_boot_devs(vm, vm_disks, current)
-            vm_networks = _find_vm_networks(vm["node_id"], current, vni_map, p_id)
-            nics = [
-                {"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"}
-                for n in vm_networks
-            ] or None
-
-            # Build map of deployed disk library items for change detection
-            dep_disk_libs = {}
-            dep_disk_sizes = {}
-            dep_vm_node = next(
-                (n for n in deployed.get("nodes", []) if n["id"] == vm["node_id"]),
-                None,
+            _reconfigure_existing_vm(
+                h,
+                p_id,
+                s,
+                current,
+                deployed,
+                vm,
+                vni_map,
+                restart_vm_ids,
+                _pool,
+                diff,
+                errors,
             )
-            if dep_vm_node:
-                dep_disks = _find_vm_disks(vm["node_id"], deployed)
-                for dd in dep_disks:
-                    dep_disk_libs[dd["node_id"]] = dd.get("library_item_id")
-                    dep_disk_sizes[dd["node_id"]] = dd.get("size_gb", 0)
-
-            from app.services.deploy_service import _image_cache_path
-
-            disk_list = []
-            cdrom_list = []
-            any_disk_changed = False
-            needs_library_download = False
-            files_to_remove = []
-            disks_to_create = []
-            disks_to_resize = []
-            for d in vm_disks:
-                if d["format"] == "iso":
-                    if d.get("library_item_id"):
-                        cdrom_list.append(
-                            _image_cache_path(d["library_item_id"], "iso", pool=_pool)
-                        )
-                    continue
-                path = _disk_path(
-                    p_id, vm["node_id"], d["node_id"], d["format"], pool=_pool
-                )
-                disk_list.append({"path": path, "format": d["format"], "bus": d["bus"]})
-                old_lib = dep_disk_libs.get(d["node_id"])
-                new_lib = d.get("library_item_id")
-                image_changed = old_lib != new_lib and (old_lib or new_lib)
-                old_size = dep_disk_sizes.get(d["node_id"], 0)
-                size_grew = d["size_gb"] > old_size and old_size > 0
-                is_new_disk = (
-                    d["node_id"] not in dep_disk_libs
-                    and d["node_id"] not in dep_disk_sizes
-                )
-                if image_changed or size_grew or is_new_disk:
-                    any_disk_changed = True
-                if image_changed:
-                    files_to_remove.append(path)
-                backing = None
-                if d.get("source") == "library" and d.get("library_item_id"):
-                    needs_library_download = True
-                    backing = _image_cache_path(
-                        d["library_item_id"], d["format"], pool=_pool
-                    )
-                elif d.get("source") == "pattern" and d.get("patternId"):
-                    backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
-                disks_to_create.append(
-                    {
-                        "path": path,
-                        "size_gb": d["size_gb"],
-                        "format": d["format"],
-                        "backing_file": backing,
-                    }
-                )
-                if size_grew and not image_changed:
-                    disks_to_resize.append({"path": path, "new_size_gb": d["size_gb"]})
-
-            if vm.get("cloud_init"):
-                cdrom_list.append(_seed_path(p_id, vm["node_id"], pool=_pool))
-
-            if any_disk_changed:
-                if needs_library_download:
-                    _set_deploy_progress(
-                        p_id,
-                        {
-                            "step": "checking images",
-                            "detail": "",
-                        },
-                    )
-                    cache_library_images(current, h, s)
-                # Remove changed disk files
-                if files_to_remove:
-                    try:
-                        job_id = start_job(
-                            h, "/files/remove", {"paths": files_to_remove}
-                        )
-                        wait_for_job(h, job_id, timeout=30)
-                    except TroshkadError as e:
-                        logger.warning("Failed to remove old disk files: %s", e)
-                # Create new disks
-                for dc in disks_to_create:
-                    params = {
-                        "path": dc["path"],
-                        "size_gb": dc["size_gb"],
-                        "format": dc["format"],
-                    }
-                    if dc["backing_file"]:
-                        params["backing_file"] = dc["backing_file"]
-                    try:
-                        job_id = start_job(h, "/disks/create", params)
-                        wait_for_job(h, job_id, timeout=300)
-                    except TroshkadError as e:
-                        logger.warning("Failed to create disk %s: %s", dc["path"], e)
-                # Resize disks
-                for dr in disks_to_resize:
-                    try:
-                        job_id = start_job(h, "/disks/resize", dr)
-                        wait_for_job(h, job_id, timeout=60)
-                    except TroshkadError as e:
-                        logger.warning("Failed to resize disk %s: %s", dr["path"], e)
-
-            current_cfg = troshkad_get_vm_config(h, dom)
-            if not current_cfg:
-                vm_node = next(
-                    (n for n in current.get("nodes", []) if n["id"] == vm["node_id"]),
-                    None,
-                )
-                if vm_node:
-                    diff["added_vms"].append(vm_node)
-                continue
-
-            desired_nics = (
-                [{"bridge": n["bridge"], "mac": n["mac"]} for n in vm_networks]
-                if vm_networks
-                else []
-            )
-            current_bridges = sorted(n["bridge"] for n in current_cfg["nics"])
-            desired_bridges = sorted(n["bridge"] for n in desired_nics)
-            desired_disks = [d["path"] for d in disk_list]
-            if (
-                current_cfg["boot_devs"] == boot_devs
-                and current_cfg["vcpus"] == vm["vcpus"]
-                and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
-                and current_bridges == desired_bridges
-                and current_cfg["disks"] == desired_disks
-                and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
-            ):
-                logger.debug(
-                    "Reconfigure %s: VM %s unchanged, skipping",
-                    p_id[:8],
-                    vm["name"],
-                )
-                continue
-
-            logger.info(
-                "Reconfigure %s: VM %s changed — boot_devs:%s vcpus:%s ram:%s bridges:%s disks:%s cdroms:%s",
-                p_id[:8],
-                vm["name"],
-                current_cfg["boot_devs"] != boot_devs,
-                current_cfg["vcpus"] != vm["vcpus"],
-                current_cfg["ram_mb"] != vm["ram_gb"] * 1024,
-                current_bridges != desired_bridges,
-                current_cfg["disks"] != desired_disks,
-                sorted(current_cfg.get("cdroms", [])) != sorted(cdrom_list),
-            )
-            _set_deploy_progress(p_id, {"step": "reconfiguring", "detail": vm["name"]})
-            disk_only_change = (
-                current_cfg["disks"] != desired_disks
-                and current_cfg["boot_devs"] == boot_devs
-                and current_cfg["vcpus"] == vm["vcpus"]
-                and current_cfg["ram_mb"] == vm["ram_gb"] * 1024
-                and current_bridges == desired_bridges
-                and sorted(current_cfg.get("cdroms", [])) == sorted(cdrom_list)
-            )
-            needs_restart = (
-                vm["node_id"] in restart_vm_ids
-                or current_cfg["boot_devs"] != boot_devs
-                or current_cfg["vcpus"] != vm["vcpus"]
-                or current_cfg["ram_mb"] != vm["ram_gb"] * 1024
-                or current_bridges != desired_bridges
-            ) and not disk_only_change
-            try:
-                troshkad_reconfigure_vm(
-                    h,
-                    dom,
-                    boot_devs=boot_devs,
-                    vcpus=vm["vcpus"],
-                    ram_mb=vm["ram_gb"] * 1024,
-                    nics=nics,
-                    disks=disk_list,
-                    cdroms=cdrom_list,
-                    restart=needs_restart,
-                )
-            except TroshkadError as e:
-                errors.append(f"Failed to reconfigure {dom}: {e}")
 
         if diff["added_vms"]:
             _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
 
-        from app.services.placement import sync_host_capacity
-
-        sync_host_capacity(s, h)
-
-        # BMC setup/teardown during reconfigure
-        from app.services.deploy_service import _extract_bmc_config
-
-        bmc_config = _extract_bmc_config(current, p_id)
-        _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors)
-
-        s.refresh(proj)
-        final_topo = proj.topology or {}
-
-        import copy
-
-        proj.state = "active"
-        if not errors:
-            # Store BMC addresses in deployed topology
-            deployed_topo = copy.deepcopy(final_topo)
-            if bmc_config:
-                deployed_topo["bmc"] = {
-                    "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
-                    "password": bmc_config["bmc_network"].get(
-                        "bmcPassword", "password"
-                    ),
-                    "vms": {
-                        vm["node_id"]: {
-                            "ip": vm["bmc_ip"],
-                            "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['domain_name']}",
-                            "ipmi_address": f"{vm['bmc_ip']}:623",
-                        }
-                        for vm in bmc_config["vms"]
-                    },
-                }
-            proj.deployed_topology = deployed_topo
-            proj.deploy_error = None
-        else:
-            proj.deploy_error = "\n".join(errors)
-        s.commit()
-        _delete_deploy_progress(p_id)
-        notify_project(
-            p_id,
-            {
-                "type": "project-state",
-                "state": "active",
-                "deploy_error": proj.deploy_error,
-            },
-        )
-        _broadcast_vm_states(h, p_id, current)
-        logger.info(
-            "Reconfigure %s complete%s",
-            p_id[:8],
-            f" with errors: {errors}" if errors else "",
-        )
+        _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:
         logger.exception("Reconfigure %s failed", p_id[:8])
         proj = s.query(Project).filter_by(id=p_id).first()
@@ -3276,6 +3340,44 @@ def redeploy_vm(
     return {"status": "redeploying"}
 
 
+def _cleanup_old_vm_files(h, p_id, target_vm_id, topology):
+    """Remove old disk and seed files for a VM being redeployed."""
+    vm_disks_to_remove = _find_vm_disks(target_vm_id, topology or {})
+    paths_to_remove = []
+    for d in vm_disks_to_remove:
+        if d["format"] != "iso":
+            paths_to_remove.append(
+                _disk_path(p_id, target_vm_id, d["node_id"], d["format"])
+            )
+    paths_to_remove.append(_seed_path(p_id, target_vm_id))
+    try:
+        job_id = start_job(h, "/files/remove", {"paths": paths_to_remove})
+        wait_for_job(h, job_id, timeout=15)
+    except TroshkadError as e:
+        from app.services.deploy_service import _vm_domain_name
+
+        logger.warning(
+            "Redeploy %s: failed to remove old files: %s",
+            _vm_domain_name(p_id, target_vm_id),
+            e,
+        )
+
+
+def _build_redeploy_vm_data(vm_node):
+    """Build vm_data dict from a topology vm_node for redeploy."""
+    vdata = vm_node.get("data", {})
+    return {
+        "node_id": vm_node["id"],
+        "name": vdata.get("name", "vm"),
+        "vcpus": vdata.get("vcpus", 2),
+        "ram_gb": vdata.get("ram", 4),
+        "cloud_init": vdata.get("cloudInit", False),
+        "boot_devices": vdata.get("bootDevices"),
+        "firmware": vdata.get("firmware", "bios"),
+        "secure_boot": vdata.get("secureBoot", False),
+    }
+
+
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -3299,21 +3401,7 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         troshkad_undefine_vm(h, dom, remove_storage=False)
 
         _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
-        # Remove old disk files via troshkad
-        # Build list of known files for this VM
-        vm_disks_to_remove = _find_vm_disks(target_vm_id, topology or {})
-        paths_to_remove = []
-        for d in vm_disks_to_remove:
-            if d["format"] != "iso":
-                paths_to_remove.append(
-                    _disk_path(p_id, target_vm_id, d["node_id"], d["format"])
-                )
-        paths_to_remove.append(_seed_path(p_id, target_vm_id))
-        try:
-            job_id = start_job(h, "/files/remove", {"paths": paths_to_remove})
-            wait_for_job(h, job_id, timeout=15)
-        except TroshkadError as e:
-            logger.warning("Redeploy %s: failed to remove old files: %s", dom, e)
+        _cleanup_old_vm_files(h, p_id, target_vm_id, topology)
 
         vm_node = next(
             (
@@ -3363,17 +3451,7 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
 
         _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
-        vdata = vm_node.get("data", {})
-        vm_data = {
-            "node_id": vm_node["id"],
-            "name": vdata.get("name", "vm"),
-            "vcpus": vdata.get("vcpus", 2),
-            "ram_gb": vdata.get("ram", 4),
-            "cloud_init": vdata.get("cloudInit", False),
-            "boot_devices": vdata.get("bootDevices"),
-            "firmware": vdata.get("firmware", "bios"),
-            "secure_boot": vdata.get("secureBoot", False),
-        }
+        vm_data = _build_redeploy_vm_data(vm_node)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
         vm_disks = _find_vm_disks(target_vm_id, topology or {})
         _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
@@ -3381,6 +3459,7 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
             h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache
         )
 
+        vdata = vm_node.get("data", {})
         should_start = was_running or vdata.get("powerOnAtDeploy", True)
         if should_start:
             try:

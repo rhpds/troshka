@@ -233,6 +233,26 @@ def _pattern_to_detail_dict(p: Pattern) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_pattern_source(body, user, db):
+    """Return (source_project, topology, state) for pattern creation."""
+    if body.source_project_id:
+        query = db.query(Project).filter_by(id=body.source_project_id)
+        if user.role != "admin":
+            query = query.filter_by(owner_id=user.id)
+        source_project = query.first()
+        if not source_project:
+            raise HTTPException(status_code=404, detail="Source project not found")
+        if source_project.state not in ("active", "stopped"):
+            raise HTTPException(
+                status_code=400,
+                detail="Project must be deployed (active or stopped) to save as pattern",
+            )
+        return source_project, source_project.topology or {}, "capturing"
+    if body.topology:
+        return None, body.topology, "available"
+    raise HTTPException(status_code=400, detail="Provide source_project_id or topology")
+
+
 @router.post("/", status_code=201)
 def create_pattern(
     body: PatternCreate,
@@ -248,32 +268,11 @@ def create_pattern(
             status_code=409, detail=f'You already have a pattern named "{body.name}"'
         )
 
-    source_project: Project | None = None
-    if body.source_project_id:
-        query = db.query(Project).filter_by(id=body.source_project_id)
-        if user.role != "admin":
-            query = query.filter_by(owner_id=user.id)
-        source_project = query.first()
-        if not source_project:
-            raise HTTPException(status_code=404, detail="Source project not found")
-        if source_project.state not in ("active", "stopped"):
-            raise HTTPException(
-                status_code=400,
-                detail="Project must be deployed (active or stopped) to save as pattern",
-            )
-        topology = source_project.topology or {}
-        state = "capturing"
-    elif body.topology:
-        topology = body.topology
-        state = "available"
-    else:
-        raise HTTPException(
-            status_code=400, detail="Provide source_project_id or topology"
-        )
+    source_project, topology, state = _resolve_pattern_source(body, user, db)
 
-    pattern_description = body.description
-    if not pattern_description and source_project:
-        pattern_description = source_project.description
+    pattern_description = body.description or (
+        source_project.description if source_project else None
+    )
 
     clock_target = None
     if body.capture_clock_target and source_project and source_project.clock_target:

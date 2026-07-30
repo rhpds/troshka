@@ -404,6 +404,93 @@ def update_provider(
     return _build_provider_response(provider)
 
 
+def _cleanup_kubevirt_k8s_resources(
+    provider: Provider, provider_id: str, creds: dict
+) -> Any | None:
+    """Delete operator deployment, CRDs, and namespaces from the K8s cluster.
+
+    Returns the core_api client (or None if connection failed).
+    """
+    core_api = None
+    try:
+        from app.services.providers.kubevirt import _get_k8s_clients
+
+        custom_api, core_api, api_client = _get_k8s_clients(provider)
+        operator_ns = creds.get("namespace", "troshka-operator")
+        cache_ns = creds.get("cache_namespace", "troshka-cache")
+
+        from kubernetes import client as k8s_client
+
+        apps_api = k8s_client.AppsV1Api(api_client)
+
+        try:
+            apps_api.delete_namespaced_deployment(
+                name="troshka-operator", namespace=operator_ns
+            )
+        except Exception:
+            pass
+        try:
+            core_api.delete_namespaced_service_account(
+                name="troshka-operator", namespace=operator_ns
+            )
+        except Exception:
+            pass
+
+        ext_api = k8s_client.ApiextensionsV1Api(api_client)
+        for crd_name in [
+            "troshkaprojects.troshka.redhat.com",
+            "troshkanetworks.troshka.redhat.com",
+            "troshkavms.troshka.redhat.com",
+        ]:
+            try:
+                ext_api.delete_custom_resource_definition(name=crd_name)
+            except Exception:
+                pass
+
+        for ns in [operator_ns, cache_ns]:
+            try:
+                core_api.delete_namespace(name=ns)
+            except Exception:
+                pass
+
+        logger.info(
+            "Cleaned up kubevirt operator resources for provider %s",
+            provider_id[:8],
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to clean up kubevirt resources for %s: %s",
+            provider_id[:8],
+            e,
+        )
+    return core_api
+
+
+def _cleanup_kubevirt_db_resources(
+    db: Session, provider: Provider, creds: dict, core_api: Any | None
+) -> None:
+    """Delete project namespaces and remove DB records for hosts/projects."""
+    from app.models.host import Host
+    from app.models.project import Project
+
+    hosts = db.query(Host).filter_by(provider_id=provider.id).all()
+    host_ids = [h.id for h in hosts]
+    if host_ids:
+        projects = db.query(Project).filter(Project.host_id.in_(host_ids)).all()
+        for project in projects:
+            try:
+                prefix = creds.get("project_prefix", "troshka-")
+                proj_ns = f"{prefix}{project.id[:8]}"
+                if core_api is not None:
+                    core_api.delete_namespace(name=proj_ns)
+            except Exception:
+                pass
+            db.delete(project)
+
+    for host in hosts:
+        db.delete(host)
+
+
 @router.delete("/{provider_id}", status_code=204)
 def delete_provider(
     provider_id: str,
@@ -415,80 +502,9 @@ def delete_provider(
         raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     if provider.type == "kubevirt":
-        from app.models.host import Host
-
         creds = provider.get_credentials()
-        core_api = None
-        try:
-            from app.services.providers.kubevirt import _get_k8s_clients
-
-            custom_api, core_api, api_client = _get_k8s_clients(provider)
-            operator_ns = creds.get("namespace", "troshka-operator")
-            cache_ns = creds.get("cache_namespace", "troshka-cache")
-
-            from kubernetes import client as k8s_client
-
-            apps_api = k8s_client.AppsV1Api(api_client)
-
-            try:
-                apps_api.delete_namespaced_deployment(
-                    name="troshka-operator", namespace=operator_ns
-                )
-            except Exception:
-                pass
-            try:
-                core_api.delete_namespaced_service_account(
-                    name="troshka-operator", namespace=operator_ns
-                )
-            except Exception:
-                pass
-
-            ext_api = k8s_client.ApiextensionsV1Api(api_client)
-            for crd_name in [
-                "troshkaprojects.troshka.redhat.com",
-                "troshkanetworks.troshka.redhat.com",
-                "troshkavms.troshka.redhat.com",
-            ]:
-                try:
-                    ext_api.delete_custom_resource_definition(name=crd_name)
-                except Exception:
-                    pass
-
-            for ns in [operator_ns, cache_ns]:
-                try:
-                    core_api.delete_namespace(name=ns)
-                except Exception:
-                    pass
-
-            logger.info(
-                "Cleaned up kubevirt operator resources for provider %s",
-                provider_id[:8],
-            )
-        except Exception as e:
-            logger.warning(
-                "Failed to clean up kubevirt resources for %s: %s",
-                provider_id[:8],
-                e,
-            )
-
-        from app.models.project import Project
-
-        hosts = db.query(Host).filter_by(provider_id=provider.id).all()
-        host_ids = [h.id for h in hosts]
-        if host_ids:
-            projects = db.query(Project).filter(Project.host_id.in_(host_ids)).all()
-            for project in projects:
-                try:
-                    prefix = creds.get("project_prefix", "troshka-")
-                    proj_ns = f"{prefix}{project.id[:8]}"
-                    if core_api is not None:
-                        core_api.delete_namespace(name=proj_ns)
-                except Exception:
-                    pass
-                db.delete(project)
-
-        for host in hosts:
-            db.delete(host)
+        core_api = _cleanup_kubevirt_k8s_resources(provider, provider_id, creds)
+        _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
     elif provider.hosts:
         raise HTTPException(
             status_code=409, detail="Provider has hosts — remove them first"
@@ -498,7 +514,10 @@ def delete_provider(
     db.commit()
 
 
-@router.get("/{provider_id}/discover-images")
+@router.get(
+    "/{provider_id}/discover-images",
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+)
 def discover_images(
     provider_id: str,
     user: User = Depends(require_role("admin")),
@@ -891,7 +910,10 @@ def set_iso(
     return {"iso_pvc": iso_pvc}
 
 
-@router.get("/{provider_id}/discover-isos")
+@router.get(
+    "/{provider_id}/discover-isos",
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+)
 def discover_isos(
     provider_id: str,
     user: User = Depends(require_role("admin")),

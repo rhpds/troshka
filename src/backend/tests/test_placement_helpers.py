@@ -1,6 +1,5 @@
 """Tests for placement helper functions."""
 
-
 from app.models.elastic_ip import ElasticIp
 from app.models.host import Host
 from app.models.provider import Provider

@@ -1981,25 +1981,18 @@ def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
     wait_for_job(host, job_id, timeout=120)
 
 
-def _deploy_kubevirt_native(project_id, project, host, topology, db):
-    """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
-    import time
+# ---------------------------------------------------------------------------
+# KubeVirt native deploy helpers (extracted to reduce cognitive complexity)
+# ---------------------------------------------------------------------------
 
-    from app.models.provider import Provider
-    from app.services.providers import get_provider_driver
-    from app.services.s3_storage import _get_s3_config
-    from app.services.ws_pubsub import notify_project
 
-    provider = db.query(Provider).filter_by(id=host.provider_id).first()
-    if not provider:
-        project.state = "error"
-        project.deploy_error = "No provider found for kubevirt host"
-        db.commit()
-        return
-
-    driver = get_provider_driver(provider)
-
-    from app.services.s3_storage import _get_readonly_s3_config, owner_params
+def _setup_kubevirt_s3_clients():
+    """Set up primary and central S3 clients for KubeVirt deploy."""
+    from app.services.s3_storage import (
+        _get_readonly_s3_config,
+        _get_s3_config,
+        owner_params,
+    )
 
     s3_config = _get_s3_config()
     central_s3_config = _get_readonly_s3_config()
@@ -2028,96 +2021,531 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         central_bucket = central_s3_config.get("bucket", "")
         central_op = owner_params(central_s3_config)
 
-    def _qcow2_virtual_size_gb(s3_path, use_central=False):
+    return (
+        s3_config,
+        central_s3_config,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
+
+
+def _qcow2_virtual_size_gb_s3(client, bucket, owner_params_dict, s3_path):
+    """Read qcow2 virtual size from S3 header (Range request)."""
+    try:
+        if not client:
+            return 0
+        import struct
+
+        resp = client.get_object(
+            Bucket=bucket, Key=s3_path, Range="bytes=0-31", **owner_params_dict
+        )
+        header = resp["Body"].read()
+        if len(header) >= 32 and header[:4] == b"QFI\xfb":
+            vsize = struct.unpack(">Q", header[24:32])[0]
+            return int(vsize / (1024**3)) + 1
+    except Exception:
+        pass
+    return 0
+
+
+def _check_central_source(
+    s3_path, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
+):
+    """Check if a disk exists in primary S3; if not, check central S3."""
+    if not central_s3_client:
+        return False
+    try:
+        s3_client.head_object(Bucket=bucket, Key=s3_path, **s3_op)
+        return False
+    except Exception:
         try:
-            cl = central_s3_client if use_central else s3_client
-            bk = central_bucket if use_central else bucket
-            if not cl:
-                return 0
-            import struct
-
-            _op = central_op if use_central else s3_op
-            resp = cl.get_object(Bucket=bk, Key=s3_path, Range="bytes=0-31", **_op)
-            header = resp["Body"].read()
-            if len(header) >= 32 and header[:4] == b"QFI\xfb":
-                vsize = struct.unpack(">Q", header[24:32])[0]
-                return int(vsize / (1024**3)) + 1
+            central_s3_client.head_object(
+                Bucket=central_bucket, Key=s3_path, **central_op
+            )
+            return True
         except Exception:
-            pass
-        return 0
+            return False
 
+
+def _resolve_pattern_disk(
+    data, db, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
+):
+    """Resolve S3 path for a pattern-sourced disk."""
     from app.models.pattern import PatternDisk as PatternDiskModel
 
+    pid = data["patternId"]
+    pattern_disk_id = data.get("patternDiskId", "")
+    pd_record = (
+        db.query(PatternDiskModel).filter_by(id=pattern_disk_id, pattern_id=pid).first()
+        if pattern_disk_id
+        else None
+    )
+    if pd_record and pd_record.s3_key:
+        s3_path = pd_record.s3_key
+    else:
+        s3_path = f"patterns/{pid}/{pattern_disk_id}.qcow2"
+    use_central = _check_central_source(
+        s3_path, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
+    )
+    data["resolvedS3Path"] = s3_path
+    data["centralSource"] = use_central
+    logger.info(
+        "Deploy: disk %s s3=%s central=%s",
+        data.get("label", "?"),
+        s3_path[:40],
+        use_central,
+    )
+    real_size = _qcow2_virtual_size_gb_s3(
+        central_s3_client if use_central else s3_client,
+        central_bucket if use_central else bucket,
+        central_op if use_central else s3_op,
+        s3_path,
+    )
+    if real_size and real_size > (data.get("size", 0) or 0):
+        data["size"] = real_size
+
+
+def _resolve_library_disk(
+    data, db, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
+):
+    """Resolve S3 path for a library-sourced disk."""
+    from app.models.library import LibraryItem
+
+    lib_item = db.get(LibraryItem, data["libraryItemId"])
+    if lib_item and lib_item.s3_key:
+        s3_path = lib_item.s3_key
+        use_central = getattr(lib_item, "source", "") == "central"
+    else:
+        fmt = data.get("format", "qcow2")
+        s3_path = f"library/{data['libraryItemId']}.{fmt}"
+        use_central = _check_central_source(
+            s3_path,
+            s3_client,
+            bucket,
+            s3_op,
+            central_s3_client,
+            central_bucket,
+            central_op,
+        )
+    data["resolvedS3Path"] = s3_path
+    data["centralSource"] = use_central
+    logger.info(
+        "Deploy: disk %s s3=%s central=%s",
+        data.get("label", "?"),
+        s3_path[:40],
+        use_central,
+    )
+
+
+def _resolve_disk_s3_paths(
+    topology,
+    db,
+    s3_client,
+    bucket,
+    s3_op,
+    central_s3_client,
+    central_bucket,
+    central_op,
+):
+    """Resolve S3 paths for pattern and library disks, annotating topology nodes."""
     for node in topology.get("nodes", []):
         data = node.get("data", {})
-        if node.get("type") == "storageNode":
-            if data.get("source") == "pattern" and data.get("patternId"):
-                pid = data["patternId"]
-                pattern_disk_id = data.get("patternDiskId", "")
-                pd_record = (
-                    db.query(PatternDiskModel)
-                    .filter_by(id=pattern_disk_id, pattern_id=pid)
-                    .first()
-                    if pattern_disk_id
-                    else None
-                )
-                if pd_record and pd_record.s3_key:
-                    s3_path = pd_record.s3_key
-                else:
-                    s3_path = f"patterns/{pid}/{pattern_disk_id}.qcow2"
-                use_central = False
-                if central_s3_client:
-                    try:
-                        s3_client.head_object(Bucket=bucket, Key=s3_path, **s3_op)
-                    except Exception:
-                        try:
-                            central_s3_client.head_object(
-                                Bucket=central_bucket, Key=s3_path, **central_op
-                            )
-                            use_central = True
-                        except Exception:
-                            pass
-                data["resolvedS3Path"] = s3_path
-                data["centralSource"] = use_central
-                logger.info(
-                    "Deploy: disk %s s3=%s central=%s",
-                    data.get("label", "?"),
-                    s3_path[:40],
-                    use_central,
-                )
-                real_size = _qcow2_virtual_size_gb(s3_path, use_central)
-                if real_size and real_size > (data.get("size", 0) or 0):
-                    data["size"] = real_size
-            elif data.get("source") == "library" and data.get("libraryItemId"):
-                from app.models.library import LibraryItem
+        if node.get("type") != "storageNode":
+            continue
+        if data.get("source") == "pattern" and data.get("patternId"):
+            _resolve_pattern_disk(
+                data,
+                db,
+                s3_client,
+                bucket,
+                s3_op,
+                central_s3_client,
+                central_bucket,
+                central_op,
+            )
+        elif data.get("source") == "library" and data.get("libraryItemId"):
+            _resolve_library_disk(
+                data,
+                db,
+                s3_client,
+                bucket,
+                s3_op,
+                central_s3_client,
+                central_bucket,
+                central_op,
+            )
 
-                lib_item = db.get(LibraryItem, data["libraryItemId"])
-                if lib_item and lib_item.s3_key:
-                    s3_path = lib_item.s3_key
-                    use_central = getattr(lib_item, "source", "") == "central"
-                else:
-                    fmt = data.get("format", "qcow2")
-                    s3_path = f"library/{data['libraryItemId']}.{fmt}"
-                    use_central = False
-                    if central_s3_client:
-                        try:
-                            s3_client.head_object(Bucket=bucket, Key=s3_path, **s3_op)
-                        except Exception:
-                            try:
-                                central_s3_client.head_object(
-                                    Bucket=central_bucket, Key=s3_path, **central_op
-                                )
-                                use_central = True
-                            except Exception:
-                                pass
-                data["resolvedS3Path"] = s3_path
-                data["centralSource"] = use_central
-                logger.info(
-                    "Deploy: disk %s s3=%s central=%s",
-                    data.get("label", "?"),
-                    s3_path[:40],
-                    use_central,
+
+def _build_clone_name_map(topology):
+    """Build a mapping from clone DV names to friendly disk labels."""
+    clone_name_map: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") != "storageNode":
+            continue
+        sid = ndata.get("id", node.get("id", ""))[:8]
+        label = ndata.get("label", ndata.get("name", ""))
+        fmt = ndata.get("format", "qcow2")
+        node_id = ndata.get("id", node.get("id", ""))
+        for edge in topology.get("edges", []):
+            if edge.get("source") == node_id:
+                vm_id = edge.get("target", "")[:8]
+            elif edge.get("target") == node_id:
+                vm_id = edge.get("source", "")[:8]
+            else:
+                continue
+            clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
+            if fmt == "iso":
+                clone_name_map[f"vm-{vm_id}-cdrom"] = label
+    return clone_name_map
+
+
+def _format_import_progress(friendly, dv, dv_progress):
+    """Format import-in-progress DataVolume status."""
+    conditions = dv.get("status", {}).get("conditions", [])
+    running_reason = ""
+    running_msg = ""
+    for cond in conditions:
+        if cond.get("type") == "Running":
+            running_reason = cond.get("reason", "")
+            running_msg = cond.get("message", "")
+            break
+    if running_reason == "Completed":
+        return f"{friendly}: writing to storage"
+    if running_reason == "Error":
+        return f"{friendly}: error — {running_msg[:40]}"
+    if dv_progress and dv_progress != "N/A":
+        try:
+            pct = float(dv_progress.rstrip("%"))
+            if pct >= 99.0:
+                return f"{friendly}: writing to storage — please wait"
+            return f"{friendly}: downloading {dv_progress}"
+        except ValueError:
+            return f"{friendly}: downloading {dv_progress}"
+    if running_reason == "TransferRunning":
+        return f"{friendly}: downloading starting"
+    return f"{friendly}: starting"
+
+
+def _format_dv_status_line(friendly, dv):
+    """Format a single DataVolume into a human-readable status line."""
+    dv_phase = dv.get("status", {}).get("phase", "")
+    dv_progress = dv.get("status", {}).get("progress", "N/A")
+
+    if dv_phase == "Succeeded":
+        return f"{friendly}: done"
+    if dv_phase == "ImportInProgress":
+        return _format_import_progress(friendly, dv, dv_progress)
+    if dv_phase in ("CloneInProgress", "CloneScheduled"):
+        return f"{friendly}: cloning"
+    if dv_phase in ("ImportScheduled", "Pending"):
+        return f"{friendly}: scheduled"
+    if dv_phase == "Failed":
+        conditions = dv.get("status", {}).get("conditions", [])
+        err = next(
+            (
+                c.get("message", "")
+                for c in conditions
+                if c.get("type") == "Running" and c.get("message")
+            ),
+            "",
+        )
+        short_err = err[:40] if err else "failed"
+        return f"{friendly}: error — {short_err}"
+    if dv_phase:
+        return f"{friendly}: {dv_phase.lower()}"
+    return f"{friendly}: waiting"
+
+
+def _best_dv_status(lines):
+    """Merge DV status lines keeping the most-advanced status per disk label."""
+    rank = {"done": 5, "downloading": 4, "cloning": 3, "scheduled": 2, "waiting": 1}
+
+    def _rank(s):
+        for k, v in rank.items():
+            if k in s:
+                return v
+        return 0
+
+    best: dict[str, str] = {}
+    for line in lines:
+        label = line.split(":")[0].strip()
+        dv_status = line.split(":", 1)[1].strip() if ":" in line else ""
+        prev = best.get(label, "")
+        if _rank(dv_status) >= _rank(prev):
+            best[label] = dv_status
+    return best
+
+
+def _fill_missing_disk_labels(topology, best_status):
+    """Add 'waiting' entries for topology disks not yet represented in DV status."""
+    for node in topology.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") == "storageNode" and ndata.get("source") in (
+            "pattern",
+            "library",
+        ):
+            label = ndata.get("label", ndata.get("name", ""))[:24]
+            if label and label not in best_status:
+                best_status[label] = "waiting"
+
+
+def _collect_dv_progress(project_id, provider, topology):
+    """Collect DataVolume progress lines for deploy status display."""
+    import hashlib
+
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    dv_lines: list[str] = []
+    try:
+        golden_name_map: dict[str, str] = {}
+        for node in topology.get("nodes", []):
+            ndata = node.get("data", {})
+            if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
+                h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[:16]
+                golden_name_map[f"golden-{h}"] = ndata.get(
+                    "label", ndata.get("name", "")
                 )
+
+        custom_api, _, _ = _get_k8s_clients(provider)
+        proj_ns = _project_ns(provider, project_id)
+        all_dvs: list = []
+        for ns in ["troshka-cache", proj_ns]:
+            try:
+                dvs = custom_api.list_namespaced_custom_object(
+                    group="cdi.kubevirt.io",
+                    version="v1beta1",
+                    namespace=ns,
+                    plural="datavolumes",
+                )
+                all_dvs.extend(dvs.get("items", []))  # type: ignore[union-attr]
+            except Exception:
+                pass
+
+        clone_name_map = _build_clone_name_map(topology)
+        cache_lines: list[str] = []
+        clone_lines: list[str] = []
+        for dv in all_dvs:
+            ns = dv["metadata"]["namespace"]
+            raw_name = dv["metadata"]["name"]
+            friendly = golden_name_map.get(raw_name) or clone_name_map.get(raw_name)
+            if not friendly:
+                continue
+            line = _format_dv_status_line(friendly[:24], dv)
+            if ns == "troshka-cache":
+                cache_lines.append(line)
+            else:
+                clone_lines.append(line)
+
+        best_status = _best_dv_status(cache_lines + clone_lines)
+        _fill_missing_disk_labels(topology, best_status)
+        dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
+    except Exception:
+        pass
+    return dv_lines
+
+
+def _compute_deploy_step(project_id, topology, status, dv_lines, progress):
+    """Compute the current deploy step, detail text, and percent."""
+    all_disks_done = dv_lines and all(": done" in line for line in dv_lines)
+    op_stage = progress.get("stage", "") if progress else ""
+    op_detail = progress.get("detail", "") if progress else ""
+    dv_detail = "\n".join(dv_lines) if dv_lines else ""
+
+    last = _get_deploy_progress_data(project_id) or {}
+    if all_disks_done and op_stage:
+        step = op_stage.lower()
+        if "certificate" in op_stage.lower():
+            detail = op_detail or step
+        else:
+            vm_states = status.get("vmStates", {})
+            if vm_states:
+                ready = sum(
+                    1 for s in vm_states.values() if s in ("Running", "Stopped")
+                )
+                detail = f"{ready}/{len(vm_states)} VMs ready"
+            else:
+                detail = op_detail or step
+    elif dv_lines:
+        step = "images"
+        detail = dv_detail
+    elif op_stage:
+        step = op_stage.lower()
+        detail = op_detail or step
+    else:
+        step = last.get("step", "") or "deploying"
+        detail = last.get("detail", "")
+
+    percent = progress.get("percent", 0) if progress else 0
+    return step, detail, percent
+
+
+def _finalize_kubevirt_deploy(project_id, project, topology, db):
+    """Handle the Running phase — update project state and topology."""
+    from app.services.ws_pubsub import notify_project
+
+    project.state = "active"
+    clean_topo = copy.deepcopy(topology)
+    for node in clean_topo.get("nodes", []):
+        ndata = node.get("data", {})
+        ndata.pop("resolvedS3Path", None)
+        ndata.pop("presignedUrl", None)
+        ndata.pop("ciGeneratedUserData", None)
+    bmc_config = _extract_bmc_config(clean_topo, project_id)
+    if bmc_config:
+        clean_topo["bmc"] = {
+            "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+            "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+            "vms": {
+                vm["node_id"]: {
+                    "ip": vm["bmc_ip"],
+                    "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['bmc_ip']}",
+                    "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{vm['bmc_ip']}",
+                    "ipmi_address": f"{vm['bmc_ip']}:623",
+                }
+                for vm in bmc_config["vms"]
+            },
+        }
+    project.deployed_topology = clean_topo
+    project.topology = clean_topo
+    project.deploy_error = None
+    if _has_ocp_monitor(topology):
+        project.ocp_status = "monitoring"
+        project.ocp_status_detail = None
+        project.ocp_install_elapsed = None
+        project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+    project.deploy_progress = None
+    db.commit()
+    _delete_deploy_progress(project_id)
+    notify_project(project_id, {"type": "project-state", "state": "active"})
+    logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
+
+
+def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
+    """Poll TroshkaProject CR status until Running/Error/timeout."""
+    import time
+
+    from app.services.ws_pubsub import notify_project
+
+    _clear_deploy_cancelled(project_id)
+    deploy_deadline = _time.time() + 7200
+    for attempt in range(1440):
+        if _time.time() > deploy_deadline:
+            break
+        if _is_deploy_cancelled(project_id):
+            logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
+            _clear_deploy_cancelled(project_id)
+            return
+        if _project_deleted(project_id):
+            return
+        try:
+            status = driver.get_project_status(provider, project_id)
+            if not isinstance(status, dict):
+                status = {}
+        except Exception:
+            status = {}
+
+        phase = status.get("phase", "Pending")
+        progress = status.get("deployProgress", {})
+        dv_lines = _collect_dv_progress(project_id, provider, topology)
+        step, detail, percent = _compute_deploy_step(
+            project_id, topology, status, dv_lines, progress
+        )
+
+        if phase == "Running":
+            _finalize_kubevirt_deploy(project_id, project, topology, db)
+            return
+
+        if phase == "Error":
+            error_msg = (
+                status.get("error")
+                or status.get("message")
+                or "Operator reported an error"
+            )
+            project.state = "error"
+            project.deploy_error = error_msg
+            db.commit()
+            _delete_deploy_progress(project_id)
+            notify_project(
+                project_id,
+                {"type": "project-state", "state": "error", "deploy_error": error_msg},
+            )
+            return
+
+        last = _get_deploy_progress_data(project_id) or {}
+        if detail or dv_lines:
+            new_progress = {"step": step, "detail": detail, "percent": percent}
+            if new_progress != last:
+                _set_deploy_progress(project_id, new_progress)
+                project.deploy_progress = new_progress
+                db.commit()
+                notify_project(
+                    project_id,
+                    {
+                        "type": "deploy-progress",
+                        "step": step,
+                        "detail": detail,
+                        "percent": percent,
+                    },
+                )
+
+        time.sleep(5)
+
+    # Timed out
+    project.state = "error"
+    project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
+    db.commit()
+    _delete_deploy_progress(project_id)
+    notify_project(
+        project_id,
+        {
+            "type": "project-state",
+            "state": "error",
+            "deploy_error": project.deploy_error,
+        },
+    )
+
+
+def _deploy_kubevirt_native(project_id, project, host, topology, db):
+    """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
+    from app.models.provider import Provider
+    from app.services.providers import get_provider_driver
+    from app.services.ws_pubsub import notify_project
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        project.state = "error"
+        project.deploy_error = "No provider found for kubevirt host"
+        db.commit()
+        return
+
+    driver = get_provider_driver(provider)
+
+    (
+        s3_config,
+        central_s3_config,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    ) = _setup_kubevirt_s3_clients()
+
+    _resolve_disk_s3_paths(
+        topology,
+        db,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
 
     # Generate per-deploy SSH key pair for exec pod → VM access
     from cryptography.hazmat.primitives import serialization
@@ -2332,297 +2760,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         cr_name,
     )
 
-    _clear_deploy_cancelled(project_id)
-    deploy_deadline = _time.time() + 7200
-    for attempt in range(1440):
-        if _time.time() > deploy_deadline:
-            break
-        if _is_deploy_cancelled(project_id):
-            logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
-            _clear_deploy_cancelled(project_id)
-            return
-        if _project_deleted(project_id):
-            return
-        try:
-            status = driver.get_project_status(provider, project_id)
-            if not isinstance(status, dict):
-                status = {}
-        except Exception:
-            status = {}
-
-        phase = status.get("phase", "Pending")
-        progress = status.get("deployProgress", {})
-
-        dv_lines = []
-        try:
-            import hashlib
-
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-            golden_name_map = {}
-            for node in topology.get("nodes", []):
-                ndata = node.get("data", {})
-                if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
-                    h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[
-                        :16
-                    ]
-                    golden_name_map[f"golden-{h}"] = ndata.get(
-                        "label", ndata.get("name", "")
-                    )
-
-            custom_api, _, _ = _get_k8s_clients(provider)
-            proj_ns = _project_ns(provider, project_id)
-            all_dvs = []
-            for ns in ["troshka-cache", proj_ns]:
-                try:
-                    dvs = custom_api.list_namespaced_custom_object(
-                        group="cdi.kubevirt.io",
-                        version="v1beta1",
-                        namespace=ns,
-                        plural="datavolumes",
-                    )
-                    all_dvs.extend(dvs.get("items", []))  # type: ignore[union-attr]
-                except Exception:
-                    pass
-            clone_name_map = {}
-            for node in topology.get("nodes", []):
-                ndata2 = node.get("data", {})
-                if node.get("type") == "storageNode":
-                    sid = ndata2.get("id", node.get("id", ""))[:8]
-                    label = ndata2.get("label", ndata2.get("name", ""))
-                    fmt = ndata2.get("format", "qcow2")
-                    for edge in topology.get("edges", []):
-                        if edge.get("source") == ndata2.get("id", node.get("id", "")):
-                            vm_id = edge.get("target", "")[:8]
-                            clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
-                            if fmt == "iso":
-                                clone_name_map[f"vm-{vm_id}-cdrom"] = label
-                        elif edge.get("target") == ndata2.get("id", node.get("id", "")):
-                            vm_id = edge.get("source", "")[:8]
-                            clone_name_map[f"vm-{vm_id}-disk-{sid}"] = label
-                            if fmt == "iso":
-                                clone_name_map[f"vm-{vm_id}-cdrom"] = label
-
-            cache_lines = []
-            clone_lines = []
-            for dv in all_dvs:
-                dv_phase = dv.get("status", {}).get("phase", "")
-                dv_progress = dv.get("status", {}).get("progress", "N/A")
-                raw_name = dv["metadata"]["name"]
-                ns = dv["metadata"]["namespace"]
-                friendly = golden_name_map.get(raw_name) or clone_name_map.get(raw_name)
-                if not friendly:
-                    continue
-                friendly = friendly[:24]
-                if dv_phase == "Succeeded":
-                    line = f"{friendly}: done"
-                elif dv_phase == "ImportInProgress":
-                    conditions = dv.get("status", {}).get("conditions", [])
-                    running_reason = ""
-                    running_msg = ""
-                    for cond in conditions:
-                        if cond.get("type") == "Running":
-                            running_reason = cond.get("reason", "")
-                            running_msg = cond.get("message", "")
-                            break
-                    if running_reason == "Completed":
-                        line = f"{friendly}: writing to storage"
-                    elif running_reason == "Error":
-                        line = f"{friendly}: error — {running_msg[:40]}"
-                    elif dv_progress and dv_progress != "N/A":
-                        try:
-                            pct = float(dv_progress.rstrip("%"))
-                            if pct >= 99.0:
-                                line = f"{friendly}: writing to storage — please wait"
-                            else:
-                                line = f"{friendly}: downloading {dv_progress}"
-                        except ValueError:
-                            line = f"{friendly}: downloading {dv_progress}"
-                    elif running_reason == "TransferRunning":
-                        line = f"{friendly}: downloading starting"
-                    else:
-                        line = f"{friendly}: starting"
-                elif dv_phase in ("CloneInProgress", "CloneScheduled"):
-                    line = f"{friendly}: cloning"
-                elif dv_phase in ("ImportScheduled", "Pending"):
-                    line = f"{friendly}: scheduled"
-                elif dv_phase == "Failed":
-                    conditions = dv.get("status", {}).get("conditions", [])
-                    err = next(
-                        (
-                            c.get("message", "")
-                            for c in conditions
-                            if c.get("type") == "Running" and c.get("message")
-                        ),
-                        "",
-                    )
-                    short_err = err[:40] if err else "failed"
-                    line = f"{friendly}: error — {short_err}"
-                elif dv_phase:
-                    line = f"{friendly}: {dv_phase.lower()}"
-                else:
-                    line = f"{friendly}: waiting"
-                if ns == "troshka-cache":
-                    cache_lines.append(line)
-                else:
-                    clone_lines.append(line)
-            best_status = {}
-            for line in cache_lines + clone_lines:
-                label = line.split(":")[0].strip()
-                dv_status = line.split(":", 1)[1].strip() if ":" in line else ""
-                prev = best_status.get(label, "")
-                rank = {
-                    "done": 5,
-                    "downloading": 4,
-                    "cloning": 3,
-                    "scheduled": 2,
-                    "waiting": 1,
-                }
-
-                def _rank(s):
-                    for k, v in rank.items():
-                        if k in s:
-                            return v
-                    return 0
-
-                if _rank(dv_status) >= _rank(prev):
-                    best_status[label] = dv_status
-
-            for node in topology.get("nodes", []):
-                ndata3 = node.get("data", {})
-                if node.get("type") == "storageNode" and ndata3.get("source") in (
-                    "pattern",
-                    "library",
-                ):
-                    label = ndata3.get("label", ndata3.get("name", ""))[:24]
-                    if label and label not in best_status:
-                        best_status[label] = "waiting"
-
-            dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
-        except Exception:
-            pass
-
-        dv_detail = "\n".join(dv_lines) if dv_lines else ""
-
-        all_disks_done = dv_lines and all(": done" in line for line in dv_lines)
-        op_stage = progress.get("stage", "") if progress else ""
-        op_detail = progress.get("detail", "") if progress else ""
-
-        last = _get_deploy_progress_data(project_id) or {}
-        if all_disks_done and op_stage:
-            step = op_stage.lower()
-            if "certificate" in op_stage.lower():
-                detail = op_detail or step
-            else:
-                vm_states = status.get("vmStates", {})
-                if vm_states:
-                    ready = sum(
-                        1 for s in vm_states.values() if s in ("Running", "Stopped")
-                    )
-                    detail = f"{ready}/{len(vm_states)} VMs ready"
-                else:
-                    detail = op_detail or step
-        elif dv_lines:
-            step = "images"
-            detail = dv_detail
-        elif op_stage:
-            step = op_stage.lower()
-            detail = op_detail or step
-        else:
-            step = last.get("step", "") or "deploying"
-            detail = last.get("detail", "")
-        percent = progress.get("percent", 0) if progress else 0
-
-        if phase == "Running":
-            project.state = "active"
-            clean_topo = copy.deepcopy(topology)
-            for node in clean_topo.get("nodes", []):
-                ndata = node.get("data", {})
-                ndata.pop("resolvedS3Path", None)
-                ndata.pop("presignedUrl", None)
-                ndata.pop("ciGeneratedUserData", None)
-            bmc_config = _extract_bmc_config(clean_topo, project_id)
-            if bmc_config:
-                clean_topo["bmc"] = {
-                    "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
-                    "password": bmc_config["bmc_network"].get(
-                        "bmcPassword", "password"
-                    ),
-                    "vms": {
-                        vm["node_id"]: {
-                            "ip": vm["bmc_ip"],
-                            "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['bmc_ip']}",
-                            "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{vm['bmc_ip']}",
-                            "ipmi_address": f"{vm['bmc_ip']}:623",
-                        }
-                        for vm in bmc_config["vms"]
-                    },
-                }
-            project.deployed_topology = clean_topo
-            project.topology = clean_topo
-            project.deploy_error = None
-            if _has_ocp_monitor(topology):
-                project.ocp_status = "monitoring"
-                project.ocp_status_detail = None
-                project.ocp_install_elapsed = None
-                project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
-            project.deploy_progress = None
-            db.commit()
-            _delete_deploy_progress(project_id)
-            notify_project(project_id, {"type": "project-state", "state": "active"})
-            logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
-            return
-
-        if phase == "Error":
-            error_msg = (
-                status.get("error")
-                or status.get("message")
-                or "Operator reported an error"
-            )
-            project.state = "error"
-            project.deploy_error = error_msg
-            db.commit()
-            _delete_deploy_progress(project_id)
-            notify_project(
-                project_id,
-                {"type": "project-state", "state": "error", "deploy_error": error_msg},
-            )
-            return
-
-        if detail or dv_lines:
-            new_progress = {
-                "step": step,
-                "detail": detail,
-                "percent": percent,
-            }
-            if new_progress != last:
-                _set_deploy_progress(project_id, new_progress)
-                project.deploy_progress = new_progress
-                db.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "deploy-progress",
-                        "step": step,
-                        "detail": detail,
-                        "percent": percent,
-                    },
-                )
-
-        time.sleep(5)
-
-    project.state = "error"
-    project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
-    db.commit()
-    _delete_deploy_progress(project_id)
-    notify_project(
-        project_id,
-        {
-            "type": "project-state",
-            "state": "error",
-            "deploy_error": project.deploy_error,
-        },
-    )
+    _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db)
 
 
 def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
@@ -4490,6 +4628,137 @@ def _monitor_ocp_vm_health(
         db.close()
 
 
+def _extract_bastion_info(nodes):
+    """Extract bastion node, IP, and password from topology nodes."""
+    bastion = next(
+        (
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
+    bastion_ip = ""
+    password = ""
+    if bastion:
+        for nic in bastion.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                bastion_ip = nic["ip"]
+                break
+        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+    return bastion, bastion_ip, password
+
+
+def _ocp_vm_poll_with_csrs(oc_fn, approve_fn, push_fn, deadline):
+    """Poll for nodes Ready + operators available, approving CSRs along the way."""
+    import time as _t
+
+    # Wait for nodes Ready
+    push_fn("nodes", "waiting for nodes to be Ready")
+    last_csr_check = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check >= 30:
+            approved = approve_fn()
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check = _t.time()
+
+        result = oc_fn(_CMD_GET_NODES, timeout=10)
+        if not _is_api_error(result):
+            items, ready_count, total = _parse_node_readiness(result)
+            if total > 0:
+                push_fn("nodes", f"{ready_count}/{total} ready", items)
+                if ready_count >= total:
+                    break
+        else:
+            push_fn("nodes", _MSG_WAITING_API)
+        _t.sleep(5)
+
+    # Wait for cluster operators
+    push_fn("operators", "waiting for cluster operators")
+    last_csr_check_ops = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_ops >= 30:
+            approved = approve_fn()
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check_ops = _t.time()
+
+        result = oc_fn("oc get co --no-headers 2>/dev/null", timeout=15)
+        if not _is_api_error(result):
+            items, available_count, total = _parse_operator_status(result)
+            if total > 0:
+                push_fn(
+                    "operators",
+                    f"{available_count}/{total} operators available",
+                    items,
+                )
+                if available_count >= total:
+                    break
+        else:
+            push_fn("operators", _MSG_WAITING_API)
+        _t.sleep(10)
+
+
+def _ocp_vm_wait_for_console(oc_fn, approve_fn, push_fn, deadline):
+    """Wait for console and OAuth routes to respond."""
+    import time as _t
+
+    push_fn("console", _MSG_WAITING_CONSOLE)
+    last_csr_check_console = 0.0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_console >= 30:
+            approved = approve_fn()
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check_console = _t.time()
+
+        result = oc_fn("oc get co console --no-headers 2>/dev/null", timeout=15)
+        if result and "error" not in result.lower():
+            parts = result.strip().split()
+            co_available = parts[2] == "True" if len(parts) >= 4 else False
+            if co_available:
+                push_fn("console", "console operator available, verifying route...")
+                console_code = (
+                    oc_fn(
+                        "curl -skm 10 -o /dev/null -w '%{http_code}' "
+                        "https://console-openshift-console.apps."
+                        "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+                        "2>/dev/null || echo 000",
+                        timeout=20,
+                    )
+                    or "000"
+                ).strip()
+                if console_code.startswith(("2", "3")) or console_code == "403":
+                    oauth_code = (
+                        oc_fn(
+                            "curl -skm 10 -o /dev/null -w '%{http_code}' "
+                            "https://oauth-openshift.apps."
+                            "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+                            "2>/dev/null || echo 000",
+                            timeout=20,
+                        )
+                        or "000"
+                    ).strip()
+                    if oauth_code.startswith(("2", "3")) or oauth_code == "403":
+                        push_fn("console", "console and OAuth ready")
+                        return
+                    suffix = (
+                        f" (HTTP {oauth_code})" if oauth_code not in ("000", "") else ""
+                    )
+                    push_fn("console", f"waiting for OAuth route{suffix}")
+                    _t.sleep(10)
+                    continue
+                suffix = (
+                    f" (HTTP {console_code})" if console_code not in ("000", "") else ""
+                )
+                push_fn("console", f"waiting for console route{suffix}")
+                _t.sleep(10)
+                continue
+        push_fn("console", _MSG_WAITING_CONSOLE)
+        _t.sleep(5)
+
+
 def _ocp_vm_health_inner(
     project_id, host_id, vm_id, vm_name, kubeconfig_content, deploy_start, db
 ):
@@ -4546,22 +4815,7 @@ def _ocp_vm_health_inner(
 
     # Find bastion for exec
     nodes = topo.get("nodes", [])
-    bastion = next(
-        (
-            n
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
-        ),
-        None,
-    )
-    bastion_ip = ""
-    password = ""
-    if bastion:
-        for nic in bastion.get("data", {}).get("nics", []):
-            if nic.get("ip"):
-                bastion_ip = nic["ip"]
-                break
-        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+    _bastion, bastion_ip, password = _extract_bastion_info(nodes)
 
     if not bastion_ip:
         logger.warning(
@@ -4638,51 +4892,8 @@ def _ocp_vm_health_inner(
         _push("timeout", "API server not reachable")
         return
 
-    # Phase 2: Wait for nodes Ready + approve CSRs
-    _push("nodes", "waiting for nodes to be Ready")
-    last_csr_check = 0.0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check >= 30:
-            approved = _approve_csrs()
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check = _t.time()
-
-        result = _oc(_CMD_GET_NODES, timeout=10)
-        if not _is_api_error(result):
-            items, ready_count, total = _parse_node_readiness(result)
-            if total > 0:
-                _push("nodes", f"{ready_count}/{total} ready", items)
-                if ready_count >= total:
-                    break
-        else:
-            _push("nodes", _MSG_WAITING_API)
-        _t.sleep(5)
-
-    # Phase 3: Wait for cluster operators
-    _push("operators", "waiting for cluster operators")
-    last_csr_check_ops = 0.0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check_ops >= 30:
-            approved = _approve_csrs()
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check_ops = _t.time()
-
-        result = _oc("oc get co --no-headers 2>/dev/null", timeout=15)
-        if not _is_api_error(result):
-            items, available_count, total = _parse_operator_status(result)
-            if total > 0:
-                _push(
-                    "operators",
-                    f"{available_count}/{total} operators available",
-                    items,
-                )
-                if available_count >= total:
-                    break
-        else:
-            _push("operators", _MSG_WAITING_API)
-        _t.sleep(10)
+    # Phases 2-3: Wait for nodes Ready + cluster operators (with CSR approval)
+    _ocp_vm_poll_with_csrs(_oc, _approve_csrs, _push, deadline)
 
     # Phase 4: Restart ingress router (picks up fresh certs after pattern deploy)
     _push("console", "restarting ingress router")
@@ -4693,65 +4904,7 @@ def _ocp_vm_health_inner(
     _t.sleep(10)
 
     # Phase 5: Wait for console + OAuth routes
-    _push("console", _MSG_WAITING_CONSOLE)
-    last_csr_check_console = 0.0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check_console >= 30:
-            approved = _approve_csrs()
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check_console = _t.time()
-
-        result = _oc("oc get co console --no-headers 2>/dev/null", timeout=15)
-        if result and "error" not in result.lower():
-            parts = result.strip().split()
-            co_available = parts[2] == "True" if len(parts) >= 4 else False
-            if co_available:
-                _push("console", "console operator available, verifying route...")
-                console_code = (
-                    _oc(
-                        "curl -skm 10 -o /dev/null -w '%{http_code}' "
-                        "https://console-openshift-console.apps."
-                        "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
-                        "2>/dev/null || echo 000",
-                        timeout=20,
-                    )
-                    or "000"
-                ).strip()
-                if console_code.startswith(("2", "3")) or console_code == "403":
-                    oauth_code = (
-                        _oc(
-                            "curl -skm 10 -o /dev/null -w '%{http_code}' "
-                            "https://oauth-openshift.apps."
-                            "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
-                            "2>/dev/null || echo 000",
-                            timeout=20,
-                        )
-                        or "000"
-                    ).strip()
-                    if oauth_code.startswith(("2", "3")) or oauth_code == "403":
-                        _push("console", "console and OAuth ready")
-                        break
-                    else:
-                        suffix = (
-                            f" (HTTP {oauth_code})"
-                            if oauth_code not in ("000", "")
-                            else ""
-                        )
-                        _push("console", f"waiting for OAuth route{suffix}")
-                        _t.sleep(10)
-                        continue
-                else:
-                    suffix = (
-                        f" (HTTP {console_code})"
-                        if console_code not in ("000", "")
-                        else ""
-                    )
-                    _push("console", f"waiting for console route{suffix}")
-                    _t.sleep(10)
-                    continue
-        _push("console", _MSG_WAITING_CONSOLE)
-        _t.sleep(5)
+    _ocp_vm_wait_for_console(_oc, _approve_csrs, _push, deadline)
 
     # Final CSR sweep
     for _ in range(6):
@@ -4814,6 +4967,707 @@ def _ocp_vm_health_inner(
     )
 
 
+def _ocp_update_status(project_id, status, elapsed_secs=None):
+    """Update ocp_status (and optionally ocp_install_elapsed) in the DB."""
+    try:
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        db = SessionLocal()
+        p = db.query(Project).filter_by(id=project_id).first()
+        if p:
+            p.ocp_status = status
+            if elapsed_secs is not None:
+                p.ocp_install_elapsed = elapsed_secs
+            db.commit()
+        db.close()
+    except Exception:
+        logger.exception("Failed to update ocp_status for %s", project_id[:8])
+
+
+def _ocp_extract_topology_info(topology):
+    """Extract bastion info, control-plane nodes, and DNS domain from topology."""
+    nodes = topology.get("nodes", [])
+
+    bastion = next(
+        (
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
+    bastion_ip = ""
+    password = ""
+    if bastion:
+        for nic in bastion.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                bastion_ip = nic["ip"]
+                break
+        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+
+    cp_nodes = [
+        n
+        for n in nodes
+        if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
+    ]
+    cp_names = [n.get("data", {}).get("label", n["id"][:8]) for n in cp_nodes]
+
+    dns_domain = "ocp.ocp.local"
+    for n in nodes:
+        if n.get("type") == "networkNode":
+            for rec in n.get("data", {}).get("dnsRecords", []):
+                name = rec.get("name", "")
+                if name.startswith("api."):
+                    dns_domain = name[4:]
+                    break
+
+    return bastion, bastion_ip, password, cp_names, dns_domain
+
+
+def _ocp_wait_for_bastion_ssh(
+    host, project_id, bastion, bastion_ip, password, push_fn, deadline
+):
+    """Phase 1: wait for bastion SSH to become available. Returns True if ready."""
+    import time as _t
+
+    if host.host_type != "kubevirt-cluster":
+        from app.services.troshkad_client import get_vm_state as _get_vm_st
+
+        bastion_dom = _vm_domain_name(project_id, bastion["id"])
+        try:
+            vm_info = _get_vm_st(host, bastion_dom, timeout=5)
+            if vm_info.get("state") in ("shut_off", "shutoff"):
+                push_fn(
+                    "waiting",
+                    "bastion is powered off — start it to enable OCP monitoring",
+                )
+                return False
+        except Exception:
+            pass
+
+    push_fn("ssh", "waiting for bastion")
+    while _t.time() < deadline:
+        result = _exec_on_bastion(
+            host, project_id, bastion_ip, password, "echo ok", timeout=5
+        )
+        if result and "ok" in result:
+            return True
+        push_fn("ssh", "waiting for bastion")
+        _t.sleep(5)
+
+    push_fn("timeout", "bastion SSH not available")
+    return False
+
+
+def _ocp_wait_for_direct_oc(host, project_id, push_fn, deadline):
+    """Phase 1 (no bastion): wait for direct oc access. Returns True if ready."""
+    import time as _t
+
+    push_fn("oc", "waiting for OCP API")
+    while _t.time() < deadline:
+        try:
+            result = _exec_oc(host, project_id, "get nodes --no-headers", timeout=10)
+            if result and "Ready" in result:
+                return True
+        except Exception:
+            pass
+        push_fn("oc", "waiting for OCP API")
+        _t.sleep(10)
+
+    push_fn("timeout", "OCP API not reachable")
+    return False
+
+
+def _ocp_parse_install_phases(
+    full_text, phases_seen, cp_names, tracked_ops, op_aliases
+):
+    """Parse install.log text and return (items, detail, phases_seen, node_status)."""
+    import re as _re
+
+    # Detect early phases from grep markers
+    _phase_markers = [
+        ("Downloading openshift-install", "downloading"),
+        ("Downloaded openshift-install", "downloaded"),
+        ("Creating agent ISO", "creating-iso"),
+        ("Agent Rest API Initialized", "api-init"),
+    ]
+    for marker, phase in _phase_markers:
+        if marker in full_text:
+            phases_seen.add(phase)
+
+    if "Extracting base ISO" in full_text or "Base ISO obtained" in full_text:
+        phases_seen.add("extracting-iso")
+    if "Generated ISO at" in full_text or "Agent ISO created" in full_text:
+        phases_seen.add("iso-ready")
+    if "Booted" in full_text and "from ISO" in full_text:
+        phases_seen.add("nodes-booted")
+    if "Waiting for cluster install to initialize" in full_text:
+        phases_seen.add("waiting-init")
+    if "validation:" in full_text:
+        phases_seen.add("validating")
+    if "preparing-for-installation" in full_text or "Preparing cluster" in full_text:
+        phases_seen.add("validation")
+        phases_seen.add("preparing")
+    if "Bootstrap Kube API Initialized" in full_text:
+        phases_seen.add("bootstrap-api")
+    if (
+        "Bootstrap is complete" in full_text
+        or "cluster bootstrap is complete" in full_text
+    ):
+        phases_seen.add("bootstrap")
+    if "Waiting up to" in full_text and "to initialize" in full_text:
+        phases_seen.add("bootstrap")
+    if "Working towards" in full_text:
+        phases_seen.add("control-plane")
+    if "Cluster is initialized" in full_text:
+        phases_seen.add("initialized")
+
+    # Parse per-node status from log
+    node_status = _ocp_parse_node_status(full_text, cp_names)
+
+    # Build progress items list
+    items = _ocp_build_progress_items(
+        phases_seen, cp_names, node_status, full_text, tracked_ops, op_aliases, _re
+    )
+
+    # Build summary detail line
+    detail = _ocp_build_summary_detail(phases_seen, full_text)
+
+    return items, detail, phases_seen, node_status
+
+
+def _ocp_parse_node_status(full_text, cp_names):
+    """Parse per-node status from install.log lines."""
+    node_status = {}
+    for line in full_text.split("\n"):
+        for cp in cp_names:
+            if (
+                f"Host {cp}" not in line
+                and f"Host: {cp}" not in line
+                and f"Node {cp}" not in line
+            ):
+                continue
+            msg = line.split("msg=")[-1] if "msg=" in line else line
+            if "Writing image to disk: 100%" in msg:
+                node_status[cp] = "written"
+            elif "Writing image to disk" in msg:
+                pct = (
+                    msg.split("Writing image to disk:")[-1].strip().rstrip("%")
+                    if ":" in msg
+                    else ""
+                )
+                node_status.setdefault(cp, f"writing {pct}%")
+            elif "Rebooting" in msg:
+                node_status[cp] = "rebooting"
+            elif "Waiting for bootkube" in msg:
+                node_status[cp] = "bootkube"
+            elif "Configuring" in msg:
+                node_status[cp] = "configuring"
+            elif "Joined" in msg:
+                node_status[cp] = "joined"
+            elif "Done" in msg or "completing installation" in msg:
+                node_status[cp] = "done"
+    return node_status
+
+
+def _ocp_build_progress_items(
+    phases_seen, cp_names, node_status, full_text, tracked_ops, op_aliases, _re
+):
+    """Build the progress items list from detected phases and node status."""
+    items = []
+    # Early phases: download, ISO generation, node boot
+    if "downloading" in phases_seen:
+        items.append(
+            f"Download OCP tools: {'✓' if 'downloaded' in phases_seen else '⏳'}"
+        )
+    if "creating-iso" in phases_seen or "downloaded" in phases_seen:
+        items.append(f"Build agent ISO: {'✓' if 'iso-ready' in phases_seen else '⏳'}")
+    if "iso-ready" in phases_seen:
+        items.append(
+            f"Boot nodes from ISO: {'✓' if 'nodes-booted' in phases_seen else '⏳'}"
+        )
+    if "nodes-booted" in phases_seen:
+        init_status = (
+            "✓"
+            if "api-init" in phases_seen or "validation" in phases_seen
+            else "⏳"
+            if "waiting-init" in phases_seen
+            else "—"
+        )
+        items.append(f"Cluster init: {init_status}")
+
+    if "validation" in phases_seen:
+        items.append("Host validation: ✓")
+    elif "validating" in phases_seen or "api-init" in phases_seen:
+        items.append("Host validation: ⏳")
+
+    if "preparing" in phases_seen:
+        has_installing = bool(node_status)
+        items.append(f"Preparing for installation: {'✓' if has_installing else '⏳'}")
+
+    if node_status:
+        all_done = all(s in ("done", "joined") for s in node_status.values())
+        items.append(f"Installing nodes: {'✓' if all_done else '⏳'}")
+        for cp in cp_names:
+            s = node_status.get(cp, "—")
+            items.append(f"  {cp}: {s}")
+
+    has_bootkube = any(s == "bootkube" for s in node_status.values())
+    has_configuring = any(
+        s in ("configuring", "joined", "done") for s in node_status.values()
+    )
+
+    if has_bootkube or has_configuring or "bootstrap-api" in phases_seen:
+        items.append(
+            f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}"
+        )
+
+    if "bootstrap" in phases_seen:
+        items.append("Bootstrap: ✓")
+    elif "bootstrap-api" in phases_seen or has_bootkube:
+        items.append("Bootstrap: ⏳")
+    elif node_status:
+        items.append("Bootstrap: —")
+
+    if "bootstrap" in phases_seen and "control-plane" not in phases_seen:
+        items.append("API: ⏳")
+
+    if "control-plane" in phases_seen:
+        items.append("API: ✓")
+        cp_detail = "⏳"
+        for line in reversed(full_text.split("\n")):
+            if "Working towards" in line:
+                msg = line.split("msg=")[-1] if "msg=" in line else line
+                m = _re.search(r"([\d.]+)", msg)
+                if m:
+                    cp_detail = f"OCP {m.group(1)} ⏳"
+                break
+        if "initialized" in phases_seen:
+            cp_detail = cp_detail.replace(" ⏳", " ✓")
+        items.append(f"Cluster init: {cp_detail}")
+    elif "bootstrap" in phases_seen:
+        items.append("Cluster init: —")
+
+    # Parse operator status from latest "not available" line
+    not_available = set()
+    for line in reversed(full_text.split("\n")):
+        if (
+            "are not available" in line or "is not available" in line
+        ) and "Cluster operator" in line:
+            msg = line.split("msg=")[-1] if "msg=" in line else line
+            for real_name, alias in op_aliases.items():
+                if real_name in msg:
+                    not_available.add(alias)
+            for op in tracked_ops:
+                if op in msg:
+                    not_available.add(op)
+            break
+
+    if "initialized" in phases_seen:
+        items.append("Cluster operators: ✓")
+    elif not_available:
+        phases_seen.add("operators")
+        avail = len(tracked_ops) - len(not_available)
+        items.append(f"Cluster operators: {avail}/{len(tracked_ops)}")
+        for op in tracked_ops:
+            items.append(f"  {op}: {'✗' if op in not_available else '✓'}")
+    elif "control-plane" in phases_seen:
+        items.append("Cluster operators: ⏳")
+
+    return items
+
+
+def _ocp_build_summary_detail(phases_seen, full_text):
+    """Build the summary detail line from detected phases."""
+    detail = "installing"
+    if "downloading" in phases_seen and "downloaded" not in phases_seen:
+        detail = "downloading OCP tools"
+    elif "creating-iso" in phases_seen and "iso-ready" not in phases_seen:
+        detail = "building agent ISO"
+    elif "iso-ready" in phases_seen and "nodes-booted" not in phases_seen:
+        detail = "booting nodes from ISO"
+    elif "waiting-init" in phases_seen and "api-init" not in phases_seen:
+        detail = "waiting for cluster init"
+    elif "api-init" in phases_seen and "validation" not in phases_seen:
+        detail = "validating hosts"
+    for line in reversed(full_text.split("\n")):
+        if "done (" in line:
+            msg = line.split("msg=")[-1] if "msg=" in line else line
+            detail = msg.strip()
+            if len(detail) > 60:
+                detail = detail[:57] + "..."
+            break
+    return detail
+
+
+def _ocp_monitor_fresh_install(
+    host, project_id, bastion_ip, password, cp_names, push_fn, start
+):
+    """Monitor fresh OCP install via install.log.
+
+    Returns ('complete', elapsed), ('error', None), or ('timeout', None).
+    """
+    import time as _t
+
+    # Pre-install phase: detect oc-mirror / registry setup
+    push_fn("installing", "preparing environment")
+    pre_install_deadline = _t.time() + 5400
+    while _t.time() < pre_install_deadline:
+        check = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "pgrep -af oc-mirror 2>/dev/null; echo '---';"
+            " systemctl is-active podman-registry 2>/dev/null; echo '---';"
+            " ls /home/*/install.log 2>/dev/null",
+            timeout=10,
+        )
+        if check and "/home/" in check.split("---")[-1]:
+            break
+        if check:
+            parts = check.split("---")
+            mirror_running = parts[0].strip() if len(parts) > 0 else ""
+            registry_active = parts[1].strip() if len(parts) > 1 else ""
+            if "oc-mirror" in mirror_running:
+                push_fn("installing", "mirroring OCP images (oc-mirror)")
+            elif registry_active == "active":
+                push_fn("installing", "setting up disconnected registry")
+            else:
+                push_fn("installing", "preparing environment")
+        _t.sleep(15)
+
+    # Monitor install.log progress with structured phases
+    push_fn("installing", "waiting for OpenShift install")
+    install_deadline = _t.time() + 7200
+    tracked_ops = [
+        "authentication",
+        "console",
+        "image-registry",
+        "ingress",
+        "monitoring",
+        "openshift-apiserver",
+        "openshift-samples",
+        "olm-packageserver",
+    ]
+    op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
+    phases_seen = set()
+
+    while _t.time() < install_deadline:
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "cat /home/cloud-user/install.log 2>/dev/null"
+            " || echo 'waiting for install to start'",
+            timeout=15,
+        )
+        if not result:
+            _t.sleep(15)
+            continue
+
+        full_text = result
+
+        # Detect install failure
+        if (
+            "Bootstrap failed to complete" in full_text
+            or "failed to complete" in full_text
+            or "context deadline exceeded" in full_text
+        ):
+            push_fn("error", "install failed")
+            _ocp_update_status(project_id, "error")
+            logger.warning("OCP install failed for %s", project_id[:8])
+            return "error", None
+
+        # Detect install completion
+        if (
+            "Install complete!" in full_text
+            or "Install completed" in full_text
+            or "All cluster operators have completed" in full_text
+        ):
+            items = [
+                "Validation: ✓",
+                "Bootstrap: ✓",
+                "Control plane: ✓",
+                "Cluster operators: ✓",
+            ]
+            push_fn("ready", "install complete", items=items)
+            elapsed_secs = int(_t.time() - start)
+            push_fn("ready", "cluster ready")
+            _ocp_update_status(project_id, "ready", elapsed_secs)
+            logger.info("OCP health monitor (install) complete for %s", project_id[:8])
+            return "complete", elapsed_secs
+
+        items, detail, phases_seen, _node_status = _ocp_parse_install_phases(
+            full_text, phases_seen, cp_names, tracked_ops, op_aliases
+        )
+        push_fn("installing", detail, items=items)
+        _t.sleep(15)
+    else:
+        push_fn("timeout", "install timed out")
+        _ocp_update_status(project_id, "error")
+        logger.warning("OCP install timed out for %s", project_id[:8])
+        return "timeout", None
+
+    return "timeout", None
+
+
+def _ocp_wait_for_nodes_ready(
+    host, project_id, bastion_ip, password, cp_names, push_fn, deadline
+):
+    """Phase 3: wait for nodes Ready, approve CSRs. Returns True if all ready."""
+    import time as _t
+
+    logger.info("OCP monitor %s: waiting for nodes Ready", project_id[:8])
+    push_fn("nodes", "waiting for nodes to be Ready")
+    api_seen = False
+    nodes_ready = False
+    last_csr_check = 0
+    while _t.time() < deadline:
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            _CMD_GET_NODES,
+            timeout=10,
+        )
+        if not _is_api_error(result):
+            api_seen = True
+            items, ready_count, _total = _parse_node_readiness(result)
+            if items:
+                push_fn("nodes", f"{ready_count}/{len(cp_names)} ready", items)
+                if ready_count >= len(cp_names):
+                    nodes_ready = True
+                    break
+        else:
+            push_fn("nodes", _MSG_WAITING_API)
+
+        if api_seen and _t.time() - last_csr_check >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check = _t.time()
+
+        _t.sleep(5)
+
+    return nodes_ready
+
+
+def _ocp_wait_for_operators(host, project_id, bastion_ip, password, push_fn, deadline):
+    """Phase 4: wait for cluster operators. Returns True if all available."""
+    import time as _t
+
+    logger.info("OCP monitor %s: waiting for operators", project_id[:8])
+    push_fn("operators", "waiting for cluster operators")
+    operators_ready = False
+    last_csr_check_ops = 0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_ops >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check_ops = _t.time()
+
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get co --no-headers 2>/dev/null",
+            timeout=15,
+        )
+        if not _is_api_error(result):
+            items, available_count, total = _parse_operator_status(result)
+            if total > 0:
+                push_fn(
+                    "operators",
+                    f"{available_count}/{total} operators available",
+                    items,
+                )
+                if available_count >= total:
+                    operators_ready = True
+                    break
+        else:
+            push_fn("operators", _MSG_WAITING_API)
+        _t.sleep(10)
+
+    return operators_ready
+
+
+def _ocp_check_console_route(host, project_id, bastion_ip, password, push_fn):
+    """Check if console and OAuth routes are responding. Returns True if both ready."""
+    import time as _t
+
+    push_fn("console", "console operator available, verifying route...")
+    console_url_result = _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        "curl -skm 10 -o /dev/null -w '%{http_code}' "
+        "https://console-openshift-console.apps."
+        "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+        "2>/dev/null || echo 000",
+        timeout=20,
+    )
+    http_code = (console_url_result or "000").strip()
+    if not (
+        http_code.startswith("2") or http_code.startswith("3") or http_code == "403"
+    ):
+        push_fn(
+            "console",
+            "waiting for console route"
+            + (f" (HTTP {http_code})" if http_code not in ("000", "") else ""),
+        )
+        _t.sleep(10)
+        return False
+
+    # Console responds — now verify OAuth route
+    oauth_result = _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        "curl -skm 10 -o /dev/null -w '%{http_code}' "
+        "https://oauth-openshift.apps."
+        "$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') "
+        "2>/dev/null || echo 000",
+        timeout=20,
+    )
+    oauth_code = (oauth_result or "000").strip()
+    if not (
+        oauth_code.startswith("2") or oauth_code.startswith("3") or oauth_code == "403"
+    ):
+        push_fn(
+            "console",
+            "waiting for OAuth route"
+            + (f" (HTTP {oauth_code})" if oauth_code not in ("000", "") else ""),
+        )
+        _t.sleep(10)
+        return False
+
+    push_fn("console", "console and OAuth ready")
+    return True
+
+
+def _ocp_wait_for_console_route(
+    host, project_id, bastion_ip, password, push_fn, deadline, topology
+):
+    """Phase 5: wait for console route. Returns True if console ready."""
+    import time as _t
+
+    logger.info("OCP monitor %s: waiting for console", project_id[:8])
+    push_fn("console", _MSG_WAITING_CONSOLE)
+
+    # Restart ingress router to pick up fresh certs after pattern deploy
+    if _is_pattern_deploy(topology):
+        push_fn("console", "restarting ingress router")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc rollout restart deployment/router-default"
+            " -n openshift-ingress 2>/dev/null || true",
+            timeout=15,
+        )
+        _t.sleep(10)
+
+    console_ready = False
+    last_csr_check_console = 0
+    while _t.time() < deadline:
+        if _t.time() - last_csr_check_console >= 30:
+            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+            if approved:
+                push_fn("certs", f"approved {approved} certificate(s)")
+            last_csr_check_console = _t.time()
+
+        result = _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get co console --no-headers 2>/dev/null",
+            timeout=15,
+        )
+        if result and "error" not in result.lower():
+            parts = result.strip().split()
+            co_available = parts[2] == "True" if len(parts) >= 4 else False
+            if co_available:
+                if _ocp_check_console_route(
+                    host, project_id, bastion_ip, password, push_fn
+                ):
+                    console_ready = True
+                    break
+                continue
+            else:
+                push_fn("console", "waiting for console operator")
+        push_fn("console", _MSG_WAITING_CONSOLE)
+        _t.sleep(5)
+
+    return console_ready
+
+
+def _ocp_post_pattern_cert_refresh(
+    host, project_id, bastion_ip, password, topology, push_fn
+):
+    """Post-pattern deploy: refresh bastion certs if recert was used."""
+    used_recert = False
+    for node in topology.get("nodes", []):
+        if node.get("type") == "storageNode":
+            pid = node.get("data", {}).get("patternId")
+            if pid:
+                try:
+                    from app.core.database import SessionLocal as _SL
+
+                    _db = _SL()
+                    pat = _db.query(Pattern).filter_by(id=pid).first()
+                    used_recert = bool(pat and pat.recert)
+                    _db.close()
+                except Exception:
+                    pass
+                break
+
+    rhcos_count = sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
+    )
+    if not bastion_ip or not (used_recert or rhcos_count == 1):
+        return
+
+    push_fn("certs", "refreshing bastion certificates")
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
+        "oc get secret -n openshift-ingress router-certs-default "
+        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+        "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+        "&& sudo update-ca-trust",
+        timeout=15,
+    )
+
+    push_fn("certs", "verifying bastion setup")
+
+    def _bastion_oc(cmd, timeout=15):
+        return _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; {cmd}",
+            timeout=timeout,
+        )
+
+    _verify_bastion_browser(_bastion_oc, push_fn, project_id)
+
+
 def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     import time as _t
 
@@ -4852,40 +5706,10 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         except Exception:
             logger.exception("Failed to save ocp_status_detail for %s", project_id[:8])
 
-    nodes = topology.get("nodes", [])
-    bastion = next(
-        (
-            n
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
-        ),
-        None,
+    # Extract topology info
+    bastion, bastion_ip, password, cp_names, dns_domain = _ocp_extract_topology_info(
+        topology
     )
-
-    bastion_ip = ""
-    password = ""
-    if bastion:
-        for nic in bastion.get("data", {}).get("nics", []):
-            if nic.get("ip"):
-                bastion_ip = nic["ip"]
-                break
-        password = bastion.get("data", {}).get("ciCloudUserPassword", "")
-
-    cp_nodes = [
-        n
-        for n in nodes
-        if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
-    ]
-    cp_names = [n.get("data", {}).get("label", n["id"][:8]) for n in cp_nodes]
-
-    dns_domain = "ocp.ocp.local"
-    for n in nodes:
-        if n.get("type") == "networkNode":
-            for rec in n.get("data", {}).get("dnsRecords", []):
-                name = rec.get("name", "")
-                if name.startswith("api."):
-                    dns_domain = name[4:]
-                    break
 
     deadline = _t.time() + 1800
     logger.info(
@@ -4897,401 +5721,29 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
     # Phase 1: Wait for OCP access (bastion SSH or direct oc)
     if bastion:
-        if host.host_type != "kubevirt-cluster":
-            from app.services.troshkad_client import get_vm_state as _get_vm_st
-
-            bastion_dom = _vm_domain_name(project_id, bastion["id"])
-            try:
-                vm_info = _get_vm_st(host, bastion_dom, timeout=5)
-                if vm_info.get("state") in ("shut_off", "shutoff"):
-                    _push(
-                        "waiting",
-                        "bastion is powered off — start it to enable OCP monitoring",
-                    )
-                    return
-            except Exception:
-                pass
-
-        _push("ssh", "waiting for bastion")
-        while _t.time() < deadline:
-            result = _exec_on_bastion(
-                host, project_id, bastion_ip, password, "echo ok", timeout=5
-            )
-            if result and "ok" in result:
-                break
-            _push("ssh", "waiting for bastion")
-            _t.sleep(5)
-        else:
-            _push("timeout", "bastion SSH not available")
+        if not _ocp_wait_for_bastion_ssh(
+            host, project_id, bastion, bastion_ip, password, _push, deadline
+        ):
             return
         logger.info(
             "OCP monitor %s: bastion SSH ready (%s)", project_id[:8], _elapsed()
         )
     else:
-        _push("oc", "waiting for OCP API")
-        while _t.time() < deadline:
-            try:
-                result = _exec_oc(
-                    host, project_id, "get nodes --no-headers", timeout=10
-                )
-                if result and "Ready" in result:
-                    break
-            except Exception:
-                pass
-            _push("oc", "waiting for OCP API")
-            _t.sleep(10)
-        else:
-            _push("timeout", "OCP API not reachable")
+        if not _ocp_wait_for_direct_oc(host, project_id, _push, deadline):
             return
 
-    # Detect mode: pattern deploy (cluster pre-installed) vs fresh install (install-ocp.sh running)
+    # Fresh install path (non-pattern with bastion) — monitor and return
     is_pattern = _is_pattern_deploy(topology)
     if not is_pattern and bastion:
-        # Pre-install phase: detect oc-mirror / registry setup before install log exists
-        _push("installing", "preparing environment")
-        pre_install_deadline = _t.time() + 5400
-        while _t.time() < pre_install_deadline:
-            check = _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                "pgrep -af oc-mirror 2>/dev/null; echo '---';"
-                " systemctl is-active podman-registry 2>/dev/null; echo '---';"
-                " ls /home/*/install.log 2>/dev/null",
-                timeout=10,
-            )
-            if check and "/home/" in check.split("---")[-1]:
-                break
-            if check:
-                parts = check.split("---")
-                mirror_running = parts[0].strip() if len(parts) > 0 else ""
-                registry_active = parts[1].strip() if len(parts) > 1 else ""
-                if "oc-mirror" in mirror_running:
-                    _push("installing", "mirroring OCP images (oc-mirror)")
-                elif registry_active == "active":
-                    _push("installing", "setting up disconnected registry")
-                else:
-                    _push("installing", "preparing environment")
-            _t.sleep(15)
-
-        # Fresh install — monitor install.log progress with structured phases
-        _push("installing", "waiting for OpenShift install")
-        install_deadline = _t.time() + 7200
-        tracked_ops = [
-            "authentication",
-            "console",
-            "image-registry",
-            "ingress",
-            "monitoring",
-            "openshift-apiserver",
-            "openshift-samples",
-            "olm-packageserver",
-        ]
-        _op_aliases = {"operator-lifecycle-manager-packageserver": "olm-packageserver"}
-        phases_seen = set()
-
-        while _t.time() < install_deadline:
-            result = _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                "cat /home/cloud-user/install.log 2>/dev/null || echo 'waiting for install to start'",
-                timeout=15,
-            )
-            if not result:
-                _t.sleep(15)
-                continue
-
-            full_text = result
-            # Detect early phases from grep markers
-            if "Downloading openshift-install" in full_text:
-                phases_seen.add("downloading")
-            if "Downloaded openshift-install" in full_text:
-                phases_seen.add("downloaded")
-            if "Creating agent ISO" in full_text:
-                phases_seen.add("creating-iso")
-            if "Extracting base ISO" in full_text or "Base ISO obtained" in full_text:
-                phases_seen.add("extracting-iso")
-            if "Generated ISO at" in full_text or "Agent ISO created" in full_text:
-                phases_seen.add("iso-ready")
-            if "Booted" in full_text and "from ISO" in full_text:
-                phases_seen.add("nodes-booted")
-            if "Waiting for cluster install to initialize" in full_text:
-                phases_seen.add("waiting-init")
-            if "Agent Rest API Initialized" in full_text:
-                phases_seen.add("api-init")
-
-            # Detect install failure
-            if (
-                "Bootstrap failed to complete" in full_text
-                or "failed to complete" in full_text
-                or "context deadline exceeded" in full_text
-            ):
-                _push("error", "install failed")
-                try:
-                    from app.core.database import SessionLocal
-                    from app.models.project import Project
-
-                    db = SessionLocal()
-                    p = db.query(Project).filter_by(id=project_id).first()
-                    if p:
-                        p.ocp_status = "error"
-                        db.commit()
-                    db.close()
-                except Exception:
-                    logger.exception(
-                        "Failed to update ocp_status for %s", project_id[:8]
-                    )
-                logger.warning(
-                    "OCP install failed for %s (%s)",
-                    project_id[:8],
-                    _elapsed(),
-                )
-                return
-
-            # Detect phases from log content
-            if (
-                "Install complete!" in full_text
-                or "Install completed" in full_text
-                or "All cluster operators have completed" in full_text
-            ):
-                phases_seen.update(
-                    ["validation", "bootstrap", "control-plane", "operators"]
-                )
-                items = [
-                    "Validation: ✓",
-                    "Bootstrap: ✓",
-                    "Control plane: ✓",
-                    "Cluster operators: ✓",
-                ]
-                _push("ready", "install complete", items=items)
-                break
-
-            if "validation:" in full_text:
-                phases_seen.add("validating")
-            if "preparing-for-installation" in full_text:
-                phases_seen.add("validation")
-                phases_seen.add("preparing")
-            if "Preparing cluster" in full_text:
-                phases_seen.add("validation")
-                phases_seen.add("preparing")
-            if "Bootstrap Kube API Initialized" in full_text:
-                phases_seen.add("bootstrap-api")
-            if (
-                "Bootstrap is complete" in full_text
-                or "cluster bootstrap is complete" in full_text
-            ):
-                phases_seen.add("bootstrap")
-            if "Waiting up to" in full_text and "to initialize" in full_text:
-                phases_seen.add("bootstrap")
-            if "Working towards" in full_text:
-                phases_seen.add("control-plane")
-            if "Cluster is initialized" in full_text:
-                phases_seen.add("initialized")
-
-            # Parse per-node status from log
-            node_status = {}
-            for l in full_text.split("\n"):
-                for cp in cp_names:
-                    if f"Host {cp}" in l or f"Host: {cp}" in l or f"Node {cp}" in l:
-                        msg = l.split("msg=")[-1] if "msg=" in l else l
-                        if "Writing image to disk: 100%" in msg:
-                            node_status[cp] = "written"
-                        elif "Writing image to disk" in msg:
-                            pct = (
-                                msg.split("Writing image to disk:")[-1]
-                                .strip()
-                                .rstrip("%")
-                                if ":" in msg
-                                else ""
-                            )
-                            node_status.setdefault(cp, f"writing {pct}%")
-                        elif "Rebooting" in msg:
-                            node_status[cp] = "rebooting"
-                        elif "Waiting for bootkube" in msg:
-                            node_status[cp] = "bootkube"
-                        elif "Configuring" in msg:
-                            node_status[cp] = "configuring"
-                        elif "Joined" in msg:
-                            node_status[cp] = "joined"
-                        elif "Done" in msg or "completing installation" in msg:
-                            node_status[cp] = "done"
-
-            items = []
-            # Early phases: download, ISO generation, node boot
-            if "downloading" in phases_seen:
-                items.append(
-                    f"Download OCP tools: {'✓' if 'downloaded' in phases_seen else '⏳'}"
-                )
-            if "creating-iso" in phases_seen or "downloaded" in phases_seen:
-                items.append(
-                    f"Build agent ISO: {'✓' if 'iso-ready' in phases_seen else '⏳'}"
-                )
-            if "iso-ready" in phases_seen:
-                items.append(
-                    f"Boot nodes from ISO: {'✓' if 'nodes-booted' in phases_seen else '⏳'}"
-                )
-            if "nodes-booted" in phases_seen:
-                items.append(
-                    f"Cluster init: {'✓' if 'api-init' in phases_seen or 'validation' in phases_seen else '⏳' if 'waiting-init' in phases_seen else '—'}"
-                )
-
-            if "validation" in phases_seen:
-                items.append("Host validation: ✓")
-            elif "validating" in phases_seen:
-                items.append("Host validation: ⏳")
-            elif "api-init" in phases_seen:
-                items.append("Host validation: ⏳")
-
-            if "preparing" in phases_seen:
-                has_installing = bool(node_status)
-                items.append(
-                    f"Preparing for installation: {'✓' if has_installing else '⏳'}"
-                )
-
-            if node_status:
-                all_done = all(s in ("done", "joined") for s in node_status.values())
-                items.append(f"Installing nodes: {'✓' if all_done else '⏳'}")
-                for cp in cp_names:
-                    s = node_status.get(cp, "—")
-                    items.append(f"  {cp}: {s}")
-
-            has_bootkube = any(s == "bootkube" for s in node_status.values())
-            has_configuring = any(
-                s in ("configuring", "joined", "done") for s in node_status.values()
-            )
-
-            if has_bootkube or has_configuring or "bootstrap-api" in phases_seen:
-                items.append(
-                    f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}"
-                )
-
-            if "bootstrap" in phases_seen:
-                items.append("Bootstrap: ✓")
-            elif "bootstrap-api" in phases_seen:
-                items.append("Bootstrap: ⏳")
-            elif has_bootkube:
-                items.append("Bootstrap: ⏳")
-            elif node_status:
-                items.append("Bootstrap: —")
-
-            if "bootstrap" in phases_seen and "control-plane" not in phases_seen:
-                items.append("API: ⏳")
-
-            if "control-plane" in phases_seen:
-                items.append("API: ✓")
-                cp_detail = "⏳"
-                for l in reversed(full_text.split("\n")):
-                    if "Working towards" in l:
-                        msg = l.split("msg=")[-1] if "msg=" in l else l
-                        import re as _re
-
-                        m = _re.search(r"([\d.]+)", msg)
-                        if m:
-                            cp_detail = f"OCP {m.group(1)} ⏳"
-                        break
-                if "initialized" in phases_seen:
-                    cp_detail = cp_detail.replace(" ⏳", " ✓")
-                items.append(f"Cluster init: {cp_detail}")
-            elif "bootstrap" in phases_seen:
-                items.append("Cluster init: —")
-
-            # Parse operator status from latest "not available" line
-            not_available = set()
-            for l in reversed(full_text.split("\n")):
-                if (
-                    "are not available" in l or "is not available" in l
-                ) and "Cluster operator" in l:
-                    msg = l.split("msg=")[-1] if "msg=" in l else l
-                    for real_name, alias in _op_aliases.items():
-                        if real_name in msg:
-                            not_available.add(alias)
-                    for op in tracked_ops:
-                        if op in msg:
-                            not_available.add(op)
-                    break
-
-            if "initialized" in phases_seen:
-                items.append("Cluster operators: ✓")
-            elif not_available:
-                phases_seen.add("operators")
-                avail = len(tracked_ops) - len(not_available)
-                items.append(f"Cluster operators: {avail}/{len(tracked_ops)}")
-                for op in tracked_ops:
-                    items.append(f"  {op}: {'✗' if op in not_available else '✓'}")
-            elif "control-plane" in phases_seen:
-                items.append("Cluster operators: ⏳")
-
-            # Build summary detail line
-            detail = "installing"
-            if "downloading" in phases_seen and "downloaded" not in phases_seen:
-                detail = "downloading OCP tools"
-            elif "creating-iso" in phases_seen and "iso-ready" not in phases_seen:
-                detail = "building agent ISO"
-            elif "iso-ready" in phases_seen and "nodes-booted" not in phases_seen:
-                detail = "booting nodes from ISO"
-            elif "waiting-init" in phases_seen and "api-init" not in phases_seen:
-                detail = "waiting for cluster init"
-            elif "api-init" in phases_seen and "validation" not in phases_seen:
-                detail = "validating hosts"
-            for l in reversed(full_text.split("\n")):
-                if "done (" in l:
-                    msg = l.split("msg=")[-1] if "msg=" in l else l
-                    detail = msg.strip()
-                    if len(detail) > 60:
-                        detail = detail[:57] + "..."
-                    break
-
-            _push("installing", detail, items=items)
-            _t.sleep(15)
-        else:
-            _push("timeout", "install timed out")
-            try:
-                from app.core.database import SessionLocal
-                from app.models.project import Project
-
-                db = SessionLocal()
-                p = db.query(Project).filter_by(id=project_id).first()
-                if p:
-                    p.ocp_status = "error"
-                    db.commit()
-                db.close()
-            except Exception:
-                logger.exception("Failed to update ocp_status for %s", project_id[:8])
-            logger.warning(
-                "OCP install timed out for %s (%s)",
-                project_id[:8],
-                _elapsed(),
-            )
-            return
-        elapsed_secs = int(_t.time() - start)
-        _push("ready", "cluster ready")
-        try:
-            from app.core.database import SessionLocal
-            from app.models.project import Project
-
-            db = SessionLocal()
-            p = db.query(Project).filter_by(id=project_id).first()
-            if p:
-                p.ocp_status = "ready"
-                p.ocp_install_elapsed = elapsed_secs
-                db.commit()
-            db.close()
-        except Exception:
-            logger.exception("Failed to update ocp_status for %s", project_id[:8])
-        logger.info(
-            "OCP health monitor (install) complete for %s (%s)",
-            project_id[:8],
-            _elapsed(),
+        _ocp_monitor_fresh_install(
+            host, project_id, bastion_ip, password, cp_names, _push, start
         )
         return
 
     # Phase 2: Ping CP nodes (pattern deploy path)
-    # Also approve CSRs early — bootstrap CSRs arrive while nodes are still
+    # Approve CSRs early — bootstrap CSRs arrive while nodes are still
     # booting, and approving them immediately lets the node proceed to
-    # requesting its serving cert sooner (otherwise there's a multi-minute gap)
+    # requesting its serving cert sooner
     if bastion:
         _push("nodes", "pinging control plane nodes")
         last_csr_check_ping = 0
@@ -5330,9 +5782,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
     logger.info("OCP monitor %s: nodes reachable (%s)", project_id[:8], _elapsed())
 
-    # Force kube-apiserver rollout to pick up current kubelet serving CA.
-    # After pattern restore or extended downtime, the API server may not
-    # trust the kubelet's serving cert — this triggers a redeploy.
+    # Force kube-apiserver rollout to pick up current kubelet serving CA
     _push("certs", "refreshing API server certificates")
     _exec_on_bastion(
         host,
@@ -5344,185 +5794,18 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     )
     logger.info("Triggered kube-apiserver rollout for %s", project_id[:8])
 
-    # Phase 3: Wait for nodes Ready (approve expired CSRs along the way)
-    logger.info(
-        "OCP monitor %s: waiting for nodes Ready (%s)", project_id[:8], _elapsed()
+    # Phase 3-5: nodes Ready, operators, console
+    nodes_ready = _ocp_wait_for_nodes_ready(
+        host, project_id, bastion_ip, password, cp_names, _push, deadline
     )
-    _push("nodes", "waiting for nodes to be Ready")
-    api_seen = False
-    nodes_ready = False
-    last_csr_check = 0
-    while _t.time() < deadline:
-        result = _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            _CMD_GET_NODES,
-            timeout=10,
-        )
-        if not _is_api_error(result):
-            api_seen = True
-            items, ready_count, _total = _parse_node_readiness(result)
-            if items:
-                _push("nodes", f"{ready_count}/{len(cp_names)} ready", items)
-                if ready_count >= len(cp_names):
-                    nodes_ready = True
-                    break
-        else:
-            _push("nodes", _MSG_WAITING_API)
-
-        if api_seen and _t.time() - last_csr_check >= 30:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check = _t.time()
-
-        _t.sleep(5)
-
-    # Phase 4: Wait for cluster operators (continue CSR approval)
-    logger.info(
-        "OCP monitor %s: nodes ready, waiting for operators (%s)",
-        project_id[:8],
-        _elapsed(),
+    operators_ready = _ocp_wait_for_operators(
+        host, project_id, bastion_ip, password, _push, deadline
     )
-    _push("operators", "waiting for cluster operators")
-    operators_ready = False
-    last_csr_check_ops = 0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check_ops >= 30:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check_ops = _t.time()
-
-        result = _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            "oc get co --no-headers 2>/dev/null",
-            timeout=15,
-        )
-        if not _is_api_error(result):
-            items, available_count, total = _parse_operator_status(result)
-            if total > 0:
-                _push(
-                    "operators", f"{available_count}/{total} operators available", items
-                )
-                if available_count >= total:
-                    operators_ready = True
-                    break
-        else:
-            _push("operators", _MSG_WAITING_API)
-        _t.sleep(10)
-
-    # Restart ingress router to pick up fresh certs after pattern deploy
-    if _is_pattern_deploy(topology):
-        _push("console", "restarting ingress router")
-        _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            "oc rollout restart deployment/router-default -n openshift-ingress 2>/dev/null || true",
-            timeout=15,
-        )
-        _t.sleep(10)
-
-    # Phase 5: Wait for console (continue approving CSRs — serving certs
-    # often arrive late and block the console route)
-    logger.info(
-        "OCP monitor %s: operators ready, waiting for console (%s)",
-        project_id[:8],
-        _elapsed(),
+    console_ready = _ocp_wait_for_console_route(
+        host, project_id, bastion_ip, password, _push, deadline, topology
     )
-    _push("console", _MSG_WAITING_CONSOLE)
-    console_ready = False
-    last_csr_check_console = 0
-    while _t.time() < deadline:
-        if _t.time() - last_csr_check_console >= 30:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                _push("certs", f"approved {approved} certificate(s)")
-            last_csr_check_console = _t.time()
 
-        result = _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            "oc get co console --no-headers 2>/dev/null",
-            timeout=15,
-        )
-        if result and "error" not in result.lower():
-            parts = result.strip().split()
-            co_available = parts[2] == "True" if len(parts) >= 4 else False
-            if co_available:
-                _push("console", "console operator available, verifying route...")
-                # Verify the console route actually responds (operator reports
-                # available before the route is fully serving on pattern deploys)
-                console_url_result = _exec_on_bastion(
-                    host,
-                    project_id,
-                    bastion_ip,
-                    password,
-                    "curl -skm 10 -o /dev/null -w '%{http_code}' https://console-openshift-console.apps.$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') 2>/dev/null || echo 000",
-                    timeout=20,
-                )
-                http_code = (console_url_result or "000").strip()
-                if (
-                    http_code.startswith("2")
-                    or http_code.startswith("3")
-                    or http_code == "403"
-                ):
-                    # Also verify OAuth route responds (certs regenerate after console)
-                    oauth_result = _exec_on_bastion(
-                        host,
-                        project_id,
-                        bastion_ip,
-                        password,
-                        "curl -skm 10 -o /dev/null -w '%{http_code}' https://oauth-openshift.apps.$(oc whoami --show-server 2>/dev/null | sed 's|https://api\\.||;s|:6443||') 2>/dev/null || echo 000",
-                        timeout=20,
-                    )
-                    oauth_code = (oauth_result or "000").strip()
-                    if not (
-                        oauth_code.startswith("2")
-                        or oauth_code.startswith("3")
-                        or oauth_code == "403"
-                    ):
-                        _push(
-                            "console",
-                            "waiting for OAuth route"
-                            + (
-                                f" (HTTP {oauth_code})"
-                                if oauth_code not in ("000", "")
-                                else ""
-                            ),
-                        )
-                        _t.sleep(10)
-                        continue
-                    _push("console", "console and OAuth ready")
-                    console_ready = True
-                    break
-                else:
-                    _push(
-                        "console",
-                        "waiting for console route"
-                        + (
-                            f" (HTTP {http_code})"
-                            if http_code not in ("000", "")
-                            else ""
-                        ),
-                    )
-                    _t.sleep(10)
-                    continue
-            else:
-                _push("console", "waiting for console operator")
-        _push("console", _MSG_WAITING_CONSOLE)
-        _t.sleep(5)
-
-    # Final CSR sweep — don't declare ready with pending certs
+    # Final CSR sweep
     for _ in range(6):
         approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
         if not approved:
@@ -5530,57 +5813,13 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         _push("certs", f"approved {approved} certificate(s)")
         _t.sleep(10)
 
+    # Post-pattern cert refresh
     if _is_pattern_deploy(topology):
-        used_recert = False
-        for node in topology.get("nodes", []):
-            if node.get("type") == "storageNode":
-                pid = node.get("data", {}).get("patternId")
-                if pid:
-                    try:
-                        from app.core.database import SessionLocal as _SL
-
-                        _db = _SL()
-                        pat = _db.query(Pattern).filter_by(id=pid).first()
-                        used_recert = bool(pat and pat.recert)
-                        _db.close()
-                    except Exception:
-                        pass
-                    break
-        rhcos_count = sum(
-            1
-            for n in topology.get("nodes", [])
-            if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
+        _ocp_post_pattern_cert_refresh(
+            host, project_id, bastion_ip, password, topology, _push
         )
-        if bastion and (used_recert or rhcos_count == 1):
-            _push("certs", "refreshing bastion certificates")
-            _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                "oc get secret -n openshift-ingress router-certs-default "
-                "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-                "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
-                "&& sudo update-ca-trust",
-                timeout=15,
-            )
 
-            # Verify bastion CA matches live ingress cert + Firefox has current OAuth URL
-            _push("certs", "verifying bastion setup")
-
-            def _bastion_oc(cmd, timeout=15):
-                return _exec_on_bastion(
-                    host,
-                    project_id,
-                    bastion_ip,
-                    password,
-                    f"export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; {cmd}",
-                    timeout=timeout,
-                )
-
-            _verify_bastion_browser(_bastion_oc, _push, project_id)
-
+    # Final status
     elapsed_secs = int(_t.time() - start)
 
     not_ready = []
@@ -5605,19 +5844,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             "OCP health monitor complete for %s (%s)", project_id[:8], _elapsed()
         )
 
-    try:
-        from app.core.database import SessionLocal
-        from app.models.project import Project
-
-        db = SessionLocal()
-        p = db.query(Project).filter_by(id=project_id).first()
-        if p:
-            p.ocp_status = final_status
-            p.ocp_install_elapsed = elapsed_secs
-            db.commit()
-        db.close()
-    except Exception:
-        logger.exception("Failed to update ocp_status for %s", project_id[:8])
+    _ocp_update_status(project_id, final_status, elapsed_secs)
 
 
 def stop_project_async(project_id: str):
@@ -6079,10 +6306,225 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
         _deploy_semaphore.release()
 
 
+def _destroy_kubevirt_native(project_id, host, session, delete_record):
+    """Destroy a project via KubeVirt operator and wait for namespace cleanup."""
+    from app.models.provider import Provider
+    from app.services.providers import get_provider_driver
+
+    provider = session.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        if delete_record:
+            _delete_project_record(project_id)
+        return
+
+    driver = get_provider_driver(provider)
+    try:
+        driver.destroy_project(provider, project_id)
+        logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
+    except Exception as e:
+        logger.exception("Destroy %s: kubevirt cleanup failed", project_id[:8])
+        _set_destroy_error(project_id, str(e))
+        return
+
+    import time as _del_time
+
+    from kubernetes.client.exceptions import ApiException as _KApiErr
+
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    _, core_api, _ = _get_k8s_clients(provider)
+    ns_name = _project_ns(provider, project_id)
+    for _ in range(60):
+        try:
+            core_api.read_namespace(name=ns_name)
+            _del_time.sleep(5)
+        except _KApiErr as e:
+            if e.status == 404:
+                break
+            _del_time.sleep(5)
+        except Exception:
+            break
+    logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
+    if delete_record:
+        _delete_project_record(project_id)
+
+
+def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
+    """Tear down containers, VMs, files, metadata, BMC, and networks via troshkad."""
+    # Destroy containers first (before networks teardown)
+    pool = _get_host_pool(host, session)
+    containers = _extract_containers(topo)
+    for ctr in containers:
+        if ctr.get("is_pod"):
+            full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+            volumes = _find_container_volumes(ctr["node_id"], topo, project_id, pool)
+            try:
+                job_id = start_job(
+                    host,
+                    "/pods/destroy",
+                    {
+                        "pod_name": full_pod_name,
+                        "project_id": project_id,
+                        "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
+                    },
+                )
+                wait_for_job(host, job_id, timeout=30)
+            except TroshkadError as e:
+                logger.warning(
+                    "Destroy %s: failed to destroy pod %s: %s",
+                    project_id[:8],
+                    full_pod_name,
+                    e,
+                )
+        else:
+            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+            volumes = _find_container_volumes(ctr["node_id"], topo, project_id, pool)
+            try:
+                job_id = start_job(
+                    host,
+                    "/containers/destroy",
+                    {
+                        "container_name": container_name,
+                        "project_id": project_id,
+                        "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
+                    },
+                )
+                wait_for_job(host, job_id, timeout=30)
+            except TroshkadError as e:
+                logger.warning(
+                    "Destroy %s: failed to destroy container %s: %s",
+                    project_id[:8],
+                    container_name,
+                    e,
+                )
+
+    # Destroy VMs via troshkad
+    vms = _extract_vms(topo)
+    for vm in vms:
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/destroy", {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=60)
+        except TroshkadError as e:
+            logger.warning(
+                "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
+            )
+
+    # Remove project VM directory
+    pool = _get_host_pool(host, session)
+    vm_dir = _vm_dir(project_id, pool)
+    paths_to_remove = [vm_dir]
+    if pool and pool.mode.startswith("shared"):
+        paths_to_remove.append(f"/var/lib/troshka/seeds/{project_id}")
+    try:
+        job_id = start_job(host, "/files/remove", {"paths": paths_to_remove})
+        wait_for_job(host, job_id, timeout=30)
+    except TroshkadError as e:
+        logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
+
+    # Kill metadata service and remove script/log
+    try:
+        job_id = start_job(
+            host,
+            "/files/remove",
+            {
+                "paths": [
+                    f"/opt/troshka/metadata-{project_id[:8]}.py",
+                    f"/var/log/troshka-metadata-{project_id[:8]}.log",
+                ],
+                "kill_pattern": f"metadata-{project_id[:8]}.py",
+            },
+        )
+        wait_for_job(host, job_id, timeout=15)
+    except TroshkadError:
+        pass
+
+    # Tear down BMC endpoints (sushy-emulator, vbmcd)
+    try:
+        _teardown_bmc_via_troshkad(host, project_id)
+    except Exception as e:
+        logger.warning(
+            "Destroy %s: BMC teardown failed (non-fatal): %s", project_id[:8], e
+        )
+
+    # Tear down networks via troshkad (serialized to avoid nftables contention)
+    with _get_network_lock(host.id):
+        _teardown_networks_via_troshkad(host, project_id, vni_map)
+
+    from app.services.placement import sync_host_capacity
+
+    sync_host_capacity(session, host)
+    session.commit()
+
+
+def _destroy_cleanup_sg_rules(host, project_id, session):
+    """Clean up AWS security group rules tagged with this project's ID."""
+    try:
+        from app.models.provider import Provider
+        from app.services.provider_gc_service import _get_ec2_client
+
+        provider = (
+            session.query(Provider).filter_by(id=host.provider_id).first()
+            if host.provider_id
+            else None
+        )
+        if not provider or not provider.security_group_id:
+            return
+        ec2 = _get_ec2_client(provider)
+        sg = ec2.describe_security_groups(GroupIds=[provider.security_group_id])
+        for perm in sg["SecurityGroups"][0]["IpPermissions"]:
+            for ip_range in perm.get("IpRanges", []):
+                desc = ip_range.get("Description", "")
+                if desc.startswith(f"troshka-pf:{project_id}:"):
+                    try:
+                        ec2.revoke_security_group_ingress(
+                            GroupId=provider.security_group_id,
+                            IpPermissions=[
+                                {
+                                    "IpProtocol": perm["IpProtocol"],
+                                    "FromPort": perm["FromPort"],
+                                    "ToPort": perm["ToPort"],
+                                    "IpRanges": [
+                                        {
+                                            "CidrIp": "0.0.0.0/0",
+                                            "Description": desc,
+                                        }
+                                    ],
+                                }
+                            ],
+                        )
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.warning(
+            "Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e
+        )
+
+
+def _destroy_cleanup_route_access(host, project_id, session):
+    """Clean up OCP Route-based external access (OCP Virt only)."""
+    try:
+        from app.models.provider import Provider
+        from app.services.providers import get_provider_driver
+
+        if not host or not host.provider_id:
+            return
+        provider = session.query(Provider).filter_by(id=host.provider_id).first()
+        if not provider or provider.type != "ocpvirt":
+            return
+        driver = get_provider_driver(provider)
+        driver.delete_route_access(provider, project_id)
+        logger.info("Destroy %s: cleaned up Route access resources", project_id[:8])
+    except Exception:
+        logger.warning(
+            "Destroy %s: Route cleanup failed (non-fatal)",
+            project_id[:8],
+            exc_info=True,
+        )
+
+
 def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
-    """ctx contains pre-captured project data (project_id, host_id, vni_map, topology, dns_provider_id, domain).
-    When delete_record is False, the DB record is preserved (used by redeploy).
-    """
+    """Orchestrate project destruction by delegating to focused helper functions."""
     from app.core.database import SessionLocal
     from app.models.host import Host
 
@@ -6097,159 +6539,14 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
 
         # KubeVirt native: delegate destroy to operator
         if host.host_type == "kubevirt-cluster":
-            from app.models.provider import Provider
-            from app.services.providers import get_provider_driver
-
-            provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider:
-                driver = get_provider_driver(provider)
-                try:
-                    driver.destroy_project(provider, project_id)
-                    logger.info("Destroy %s: kubevirt project deleted", project_id[:8])
-                except Exception as e:
-                    logger.exception(
-                        "Destroy %s: kubevirt cleanup failed", project_id[:8]
-                    )
-                    _set_destroy_error(project_id, str(e))
-                    return
-
-                import time as _del_time
-
-                from kubernetes.client.exceptions import ApiException as _KApiErr
-
-                from app.services.providers.kubevirt import (
-                    _get_k8s_clients,
-                    _project_ns,
-                )
-
-                _, core_api, _ = _get_k8s_clients(provider)
-                ns_name = _project_ns(provider, project_id)
-                for _ in range(60):
-                    try:
-                        core_api.read_namespace(name=ns_name)
-                        _del_time.sleep(5)
-                    except _KApiErr as e:
-                        if e.status == 404:
-                            break
-                        _del_time.sleep(5)
-                    except Exception:
-                        break
-                logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
-            if delete_record:
-                _delete_project_record(project_id)
+            _destroy_kubevirt_native(project_id, host, s, delete_record)
             return
 
         vni_map = ctx.get("vni_map", {})
         topo = ctx.get("topology", {})
 
-        # Destroy containers first (before networks teardown)
-        pool = _get_host_pool(host, s)
-        containers = _extract_containers(topo)
-        for ctr in containers:
-            if ctr.get("is_pod"):
-                full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
-                volumes = _find_container_volumes(
-                    ctr["node_id"], topo, project_id, pool
-                )
-                try:
-                    job_id = start_job(
-                        host,
-                        "/pods/destroy",
-                        {
-                            "pod_name": full_pod_name,
-                            "project_id": project_id,
-                            "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
-                        },
-                    )
-                    wait_for_job(host, job_id, timeout=30)
-                except TroshkadError as e:
-                    logger.warning(
-                        "Destroy %s: failed to destroy pod %s: %s",
-                        project_id[:8],
-                        full_pod_name,
-                        e,
-                    )
-            else:
-                container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
-                volumes = _find_container_volumes(
-                    ctr["node_id"], topo, project_id, pool
-                )
-                try:
-                    job_id = start_job(
-                        host,
-                        "/containers/destroy",
-                        {
-                            "container_name": container_name,
-                            "project_id": project_id,
-                            "volumes": [{"mount_dir": v["mount_dir"]} for v in volumes],
-                        },
-                    )
-                    wait_for_job(host, job_id, timeout=30)
-                except TroshkadError as e:
-                    logger.warning(
-                        "Destroy %s: failed to destroy container %s: %s",
-                        project_id[:8],
-                        container_name,
-                        e,
-                    )
-
-        # Destroy VMs via troshkad
-        vms = _extract_vms(topo)
-        for vm in vms:
-            vm_name = _vm_domain_name(project_id, vm["node_id"])
-            try:
-                job_id = start_job(host, "/vms/destroy", {"domain_name": vm_name})
-                wait_for_job(host, job_id, timeout=60)
-            except TroshkadError as e:
-                logger.warning(
-                    "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
-                )
-
-        # Remove project VM directory
-        pool = _get_host_pool(host, s)
-        vm_dir = _vm_dir(project_id, pool)
-        paths_to_remove = [vm_dir]
-        if pool and pool.mode.startswith("shared"):
-            paths_to_remove.append(f"/var/lib/troshka/seeds/{project_id}")
-        try:
-            job_id = start_job(host, "/files/remove", {"paths": paths_to_remove})
-            wait_for_job(host, job_id, timeout=30)
-        except TroshkadError as e:
-            logger.warning("Destroy %s: failed to remove VM dir: %s", project_id[:8], e)
-
-        # Kill metadata service and remove script/log
-        try:
-            job_id = start_job(
-                host,
-                "/files/remove",
-                {
-                    "paths": [
-                        f"/opt/troshka/metadata-{project_id[:8]}.py",
-                        f"/var/log/troshka-metadata-{project_id[:8]}.log",
-                    ],
-                    "kill_pattern": f"metadata-{project_id[:8]}.py",
-                },
-            )
-            wait_for_job(host, job_id, timeout=15)
-        except TroshkadError:
-            pass
-
-        # Tear down BMC endpoints (sushy-emulator, vbmcd)
-        try:
-            _teardown_bmc_via_troshkad(host, project_id)
-        except Exception as e:
-            logger.warning(
-                "Destroy %s: BMC teardown failed (non-fatal): %s", project_id[:8], e
-            )
-
-        # Tear down networks via troshkad (serialized to avoid nftables contention)
-        with _get_network_lock(host.id):
-            _teardown_networks_via_troshkad(host, project_id, vni_map)
-
-        from app.services.placement import sync_host_capacity
-
-        sync_host_capacity(s, host)
-        s.commit()
+        # Tear down all troshkad-managed resources (containers, VMs, files, BMC, networks)
+        _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
 
         # Delete DNS records if configured
         if ctx.get("dns_provider_id"):
@@ -6265,68 +6562,10 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
                 delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
 
         # Clean up security group rules for this project
-        try:
-            from app.models.provider import Provider
-            from app.services.provider_gc_service import _get_ec2_client
-
-            provider = (
-                s.query(Provider).filter_by(id=host.provider_id).first()
-                if host.provider_id
-                else None
-            )
-            if not provider and host.provider_id:
-                provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider and provider.security_group_id:
-                ec2 = _get_ec2_client(provider)
-                sg = ec2.describe_security_groups(GroupIds=[provider.security_group_id])
-                for perm in sg["SecurityGroups"][0]["IpPermissions"]:
-                    for ip_range in perm.get("IpRanges", []):
-                        desc = ip_range.get("Description", "")
-                        if desc.startswith(f"troshka-pf:{project_id}:"):
-                            try:
-                                ec2.revoke_security_group_ingress(
-                                    GroupId=provider.security_group_id,
-                                    IpPermissions=[
-                                        {
-                                            "IpProtocol": perm["IpProtocol"],
-                                            "FromPort": perm["FromPort"],
-                                            "ToPort": perm["ToPort"],
-                                            "IpRanges": [
-                                                {
-                                                    "CidrIp": "0.0.0.0/0",
-                                                    "Description": desc,
-                                                }
-                                            ],
-                                        }
-                                    ],
-                                )
-                            except Exception:
-                                pass
-        except Exception as e:
-            logger.warning(
-                "Destroy %s: SG cleanup failed (non-fatal): %s", project_id[:8], e
-            )
+        _destroy_cleanup_sg_rules(host, project_id, s)
 
         # Clean up Route-based external access (OCP Virt only)
-        try:
-            from app.models.provider import Provider
-            from app.services.providers import get_provider_driver
-
-            provider = None
-            if host and host.provider_id:
-                provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider and provider.type == "ocpvirt":
-                driver = get_provider_driver(provider)
-                driver.delete_route_access(provider, project_id)
-                logger.info(
-                    "Destroy %s: cleaned up Route access resources", project_id[:8]
-                )
-        except Exception:
-            logger.warning(
-                "Destroy %s: Route cleanup failed (non-fatal)",
-                project_id[:8],
-                exc_info=True,
-            )
+        _destroy_cleanup_route_access(host, project_id, s)
 
         # Release all EIPs for this project
         from app.models.elastic_ip import ElasticIp

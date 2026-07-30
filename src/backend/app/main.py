@@ -50,6 +50,68 @@ def _startup_clear_health_monitors():
         pass
 
 
+def _is_stale_abandoned_job(j, now_utc) -> bool:
+    """Return True if the abandoned job ended more than 1 hour ago."""
+
+    job_ended = j.ended_at
+    if not job_ended:
+        return False
+    if job_ended.tzinfo is None:
+        job_ended = job_ended.replace(tzinfo=UTC)
+    return (now_utc - job_ended).total_seconds() > 3600
+
+
+def _should_discard_for_project(j, db) -> bool:
+    """Return True if the job's project is gone or no longer in a transient state."""
+    from app.models.project import Project
+
+    pid = j.meta.get("project_id")
+    if not pid:
+        return False
+    proj = db.get(Project, pid)
+    if not proj:
+        return True
+    return proj.state not in ("deploying", "starting", "stopping", "reconfiguring")
+
+
+def _handle_abandoned_job(j, registry, db, now_utc):
+    """Process a single abandoned job: discard if stale/irrelevant, otherwise re-queue."""
+    if "AbandonedJobError" not in str(j.exc_info or ""):
+        return
+
+    func_label = (j.func_name or "unknown").split(".")[-1]
+    jid = j.id
+
+    if _is_stale_abandoned_job(j, now_utc):
+        logger.info(
+            "Startup: discarding stale abandoned job %s (%s)",
+            jid[:8],
+            func_label,
+        )
+        registry.remove(j)
+        j.delete()
+        return
+
+    if _should_discard_for_project(j, db):
+        pid = j.meta.get("project_id", "")
+        logger.info(
+            "Startup: discarding abandoned job %s — project %s not applicable",
+            jid[:8],
+            pid[:8] if pid else "none",
+        )
+        registry.remove(j)
+        j.delete()
+        return
+
+    logger.warning(
+        "Startup: re-queuing abandoned job %s (%s)",
+        jid[:8],
+        func_label,
+    )
+    registry.remove(j)
+    j.requeue()
+
+
 def _startup_recover_abandoned_jobs():
     """Clean up abandoned RQ jobs (workers killed during rollout)."""
     from app.core.redis import is_redis_available
@@ -64,7 +126,6 @@ def _startup_recover_abandoned_jobs():
 
         from app.core.database import SessionLocal
         from app.core.redis import get_redis_raw
-        from app.models.project import Project
 
         r = get_redis_raw()
         db = SessionLocal()
@@ -77,64 +138,7 @@ def _startup_recover_abandoned_jobs():
                 for jid in abandoned_ids:
                     try:
                         j = Job.fetch(jid, connection=r)
-                        if "AbandonedJobError" not in str(j.exc_info or ""):
-                            continue
-
-                        pid = j.meta.get("project_id")
-                        func_label = (j.func_name or "unknown").split(".")[-1]
-
-                        # Age out stale jobs (>1 hour since failure)
-                        job_ended = j.ended_at
-                        if job_ended:
-                            if job_ended.tzinfo is None:
-                                job_ended = job_ended.replace(tzinfo=UTC)
-                            age_s = (now_utc - job_ended).total_seconds()
-                            if age_s > 3600:
-                                logger.info(
-                                    "Startup: discarding stale abandoned job %s (%s, %.0fh old)",
-                                    jid[:8],
-                                    func_label,
-                                    age_s / 3600,
-                                )
-                                registry.remove(j)
-                                j.delete()
-                                continue
-
-                        # Check project state — only re-queue if still in transient state
-                        if pid:
-                            proj = db.get(Project, pid)
-                            if not proj:
-                                logger.info(
-                                    "Startup: discarding abandoned job %s — project %s not found",
-                                    jid[:8],
-                                    pid[:8],
-                                )
-                                registry.remove(j)
-                                j.delete()
-                                continue
-                            if proj.state not in (
-                                "deploying",
-                                "starting",
-                                "stopping",
-                                "reconfiguring",
-                            ):
-                                logger.info(
-                                    "Startup: discarding abandoned job %s — project %s already %s",
-                                    jid[:8],
-                                    pid[:8],
-                                    proj.state,
-                                )
-                                registry.remove(j)
-                                j.delete()
-                                continue
-
-                        logger.warning(
-                            "Startup: re-queuing abandoned job %s (%s)",
-                            jid[:8],
-                            func_label,
-                        )
-                        registry.remove(j)
-                        j.requeue()
+                        _handle_abandoned_job(j, registry, db, now_utc)
                     except Exception:
                         pass
         finally:

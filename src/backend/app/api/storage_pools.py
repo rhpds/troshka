@@ -22,6 +22,10 @@ from app.services import storage_pool_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/storage-pools", tags=["storage-pools"])
 
+_ERR_PROVIDER_NOT_FOUND = "Provider not found"
+_ERR_POOL_NOT_FOUND = "Storage pool not found"
+_ERR_PROVIDER_MISSING_REGION = "Provider missing default region"
+
 
 def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
     resp = StoragePoolResponse.model_validate(pool)
@@ -69,7 +73,11 @@ def list_pools(
     return [_pool_response(pool, db) for pool in pools]
 
 
-@router.get("/{pool_id}", response_model=StoragePoolResponse)
+@router.get(
+    "/{pool_id}",
+    response_model=StoragePoolResponse,
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def get_pool(
     pool_id: str,
     user: User = Depends(require_role("admin")),
@@ -77,24 +85,178 @@ def get_pool(
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
     return _pool_response(pool, db)
 
 
-@router.post("/", response_model=StoragePoolResponse, status_code=201)
+_VALID_POOL_MODES = (
+    "local",
+    "shared-fsx",
+    "shared-byo",
+    "shared-ceph-nfs",
+    "shared-netapp",
+    "shared-azure-files",
+)
+
+
+def _validate_pool_mode(body: StoragePoolCreate, provider: Provider) -> None:
+    """Validate mode-specific required fields; raises HTTPException on error."""
+    if body.mode == "shared-fsx":
+        if not body.az:
+            raise HTTPException(400, "AZ is required for shared-fsx pools")
+        if not body.fsx_throughput_mbps or not body.fsx_storage_gb:
+            raise HTTPException(
+                400, "fsx_throughput_mbps and fsx_storage_gb are required"
+            )
+    elif body.mode == "shared-byo":
+        if not body.nfs_endpoint:
+            raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
+    elif body.mode == "shared-ceph-nfs":
+        if provider.type != "ocpvirt":
+            raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
+    elif body.mode == "shared-netapp":
+        if provider.type != "gcp":
+            raise HTTPException(400, "NetApp Volumes pools require a GCP provider")
+        if not body.netapp_capacity_gb:
+            raise HTTPException(400, "netapp_capacity_gb is required")
+    elif body.mode == "shared-azure-files":
+        if provider.type != "azure":
+            raise HTTPException(400, "Azure Files pools require an Azure provider")
+        if not body.azure_files_capacity_gb:
+            raise HTTPException(400, "azure_files_capacity_gb is required")
+
+
+def _provision_fsx(
+    pool: StoragePool, body: StoragePoolCreate, provider: Provider, db: Session
+) -> None:
+    credentials = provider.get_credentials()
+    region = provider.default_region
+    sg_id = provider.security_group_id
+    if not region or not sg_id:
+        raise HTTPException(400, "Provider missing region or security group")
+
+    subnet_id = storage_pool_service.ensure_subnet_in_az(
+        credentials, region, provider.vpc_id, body.az  # type: ignore[arg-type]
+    )
+    pool.subnet_id = subnet_id
+    db.commit()
+
+    storage_pool_service.add_sg_rules_for_shared_storage(credentials, region, sg_id)
+
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        storage_pool_service.provision_fsx_pool,
+        pool.id,
+        credentials,
+        region,
+        subnet_id,
+        sg_id,
+        body.fsx_storage_gb,
+        body.fsx_throughput_mbps,
+        queue_name="host_lifecycle",
+    )
+
+
+def _provision_byo(provider: Provider) -> None:
+    credentials = provider.get_credentials()
+    region = provider.default_region
+    sg_id = provider.security_group_id
+    if not region or not sg_id:
+        raise HTTPException(400, "Provider missing region or security group")
+    storage_pool_service.add_sg_rules_for_shared_storage(
+        credentials, region, sg_id, include_nfs=False
+    )
+
+
+def _provision_ceph_nfs(pool: StoragePool, provider: Provider) -> None:
+    credentials = provider.get_credentials()
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        storage_pool_service.provision_ceph_nfs_pool,
+        pool.id,
+        credentials,
+        queue_name="host_lifecycle",
+    )
+
+
+def _provision_netapp(
+    pool: StoragePool, body: StoragePoolCreate, provider: Provider
+) -> None:
+    credentials = provider.get_credentials()
+    region = provider.default_region or "us-central1"
+    network = provider.gcp_network_id
+    if not network:
+        raise HTTPException(400, "GCP provider has no network configured")
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        storage_pool_service.provision_netapp_pool,
+        pool.id,
+        credentials,
+        provider.gcp_project_id,
+        region,
+        network,
+        body.netapp_capacity_gb,
+        "troshka",
+        body.netapp_service_level or "FLEX",
+        queue_name="host_lifecycle",
+    )
+
+
+def _provision_azure_files(
+    pool: StoragePool, body: StoragePoolCreate, provider: Provider
+) -> None:
+    credentials = provider.get_credentials()
+    location = provider.azure_location or provider.default_region
+    subnet_id = provider.azure_subnet_id
+    if not subnet_id:
+        raise HTTPException(400, "Azure provider has no subnet configured")
+    from app.core.redis import enqueue_job
+
+    enqueue_job(
+        storage_pool_service.provision_azure_files_pool,
+        pool.id,
+        credentials,
+        provider.azure_resource_group,
+        location,
+        subnet_id,
+        body.azure_files_capacity_gb,
+        body.azure_files_iops,
+        body.azure_files_throughput,
+        queue_name="host_lifecycle",
+    )
+
+
+def _provision_pool_storage(
+    pool: StoragePool, body: StoragePoolCreate, provider: Provider, db: Session
+) -> None:
+    """Kick off mode-specific storage provisioning."""
+    if body.mode == "shared-fsx":
+        _provision_fsx(pool, body, provider, db)
+    elif body.mode == "shared-byo":
+        _provision_byo(provider)
+    elif body.mode == "shared-ceph-nfs":
+        _provision_ceph_nfs(pool, provider)
+    elif body.mode == "shared-netapp":
+        _provision_netapp(pool, body, provider)
+    elif body.mode == "shared-azure-files":
+        _provision_azure_files(pool, body, provider)
+
+
+@router.post(
+    "/",
+    response_model=StoragePoolResponse,
+    status_code=201,
+    responses={404: {"description": _ERR_PROVIDER_NOT_FOUND}},
+)
 def create_pool(
     body: StoragePoolCreate,
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    if body.mode not in (
-        "local",
-        "shared-fsx",
-        "shared-byo",
-        "shared-ceph-nfs",
-        "shared-netapp",
-        "shared-azure-files",
-    ):
+    if body.mode not in _VALID_POOL_MODES:
         raise HTTPException(400, f"Invalid mode: {body.mode}")
 
     existing = db.query(StoragePool).filter(StoragePool.name == body.name).first()
@@ -103,35 +265,9 @@ def create_pool(
 
     provider = db.get(Provider, body.provider_id)
     if not provider:
-        raise HTTPException(404, "Provider not found")
+        raise HTTPException(404, _ERR_PROVIDER_NOT_FOUND)
 
-    if body.mode == "shared-fsx":
-        if not body.az:
-            raise HTTPException(400, "AZ is required for shared-fsx pools")
-        if not body.fsx_throughput_mbps or not body.fsx_storage_gb:
-            raise HTTPException(
-                400, "fsx_throughput_mbps and fsx_storage_gb are required"
-            )
-
-    if body.mode == "shared-byo":
-        if not body.nfs_endpoint:
-            raise HTTPException(400, "nfs_endpoint is required for shared-byo pools")
-
-    if body.mode == "shared-ceph-nfs":
-        if provider.type != "ocpvirt":
-            raise HTTPException(400, "Ceph-NFS pools require an OCP Virt provider")
-
-    if body.mode == "shared-netapp":
-        if provider.type != "gcp":
-            raise HTTPException(400, "NetApp Volumes pools require a GCP provider")
-        if not body.netapp_capacity_gb:
-            raise HTTPException(400, "netapp_capacity_gb is required")
-
-    if body.mode == "shared-azure-files":
-        if provider.type != "azure":
-            raise HTTPException(400, "Azure Files pools require an Azure provider")
-        if not body.azure_files_capacity_gb:
-            raise HTTPException(400, "azure_files_capacity_gb is required")
+    _validate_pool_mode(body, provider)
 
     ca_cert, ca_key = None, None
     if body.mode.startswith("shared"):
@@ -154,157 +290,50 @@ def create_pool(
     db.commit()
     db.refresh(pool)
 
-    if body.mode == "shared-fsx":
-        credentials = provider.get_credentials()
-        region = provider.default_region
-        sg_id = provider.security_group_id
-        if not region or not sg_id:
-            raise HTTPException(400, "Provider missing region or security group")
-
-        subnet_id = storage_pool_service.ensure_subnet_in_az(
-            credentials, region, provider.vpc_id, body.az  # type: ignore[arg-type]
-        )
-        pool.subnet_id = subnet_id
-        db.commit()
-
-        storage_pool_service.add_sg_rules_for_shared_storage(credentials, region, sg_id)
-
-        from app.core.redis import enqueue_job
-
-        enqueue_job(
-            storage_pool_service.provision_fsx_pool,
-            pool.id,
-            credentials,
-            region,
-            subnet_id,
-            sg_id,
-            body.fsx_storage_gb,
-            body.fsx_throughput_mbps,
-            queue_name="host_lifecycle",
-        )
-
-    elif body.mode == "shared-byo":
-        credentials = provider.get_credentials()
-        region = provider.default_region
-        sg_id = provider.security_group_id
-        if not region or not sg_id:
-            raise HTTPException(400, "Provider missing region or security group")
-        storage_pool_service.add_sg_rules_for_shared_storage(
-            credentials, region, sg_id, include_nfs=False
-        )
-
-    elif body.mode == "shared-ceph-nfs":
-        credentials = provider.get_credentials()
-        from app.core.redis import enqueue_job
-
-        enqueue_job(
-            storage_pool_service.provision_ceph_nfs_pool,
-            pool.id,
-            credentials,
-            queue_name="host_lifecycle",
-        )
-
-    elif body.mode == "shared-netapp":
-        credentials = provider.get_credentials()
-        region = provider.default_region or "us-central1"
-        network = provider.gcp_network_id
-        if not network:
-            raise HTTPException(400, "GCP provider has no network configured")
-        from app.core.redis import enqueue_job
-
-        enqueue_job(
-            storage_pool_service.provision_netapp_pool,
-            pool.id,
-            credentials,
-            provider.gcp_project_id,
-            region,
-            network,
-            body.netapp_capacity_gb,
-            "troshka",
-            body.netapp_service_level or "FLEX",
-            queue_name="host_lifecycle",
-        )
-
-    elif body.mode == "shared-azure-files":
-        credentials = provider.get_credentials()
-        location = provider.azure_location or provider.default_region
-        subnet_id = provider.azure_subnet_id
-        if not subnet_id:
-            raise HTTPException(400, "Azure provider has no subnet configured")
-        from app.core.redis import enqueue_job
-
-        enqueue_job(
-            storage_pool_service.provision_azure_files_pool,
-            pool.id,
-            credentials,
-            provider.azure_resource_group,
-            location,
-            subnet_id,
-            body.azure_files_capacity_gb,
-            body.azure_files_iops,
-            body.azure_files_throughput,
-            queue_name="host_lifecycle",
-        )
+    _provision_pool_storage(pool, body, provider, db)
 
     return _pool_response(pool, db)
 
 
-@router.patch("/{pool_id}", response_model=StoragePoolResponse)
-def update_pool(
-    pool_id: str,
-    body: StoragePoolUpdate,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    pool = db.get(StoragePool, pool_id)
-    if not pool:
-        raise HTTPException(404, "Storage pool not found")
+def _update_fsx_pool(pool: StoragePool, body: StoragePoolUpdate, db: Session) -> None:
+    """Apply FSx throughput / storage changes to the pool."""
+    provider = db.get(Provider, pool.provider_id)
+    if not provider:
+        raise HTTPException(404, _ERR_PROVIDER_NOT_FOUND)
+    credentials = provider.get_credentials()
+    region = provider.default_region
+    if not region:
+        raise HTTPException(400, _ERR_PROVIDER_MISSING_REGION)
+    fsx_id = pool.fsx_filesystem_id
+    if not fsx_id:
+        raise HTTPException(400, "Pool missing FSx filesystem ID")
 
-    if pool.mode == "shared-fsx":
-        provider = db.get(Provider, pool.provider_id)
-        if not provider:
-            raise HTTPException(404, "Provider not found")
-        credentials = provider.get_credentials()
-        region = provider.default_region
-        if not region:
-            raise HTTPException(400, "Provider missing default region")
-        fsx_id = pool.fsx_filesystem_id
-        if not fsx_id:
-            raise HTTPException(400, "Pool missing FSx filesystem ID")
+    if (
+        body.fsx_throughput_mbps
+        and body.fsx_throughput_mbps != pool.fsx_throughput_mbps
+    ):
+        storage_pool_service.update_fsx_throughput(
+            credentials, region, fsx_id, body.fsx_throughput_mbps
+        )
+        pool.fsx_throughput_mbps = body.fsx_throughput_mbps
 
-        if (
-            body.fsx_throughput_mbps
-            and body.fsx_throughput_mbps != pool.fsx_throughput_mbps
-        ):
-            storage_pool_service.update_fsx_throughput(
-                credentials,
-                region,
-                fsx_id,
-                body.fsx_throughput_mbps,
+    if body.fsx_storage_gb and body.fsx_storage_gb > (pool.fsx_storage_gb or 0):
+        import math
+
+        min_grow = math.ceil((pool.fsx_storage_gb or 64) * 1.1)
+        if body.fsx_storage_gb < min_grow:
+            raise HTTPException(
+                400,
+                f"Storage increase must be at least 10% (minimum {min_grow} GB)",
             )
-            pool.fsx_throughput_mbps = body.fsx_throughput_mbps
+        storage_pool_service.update_fsx_storage(
+            credentials, region, fsx_id, body.fsx_storage_gb
+        )
+        pool.fsx_storage_gb = body.fsx_storage_gb
 
-        if body.fsx_storage_gb and body.fsx_storage_gb > (pool.fsx_storage_gb or 0):
-            import math
 
-            min_grow = math.ceil((pool.fsx_storage_gb or 64) * 1.1)
-            if body.fsx_storage_gb < min_grow:
-                raise HTTPException(
-                    400,
-                    f"Storage increase must be at least 10% (minimum {min_grow} GB)",
-                )
-            storage_pool_service.update_fsx_storage(
-                credentials,
-                region,
-                fsx_id,
-                body.fsx_storage_gb,
-            )
-            pool.fsx_storage_gb = body.fsx_storage_gb
-
-    if pool.mode == "shared-byo":
-        if body.nfs_endpoint is not None:
-            pool.nfs_endpoint = body.nfs_endpoint
-
+def _apply_auto_extend_fields(pool: StoragePool, body: StoragePoolUpdate) -> None:
+    """Copy auto-extend and pattern-buffer settings from the update body."""
     if body.auto_extend_enabled is not None:
         pool.auto_extend_enabled = body.auto_extend_enabled
     if body.auto_extend_threshold_pct is not None:
@@ -313,16 +342,43 @@ def update_pool(
         pool.auto_extend_increment_gb = body.auto_extend_increment_gb
     if body.auto_extend_max_gb is not None:
         pool.auto_extend_max_gb = body.auto_extend_max_gb
-
     if body.pb_auto_sleep_minutes is not None:
         pool.pb_auto_sleep_minutes = body.pb_auto_sleep_minutes
+
+
+@router.patch(
+    "/{pool_id}",
+    response_model=StoragePoolResponse,
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
+def update_pool(
+    pool_id: str,
+    body: StoragePoolUpdate,
+    user: User = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    pool = db.get(StoragePool, pool_id)
+    if not pool:
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
+
+    if pool.mode == "shared-fsx":
+        _update_fsx_pool(pool, body, db)
+
+    if pool.mode == "shared-byo":
+        if body.nfs_endpoint is not None:
+            pool.nfs_endpoint = body.nfs_endpoint
+
+    _apply_auto_extend_fields(pool, body)
 
     db.commit()
     db.refresh(pool)
     return _pool_response(pool, db)
 
 
-@router.post("/{pool_id}/extend")
+@router.post(
+    "/{pool_id}/extend",
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def extend_pool(
     pool_id: str,
     body: dict | None = None,
@@ -332,7 +388,7 @@ def extend_pool(
     """Extend the FSx filesystem by the configured increment."""
     pool = db.get(StoragePool, pool_id)
     if not pool:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
     if pool.mode != "shared-fsx":
         raise HTTPException(400, "Only FSx pools can be extended")
 
@@ -346,7 +402,60 @@ def extend_pool(
     return result
 
 
-@router.delete("/{pool_id}", status_code=204)
+def _terminate_pattern_buffer(pool: StoragePool, db: Session) -> None:
+    """Terminate the pattern buffer instance and clear the association."""
+    if not pool.worker_host_id:
+        return
+    worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
+    if worker and worker.state not in ("terminated",):
+        try:
+            from app.services.providers import get_provider_driver
+
+            provider = db.get(Provider, pool.provider_id)
+            drv = get_provider_driver(provider)
+            drv.terminate_host(provider, worker.instance_id)
+            logger.info("Terminated pattern buffer %s", worker.id[:8])
+        except Exception:
+            logger.warning(
+                "Failed to terminate pattern buffer %s",
+                worker.id[:8],
+                exc_info=True,
+            )
+        worker.state = "terminated"
+        worker.agent_status = "disconnected"
+    pool.worker_host_id = None
+    db.commit()
+
+
+def _cleanup_pool_storage(pool: StoragePool, db: Session) -> None:
+    """Delete the backing storage (FSx filesystem, Ceph subvolume, etc.)."""
+    if pool.mode == "shared-fsx" and pool.fsx_filesystem_id:
+        provider = db.get(Provider, pool.provider_id)
+        if not provider:
+            raise HTTPException(404, _ERR_PROVIDER_NOT_FOUND)
+        credentials = provider.get_credentials()
+        region = provider.default_region
+        if not region:
+            raise HTTPException(400, _ERR_PROVIDER_MISSING_REGION)
+        storage_pool_service.delete_fsx_filesystem(
+            credentials, region, pool.fsx_filesystem_id
+        )
+
+    if pool.mode == "shared-ceph-nfs":
+        provider = db.get(Provider, pool.provider_id)
+        if not provider:
+            raise HTTPException(404, _ERR_PROVIDER_NOT_FOUND)
+        credentials = provider.get_credentials()
+        storage_pool_service.delete_ceph_nfs_pool(
+            pool.id, credentials, pool.ceph_subvolume_group
+        )
+
+
+@router.delete(
+    "/{pool_id}",
+    status_code=204,
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def delete_pool(
     pool_id: str,
     user: User = Depends(require_role("admin")),
@@ -354,7 +463,7 @@ def delete_pool(
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
 
     host_count = (
         db.query(Host)
@@ -367,53 +476,18 @@ def delete_pool(
     if host_count > 0:
         raise HTTPException(400, f"Pool still has {host_count} hosts assigned")
 
-    if pool.worker_host_id:
-        worker = db.query(Host).filter_by(id=pool.worker_host_id).first()
-        if worker and worker.state not in ("terminated",):
-            try:
-                from app.services.providers import get_provider_driver
-
-                provider = db.get(Provider, pool.provider_id)
-                drv = get_provider_driver(provider)
-                drv.terminate_host(provider, worker.instance_id)
-                logger.info("Terminated pattern buffer %s", worker.id[:8])
-            except Exception:
-                logger.warning(
-                    "Failed to terminate pattern buffer %s",
-                    worker.id[:8],
-                    exc_info=True,
-                )
-            worker.state = "terminated"
-            worker.agent_status = "disconnected"
-        pool.worker_host_id = None
-        db.commit()
-
-    if pool.mode == "shared-fsx" and pool.fsx_filesystem_id:
-        provider = db.get(Provider, pool.provider_id)
-        if not provider:
-            raise HTTPException(404, "Provider not found")
-        credentials = provider.get_credentials()
-        region = provider.default_region
-        if not region:
-            raise HTTPException(400, "Provider missing default region")
-        storage_pool_service.delete_fsx_filesystem(
-            credentials, region, pool.fsx_filesystem_id
-        )
-
-    if pool.mode == "shared-ceph-nfs":
-        provider = db.get(Provider, pool.provider_id)
-        if not provider:
-            raise HTTPException(404, "Provider not found")
-        credentials = provider.get_credentials()
-        storage_pool_service.delete_ceph_nfs_pool(
-            pool.id, credentials, pool.ceph_subvolume_group
-        )
+    _terminate_pattern_buffer(pool, db)
+    _cleanup_pool_storage(pool, db)
 
     db.delete(pool)
     db.commit()
 
 
-@router.get("/{pool_id}/cache", response_model=list[SharedCacheEntryResponse])
+@router.get(
+    "/{pool_id}/cache",
+    response_model=list[SharedCacheEntryResponse],
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def list_cache(
     pool_id: str,
     user: User = Depends(require_role("admin")),
@@ -421,7 +495,7 @@ def list_cache(
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
     entries = (
         db.query(SharedCacheEntry)
         .filter(SharedCacheEntry.storage_pool_id == pool_id)
@@ -452,7 +526,11 @@ def evict_cache_entry(
     db.commit()
 
 
-@router.post("/{pool_id}/probe-azs", response_model=AzProbeResponse)
+@router.post(
+    "/{pool_id}/probe-azs",
+    response_model=AzProbeResponse,
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def probe_azs(
     pool_id: str,
     instance_types: list[str],
@@ -463,14 +541,14 @@ def probe_azs(
     if pool:
         provider = db.get(Provider, pool.provider_id)
     else:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
 
     if not provider:
-        raise HTTPException(404, "Provider not found")
+        raise HTTPException(404, _ERR_PROVIDER_NOT_FOUND)
     credentials = provider.get_credentials()
     region = provider.default_region
     if not region:
-        raise HTTPException(400, "Provider missing default region")
+        raise HTTPException(400, _ERR_PROVIDER_MISSING_REGION)
     az_results = storage_pool_service.probe_az_capacity(
         credentials, region, instance_types
     )
@@ -489,7 +567,10 @@ def probe_azs(
     return AzProbeResponse(results=results, recommended_az=recommended)
 
 
-@router.post("/{pool_id}/gc")
+@router.post(
+    "/{pool_id}/gc",
+    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+)
 def run_pool_gc(
     pool_id: str,
     dry_run: bool = False,
@@ -498,7 +579,7 @@ def run_pool_gc(
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
-        raise HTTPException(404, "Storage pool not found")
+        raise HTTPException(404, _ERR_POOL_NOT_FOUND)
     if pool.mode == "local":
         raise HTTPException(400, "GC only applies to shared storage pools")
 
