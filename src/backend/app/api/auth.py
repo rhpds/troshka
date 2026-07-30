@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -8,6 +10,9 @@ from app.models.user import User, UserSshKey
 from app.schemas.auth import LoginResponse, UserIdentity
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
 
 
 def _get_or_create_dev_user(db: Session, role: str = "admin") -> User:
@@ -40,7 +45,7 @@ def auth_config():
 
 
 @router.get("/dev-token", response_model=LoginResponse)
-def dev_token(db: Session = Depends(get_db)):
+def dev_token(db: DbSession):
     if config.auth.oauth_enabled:
         raise HTTPException(
             status_code=403, detail="Dev tokens disabled when SSO is enabled"
@@ -58,7 +63,7 @@ def dev_token(db: Session = Depends(get_db)):
 
 
 @router.get("/dev-token/{role}", response_model=LoginResponse)
-def dev_token_with_role(role: str, db: Session = Depends(get_db)):
+def dev_token_with_role(role: str, db: DbSession):
     if config.auth.oauth_enabled:
         raise HTTPException(
             status_code=403, detail="Dev tokens disabled when SSO is enabled"
@@ -80,12 +85,12 @@ def dev_token_with_role(role: str, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserIdentity)
-def auth_me(user: User = Depends(get_current_user)):
+def auth_me(user: CurrentUser):
     return UserIdentity.model_validate(user)
 
 
 @router.get("/ws-token")
-def ws_token(user: User = Depends(get_current_user)):
+def ws_token(user: CurrentUser):
     """Return a short-lived JWT for WebSocket authentication.
 
     WebSocket connections bypass OAuth proxy (skip-auth-regex), so the
@@ -107,9 +112,7 @@ class SshKeyCreate(BaseModel):
 
 
 @router.get("/ssh-keys")
-def list_ssh_keys(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def list_ssh_keys(user: CurrentUser, db: DbSession):
     keys = (
         db.query(UserSshKey)
         .filter_by(user_id=user.id)
@@ -130,8 +133,8 @@ def list_ssh_keys(
 @router.post("/ssh-keys", status_code=201)
 def add_ssh_key(
     body: SshKeyCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     import re
 
@@ -152,9 +155,7 @@ def add_ssh_key(
 
 
 @router.delete("/ssh-keys/{key_id}", status_code=204)
-def delete_ssh_key(
-    key_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def delete_ssh_key(key_id: int, user: CurrentUser, db: DbSession):
     key = db.query(UserSshKey).filter_by(id=key_id, user_id=user.id).first()
     if not key:
         raise HTTPException(status_code=404, detail="Key not found")
@@ -166,7 +167,7 @@ def delete_ssh_key(
 
 
 @router.get("/ocp-pull-secret")
-def get_ocp_pull_secret(user: User = Depends(get_current_user)):
+def get_ocp_pull_secret(user: CurrentUser):
     if not user.ocp_pull_secret:
         return {
             "has_secret": False,
@@ -187,9 +188,7 @@ def get_ocp_pull_secret(user: User = Depends(get_current_user)):
 
 
 @router.put("/ocp-pull-secret")
-def set_ocp_pull_secret(
-    body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def set_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
     import base64
     import json
 
@@ -231,17 +230,13 @@ def set_ocp_pull_secret(
 
 
 @router.delete("/ocp-pull-secret", status_code=204)
-def delete_ocp_pull_secret(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def delete_ocp_pull_secret(user: CurrentUser, db: DbSession):
     user.ocp_pull_secret = None
     db.commit()
 
 
 @router.patch("/ocp-pull-secret")
-def patch_ocp_pull_secret(
-    body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def patch_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
     if "pull_through_registry" in body:
         user.pull_through_registry = bool(body["pull_through_registry"])
     db.commit()
@@ -252,7 +247,7 @@ def patch_ocp_pull_secret(
 
 
 @router.get("/rh-offline-token")
-def get_rh_offline_token(user: User = Depends(get_current_user)):
+def get_rh_offline_token(user: CurrentUser):
     if not user.rh_offline_token:
         return {"has_token": False, "masked": ""}
     from app.core.encryption import decrypt
@@ -263,9 +258,7 @@ def get_rh_offline_token(user: User = Depends(get_current_user)):
 
 
 @router.put("/rh-offline-token")
-def set_rh_offline_token(
-    body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def set_rh_offline_token(body: dict, user: CurrentUser, db: DbSession):
     token = body.get("offline_token", "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="Offline token is required")
@@ -277,8 +270,6 @@ def set_rh_offline_token(
 
 
 @router.delete("/rh-offline-token", status_code=204)
-def delete_rh_offline_token(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def delete_rh_offline_token(user: CurrentUser, db: DbSession):
     user.rh_offline_token = None
     db.commit()

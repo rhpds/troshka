@@ -63,6 +63,13 @@ DEPLOY_STEPS = [
 
 _HEALTH_MONITORS_SET = "deploy:health_monitors"
 
+# Duplicated string constants (SonarQube S1192)
+_MSG_WAITING_API = "waiting for API server"
+_CMD_GET_NODES = "oc get nodes --no-headers 2>/dev/null"
+_MSG_WAITING_CONSOLE = "waiting for OpenShift console"
+_MSG_CA_CERT = "CA cert"
+_MSG_BROWSER_CREDS = "browser credentials"
+
 
 def _set_deploy_progress(project_id: str, data: dict):
     set_progress(f"deploy:{project_id}", data)
@@ -3951,13 +3958,70 @@ def _is_pattern_deploy(topology: dict) -> bool:
     )
 
 
-def maybe_start_ocp_health_monitor(project_id: str):
-    """Start OCP health monitor if project needs it and one isn't already running."""
+def _parse_node_readiness(result: str | None) -> tuple[list[str], int, int]:
+    """Parse ``oc get nodes --no-headers`` output.
+
+    Returns (items, ready_count, total).
+    """
+    if not result:
+        return [], 0, 0
+    items: list[str] = []
+    ready_count = 0
+    total = 0
+    for line in result.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 2:
+            total += 1
+            name, status = parts[0], parts[1]
+            items.append(f"{name}: {status}")
+            if "Ready" in status and "Not" not in status:
+                ready_count += 1
+    return items, ready_count, total
+
+
+def _parse_operator_status(result: str | None) -> tuple[list[str], int, int]:
+    """Parse ``oc get co --no-headers`` output.
+
+    Returns (items, available_count, total).
+    """
+    if not result:
+        return [], 0, 0
+    items: list[str] = []
+    available_count = 0
+    total = 0
+    for line in result.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4:
+            name = parts[0]
+            avail = parts[2]
+            degraded = parts[4] if len(parts) > 4 else "False"
+            total += 1
+            if avail == "True":
+                available_count += 1
+                items.append(f"{name}: available")
+            elif degraded == "True":
+                items.append(f"{name}: degraded")
+            else:
+                items.append(f"{name}: progressing")
+    return items, available_count, total
+
+
+def _is_api_error(result: str | None) -> bool:
+    """Return True if the oc command result indicates an API error."""
+    if not result:
+        return True
+    lower = result.lower()
+    return "error" in lower or "refused" in lower or "connection" in lower
+
+
+def _resolve_monitor_context(project_id: str):
+    """Validate preconditions for OCP health monitor and return context.
+
+    Returns (project, host, topo, deploy_start) if monitor should start, else None.
+    """
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.project import Project
 
-    logger.info("maybe_start_ocp_health_monitor called for %s", project_id[:8])
     db = SessionLocal()
     try:
         project = db.query(Project).filter_by(id=project_id).first()
@@ -3972,11 +4036,11 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 project.state if project else "missing",
                 project.ocp_status if project else "missing",
             )
-            return
+            return None
         host = db.query(Host).filter_by(id=project.host_id).first()
         if not host:
             logger.warning("OCP monitor: host not found for %s", project_id[:8])
-            return
+            return None
         if host.host_type != "kubevirt-cluster" and host.agent_status != "connected":
             logger.info(
                 "OCP monitor %s: skipped (host not connected: type=%s, agent=%s)",
@@ -3984,60 +4048,75 @@ def maybe_start_ocp_health_monitor(project_id: str):
                 host.host_type,
                 host.agent_status,
             )
-            return
+            return None
         topo = project.deployed_topology or project.topology or {}
         if not _has_ocp_monitor(topo):
             logger.info(
                 "OCP monitor %s: skipped (no ocpMonitor in topo)", project_id[:8]
             )
-            return
+            return None
         if project.ocp_install_elapsed is not None:
             logger.info("OCP monitor %s: skipped (already completed)", project_id[:8])
-            return
-        deploy_start = (
-            project.deploy_started_at.timestamp()
-            if project.deploy_started_at
-            else (
-                project.ocp_monitor_started_at.timestamp()
-                if project.ocp_monitor_started_at
-                else 0
-            )
-        )
-
-        # Start per-VM monitors for VMs with ocpMonitor flag
-        vm_candidates = 0
-        for node in topo.get("nodes", []):
-            if node.get("type") != "vmNode":
-                continue
-            data = node.get("data", {})
-            if not data.get("ocpMonitor") and not data.get("configureBastionBrowser"):
-                continue
-            vm_candidates += 1
-            vm_id = node["id"]
-            monitor_key = f"{project_id}:{vm_id}"
-            if is_in_set(_HEALTH_MONITORS_SET, monitor_key):
-                logger.info(
-                    "OCP monitor %s: VM %s already in monitor set, skipping",
-                    project_id[:8],
-                    data.get("label", vm_id[:8]),
-                )
-                continue
-            vm_name = data.get("label") or data.get("name", vm_id[:8])
-            kc = data.get("ocpKubeconfig")
-            add_to_set(_HEALTH_MONITORS_SET, monitor_key, ttl=86400)
-            threading.Thread(
-                target=_monitor_ocp_vm_health,
-                args=(project_id, host.id, vm_id, vm_name, kc, deploy_start),
-                daemon=True,
-                name=f"ocp-vm-{project_id[:8]}-{vm_name}",
-            ).start()
-            logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
-        if vm_candidates == 0:
-            logger.info(
-                "OCP monitor %s: no VMs with ocpMonitor found in topo", project_id[:8]
-            )
+            return None
+        if project.deploy_started_at:
+            deploy_start = project.deploy_started_at.timestamp()
+        elif project.ocp_monitor_started_at:
+            deploy_start = project.ocp_monitor_started_at.timestamp()
+        else:
+            deploy_start = 0
+        return project, host, topo, deploy_start
     finally:
         db.close()
+
+
+def _start_vm_monitor(project_id, host_id, node, deploy_start):
+    """Start a monitor thread for a single VM if not already running.
+
+    Returns True if the VM was a monitor candidate, False otherwise.
+    """
+    data = node.get("data", {})
+    if not data.get("ocpMonitor") and not data.get("configureBastionBrowser"):
+        return False
+    vm_id = node["id"]
+    monitor_key = f"{project_id}:{vm_id}"
+    if is_in_set(_HEALTH_MONITORS_SET, monitor_key):
+        logger.info(
+            "OCP monitor %s: VM %s already in monitor set, skipping",
+            project_id[:8],
+            data.get("label", vm_id[:8]),
+        )
+        return True
+    vm_name = data.get("label") or data.get("name", vm_id[:8])
+    kc = data.get("ocpKubeconfig")
+    add_to_set(_HEALTH_MONITORS_SET, monitor_key, ttl=86400)
+    threading.Thread(
+        target=_monitor_ocp_vm_health,
+        args=(project_id, host_id, vm_id, vm_name, kc, deploy_start),
+        daemon=True,
+        name=f"ocp-vm-{project_id[:8]}-{vm_name}",
+    ).start()
+    logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
+    return True
+
+
+def maybe_start_ocp_health_monitor(project_id: str):
+    """Start OCP health monitor if project needs it and one isn't already running."""
+    logger.info("maybe_start_ocp_health_monitor called for %s", project_id[:8])
+    ctx = _resolve_monitor_context(project_id)
+    if not ctx:
+        return
+    _project, host, topo, deploy_start = ctx
+
+    vm_candidates = 0
+    for node in topo.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        if _start_vm_monitor(project_id, host.id, node, deploy_start):
+            vm_candidates += 1
+    if vm_candidates == 0:
+        logger.info(
+            "OCP monitor %s: no VMs with ocpMonitor found in topo", project_id[:8]
+        )
 
 
 def _exec_oc(host, project_id: str, command: str, timeout: int = 15):
@@ -4265,6 +4344,73 @@ def _exec_on_bastion_troshkad(host, project_id, bastion_ip, password, command, t
     return None
 
 
+def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
+    """Verify and fix bastion CA trust and browser credentials.
+
+    Args:
+        exec_fn: callable(command, timeout) that runs shell commands on the bastion.
+        push_fn: callable(phase, detail) for progress updates.
+        project_id: project ID for logging.
+        vm_name: optional VM name for logging context.
+
+    Returns True if bastion is ready, False otherwise.
+    """
+    import time as _t
+
+    label = f"{project_id[:8]}/{vm_name}" if vm_name else project_id[:8]
+    _VERIFY_SCRIPT = (
+        "LIVE_FP=$(oc get secret -n openshift-ingress router-certs-default "
+        "  -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+        "  | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); "
+        "FILE_FP=$(openssl x509 -noout -fingerprint -sha256 "
+        "  -in /etc/pki/ca-trust/source/anchors/ocp-ingress.pem 2>/dev/null | cut -d= -f2); "
+        'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
+        'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
+        'else echo "ca:stale"; fi; '
+        'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
+        "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
+        'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
+        'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
+        'else echo "logins:stale"; fi'
+    )
+    _CA_UPDATE_CMD = (
+        "oc get secret -n openshift-ingress router-certs-default "
+        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+        "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+        "&& sudo update-ca-trust"
+    )
+    _AUTOLOGIN_CMD = (
+        "CONSOLE_URL=$(oc whoami --show-console 2>/dev/null); "
+        '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
+        'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true'
+    )
+
+    for _ in range(18):
+        verify = exec_fn(_VERIFY_SCRIPT, timeout=20)
+        if verify and "ca:ok" in verify and "logins:ok" in verify:
+            return True
+
+        needs_fix = []
+        if verify and "ca:stale" in verify:
+            needs_fix.append(_MSG_CA_CERT)
+        if verify and ("logins:stale" in verify or "logins:missing" in verify):
+            needs_fix.append(_MSG_BROWSER_CREDS)
+
+        if needs_fix:
+            push_fn("browser", f"bastion {', '.join(needs_fix)} stale, updating...")
+            if _MSG_CA_CERT in needs_fix:
+                exec_fn(_CA_UPDATE_CMD, timeout=15)
+            if _MSG_BROWSER_CREDS in needs_fix:
+                exec_fn(_AUTOLOGIN_CMD, timeout=30)
+            _t.sleep(5)
+            continue
+        push_fn("browser", "waiting for bastion setup")
+        _t.sleep(10)
+
+    logger.warning("OCP monitor %s: bastion browser setup incomplete", label)
+    return False
+
+
 def _approve_pending_csrs(host, project_id, bastion_ip, password):
     """Approve any pending OCP CSRs on the cluster. Returns count approved."""
     result = _exec_on_bastion(
@@ -4478,15 +4624,15 @@ def _ocp_vm_health_inner(
     logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
 
     # Phase 1: Wait for API server
-    _push("oc", "waiting for API server")
+    _push("oc", _MSG_WAITING_API)
     while _t.time() < deadline:
         try:
-            result = _oc("oc get nodes --no-headers 2>/dev/null", timeout=10)
+            result = _oc(_CMD_GET_NODES, timeout=10)
             if result and "Ready" in result:
                 break
         except Exception:
             pass
-        _push("oc", "waiting for API server")
+        _push("oc", _MSG_WAITING_API)
         _t.sleep(10)
     else:
         _push("timeout", "API server not reachable")
@@ -4502,25 +4648,15 @@ def _ocp_vm_health_inner(
                 _push("certs", f"approved {approved} certificate(s)")
             last_csr_check = _t.time()
 
-        result = _oc("oc get nodes --no-headers 2>/dev/null", timeout=10)
-        if result and "error" not in result.lower() and "refused" not in result.lower():
-            items = []
-            ready_count = 0
-            total = 0
-            for line in result.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    total += 1
-                    name, status = parts[0], parts[1]
-                    items.append(f"{name}: {status}")
-                    if "Ready" in status and "Not" not in status:
-                        ready_count += 1
+        result = _oc(_CMD_GET_NODES, timeout=10)
+        if not _is_api_error(result):
+            items, ready_count, total = _parse_node_readiness(result)
             if total > 0:
                 _push("nodes", f"{ready_count}/{total} ready", items)
                 if ready_count >= total:
                     break
         else:
-            _push("nodes", "waiting for API server")
+            _push("nodes", _MSG_WAITING_API)
         _t.sleep(5)
 
     # Phase 3: Wait for cluster operators
@@ -4534,24 +4670,8 @@ def _ocp_vm_health_inner(
             last_csr_check_ops = _t.time()
 
         result = _oc("oc get co --no-headers 2>/dev/null", timeout=15)
-        if result and "error" not in result.lower() and "refused" not in result.lower():
-            items = []
-            available_count = 0
-            total = 0
-            for line in result.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 4:
-                    name = parts[0]
-                    avail = parts[2]
-                    degraded = parts[4] if len(parts) > 4 else "False"
-                    total += 1
-                    if avail == "True":
-                        available_count += 1
-                        items.append(f"{name}: available")
-                    elif degraded == "True":
-                        items.append(f"{name}: degraded")
-                    else:
-                        items.append(f"{name}: progressing")
+        if not _is_api_error(result):
+            items, available_count, total = _parse_operator_status(result)
             if total > 0:
                 _push(
                     "operators",
@@ -4561,7 +4681,7 @@ def _ocp_vm_health_inner(
                 if available_count >= total:
                     break
         else:
-            _push("operators", "waiting for API server")
+            _push("operators", _MSG_WAITING_API)
         _t.sleep(10)
 
     # Phase 4: Restart ingress router (picks up fresh certs after pattern deploy)
@@ -4573,7 +4693,7 @@ def _ocp_vm_health_inner(
     _t.sleep(10)
 
     # Phase 5: Wait for console + OAuth routes
-    _push("console", "waiting for OpenShift console")
+    _push("console", _MSG_WAITING_CONSOLE)
     last_csr_check_console = 0.0
     while _t.time() < deadline:
         if _t.time() - last_csr_check_console >= 30:
@@ -4630,7 +4750,7 @@ def _ocp_vm_health_inner(
                     _push("console", f"waiting for console route{suffix}")
                     _t.sleep(10)
                     continue
-        _push("console", "waiting for OpenShift console")
+        _push("console", _MSG_WAITING_CONSOLE)
         _t.sleep(5)
 
     # Final CSR sweep
@@ -4675,64 +4795,9 @@ def _ocp_vm_health_inner(
 
         # Verify CA fingerprint + run autologin with retry loop
         _push("browser", "verifying bastion browser setup")
-        bastion_ready = False
-        for _ in range(18):
-            verify = _oc(
-                "LIVE_FP=$(oc get secret -n openshift-ingress router-certs-default "
-                "  -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-                "  | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); "
-                "FILE_FP=$(openssl x509 -noout -fingerprint -sha256 "
-                "  -in /etc/pki/ca-trust/source/anchors/ocp-ingress.pem 2>/dev/null | cut -d= -f2); "
-                'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
-                'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
-                'else echo "ca:stale"; fi; '
-                'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
-                "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
-                'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
-                'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
-                'else echo "logins:stale"; fi',
-                timeout=20,
-            )
-            if verify and "ca:ok" in verify and "logins:ok" in verify:
-                bastion_ready = True
-                break
-
-            needs_fix = []
-            if verify and "ca:stale" in verify:
-                needs_fix.append("CA cert")
-            if verify and ("logins:stale" in verify or "logins:missing" in verify):
-                needs_fix.append("browser credentials")
-
-            if needs_fix:
-                _push("browser", f"bastion {', '.join(needs_fix)} stale, updating...")
-                if "CA cert" in needs_fix:
-                    _oc(
-                        "oc get secret -n openshift-ingress router-certs-default "
-                        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-                        "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
-                        "&& sudo update-ca-trust",
-                        timeout=15,
-                    )
-                if "browser credentials" in needs_fix:
-                    _oc(
-                        "CONSOLE_URL=$(oc whoami --show-console 2>/dev/null); "
-                        '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
-                        'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true',
-                        timeout=30,
-                    )
-                _t.sleep(5)
-                continue
-            _push("browser", "waiting for bastion setup")
-            _t.sleep(10)
-
+        bastion_ready = _verify_bastion_browser(_oc, _push, project_id, vm_name)
         if bastion_ready:
             _push("browser", "bastion browser ready")
-        else:
-            logger.warning(
-                "OCP VM monitor %s/%s: bastion browser setup incomplete",
-                project_id[:8],
-                vm_name,
-            )
 
     # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
     if kc_path and not configure_browser:
@@ -5293,32 +5358,19 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             project_id,
             bastion_ip,
             password,
-            "oc get nodes --no-headers 2>/dev/null",
+            _CMD_GET_NODES,
             timeout=10,
         )
-        if (
-            result
-            and "connection" not in result.lower()
-            and "refused" not in result.lower()
-            and "error" not in result.lower()
-        ):
+        if not _is_api_error(result):
             api_seen = True
-            items = []
-            ready_count = 0
-            for line in result.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    name, status = parts[0], parts[1]
-                    items.append(f"{name}: {status}")
-                    if "Ready" in status and "Not" not in status:
-                        ready_count += 1
+            items, ready_count, _total = _parse_node_readiness(result)
             if items:
                 _push("nodes", f"{ready_count}/{len(cp_names)} ready", items)
                 if ready_count >= len(cp_names):
                     nodes_ready = True
                     break
         else:
-            _push("nodes", "waiting for API server")
+            _push("nodes", _MSG_WAITING_API)
 
         if api_seen and _t.time() - last_csr_check >= 30:
             approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
@@ -5352,29 +5404,8 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
             "oc get co --no-headers 2>/dev/null",
             timeout=15,
         )
-        if (
-            result
-            and "connection" not in result.lower()
-            and "refused" not in result.lower()
-            and "error" not in result.lower()
-        ):
-            items = []
-            available_count = 0
-            total = 0
-            for line in result.strip().split("\n"):
-                parts = line.split()
-                if len(parts) >= 4:
-                    name = parts[0]
-                    avail = parts[2]
-                    degraded = parts[4] if len(parts) > 4 else "False"
-                    total += 1
-                    if avail == "True":
-                        available_count += 1
-                        items.append(f"{name}: available")
-                    elif degraded == "True":
-                        items.append(f"{name}: degraded")
-                    else:
-                        items.append(f"{name}: progressing")
+        if not _is_api_error(result):
+            items, available_count, total = _parse_operator_status(result)
             if total > 0:
                 _push(
                     "operators", f"{available_count}/{total} operators available", items
@@ -5383,7 +5414,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     operators_ready = True
                     break
         else:
-            _push("operators", "waiting for API server")
+            _push("operators", _MSG_WAITING_API)
         _t.sleep(10)
 
     # Restart ingress router to pick up fresh certs after pattern deploy
@@ -5406,7 +5437,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
         project_id[:8],
         _elapsed(),
     )
-    _push("console", "waiting for OpenShift console")
+    _push("console", _MSG_WAITING_CONSOLE)
     console_ready = False
     last_csr_check_console = 0
     while _t.time() < deadline:
@@ -5488,7 +5519,7 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
                     continue
             else:
                 _push("console", "waiting for console operator")
-        _push("console", "waiting for OpenShift console")
+        _push("console", _MSG_WAITING_CONSOLE)
         _t.sleep(5)
 
     # Final CSR sweep — don't declare ready with pending certs
@@ -5537,89 +5568,18 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
 
             # Verify bastion CA matches live ingress cert + Firefox has current OAuth URL
             _push("certs", "verifying bastion setup")
-            bastion_ready = False
-            for _bv in range(18):
-                verify_result = _exec_on_bastion(
+
+            def _bastion_oc(cmd, timeout=15):
+                return _exec_on_bastion(
                     host,
                     project_id,
                     bastion_ip,
                     password,
-                    "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                    # Compare CA anchor fingerprint with live ingress cert
-                    "LIVE_FP=$(oc get secret -n openshift-ingress router-certs-default "
-                    "  -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-                    "  | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2); "
-                    "FILE_FP=$(openssl x509 -noout -fingerprint -sha256 "
-                    "  -in /etc/pki/ca-trust/source/anchors/ocp-ingress.pem 2>/dev/null | cut -d= -f2); "
-                    'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
-                    'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
-                    'else echo "ca:stale"; fi; '
-                    # Check Firefox logins.json was written after VM boot (not stale from pattern)
-                    'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
-                    "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
-                    'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
-                    'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
-                    'else echo "logins:stale"; fi',
-                    timeout=20,
+                    f"export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; {cmd}",
+                    timeout=timeout,
                 )
-                if (
-                    verify_result
-                    and "ca:ok" in verify_result
-                    and "logins:ok" in verify_result
-                ):
-                    bastion_ready = True
-                    logger.info(
-                        "OCP monitor %s: bastion setup verified", project_id[:8]
-                    )
-                    break
 
-                needs_fix = []
-                if verify_result and "ca:stale" in verify_result:
-                    needs_fix.append("CA cert")
-                if verify_result and (
-                    "logins:stale" in verify_result or "logins:missing" in verify_result
-                ):
-                    needs_fix.append("browser credentials")
-
-                if needs_fix:
-                    _push("certs", f"bastion {', '.join(needs_fix)} stale, updating...")
-                    # Re-run CA trust update
-                    if "CA cert" in needs_fix:
-                        _exec_on_bastion(
-                            host,
-                            project_id,
-                            bastion_ip,
-                            password,
-                            "export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                            "oc get secret -n openshift-ingress router-certs-default "
-                            "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-                            "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
-                            "&& sudo update-ca-trust",
-                            timeout=15,
-                        )
-                    # Re-run Firefox password stashing
-                    if "browser credentials" in needs_fix:
-                        _exec_on_bastion(
-                            host,
-                            project_id,
-                            bastion_ip,
-                            password,
-                            "CONSOLE_URL=$(export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; "
-                            "oc whoami --show-console 2>/dev/null); "
-                            '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
-                            'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true',
-                            timeout=30,
-                        )
-                    _t.sleep(5)
-                    continue
-
-                _push("certs", "waiting for bastion setup")
-                _t.sleep(10)
-            if not bastion_ready:
-                logger.warning(
-                    "OCP monitor %s: bastion setup incomplete after retries",
-                    project_id[:8],
-                )
+            _verify_bastion_browser(_bastion_oc, _push, project_id)
 
     elapsed_secs = int(_t.time() - start)
 

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,6 +13,8 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
+
+_PROVIDER_NOT_FOUND = "Provider not found"
 
 
 class ProviderCreate(BaseModel):
@@ -102,46 +104,204 @@ class ProviderResponse(BaseModel):
     model_config = {"from_attributes": False}
 
 
+def _build_provider_credentials(
+    body: ProviderCreate, provider: Provider
+) -> dict[str, Any]:
+    """Build credentials dict and update provider fields based on type.
+
+    Returns the credentials dict to be stored on the provider.
+    Raises HTTPException on validation errors.
+    """
+    if body.type == "ocpvirt":
+        if not body.api_url or not body.token:
+            raise HTTPException(
+                status_code=400,
+                detail="OCP Virt providers require api_url and token",
+            )
+        creds: dict[str, Any] = {
+            "api_url": body.api_url,
+            "token": body.token,
+            "namespace": body.namespace or "troshka",
+            "verify_ssl": body.verify_ssl,
+        }
+        if body.iso_pvc is not None:
+            creds["iso_pvc"] = body.iso_pvc
+        provider.default_region = body.namespace or "troshka"
+        api_host = (
+            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+        )
+        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
+        return creds
+
+    if body.type == "gcp":
+        if not body.gcp_project_id or not body.service_account_json:
+            raise HTTPException(
+                status_code=400,
+                detail="GCP providers require gcp_project_id and service_account_json",
+            )
+        try:
+            sa_json = json.loads(body.service_account_json)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=400, detail="service_account_json must be valid JSON"
+            )
+        provider.gcp_project_id = body.gcp_project_id
+        return {"service_account_json": sa_json}
+
+    if body.type == "azure":
+        if not all(
+            [
+                body.azure_tenant_id,
+                body.azure_client_id,
+                body.azure_client_secret,
+                body.azure_subscription_id,
+            ]
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Azure providers require tenant_id, client_id, client_secret, subscription_id",
+            )
+        provider.azure_subscription_id = body.azure_subscription_id
+        provider.azure_location = body.azure_location or body.default_region or None
+        return {
+            "tenant_id": body.azure_tenant_id,
+            "client_id": body.azure_client_id,
+            "client_secret": body.azure_client_secret,
+            "subscription_id": body.azure_subscription_id,
+        }
+
+    if body.type == "kubevirt":
+        if not body.api_url or not body.token:
+            raise HTTPException(
+                status_code=400,
+                detail="KubeVirt providers require api_url and token",
+            )
+        op_ns = body.namespace or "troshka-operator"
+        provider.default_region = op_ns
+        api_host = (
+            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
+        )
+        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
+        return {
+            "api_url": body.api_url,
+            "token": body.token,
+            "namespace": op_ns,
+            "verify_ssl": body.verify_ssl,
+            "cache_namespace": body.cache_namespace or "troshka-cache",
+            "project_prefix": body.project_prefix or "troshka-",
+        }
+
+    if body.type in ("ec2", "s3", "s3_readonly"):
+        creds = {
+            "access_key_id": body.access_key_id,
+            "secret_access_key": body.secret_access_key,
+        }
+        if body.bucket:
+            creds["bucket"] = body.bucket
+        if body.endpoint_url:
+            creds["endpoint_url"] = body.endpoint_url
+        return creds
+
+    raise HTTPException(400, f"Unknown provider type: {body.type}")
+
+
+def _enqueue_cluster_host_provision(provider: Provider, db: Session) -> None:
+    """Create a placeholder host and enqueue provisioning for cluster providers."""
+    import uuid as _uuid
+
+    from app.core.redis import enqueue_job
+    from app.models.host import Host
+
+    host_id = str(_uuid.uuid4())
+    host = Host(
+        id=host_id,
+        provider_id=provider.id,
+        instance_id="",
+        instance_type="kubevirt-cluster",
+        region=provider.default_region or "",
+        state="provisioning",
+        host_type="kubevirt-cluster",
+        total_vcpus=0,
+        total_ram_mb=0,
+        ip_address="",
+        agent_status="provisioning",
+        storage_size_gb=0,
+        max_eips=0,
+    )
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+
+    if provider.type == "ocpvirt":
+        from app.workers.jobs import job_provision_ocpvirt_host
+
+        enqueue_job(
+            job_provision_ocpvirt_host,
+            provider.id,
+            host_id,
+            queue_name="host_lifecycle",
+        )
+    elif provider.type == "kubevirt":
+        from app.workers.jobs import job_provision_kubevirt
+
+        enqueue_job(job_provision_kubevirt, provider.id, queue_name="host_lifecycle")
+
+
+def _build_provider_response(
+    provider: Provider,
+    has_credentials: bool = False,
+    endpoint_url: str | None = None,
+    host_count: int | None = None,
+) -> ProviderResponse:
+    """Build a ProviderResponse from a Provider model instance."""
+    if host_count is None:
+        host_count = len(provider.hosts)
+    if not has_credentials:
+        has_credentials = bool(provider.credentials)
+    if endpoint_url is None and provider.credentials:
+        endpoint_url = provider.get_credentials().get("endpoint_url") or None
+    return ProviderResponse(
+        id=provider.id,
+        name=provider.name,
+        type=provider.type,
+        default_region=provider.default_region,
+        default_image=provider.default_image,
+        vpc_id=provider.vpc_id,
+        subnet_id=provider.subnet_id,
+        security_group_id=provider.security_group_id,
+        console_base_domain=provider.console_base_domain,
+        console_nameservers=provider.console_nameservers,
+        console_configured=bool(
+            provider.console_zone_id or provider.console_base_domain
+        ),
+        iso_pvc=(
+            provider.get_credentials().get("iso_pvc") if provider.credentials else None
+        ),
+        gcp_project_id=provider.gcp_project_id,
+        gcp_network_id=provider.gcp_network_id,
+        gcp_subnet_id=provider.gcp_subnet_id,
+        gcp_firewall_policy=provider.gcp_firewall_policy,
+        gcp_zone=provider.gcp_zone,
+        azure_subscription_id=provider.azure_subscription_id,
+        azure_resource_group=provider.azure_resource_group,
+        azure_vnet_id=provider.azure_vnet_id,
+        azure_subnet_id=provider.azure_subnet_id,
+        azure_nsg_id=provider.azure_nsg_id,
+        azure_location=provider.azure_location,
+        state=provider.state,
+        has_credentials=has_credentials,
+        endpoint_url=endpoint_url,
+        host_count=host_count,
+        created_at=provider.created_at.isoformat() if provider.created_at else "",
+    )
+
+
 @router.get("/", response_model=list[ProviderResponse])
 def list_providers(
     user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
 ):
     providers = db.query(Provider).order_by(Provider.name).all()
-    return [
-        ProviderResponse(
-            id=p.id,
-            name=p.name,
-            type=p.type,
-            default_region=p.default_region,
-            default_image=p.default_image,
-            vpc_id=p.vpc_id,
-            subnet_id=p.subnet_id,
-            security_group_id=p.security_group_id,
-            console_base_domain=p.console_base_domain,
-            console_nameservers=p.console_nameservers,
-            console_configured=bool(p.console_zone_id or p.console_base_domain),
-            iso_pvc=p.get_credentials().get("iso_pvc") if p.credentials else None,
-            gcp_project_id=p.gcp_project_id,
-            gcp_network_id=p.gcp_network_id,
-            gcp_subnet_id=p.gcp_subnet_id,
-            gcp_firewall_policy=p.gcp_firewall_policy,
-            gcp_zone=p.gcp_zone,
-            azure_subscription_id=p.azure_subscription_id,
-            azure_resource_group=p.azure_resource_group,
-            azure_vnet_id=p.azure_vnet_id,
-            azure_subnet_id=p.azure_subnet_id,
-            azure_nsg_id=p.azure_nsg_id,
-            azure_location=p.azure_location,
-            state=p.state,
-            has_credentials=bool(p.credentials),
-            endpoint_url=(
-                p.get_credentials().get("endpoint_url") if p.credentials else None
-            ),
-            host_count=len(p.hosts),
-            created_at=p.created_at.isoformat() if p.created_at else "",
-        )
-        for p in providers
-    ]
+    return [_build_provider_response(p) for p in providers]
 
 
 @router.post("/", response_model=ProviderResponse, status_code=201)
@@ -163,93 +323,7 @@ def create_provider(
         subnet_id=body.subnet_id or None,
         created_by=user.email,
     )
-    if body.type == "ocpvirt":
-        if not body.api_url or not body.token:
-            raise HTTPException(
-                status_code=400,
-                detail="OCP Virt providers require api_url and token",
-            )
-        creds = {
-            "api_url": body.api_url,
-            "token": body.token,
-            "namespace": body.namespace or "troshka",
-            "verify_ssl": body.verify_ssl,
-        }
-        if body.iso_pvc is not None:
-            creds["iso_pvc"] = body.iso_pvc
-        provider.default_region = body.namespace or "troshka"
-        api_host = (
-            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
-        )
-        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
-    elif body.type == "gcp":
-        if not body.gcp_project_id or not body.service_account_json:
-            raise HTTPException(
-                status_code=400,
-                detail="GCP providers require gcp_project_id and service_account_json",
-            )
-        import json as json_mod
-
-        try:
-            sa_json = json_mod.loads(body.service_account_json)
-        except json_mod.JSONDecodeError:
-            raise HTTPException(
-                status_code=400, detail="service_account_json must be valid JSON"
-            )
-        creds = {"service_account_json": sa_json}
-        provider.gcp_project_id = body.gcp_project_id
-    elif body.type == "azure":
-        if not all(
-            [
-                body.azure_tenant_id,
-                body.azure_client_id,
-                body.azure_client_secret,
-                body.azure_subscription_id,
-            ]
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Azure providers require tenant_id, client_id, client_secret, subscription_id",
-            )
-        creds = {
-            "tenant_id": body.azure_tenant_id,
-            "client_id": body.azure_client_id,
-            "client_secret": body.azure_client_secret,
-            "subscription_id": body.azure_subscription_id,
-        }
-        provider.azure_subscription_id = body.azure_subscription_id
-        provider.azure_location = body.azure_location or body.default_region or None
-    elif body.type == "kubevirt":
-        if not body.api_url or not body.token:
-            raise HTTPException(
-                status_code=400,
-                detail="KubeVirt providers require api_url and token",
-            )
-        op_ns = body.namespace or "troshka-operator"
-        creds = {
-            "api_url": body.api_url,
-            "token": body.token,
-            "namespace": op_ns,
-            "verify_ssl": body.verify_ssl,
-            "cache_namespace": body.cache_namespace or "troshka-cache",
-            "project_prefix": body.project_prefix or "troshka-",
-        }
-        provider.default_region = op_ns
-        api_host = (
-            body.api_url.replace("https://", "").replace("http://", "").split(":")[0]
-        )
-        provider.console_base_domain = api_host.replace("api.", "apps.", 1)
-    elif body.type in ("ec2", "s3", "s3_readonly"):
-        creds = {
-            "access_key_id": body.access_key_id,
-            "secret_access_key": body.secret_access_key,
-        }
-        if body.bucket:
-            creds["bucket"] = body.bucket
-        if body.endpoint_url:
-            creds["endpoint_url"] = body.endpoint_url
-    else:
-        raise HTTPException(400, f"Unknown provider type: {body.type}")
+    creds = _build_provider_credentials(body, provider)
     provider.set_credentials(creds)
     db.add(provider)
     db.commit()
@@ -264,194 +338,14 @@ def create_provider(
         except Exception as e:
             logger.warning("Central library auto-sync failed: %s", e)
 
-    if body.type == "ocpvirt":
-        import uuid as _uuid
+    if body.type in ("ocpvirt", "kubevirt"):
+        _enqueue_cluster_host_provision(provider, db)
 
-        from app.models.host import Host
-
-        host_id = str(_uuid.uuid4())
-        host = Host(
-            id=host_id,
-            provider_id=provider.id,
-            instance_id="",
-            instance_type="kubevirt-cluster",
-            region=provider.default_region or "",
-            state="provisioning",
-            host_type="kubevirt-cluster",
-            total_vcpus=0,
-            total_ram_mb=0,
-            ip_address="",
-            agent_status="provisioning",
-            storage_size_gb=0,
-            max_eips=0,
-        )
-        db.add(host)
-        db.commit()
-        db.refresh(host)
-
-        _provider_id = provider.id
-        _host_id = host_id
-
-        def _provision_ocpvirt_host():
-            from app.core.database import SessionLocal
-            from app.models.host import Host as HostModel
-            from app.models.provider import Provider as ProvModel
-            from app.services.providers import get_provider_driver
-
-            s = SessionLocal()
-            try:
-                h = s.query(HostModel).filter_by(id=_host_id).first()
-                prov = s.query(ProvModel).filter_by(id=_provider_id).first()
-                if not h or not prov:
-                    return
-                drv = get_provider_driver(prov)
-                result = drv.provision_host(
-                    provider=prov,
-                    host_id=_host_id,
-                    instance_type="kubevirt-cluster",
-                    storage_size_gb=0,
-                )
-                h.instance_id = result["instance_id"]
-                h.instance_type = result["instance_type"]
-                h.state = "active"
-                h.total_vcpus = result["total_vcpus"]
-                h.total_ram_mb = result["total_ram_mb"]
-                h.ip_address = result["public_ip"]
-                h.private_ip = result.get("private_ip")
-                h.agent_status = "connected"
-                h.agent_token = prov.get_credentials().get("token", "")
-                s.commit()
-                logger.info(
-                    "OCP Virt host %s provisioned for provider %s",
-                    _host_id[:8],
-                    _provider_id[:8],
-                )
-            except Exception:
-                logger.exception("Failed to provision ocpvirt host %s", _host_id[:8])
-                h = s.query(HostModel).filter_by(id=_host_id).first()
-                if h:
-                    h.state = "error"
-                    h.agent_status = "provision_failed"
-                    s.commit()
-            finally:
-                s.close()
-
-        from app.core.redis import enqueue_job
-        from app.workers.jobs import job_provision_ocpvirt_host
-
-        enqueue_job(
-            job_provision_ocpvirt_host,
-            _provider_id,
-            _host_id,
-            queue_name="host_lifecycle",
-        )
-
-    if body.type == "kubevirt":
-        import uuid as _uuid
-
-        from app.models.host import Host
-
-        host_id = str(_uuid.uuid4())
-        host = Host(
-            id=host_id,
-            provider_id=provider.id,
-            instance_id="",
-            instance_type="kubevirt-cluster",
-            region=provider.default_region or "",
-            state="provisioning",
-            host_type="kubevirt-cluster",
-            total_vcpus=0,
-            total_ram_mb=0,
-            ip_address="",
-            agent_status="provisioning",
-            storage_size_gb=0,
-            max_eips=0,
-        )
-        db.add(host)
-        db.commit()
-        db.refresh(host)
-
-        _provider_id = provider.id
-        _host_id = host_id
-
-        def _provision_kubevirt():
-            from app.core.database import SessionLocal
-            from app.models.host import Host as HostModel
-            from app.models.provider import Provider as ProvModel
-            from app.services.providers import get_provider_driver
-
-            s = SessionLocal()
-            try:
-                h = s.get(HostModel, _host_id)
-                prov = s.get(ProvModel, _provider_id)
-                if not h or not prov:
-                    return
-                drv = get_provider_driver(prov)
-                result = drv.provision_host(
-                    provider=prov,
-                    host_id=_host_id,
-                    instance_type="kubevirt-cluster",
-                    storage_size_gb=0,
-                )
-                h.instance_id = result["instance_id"]
-                h.instance_type = result["instance_type"]
-                h.state = "active"
-                h.total_vcpus = result["total_vcpus"]
-                h.total_ram_mb = result["total_ram_mb"]
-                h.ip_address = result["public_ip"]
-                h.private_ip = result.get("private_ip")
-                h.agent_status = "connected"
-                h.agent_token = prov.get_credentials().get("token", "")
-                h.storage_size_gb = result.get("storage_size_gb", 0)
-                s.commit()
-                logger.info(
-                    "KubeVirt provider %s ready — %d vCPUs, %d MB RAM",
-                    _provider_id[:8],
-                    result["total_vcpus"],
-                    result["total_ram_mb"],
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to provision kubevirt provider %s", _provider_id[:8]
-                )
-                h = s.get(HostModel, _host_id)
-                if h:
-                    h.state = "error"
-                    h.agent_status = "provision_failed"
-                    s.commit()
-            finally:
-                s.close()
-
-        from app.core.redis import enqueue_job
-        from app.workers.jobs import job_provision_kubevirt
-
-        enqueue_job(job_provision_kubevirt, _provider_id, queue_name="host_lifecycle")
-
-    return ProviderResponse(
-        id=provider.id,
-        name=provider.name,
-        type=provider.type,
-        default_region=provider.default_region,
-        default_image=provider.default_image,
-        vpc_id=provider.vpc_id,
-        subnet_id=provider.subnet_id,
-        security_group_id=provider.security_group_id,
-        gcp_project_id=provider.gcp_project_id,
-        gcp_network_id=provider.gcp_network_id,
-        gcp_subnet_id=provider.gcp_subnet_id,
-        gcp_firewall_policy=provider.gcp_firewall_policy,
-        gcp_zone=provider.gcp_zone,
-        azure_subscription_id=provider.azure_subscription_id,
-        azure_resource_group=provider.azure_resource_group,
-        azure_vnet_id=provider.azure_vnet_id,
-        azure_subnet_id=provider.azure_subnet_id,
-        azure_nsg_id=provider.azure_nsg_id,
-        azure_location=provider.azure_location,
-        state=provider.state,
+    return _build_provider_response(
+        provider,
         has_credentials=True,
         endpoint_url=str(creds.get("endpoint_url", "")) or None,
         host_count=0,
-        created_at=provider.created_at.isoformat() if provider.created_at else "",
     )
 
 
@@ -464,7 +358,7 @@ def update_provider(
 ):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     if body.name is not None:
         provider.name = body.name
@@ -507,31 +401,7 @@ def update_provider(
     db.commit()
     db.refresh(provider)
 
-    return ProviderResponse(
-        id=provider.id,
-        name=provider.name,
-        type=provider.type,
-        default_region=provider.default_region,
-        default_image=provider.default_image,
-        vpc_id=provider.vpc_id,
-        subnet_id=provider.subnet_id,
-        security_group_id=provider.security_group_id,
-        gcp_project_id=provider.gcp_project_id,
-        gcp_network_id=provider.gcp_network_id,
-        gcp_subnet_id=provider.gcp_subnet_id,
-        gcp_firewall_policy=provider.gcp_firewall_policy,
-        gcp_zone=provider.gcp_zone,
-        azure_subscription_id=provider.azure_subscription_id,
-        azure_resource_group=provider.azure_resource_group,
-        azure_vnet_id=provider.azure_vnet_id,
-        azure_subnet_id=provider.azure_subnet_id,
-        azure_nsg_id=provider.azure_nsg_id,
-        azure_location=provider.azure_location,
-        state=provider.state,
-        has_credentials=bool(provider.credentials),
-        host_count=len(provider.hosts),
-        created_at=provider.created_at.isoformat() if provider.created_at else "",
-    )
+    return _build_provider_response(provider)
 
 
 @router.delete("/{provider_id}", status_code=204)
@@ -542,7 +412,7 @@ def delete_provider(
 ):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     if provider.type == "kubevirt":
         from app.models.host import Host
@@ -641,7 +511,7 @@ def discover_images(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     creds = provider.get_credentials()
     try:
@@ -750,7 +620,7 @@ def discover_vpcs(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     creds = provider.get_credentials()
     try:
@@ -814,7 +684,7 @@ def create_vpc(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     creds = provider.get_credentials()
     try:
@@ -950,7 +820,7 @@ def setup_infrastructure(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     creds = provider.get_credentials()
     try:
@@ -985,7 +855,7 @@ def set_image(
     """Set the default image for a provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     provider.default_image = image_id
     db.commit()
     return {"image_id": image_id}
@@ -1013,7 +883,7 @@ def set_iso(
     """Set the install ISO PVC name for an OCP Virt provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     creds = provider.get_credentials()
     creds["iso_pvc"] = iso_pvc
     provider.set_credentials(creds)
@@ -1030,7 +900,7 @@ def discover_isos(
     """List available ISO PVCs in the troshka namespace."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type != "ocpvirt":
         raise HTTPException(
             status_code=400, detail="ISO discovery is only for OCP Virt"
@@ -1067,7 +937,7 @@ def discover_datasources(
     """List available VM base images (DataSources) on an OCP Virt cluster."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type != "ocpvirt":
         raise HTTPException(
             status_code=400,
@@ -1101,171 +971,173 @@ def discover_datasources(
         raise HTTPException(status_code=400, detail="Failed to list DataSources")
 
 
+def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, Any]:
+    """Test S3 provider credentials and bucket access."""
+    import boto3
+
+    s3 = boto3.client(
+        "s3",
+        region_name=provider.default_region,
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
+    )
+    bucket = creds.get("bucket", "troshka-images")
+    sts = boto3.client(
+        "sts",
+        region_name=provider.default_region,
+        aws_access_key_id=creds.get("access_key_id"),
+        aws_secret_access_key=creds.get("secret_access_key"),
+    )
+    identity = sts.get_caller_identity()
+    account_id = identity["Account"]
+    try:
+        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account_id)
+        return {"status": "ok", "bucket": bucket, "account": account_id}
+    except s3.exceptions.ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code == "404":
+            return {
+                "status": "ok",
+                "bucket_missing": True,
+                "bucket": bucket,
+                "account": account_id,
+                "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
+            }
+        if code == "403":
+            return {
+                "status": "ok",
+                "bucket_denied": True,
+                "bucket": bucket,
+                "account": account_id,
+                "message": f"Credentials OK but no access to bucket '{bucket}'.",
+            }
+        raise
+
+
+def _test_kubevirt_provider(
+    provider: Provider, creds: dict[str, Any]
+) -> dict[str, Any]:
+    """Test KubeVirt provider: cluster connectivity, operator, CRDs, namespaces."""
+    from app.services.providers.kubevirt import _get_k8s_clients as _get_kv_clients
+
+    custom_api, core_api, api_client = _get_kv_clients(provider)
+    nodes: Any = core_api.list_node()
+    node_count = len(nodes.items)
+
+    operator_ns = creds.get("namespace", "troshka-operator")
+    operator_status = _check_operator_deployment(custom_api, core_api, operator_ns)
+    crds_installed, crds_status = _check_crds_installed(api_client)
+
+    cache_ns = creds.get("cache_namespace", "troshka-cache")
+    ns_checks = _ensure_namespaces(
+        core_api, [(operator_ns, "operator"), (cache_ns, "cache")]
+    )
+
+    return {
+        "status": "ok",
+        "cluster": creds.get("api_url", ""),
+        "nodes": node_count,
+        "operator": operator_status,
+        "crds": crds_status,
+        "crds_installed": crds_installed,
+        "namespaces": ns_checks,
+    }
+
+
+def _check_operator_deployment(custom_api: Any, core_api: Any, operator_ns: str) -> str:
+    """Check if the troshka-operator deployment is running."""
+    try:
+        core_api.read_namespace(operator_ns)
+        deps: dict[str, Any] = custom_api.list_namespaced_custom_object(  # type: ignore[assignment]
+            group="apps",
+            version="v1",
+            namespace=operator_ns,
+            plural="deployments",
+        )
+        for dep in deps.get("items", []):
+            if dep["metadata"]["name"] == "troshka-operator":
+                ready = dep.get("status", {}).get("readyReplicas", 0)
+                return f"running ({ready} replica)" if ready > 0 else "not ready"
+        return "namespace exists, deployment missing"
+    except Exception:
+        return "not installed"
+
+
+def _check_crds_installed(api_client: Any) -> tuple[bool, str]:
+    """Check if Troshka CRDs are installed on the cluster."""
+    from kubernetes import client as k8s_client
+    from kubernetes.client.exceptions import ApiException as K8sApiException
+
+    try:
+        ext_api = k8s_client.ApiextensionsV1Api(api_client)
+        ext_api.read_custom_resource_definition("troshkaprojects.troshka.redhat.com")
+        return True, "installed"
+    except K8sApiException as e:
+        if e.status == 403:
+            return False, "no permission (SA needs apiextensions.k8s.io access)"
+        return False, "missing"
+    except Exception:
+        return False, "missing"
+
+
+def _ensure_namespaces(
+    core_api: Any, namespaces: list[tuple[str, str]]
+) -> dict[str, str]:
+    """Check or create namespaces, returning status per label."""
+    ns_checks: dict[str, str] = {}
+    for ns_name, ns_label in namespaces:
+        try:
+            core_api.read_namespace(ns_name)
+            ns_checks[ns_label] = "ok"
+        except Exception:
+            try:
+                core_api.create_namespace(
+                    body={
+                        "apiVersion": "v1",
+                        "kind": "Namespace",
+                        "metadata": {
+                            "name": ns_name,
+                            "labels": {"app": "troshka"},
+                        },
+                    }
+                )
+                ns_checks[ns_label] = "ok (just created)"
+            except Exception:
+                ns_checks[ns_label] = "no access"
+    return ns_checks
+
+
 @router.post("/{provider_id}/test")
 def test_provider(
     provider_id: str,
     user: User = Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Test provider credentials by calling AWS STS."""
-    import boto3
-
+    """Test provider credentials by calling the provider's API."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     creds = provider.get_credentials()
     try:
         if provider.type == "s3":
-            s3 = boto3.client(
-                "s3",
-                region_name=provider.default_region,
-                aws_access_key_id=creds.get("access_key_id"),
-                aws_secret_access_key=creds.get("secret_access_key"),
-            )
-            bucket = creds.get("bucket", "troshka-images")
-            # Test credentials first via STS
-            sts = boto3.client(
-                "sts",
-                region_name=provider.default_region,
-                aws_access_key_id=creds.get("access_key_id"),
-                aws_secret_access_key=creds.get("secret_access_key"),
-            )
-            identity = sts.get_caller_identity()
-            account_id = identity["Account"]
-            # Then check bucket
-            try:
-                s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account_id)
-                return {
-                    "status": "ok",
-                    "bucket": bucket,
-                    "account": account_id,
-                }
-            except s3.exceptions.ClientError as e:
-                code = e.response["Error"]["Code"]
-                if code == "404":
-                    return {
-                        "status": "ok",
-                        "bucket_missing": True,
-                        "bucket": bucket,
-                        "account": identity["Account"],
-                        "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
-                    }
-                elif code == "403":
-                    return {
-                        "status": "ok",
-                        "bucket_denied": True,
-                        "bucket": bucket,
-                        "account": identity["Account"],
-                        "message": f"Credentials OK but no access to bucket '{bucket}'.",
-                    }
-                raise
-        elif provider.type == "ocpvirt":
+            return _test_s3_provider(provider, creds)
+        if provider.type == "ocpvirt":
             from app.services.providers.ocpvirt import _get_k8s_clients
 
             custom_api, core_api = _get_k8s_clients(creds)
             ns = creds.get("namespace", "troshka")
             core_api.read_namespace(ns)
             nodes: Any = core_api.list_node()
-            node_count = len(nodes.items)
             return {
                 "status": "ok",
                 "cluster": creds.get("api_url", ""),
                 "namespace": ns,
-                "nodes": node_count,
+                "nodes": len(nodes.items),
             }
-        elif provider.type == "kubevirt":
-            from app.services.providers.kubevirt import (
-                _get_k8s_clients as _get_kv_clients,
-            )
-
-            custom_api, core_api, _ = _get_kv_clients(provider)
-            nodes: Any = core_api.list_node()
-            node_count = len(nodes.items)
-
-            operator_ns = creds.get("namespace", "troshka-operator")
-            operator_ready = False
-            operator_status = "not installed"
-            try:
-                core_api.read_namespace(operator_ns)
-                deps: dict[str, Any] = custom_api.list_namespaced_custom_object(  # type: ignore[assignment]
-                    group="apps",
-                    version="v1",
-                    namespace=operator_ns,
-                    plural="deployments",
-                )
-                for dep in deps.get("items", []):
-                    if dep["metadata"]["name"] == "troshka-operator":
-                        ready = dep.get("status", {}).get("readyReplicas", 0)
-                        operator_ready = ready > 0
-                        operator_status = (
-                            f"running ({ready} replica)"
-                            if operator_ready
-                            else "not ready"
-                        )
-                        break
-                else:
-                    operator_status = "namespace exists, deployment missing"
-            except Exception:
-                pass
-
-            crds_installed = False
-            crds_status = "missing"
-            from kubernetes import client as k8s_client
-            from kubernetes.client.exceptions import (
-                ApiException as K8sApiException,
-            )
-
-            try:
-                ext_api = k8s_client.ApiextensionsV1Api(_get_kv_clients(provider)[2])
-                ext_api.read_custom_resource_definition(
-                    "troshkaprojects.troshka.redhat.com"
-                )
-                crds_installed = True
-                crds_status = "installed"
-            except K8sApiException as e:
-                if e.status == 403:
-                    crds_status = "no permission (SA needs apiextensions.k8s.io access)"
-                else:
-                    crds_status = "missing"
-            except Exception:
-                crds_status = "missing"
-
-            cache_ns = creds.get("cache_namespace", "troshka-cache")
-            ns_checks = {}
-            for ns_name, ns_label in [
-                (operator_ns, "operator"),
-                (cache_ns, "cache"),
-            ]:
-                try:
-                    core_api.read_namespace(ns_name)
-                    ns_checks[ns_label] = "ok"
-                except Exception:
-                    try:
-                        core_api.create_namespace(
-                            body={
-                                "apiVersion": "v1",
-                                "kind": "Namespace",
-                                "metadata": {
-                                    "name": ns_name,
-                                    "labels": {"app": "troshka"},
-                                },
-                            }
-                        )
-                        ns_checks[ns_label] = "ok (just created)"
-                    except Exception:
-                        ns_checks[ns_label] = "no access"
-
-            return {
-                "status": "ok",
-                "cluster": creds.get("api_url", ""),
-                "nodes": node_count,
-                "operator": operator_status,
-                "crds": crds_status,
-                "crds_installed": crds_installed,
-                "namespaces": ns_checks,
-            }
-        elif provider.type == "gcp":
+        if provider.type == "kubevirt":
+            return _test_kubevirt_provider(provider, creds)
+        if provider.type == "gcp":
             import google.auth.transport.requests
             from google.oauth2 import service_account
 
@@ -1279,7 +1151,7 @@ def test_provider(
                 "project": provider.gcp_project_id,
                 "message": f"OK — Project: {provider.gcp_project_id}",
             }
-        elif provider.type == "azure":
+        if provider.type == "azure":
             from azure.identity import ClientSecretCredential
             from azure.mgmt.resource import ResourceManagementClient  # type: ignore[attr-defined]
 
@@ -1297,7 +1169,9 @@ def test_provider(
                 "status": "ok",
                 "message": f"OK — Resource Group: {rg} ({rg_info.location})",
             }
-        elif provider.type == "ec2":
+        if provider.type == "ec2":
+            import boto3
+
             sts = boto3.client(
                 "sts",
                 region_name=provider.default_region,
@@ -1310,8 +1184,9 @@ def test_provider(
                 "account": identity["Account"],
                 "arn": identity["Arn"],
             }
-        else:
-            raise HTTPException(400, f"Unknown provider type: {provider.type}")
+        raise HTTPException(400, f"Unknown provider type: {provider.type}")
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Provider test failed for %s", provider.name)
         raise HTTPException(status_code=400, detail="Credentials test failed")
@@ -1328,7 +1203,7 @@ def create_s3_bucket(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type != "s3":
         raise HTTPException(status_code=400, detail="Not an S3 provider")
 
@@ -1368,7 +1243,7 @@ def install_operator(
 ):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type != "kubevirt":
         raise HTTPException(
             status_code=400, detail="Install operator is only for kubevirt providers"
@@ -1458,7 +1333,7 @@ def list_availability_zones(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type != "ec2":
         raise HTTPException(status_code=400, detail="Not an EC2 provider")
 
@@ -1491,7 +1366,7 @@ def setup_console(
     """Set up console infrastructure for direct VNC proxy."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
 
     base_domain = req.base_domain.strip().lower()
     if not base_domain or "." not in base_domain:
@@ -1636,7 +1511,7 @@ def delete_console(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if not provider.console_zone_id:
         raise HTTPException(status_code=400, detail="Console not configured")
 
@@ -2063,7 +1938,7 @@ def build_image(
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
     if provider.type not in ("gcp", "azure"):
         raise HTTPException(
             status_code=400,
@@ -2117,11 +1992,14 @@ def clear_build_image_status(
     image_builder_service.clear_build_status(provider_id)
 
 
-@router.get("/{provider_id}/operator-status")
+@router.get(
+    "/{provider_id}/operator-status",
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+)
 def get_operator_status(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: Annotated[User, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
 ):
     from app.services.operator_updater import (
         _fetch_registry_digest,
@@ -2130,30 +2008,40 @@ def get_operator_status(
 
     provider = db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(404, "Provider not found")
+        raise HTTPException(404, _PROVIDER_NOT_FOUND)
     running, rolling_out, tag = _get_operator_info(provider)
     registry = _fetch_registry_digest(tag)
+
+    if rolling_out:
+        up_to_date: bool | None = True
+    elif running and registry:
+        up_to_date = running == registry
+    else:
+        up_to_date = None
+
     return {
         "operator_digest": running[:20] if running else None,
         "registry_digest": registry[:20] if registry else None,
-        "up_to_date": (
-            True
-            if rolling_out
-            else (running == registry if running and registry else None)
-        ),
+        "up_to_date": up_to_date,
         "rolling_out": rolling_out,
     }
 
 
-@router.post("/{provider_id}/update-operator")
+@router.post(
+    "/{provider_id}/update-operator",
+    responses={
+        400: {"description": "Not a kubevirt provider"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+    },
+)
 def update_operator_endpoint(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: Annotated[User, Depends(require_role("admin"))],
+    db: Annotated[Session, Depends(get_db)],
 ):
     provider = db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(404, "Provider not found")
+        raise HTTPException(404, _PROVIDER_NOT_FOUND)
     if provider.type != "kubevirt":
         raise HTTPException(400, "Not a kubevirt provider")
 

@@ -705,6 +705,28 @@ def pattern_progress(
 # ---------------------------------------------------------------------------
 
 
+def _apply_inject_vars(nodes: list, inject_vars: dict) -> None:
+    """Find the best target VM and set ciInjectVars on it.
+
+    Priority: bastion VM first, then any cloud-init VM.
+    """
+    target_vm = None
+    for n in nodes:
+        if n.get("type") == "vmNode":
+            tags = n.get("data", {}).get("tags", {})
+            groups = tags.get("AnsibleGroup", "")
+            if "bastions" in [g.strip() for g in groups.split(",")]:
+                target_vm = n
+                break
+    if target_vm is None:
+        for n in nodes:
+            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+                target_vm = n
+                break
+    if target_vm is not None:
+        target_vm["data"]["ciInjectVars"] = inject_vars
+
+
 @router.post("/{pattern_id}/deploy", status_code=201)
 def deploy_pattern(
     pattern_id: str,
@@ -761,21 +783,7 @@ def deploy_pattern(
                 n["data"]["ciSshKeys"] = list(set(existing + body.ssh_keys))
 
     if body.inject_vars:
-        target_vm = None
-        for n in nodes:
-            if n.get("type") == "vmNode":
-                tags = n.get("data", {}).get("tags", {})
-                groups = tags.get("AnsibleGroup", "")
-                if "bastions" in [g.strip() for g in groups.split(",")]:
-                    target_vm = n
-                    break
-        if target_vm is None:
-            for n in nodes:
-                if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
-                    target_vm = n
-                    break
-        if target_vm is not None:
-            target_vm["data"]["ciInjectVars"] = body.inject_vars
+        _apply_inject_vars(nodes, body.inject_vars)
 
     project = Project(
         name=project_name,

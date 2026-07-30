@@ -150,20 +150,19 @@ def _redis_listen_loop():
             logger.info("Redis pub/sub listener connected")
 
             for msg in ps.listen():
-                if msg["type"] not in ("pmessage",):
+                if msg["type"] != "pmessage":
                     continue
                 channel = msg["channel"]
                 if isinstance(channel, bytes):
                     channel = channel.decode()
-                if not channel.startswith("project:"):
+                prefix = "project:"
+                if not channel.startswith(prefix):
                     continue
-                project_id = channel[8:]
-
+                project_id = channel[len(prefix) :]
                 try:
                     data = json.loads(msg["data"])
                 except (json.JSONDecodeError, TypeError):
                     continue
-
                 _deliver_locally(project_id, data)
         except Exception:
             logger.warning("Redis pub/sub listener disconnected, reconnecting in 5s")
@@ -238,8 +237,170 @@ def _maybe_scan_ocp_monitors():
         db.close()
 
 
-def _poll_active_projects():
+def _fetch_kubevirt_vm_states(project, host, db):
+    """Fetch VM states from KubeVirt VMIs for a kubevirt-cluster host.
+
+    Returns a dict of {node_id: phase_string} or None on failure.
+    """
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return None
+    try:
+        custom_api, _, _ = _get_k8s_clients(provider)
+        namespace = _project_ns(provider, project.id)
+        vmis_raw = custom_api.list_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+        )
+        vmis: dict = vmis_raw if isinstance(vmis_raw, dict) else {}
+        vmi_phases = {}
+        for vmi in vmis.get("items", []):
+            vmi_phases[vmi["metadata"]["name"]] = vmi.get("status", {}).get(
+                "phase", "Unknown"
+            )
+        vm_states = {}
+        topo = project.topology or {}
+        for node in topo.get("nodes", []):
+            if node.get("type") != "vmNode":
+                continue
+            node_id = node.get("data", {}).get("id", node.get("id", ""))
+            kv_name = f"troshka-vm-{node_id[:8]}"
+            if kv_name in vmi_phases:
+                vm_states[node_id] = vmi_phases[kv_name]
+            else:
+                vm_states[node_id] = "Stopped"
+        return vm_states if vm_states else None
+    except Exception:
+        return None
+
+
+def _map_vm_states_for_project(project, host_batch, kv_batch):
+    """Map batch VM states to per-project node states.
+
+    Returns (vm_states, vm_progress, vm_boot_devs).
+    """
     from app.api.projects import _domain_name, _redeploy_progress
+
+    vm_states = {}
+    vm_progress = {}
+    vm_boot_devs = {}
+
+    batch = kv_batch or host_batch
+    is_kubevirt = kv_batch is not None
+    if batch is None:
+        return vm_states, vm_progress, vm_boot_devs
+
+    for node in (project.topology or {}).get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        node_id = node.get("data", {}).get("id", node.get("id", ""))
+        if is_kubevirt:
+            state = batch.get(node_id, "not_found")
+        else:
+            dom_name = _domain_name(project.id, node_id)
+            if dom_name in _redeploy_progress:
+                vm_states[node_id] = "redeploying"
+                vm_progress[node_id] = _redeploy_progress[dom_name]
+                continue
+            state = batch.get(dom_name, "not_found")
+        if state == "not_found":
+            continue
+        if state in (
+            "shut_off",
+            "shutting_down",
+            "crashed",
+            "suspended",
+            "paused",
+            "Stopped",
+        ):
+            state = "stopped"
+        elif state == "Running":
+            state = "running"
+        vm_states[node_id] = state
+
+    return vm_states, vm_progress, vm_boot_devs
+
+
+def _check_and_notify_project_changes(
+    project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+):
+    """Compare current state vs last cached state and send WS notifications.
+
+    Updates _last_states for the project.
+    """
+    last = _last_states.get(project_id, {})
+    current_project_state = project.state
+    current_deploy_error = project.deploy_error
+
+    # Push project state changes
+    if (
+        last.get("project_state") != current_project_state
+        or last.get("deploy_error") != current_deploy_error
+    ):
+        notify_project(
+            project_id,
+            {
+                "type": "project-state",
+                "state": current_project_state,
+                "deploy_error": current_deploy_error,
+            },
+        )
+
+    # Push deploy progress if active
+    if dp and dp != last.get("deploy_progress"):
+        notify_project(project_id, {"type": "deploy-progress", "progress": dp})
+
+    # Log VM state changes
+    prev_vm_states = last.get("vm_states", {})
+    for vm_id, new_state in vm_states.items():
+        old_state = prev_vm_states.get(vm_id)
+        if old_state and old_state != new_state:
+            vm_label = ""
+            for node in (project.topology or {}).get("nodes", []):
+                if node["id"] == vm_id:
+                    vm_label = node.get("data", {}).get("label", vm_id[:8])
+                    break
+            logger.info(
+                "VM state change: %s/%s %s → %s",
+                project.name[:30],
+                vm_label,
+                old_state,
+                new_state,
+            )
+
+    # Notify if VM states changed
+    if vm_states and (
+        vm_states != prev_vm_states
+        or vm_progress != last.get("vm_progress")
+        or vm_boot_devs != last.get("vm_boot_devs")
+    ):
+        notify_project(
+            project_id,
+            {
+                "type": "vm-state",
+                "states": vm_states,
+                "progress": vm_progress,
+                "boot_devs": vm_boot_devs,
+            },
+        )
+
+    # Update cache
+    _last_states[project_id] = {
+        "project_state": current_project_state,
+        "deploy_error": current_deploy_error,
+        "deploy_progress": dp,
+        "vm_states": vm_states if vm_states else last.get("vm_states", {}),
+        "vm_progress": vm_progress,
+        "vm_boot_devs": vm_boot_devs,
+    }
+
+
+def _poll_active_projects():
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
@@ -278,44 +439,9 @@ def _poll_active_projects():
             if not host or not host.ip_address:
                 continue
             if host.host_type == "kubevirt-cluster":
-                from app.models.provider import Provider
-                from app.services.providers.kubevirt import (
-                    _get_k8s_clients,
-                    _project_ns,
-                )
-
-                provider = db.query(Provider).filter_by(id=host.provider_id).first()
-                if provider:
-                    try:
-                        custom_api, _, _ = _get_k8s_clients(provider)
-                        namespace = _project_ns(provider, project.id)
-                        vmis_raw = custom_api.list_namespaced_custom_object(
-                            group="kubevirt.io",
-                            version="v1",
-                            namespace=namespace,
-                            plural="virtualmachineinstances",
-                        )
-                        vmis: dict = vmis_raw if isinstance(vmis_raw, dict) else {}
-                        vmi_phases = {}
-                        for vmi in vmis.get("items", []):
-                            vmi_phases[vmi["metadata"]["name"]] = vmi.get(
-                                "status", {}
-                            ).get("phase", "Unknown")
-                        vm_states = {}
-                        topo = project.topology or {}
-                        for node in topo.get("nodes", []):
-                            if node.get("type") != "vmNode":
-                                continue
-                            node_id = node.get("data", {}).get("id", node.get("id", ""))
-                            kv_name = f"troshka-vm-{node_id[:8]}"
-                            if kv_name in vmi_phases:
-                                vm_states[node_id] = vmi_phases[kv_name]
-                            else:
-                                vm_states[node_id] = "Stopped"
-                        if vm_states:
-                            project_batch_states[project.id] = vm_states
-                    except Exception:
-                        pass
+                kv_states = _fetch_kubevirt_vm_states(project, host, db)
+                if kv_states:
+                    project_batch_states[project.id] = kv_states
                 continue
             if host.agent_status != "connected":
                 continue
@@ -328,108 +454,23 @@ def _poll_active_projects():
                     pass
 
         for project_id, project in projects.items():
-            # Always push project state changes
-            last = _last_states.get(project_id, {})
-            current_project_state = project.state
-            current_deploy_error = project.deploy_error
-            if (
-                last.get("project_state") != current_project_state
-                or last.get("deploy_error") != current_deploy_error
-            ):
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": current_project_state,
-                        "deploy_error": current_deploy_error,
-                    },
-                )
-
-            # Push deploy progress if active
             dp = _get_deploy_progress_data(project_id)
-            if dp and dp != last.get("deploy_progress"):
-                notify_project(project_id, {"type": "deploy-progress", "progress": dp})
 
             # Map batch VM states to this project's nodes
-            vm_states = {}
-            vm_progress = {}
-            vm_boot_devs = {}
             kv_batch = project_batch_states.get(project_id)
             host_batch = (
                 host_batch_states.get(project.host_id) if project.host_id else None
             )
-            batch = kv_batch or host_batch
-            is_kubevirt = kv_batch is not None
-            if batch is not None and current_project_state in ("active", "stopped"):
-                for node in (project.topology or {}).get("nodes", []):
-                    if node.get("type") != "vmNode":
-                        continue
-                    node_id = node.get("data", {}).get("id", node.get("id", ""))
-                    if is_kubevirt:
-                        state = batch.get(node_id, "not_found")
-                    else:
-                        dom_name = _domain_name(project.id, node_id)
-                        if dom_name in _redeploy_progress:
-                            vm_states[node_id] = "redeploying"
-                            vm_progress[node_id] = _redeploy_progress[dom_name]
-                            continue
-                        state = batch.get(dom_name, "not_found")
-                    if state == "not_found":
-                        continue
-                    if state in (
-                        "shut_off",
-                        "shutting_down",
-                        "crashed",
-                        "suspended",
-                        "paused",
-                        "Stopped",
-                    ):
-                        state = "stopped"
-                    elif state == "Running":
-                        state = "running"
-                    vm_states[node_id] = state
-
-            # Log VM state changes
-            prev_vm_states = last.get("vm_states", {})
-            for vm_id, new_state in vm_states.items():
-                old_state = prev_vm_states.get(vm_id)
-                if old_state and old_state != new_state:
-                    vm_label = ""
-                    for node in (project.topology or {}).get("nodes", []):
-                        if node["id"] == vm_id:
-                            vm_label = node.get("data", {}).get("label", vm_id[:8])
-                            break
-                    logger.info(
-                        "VM state change: %s/%s %s → %s",
-                        project.name[:30],
-                        vm_label,
-                        old_state,
-                        new_state,
-                    )
-
-            if vm_states and (
-                vm_states != prev_vm_states
-                or vm_progress != last.get("vm_progress")
-                or vm_boot_devs != last.get("vm_boot_devs")
-            ):
-                notify_project(
-                    project_id,
-                    {
-                        "type": "vm-state",
-                        "states": vm_states,
-                        "progress": vm_progress,
-                        "boot_devs": vm_boot_devs,
-                    },
+            if project.state in ("active", "stopped"):
+                vm_states, vm_progress, vm_boot_devs = _map_vm_states_for_project(
+                    project, host_batch, kv_batch
                 )
+            else:
+                vm_states, vm_progress, vm_boot_devs = {}, {}, {}
 
-            _last_states[project_id] = {
-                "project_state": current_project_state,
-                "deploy_error": current_deploy_error,
-                "deploy_progress": dp,
-                "vm_states": vm_states if vm_states else last.get("vm_states", {}),
-                "vm_progress": vm_progress,
-                "vm_boot_devs": vm_boot_devs,
-            }
+            _check_and_notify_project_changes(
+                project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+            )
 
         # Evict stale cache entries for projects no longer active/stopped
         stale = [k for k in _last_states if k not in projects]

@@ -48,6 +48,55 @@ def _fetch_registry_digest(tag: str | None = None) -> str | None:
         return None
 
 
+def _read_deployment_info(apps_api, operator_ns: str) -> tuple[bool, str]:
+    """Read rollout status and image tag from the operator deployment.
+
+    Returns (rolling_out, tag).
+    """
+    rolling_out = False
+    tag = TAG
+    try:
+        dep = apps_api.read_namespaced_deployment(
+            name="troshka-operator", namespace=operator_ns
+        )
+        desired = dep.spec.replicas or 1  # type: ignore[union-attr]
+        updated = dep.status.updated_replicas or 0  # type: ignore[union-attr]
+        ready = dep.status.ready_replicas or 0  # type: ignore[union-attr]
+        if updated < desired or ready < desired:
+            rolling_out = True
+        image = dep.spec.template.spec.containers[0].image or ""  # type: ignore[union-attr]
+        if ":" in image:
+            tag = image.rsplit(":", 1)[1]
+    except Exception:
+        pass
+    return rolling_out, tag
+
+
+def _read_pod_digest(core_api, operator_ns: str) -> str | None:
+    """Find the running operator pod's image digest.
+
+    Returns the sha256 digest string, or None if not found.
+    """
+    try:
+        pods = core_api.list_namespaced_pod(
+            namespace=operator_ns,
+            label_selector="app=troshka-operator",
+        )
+        for pod in pods.items or []:  # type: ignore[union-attr]
+            phase = pod.status.phase  # type: ignore[union-attr]
+            if phase != "Running":
+                continue
+            for cs in pod.status.container_statuses or []:  # type: ignore[union-attr]
+                if not (cs.ready and cs.started):  # type: ignore[union-attr]
+                    continue
+                image_id = cs.image_id or ""
+                if "@sha256:" in image_id:
+                    return "sha256:" + image_id.split("@sha256:")[-1]
+    except Exception:
+        pass
+    return None
+
+
 def _get_operator_info(provider) -> tuple[str | None, bool, str]:
     """Get the running operator digest, rollout status, and image tag.
 
@@ -66,42 +115,11 @@ def _get_operator_info(provider) -> tuple[str | None, bool, str]:
     apps_api = client.AppsV1Api(api_client)
 
     operator_ns = creds.get("namespace", "troshka-operator")
-    digest = None
-    rolling_out = False
-    tag = TAG
 
-    try:
-        dep = apps_api.read_namespaced_deployment(
-            name="troshka-operator", namespace=operator_ns
-        )
-        desired = dep.spec.replicas or 1  # type: ignore[union-attr]
-        updated = dep.status.updated_replicas or 0  # type: ignore[union-attr]
-        ready = dep.status.ready_replicas or 0  # type: ignore[union-attr]
-        if updated < desired or ready < desired:
-            rolling_out = True
-        image = dep.spec.template.spec.containers[0].image or ""  # type: ignore[union-attr]
-        if ":" in image:
-            tag = image.rsplit(":", 1)[1]
-    except Exception:
-        pass
-
-    try:
-        pods = core_api.list_namespaced_pod(
-            namespace=operator_ns,
-            label_selector="app=troshka-operator",
-        )
-        for pod in pods.items or []:  # type: ignore[union-attr]
-            phase = pod.status.phase  # type: ignore[union-attr]
-            if phase != "Running":
-                continue
-            for cs in pod.status.container_statuses or []:  # type: ignore[union-attr]
-                if not (cs.ready and cs.started):  # type: ignore[union-attr]
-                    continue
-                image_id = cs.image_id or ""
-                if "@sha256:" in image_id:
-                    digest = "sha256:" + image_id.split("@sha256:")[-1]
-    except Exception as e:
-        logger.warning("Failed to get operator digest on %s: %s", provider.name, e)
+    rolling_out, tag = _read_deployment_info(apps_api, operator_ns)
+    digest = _read_pod_digest(core_api, operator_ns)
+    if digest is None:
+        logger.debug("No running operator pod digest found on %s", provider.name)
 
     return digest, rolling_out, tag
 

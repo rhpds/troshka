@@ -409,6 +409,236 @@ def add_host(
     return host
 
 
+def _build_storage_mode_kwargs(
+    h: Host, s: Session, nfs_kwargs: dict
+) -> tuple[str, str, str, str]:
+    """Compute storage mode and TLS certs for agent install from NFS kwargs.
+
+    Returns (storage_mode, ca_cert, host_cert, host_key).
+    """
+    storage_mode = "shared" if nfs_kwargs.get("nfs_server") else "local"
+    ca_cert, host_cert, host_key = "", "", ""
+    if storage_mode == "shared" and h.storage_pool_id and h.ip_address:
+        from app.models.storage_pool import StoragePool
+        from app.services.storage_pool_service import sign_host_cert
+
+        pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+        if pool and pool.ca_cert and pool.ca_key:
+            host_cert, host_key = sign_host_cert(
+                pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or ""
+            )
+            ca_cert = pool.ca_cert
+    return storage_mode, ca_cert, host_cert, host_key
+
+
+def _setup_console_dns(
+    h: Host, s: Session, provider_console_domain: str | None
+) -> None:
+    """Create console DNS/Route record for a newly provisioned host."""
+    if not (h.instance_id and h.ip_address and provider_console_domain):
+        return
+    prov_obj = s.get(Provider, h.provider_id)
+    if not prov_obj:
+        return
+    from app.services.console_dns import console_domain_for_host
+    from app.services.providers import get_provider_driver
+
+    fqdn = console_domain_for_host(h.instance_id, provider_console_domain)
+    try:
+        drv = get_provider_driver(prov_obj)
+        result = drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
+        h.console_domain = result if result else fqdn
+    except Exception as e:
+        logger.warning("Failed to create console record for %s: %s", h.id[:8], e)
+
+
+def _build_pool_install_kwargs(h: Host, s: Session, provider_type: str) -> dict:
+    """Build deploy_agent kwargs including pool/storage/console config.
+
+    Looks up the host's storage pool from DB and assembles NFS, TLS, and SSH
+    kwargs. Returns a dict ready for ``deploy_agent(**kwargs)``.
+    """
+    from app.services.agent_ca_service import get_agent_ca_cert
+    from app.services.agent_deployer import (
+        get_provider_data_disk,
+        get_provider_ssh_port,
+        get_provider_ssh_user,
+    )
+
+    kwargs: dict[str, Any] = {
+        "ssh_user": get_provider_ssh_user(provider_type),
+        "ssh_port": get_provider_ssh_port(provider_type),
+        "data_disk_device": get_provider_data_disk(provider_type),
+        "vncd_no_tls": provider_type == "ocpvirt",
+        "agent_ca_cert": get_agent_ca_cert(),
+    }
+    if h.console_domain:
+        kwargs["console_domain"] = h.console_domain
+    if h.storage_pool_id:
+        from app.models.storage_pool import StoragePool
+
+        pool = s.get(StoragePool, h.storage_pool_id)
+        if pool and pool.mode.startswith("shared"):
+            kwargs["storage_mode"] = "shared"
+            if pool.mode == "shared-fsx" and pool.fsx_dns_name:
+                kwargs["nfs_server"] = pool.fsx_dns_name
+                kwargs["nfs_path"] = "/fsx"
+            elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
+                parts = pool.nfs_endpoint.split(":", 1)
+                kwargs["nfs_server"] = parts[0]
+                kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+                if pool.nfs_port:
+                    kwargs["nfs_port"] = pool.nfs_port
+            if pool.ca_cert and pool.ca_key and h.ip_address:
+                from app.services.storage_pool_service import sign_host_cert
+
+                hc, hk = sign_host_cert(
+                    pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or ""
+                )
+                kwargs["ca_cert"] = pool.ca_cert
+                kwargs["host_cert"] = hc
+                kwargs["host_key"] = hk
+    return kwargs
+
+
+def _verify_and_update_agent_version(h: Host, s: Session) -> None:
+    """Check installed agent version and push an update if source has changed."""
+    import hashlib
+    import time
+
+    from app.services.troshkad_client import check_health, push_update, troshkad_request
+
+    try:
+        time.sleep(5)
+        health = troshkad_request(h, "GET", "/health", timeout=10)
+        if not health or not health.get("version"):
+            return
+        h.agent_version = health["version"]
+        logger.info(
+            "Agent install verified: host %s running version %s",
+            h.id[:8],
+            h.agent_version,
+        )
+
+        troshkad_path = os.path.join(
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                )
+            ),
+            "troshkad",
+            "troshkad.py",
+        )
+        with open(troshkad_path, "rb") as f:
+            current_hash = hashlib.sha256(f.read()).hexdigest()[:12]
+        if h.agent_version != current_hash:
+            logger.info(
+                "Agent %s version %s != source %s, pushing update",
+                h.id[:8],
+                h.agent_version,
+                current_hash,
+            )
+            script_text = (
+                open(troshkad_path)
+                .read()
+                .replace('VERSION = "dev"', f'VERSION = "{current_hash}"')
+            )
+            push_update(h, script_text.encode(), current_hash)
+            time.sleep(5)
+            health2 = check_health(h)
+            if health2 and health2.get("version"):
+                h.agent_version = health2["version"]
+                logger.info(
+                    "Agent %s updated to %s after reinstall",
+                    h.id[:8],
+                    h.agent_version,
+                )
+    except Exception as e:
+        logger.warning("Could not verify agent version after install: %s", e)
+
+
+def _wait_for_running_instance(
+    drv, prov, host_id: str, instance_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Wait for a cloud instance to stop (if shutting down), start it, poll until running.
+
+    Returns (public_ip, status_dict) or (None, None) if it never reached running.
+    """
+    import time
+
+    state_now = "unknown"
+    for _ in range(60):
+        st_check = drv.get_host_status(prov, instance_id)
+        state_now = st_check["state"] if st_check else "unknown"
+        if state_now in ("stopped", "deallocated", "terminated", "running"):
+            break
+        logger.info("Host %s in %s state, waiting for stop...", host_id[:8], state_now)
+        time.sleep(5)
+
+    if state_now != "running":
+        try:
+            drv.start_host(prov, instance_id)
+        except Exception as e:
+            logger.warning("start_host failed for %s: %s", host_id[:8], e)
+
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        st = drv.get_host_status(prov, instance_id)
+        if st and st.get("state") == "running":
+            return st.get("public_ip"), st
+        time.sleep(10)
+    return None, None
+
+
+def _finalize_termination(s: Session, h: Host, prov, drv) -> bool:
+    """Delete key pair, mark host terminated, and remove from DB.
+
+    Returns True when termination was finalized.
+    """
+    import time
+
+    if h.key_pair_name and prov and drv:
+        try:
+            drv.delete_key_pair(prov, h.key_pair_name)
+        except Exception:
+            pass
+    h.state = "terminated"
+    s.commit()
+    time.sleep(10)
+    s.delete(h)
+    s.commit()
+    logger.info("Host %s terminated and removed", h.id)
+    return True
+
+
+def _push_vncd_update(h: Host, s: Session) -> None:
+    """Read the vncd script and push it to the host via troshkad."""
+    from app.services.troshkad_client import troshkad_request
+
+    vncd_path = os.path.join(
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ),
+        "troshka-vncd",
+        "troshka-vncd.py",
+    )
+    if not os.path.exists(vncd_path):
+        return
+    import base64
+
+    with open(vncd_path, "rb") as vf:
+        vncd_b64 = base64.b64encode(vf.read()).decode()
+    prov = s.query(Provider).filter_by(id=h.provider_id).first()
+    no_tls = prov.type == "ocpvirt" if prov else False
+    troshkad_request(
+        h,
+        "POST",
+        "/admin/update-vncd",
+        body={"script": vncd_b64, "no_tls": no_tls},
+    )
+    logger.info("Host %s vncd updated", h.id[:8])
+
+
 def _provision_and_install_bg(
     host_id: str,
     _provider_id: str,
@@ -508,18 +738,9 @@ def _provision_and_install_bg(
             return
         h.agent_status = "installing"  # type: ignore[arg-type]
         s.commit()
-        _sm = "shared" if nfs_kwargs.get("nfs_server") else "local"
-        _ca_cert, _host_cert, _host_key = "", "", ""
-        if _sm == "shared" and h.storage_pool_id and h.ip_address:
-            from app.models.storage_pool import StoragePool
-            from app.services.storage_pool_service import sign_host_cert
-
-            _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
-            if _pool and _pool.ca_cert and _pool.ca_key:  # type: ignore[arg-type]
-                _host_cert, _host_key = sign_host_cert(
-                    _pool.ca_cert, _pool.ca_key, h.ip_address, h.private_ip or ""  # type: ignore[arg-type]
-                )
-                _ca_cert = _pool.ca_cert
+        _sm, _ca_cert, _host_cert, _host_key = _build_storage_mode_kwargs(
+            h, s, nfs_kwargs
+        )
         from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
 
         # type: ignore[arg-type]
@@ -555,26 +776,7 @@ def _provision_and_install_bg(
             _detach_install_iso(h, s)
 
         # Create console DNS/Route record
-        if h.instance_id and h.ip_address:
-            prov_obj = s.get(Provider, h.provider_id)
-            if provider_console_domain:
-                from app.services.console_dns import console_domain_for_host
-                from app.services.providers import get_provider_driver
-
-                # type: ignore[arg-type]
-                fqdn = console_domain_for_host(
-                    h.instance_id, provider_console_domain  # type: ignore[arg-type]
-                )
-                try:
-                    drv = get_provider_driver(prov_obj)
-                    result = drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
-                    h.console_domain = result if result else fqdn
-                except Exception as e:
-                    logger.warning(
-                        "Failed to create console record for %s: %s",
-                        h.id[:8],
-                        e,
-                    )
+        _setup_console_dns(h, s, provider_console_domain)
 
         s.commit()
     except Exception:
@@ -673,49 +875,7 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
         h.agent_status = "installing"
         s.commit()
 
-        _install_kwargs = {
-            "ssh_user": _ssh_user,
-            "ssh_port": _ssh_port,
-            "data_disk_device": _data_disk,
-            "vncd_no_tls": _provider_type == "ocpvirt",
-        }
-        if h.console_domain:
-            _install_kwargs["console_domain"] = h.console_domain
-        if h.storage_pool_id:
-            from app.models.storage_pool import StoragePool as _SP2
-
-            _pool = s.get(_SP2, h.storage_pool_id)
-            if _pool and _pool.mode.startswith("shared"):
-                _install_kwargs["storage_mode"] = "shared"
-                if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
-                    _install_kwargs["nfs_server"] = _pool.fsx_dns_name
-                    _install_kwargs["nfs_path"] = "/fsx"
-                elif (
-                    _pool.mode in ("shared-byo", "shared-ceph-nfs")
-                    and _pool.nfs_endpoint
-                ):
-                    _parts = _pool.nfs_endpoint.split(":", 1)
-                    _install_kwargs["nfs_server"] = _parts[0]
-                    _install_kwargs["nfs_path"] = _parts[1] if len(_parts) > 1 else "/"
-                    if _pool.nfs_port:
-                        _install_kwargs["nfs_port"] = _pool.nfs_port
-                if _pool.ca_cert and _pool.ca_key and h.ip_address:
-                    from app.services.storage_pool_service import (
-                        sign_host_cert as _shc2,
-                    )
-
-                    _hc, _hk = _shc2(
-                        _pool.ca_cert,
-                        _pool.ca_key,
-                        h.ip_address,
-                        h.private_ip or "",
-                    )
-                    _install_kwargs["ca_cert"] = _pool.ca_cert
-                    _install_kwargs["host_cert"] = _hc
-                    _install_kwargs["host_key"] = _hk
-        from app.services.agent_ca_service import get_agent_ca_cert
-
-        _install_kwargs["agent_ca_cert"] = get_agent_ca_cert()
+        _install_kwargs = _build_pool_install_kwargs(h, s, _provider_type)
         result = deploy_agent(
             host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs
         )
@@ -730,63 +890,7 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
 
         # Verify agent version and push update if source changed during reinstall
         if result["success"]:
-            try:
-                import hashlib
-                import time
-
-                from app.services.troshkad_client import (
-                    check_health,
-                    push_update,
-                    troshkad_request,
-                )
-
-                time.sleep(5)
-                health = troshkad_request(h, "GET", "/health", timeout=10)
-                if health and health.get("version"):
-                    h.agent_version = health["version"]
-                    logger.info(
-                        "Agent install verified: host %s running version %s",
-                        h.id[:8],
-                        h.agent_version,
-                    )
-
-                    troshkad_path = os.path.join(
-                        os.path.dirname(
-                            os.path.dirname(
-                                os.path.dirname(
-                                    os.path.dirname(os.path.abspath(__file__))
-                                )
-                            )
-                        ),
-                        "troshkad",
-                        "troshkad.py",
-                    )
-                    with open(troshkad_path, "rb") as _f:
-                        current_hash = hashlib.sha256(_f.read()).hexdigest()[:12]
-                    if h.agent_version != current_hash:
-                        logger.info(
-                            "Agent %s version %s != source %s, pushing update",
-                            h.id[:8],
-                            h.agent_version,
-                            current_hash,
-                        )
-                        script_text = (
-                            open(troshkad_path)
-                            .read()
-                            .replace('VERSION = "dev"', f'VERSION = "{current_hash}"')
-                        )
-                        push_update(h, script_text.encode(), current_hash)
-                        time.sleep(5)
-                        health2 = check_health(h)
-                        if health2 and health2.get("version"):
-                            h.agent_version = health2["version"]
-                            logger.info(
-                                "Agent %s updated to %s after reinstall",
-                                h.id[:8],
-                                h.agent_version,
-                            )
-            except Exception as _ve:
-                logger.warning("Could not verify agent version after install: %s", _ve)
+            _verify_and_update_agent_version(h, s)
 
         # Detach install ISO from ocpvirt hosts (unblocks live migration)
         if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
@@ -1038,8 +1142,6 @@ def poweron_host(
 
 
 def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
-    import time
-
     from app.core.database import SessionLocal
     from app.services.agent_deployer import (
         deploy_agent,
@@ -1057,39 +1159,7 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
             return
         _drv = _get_drv(_prov)
 
-        # Wait for instance to fully stop if it's still shutting down
-        state_now = "unknown"
-        for _ in range(60):
-            st_check = _drv.get_host_status(_prov, instance_id)
-            state_now = st_check["state"] if st_check else "unknown"
-            if state_now in ("stopped", "deallocated", "terminated"):
-                break
-            if state_now == "running":
-                break
-            logger.info(
-                "Host %s in %s state, waiting for stop...",
-                host_id[:8],
-                state_now,
-            )
-            time.sleep(5)
-
-        # Start the instance via cloud API
-        if state_now != "running":
-            try:
-                _drv.start_host(_prov, instance_id)
-            except Exception as e:
-                logger.warning("start_host failed for %s: %s", host_id[:8], e)
-
-        # Poll until instance is running (up to 5 min)
-        deadline = time.time() + 300
-        new_ip = None
-        st: dict[str, Any] | None = None
-        while time.time() < deadline:
-            st = _drv.get_host_status(_prov, instance_id)
-            if st and st.get("state") == "running":
-                new_ip = st.get("public_ip")
-                break
-            time.sleep(10)
+        new_ip, st = _wait_for_running_instance(_drv, _prov, host_id, instance_id)
 
         h = s.query(Host).filter_by(id=host_id).first()
         if not h:
@@ -1156,49 +1226,7 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
         h.agent_status = "installing"
         s.commit()
 
-        _kwargs = {
-            "ssh_user": _ssh_user2,
-            "ssh_port": _ssh_port2,
-            "data_disk_device": _data_disk2,
-            "vncd_no_tls": _provider_type == "ocpvirt",
-        }
-        if h.console_domain:
-            _kwargs["console_domain"] = h.console_domain
-        if h.storage_pool_id:
-            from app.models.storage_pool import StoragePool as _SP
-
-            _pool = s.get(_SP, h.storage_pool_id)
-            if _pool and _pool.mode.startswith("shared"):
-                _kwargs["storage_mode"] = "shared"
-                if _pool.mode == "shared-fsx" and _pool.fsx_dns_name:
-                    _kwargs["nfs_server"] = _pool.fsx_dns_name
-                    _kwargs["nfs_path"] = "/fsx"
-                elif (
-                    _pool.mode in ("shared-byo", "shared-ceph-nfs")
-                    and _pool.nfs_endpoint
-                ):
-                    parts = _pool.nfs_endpoint.split(":", 1)
-                    _kwargs["nfs_server"] = parts[0]
-                    _kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
-                    if _pool.nfs_port:
-                        _kwargs["nfs_port"] = _pool.nfs_port
-                if _pool.ca_cert and _pool.ca_key and h.ip_address:
-                    from app.services.storage_pool_service import (
-                        sign_host_cert as _shc,
-                    )
-
-                    _hc, _hk = _shc(
-                        _pool.ca_cert,
-                        _pool.ca_key,
-                        h.ip_address,  # type: ignore[arg-type]
-                        h.private_ip or "",
-                    )
-                    _kwargs["ca_cert"] = _pool.ca_cert
-                    _kwargs["host_cert"] = _hc
-                    _kwargs["host_key"] = _hk
-        from app.services.agent_ca_service import get_agent_ca_cert as _get_aca3
-
-        _kwargs["agent_ca_cert"] = _get_aca3()
+        _kwargs = _build_pool_install_kwargs(h, s, _provider_type)
         result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)  # type: ignore[arg-type]
         h.agent_status = "connected" if result["success"] else "disconnected"
 
@@ -1597,17 +1625,7 @@ def _wait_terminated_bg(host_id: str, instance_id: str, provider_id: str):
             if not h:
                 return
             if not status or status["state"] == "terminated":
-                if h.key_pair_name and prov and drv:
-                    try:
-                        drv.delete_key_pair(prov, h.key_pair_name)
-                    except Exception:
-                        pass
-                h.state = "terminated"
-                s.commit()
-                time.sleep(10)
-                s.delete(h)
-                s.commit()
-                logger.info("Host %s terminated and removed", host_id)
+                _finalize_termination(s, h, prov, drv)
                 return
             elif status["state"] == "shutting-down":
                 h.state = "shutting_down"
@@ -1831,7 +1849,6 @@ def _push_bg(host_id: str, script_bytes: bytes, version: str, force: bool):
         TroshkadError,
         check_health,
         push_update,
-        troshkad_request,
     )
 
     s = SessionLocal()
@@ -1873,31 +1890,7 @@ def _push_bg(host_id: str, script_bytes: bytes, version: str, force: bool):
                         )
                     # Also push vncd if available
                     try:
-                        vncd_path = os.path.join(
-                            os.path.dirname(
-                                os.path.dirname(
-                                    os.path.dirname(
-                                        os.path.dirname(os.path.abspath(__file__))
-                                    )
-                                )
-                            ),
-                            "troshka-vncd",
-                            "troshka-vncd.py",
-                        )
-                        if os.path.exists(vncd_path):
-                            import base64
-
-                            with open(vncd_path, "rb") as vf:
-                                vncd_b64 = base64.b64encode(vf.read()).decode()
-                            prov = s.query(Provider).filter_by(id=h.provider_id).first()
-                            no_tls = prov.type == "ocpvirt" if prov else False
-                            troshkad_request(
-                                h,
-                                "POST",
-                                "/admin/update-vncd",
-                                body={"script": vncd_b64, "no_tls": no_tls},
-                            )
-                            logger.info("Host %s vncd updated", host_id[:8])
+                        _push_vncd_update(h, s)
                     except Exception as ve:
                         logger.warning(
                             "Host %s vncd update failed: %s", host_id[:8], ve

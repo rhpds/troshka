@@ -1,7 +1,7 @@
 import datetime
 import logging
 import uuid as uuid_mod
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -63,6 +63,9 @@ from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
+_VMS_START_PATH = "/vms/start"
+_TROSHKA_DOMAIN = "troshka.redhat.com"
+
 
 def _get_k8s_clients_for_kubevirt(provider):
     from app.services.providers.kubevirt import _get_k8s_clients
@@ -74,6 +77,48 @@ def _kubevirt_project_ns(provider, project_id):
     from app.services.providers.kubevirt import _project_ns
 
     return _project_ns(provider, project_id)
+
+
+def _resolve_deploy_progress(project) -> dict | None:
+    """Return deploy progress data for a project in a transitional state."""
+    if project.state not in ("deploying", "reconfiguring", "starting", "stopping"):
+        return None
+    from app.services.deploy_service import _get_deploy_progress_data
+
+    dp = _get_deploy_progress_data(project.id)
+    if dp:
+        return dp
+    if project.deploy_progress:
+        dp = project.deploy_progress
+    if project.state == "deploying":
+        from app.core.redis import get_job_info
+
+        job_info = get_job_info(project.id)
+        if job_info and job_info.get("status") == "queued":
+            return {
+                "step": "queued",
+                "detail": f"#{job_info.get('queue_position', '?')} of {job_info.get('queue_length', '?')}",
+            }
+    return dp
+
+
+def _resolve_provider_type(project) -> str | None:
+    """Look up the provider type for a project's host via its SA session."""
+    if not project.host_id:
+        return None
+    from sqlalchemy.orm import Session as _S
+
+    from app.models.host import Host
+    from app.models.provider import Provider
+
+    s: _S = object.__getattribute__(project, "_sa_instance_state").session
+    if not s:
+        return None
+    h = s.get(Host, project.host_id)
+    if not h or not h.provider_id:
+        return None
+    prov = s.get(Provider, h.provider_id)
+    return prov.type if prov else None
 
 
 def _project_response_dict(project):
@@ -117,23 +162,9 @@ def _project_response_dict(project):
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
-    if project.state in ("deploying", "reconfiguring", "starting", "stopping"):
-        from app.services.deploy_service import _get_deploy_progress_data
-
-        dp = _get_deploy_progress_data(project.id)
-        if dp:
-            result["deploy_progress"] = dp
-        elif project.deploy_progress:
-            result["deploy_progress"] = project.deploy_progress
-        if project.state == "deploying":
-            from app.core.redis import get_job_info
-
-            job_info = get_job_info(project.id)
-            if job_info and job_info.get("status") == "queued":
-                result["deploy_progress"] = {
-                    "step": "queued",
-                    "detail": f"#{job_info.get('queue_position', '?')} of {job_info.get('queue_length', '?')}",
-                }
+    dp = _resolve_deploy_progress(project)
+    if dp:
+        result["deploy_progress"] = dp
 
     from app.services.ws_pubsub import get_cached_vm_states
 
@@ -145,19 +176,9 @@ def _project_response_dict(project):
     bmc_data = deployed_topo.get("bmc")
     if bmc_data:
         result["bmc"] = bmc_data
-    if project.host_id:
-        from sqlalchemy.orm import Session as _S
-
-        from app.models.host import Host
-        from app.models.provider import Provider
-
-        s: _S = object.__getattribute__(project, "_sa_instance_state").session
-        if s:
-            h = s.get(Host, project.host_id)
-            if h and h.provider_id:
-                prov = s.get(Provider, h.provider_id)
-                if prov:
-                    result["provider_type"] = prov.type
+    prov_type = _resolve_provider_type(project)
+    if prov_type:
+        result["provider_type"] = prov_type
     return result
 
 
@@ -767,8 +788,8 @@ def get_deploy_progress(
 @router.get("/{project_id}/kubeconfigs")
 def list_kubeconfigs(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
 ):
     """List available kubeconfigs for a project's recerted VMs."""
     project = db.query(Project).filter_by(id=project_id).first()
@@ -792,12 +813,26 @@ def list_kubeconfigs(
     return configs
 
 
-@router.get("/{project_id}/kubeconfig")
+def _find_kubeconfig_content(topo: dict, vm: str | None) -> str | None:
+    """Search topology nodes for a kubeconfig matching the given VM name."""
+    for node in topo.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        name = data.get("label") or data.get("name", "")
+        if vm and name != vm:
+            continue
+        if data.get("ocpKubeconfig"):
+            return data["ocpKubeconfig"]
+    return None
+
+
+@router.get("/{project_id}/kubeconfig", responses={403: {}, 404: {}})
 def get_kubeconfig(
     project_id: str,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
     vm: str | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """Download kubeconfig for a project's OCP cluster.
 
@@ -813,18 +848,7 @@ def get_kubeconfig(
         raise HTTPException(status_code=403, detail="Access denied")
 
     topo = project.deployed_topology or project.topology or {}
-    kc_content = None
-    for node in topo.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        data = node.get("data", {})
-        name = data.get("label") or data.get("name", "")
-        if vm and name != vm:
-            continue
-        if data.get("ocpKubeconfig"):
-            kc_content = data["ocpKubeconfig"]
-            break
-
+    kc_content = _find_kubeconfig_content(topo, vm)
     if not kc_content:
         raise HTTPException(
             status_code=404,
@@ -839,7 +863,9 @@ def get_kubeconfig(
     )
 
 
-@router.patch("/{project_id}", response_model=ProjectResponse)
+@router.patch(
+    "/{project_id}", response_model=ProjectResponse, responses={403: {}, 404: {}}
+)
 def update_project(
     project_id: str,
     body: ProjectUpdate,
@@ -1307,6 +1333,20 @@ def _domain_name(project_id: str, vm_id: str) -> str:
     return _vm_domain_name(project_id, vm_id)
 
 
+def _build_destroy_context(project) -> dict:
+    """Build the context dict needed by destroy_project_sync."""
+    import copy
+
+    return {
+        "project_id": project.id,
+        "host_id": project.host_id,
+        "vni_map": copy.deepcopy(project.vni_map or {}),
+        "topology": copy.deepcopy(project.deployed_topology or project.topology or {}),
+        "dns_provider_id": project.dns_provider_id,
+        "domain": project.domain,
+    }
+
+
 @router.get("/{project_id}/vm-states")
 def get_all_vm_states(
     project_id: str,
@@ -1439,7 +1479,7 @@ def start_vm(
                 # Start only the target VM
                 dom = _domain_name(p_id, target_vm_id)
                 try:
-                    job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                    job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
                     wait_for_job(h, job_id, timeout=60, poll_interval=2)
                     notify_project(
                         p_id,
@@ -1504,7 +1544,7 @@ def start_vm(
                 cache_library_images(topo, h, s)
             dom = _domain_name(p_id, vm_id)
             try:
-                job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
                 wait_for_job(h, job_id, timeout=60, poll_interval=2)
                 notify_project(
                     p_id,
@@ -2263,7 +2303,9 @@ def restart_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/{project_id}/reconfigure")
+@router.post(
+    "/{project_id}/reconfigure", responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}}
+)
 def reconfigure_project(
     project_id: str,
     body: dict | None = None,
@@ -2361,6 +2403,64 @@ def reconfigure_project(
     return {"status": "reconfiguring"}
 
 
+def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
+    """Build a TroshkaVM CR spec dict from topology data."""
+    from app.services.deploy_service import _find_vm_disks
+
+    vm_disks = _find_vm_disks(vm_id, current)
+    disk_specs = []
+    for d in vm_disks:
+        disk_spec = {
+            "id": d.get("node_id", d.get("id", "")),
+            "sizeGb": int(d.get("size", 20)),
+            "bus": "virtio",
+            "format": d.get("format", "qcow2"),
+        }
+        if d.get("source") == "pattern" and d.get("patternId"):
+            disk_spec["patternImage"] = {
+                "s3Path": d.get("resolvedS3Path", ""),
+                "format": "qcow2",
+                "central": d.get("centralSource", False),
+            }
+        elif d.get("source") == "library" and d.get("libraryItemId"):
+            disk_spec["libraryImage"] = {
+                "s3Path": d.get("resolvedS3Path", ""),
+                "format": d.get("format", "qcow2"),
+                "central": d.get("centralSource", False),
+            }
+        else:
+            disk_spec["blank"] = True
+        disk_specs.append(disk_spec)
+    vm_data = {}
+    for n in current.get("nodes", []):
+        if n.get("id") == vm_id and n.get("type") == "vmNode":
+            vm_data = n.get("data", {})
+            break
+    return {
+        "vmId": vm_data.get("id", vm_id),
+        "name": vm.get("name", "vm"),
+        "cpus": vm.get("vcpus", 2),
+        "memory": vm.get("ram_gb", 4) * 1024,
+        "firmware": vm.get("firmware", "bios"),
+        "machineType": "q35",
+        "smbiosUuid": vm_data.get("domainUuid", ""),
+        "os": vm.get("os", ""),
+        "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
+        "recertEnabled": vm_data.get("recertEnabled", False),
+        "ocpMonitor": vm_data.get("ocpMonitor", False),
+        "configureBastionBrowser": vm_data.get("configureBastionBrowser", False),
+        "bmcEnabled": vm_data.get("bmcEnabled", False),
+        "disks": disk_specs,
+        "nics": vm_data.get("nics", []),
+        "bootOrder": vm_data.get("bootDevices", []),
+        "cloudInit": {
+            "userData": vm_data.get("ciGeneratedUserData", "")
+            or vm_data.get("ciUserData", ""),
+            "networkConfig": vm_data.get("ciNetworkConfig", ""),
+        },
+    }
+
+
 def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict):
     """Reconfigure a KubeVirt project by patching CRs."""
     import copy
@@ -2433,7 +2533,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             cr_name = f"vm-{vm_id[:8]}"
             try:
                 custom_api.delete_namespaced_custom_object(
-                    group="troshka.redhat.com",
+                    group=_TROSHKA_DOMAIN,
                     version="v1alpha1",
                     namespace=ns,
                     plural="troshkavms",
@@ -2449,66 +2549,10 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             if not vm:
                 continue
             cr_name = f"vm-{vm_id[:8]}"
-
-            from app.services.deploy_service import _find_vm_disks
-
-            vm_disks = _find_vm_disks(vm_id, current)
-            disk_specs = []
-            for d in vm_disks:
-                disk_spec = {
-                    "id": d.get("node_id", d.get("id", "")),
-                    "sizeGb": int(d.get("size", 20)),
-                    "bus": "virtio",
-                    "format": d.get("format", "qcow2"),
-                }
-                if d.get("source") == "pattern" and d.get("patternId"):
-                    disk_spec["patternImage"] = {
-                        "s3Path": d.get("resolvedS3Path", ""),
-                        "format": "qcow2",
-                        "central": d.get("centralSource", False),
-                    }
-                elif d.get("source") == "library" and d.get("libraryItemId"):
-                    disk_spec["libraryImage"] = {
-                        "s3Path": d.get("resolvedS3Path", ""),
-                        "format": d.get("format", "qcow2"),
-                        "central": d.get("centralSource", False),
-                    }
-                else:
-                    disk_spec["blank"] = True
-                disk_specs.append(disk_spec)
-            vm_data = {}
-            for n in current.get("nodes", []):
-                if n.get("id") == vm_id and n.get("type") == "vmNode":
-                    vm_data = n.get("data", {})
-                    break
-            vm_spec = {
-                "vmId": vm_data.get("id", vm_id),
-                "name": vm.get("name", "vm"),
-                "cpus": vm.get("vcpus", 2),
-                "memory": vm.get("ram_gb", 4) * 1024,
-                "firmware": vm.get("firmware", "bios"),
-                "machineType": "q35",
-                "smbiosUuid": vm_data.get("domainUuid", ""),
-                "os": vm.get("os", ""),
-                "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
-                "recertEnabled": vm_data.get("recertEnabled", False),
-                "ocpMonitor": vm_data.get("ocpMonitor", False),
-                "configureBastionBrowser": vm_data.get(
-                    "configureBastionBrowser", False
-                ),
-                "bmcEnabled": vm_data.get("bmcEnabled", False),
-                "disks": disk_specs,
-                "nics": vm_data.get("nics", []),
-                "bootOrder": vm_data.get("bootDevices", []),
-                "cloudInit": {
-                    "userData": vm_data.get("ciGeneratedUserData", "")
-                    or vm_data.get("ciUserData", ""),
-                    "networkConfig": vm_data.get("ciNetworkConfig", ""),
-                },
-            }
+            vm_spec = _build_kubevirt_vm_spec(vm_id, vm, current)
             try:
                 existing = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
-                    group="troshka.redhat.com",
+                    group=_TROSHKA_DOMAIN,
                     version="v1alpha1",
                     namespace=ns,
                     plural="troshkavms",
@@ -2516,7 +2560,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 )
                 existing["spec"] = vm_spec  # type: ignore[index]
                 custom_api.replace_namespaced_custom_object(
-                    group="troshka.redhat.com",
+                    group=_TROSHKA_DOMAIN,
                     version="v1alpha1",
                     namespace=ns,
                     plural="troshkavms",
@@ -2536,7 +2580,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             all_ready = True
             try:
                 vms = custom_api.list_namespaced_custom_object(
-                    group="troshka.redhat.com",
+                    group=_TROSHKA_DOMAIN,
                     version="v1alpha1",
                     namespace=ns,
                     plural="troshkavms",
@@ -2590,6 +2634,214 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         s.close()
 
 
+def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
+    """Allocate/associate EIPs and sync security groups during reconfigure."""
+    external_ips = current.get("externalIps", [])
+    if not external_ips:
+        return
+    try:
+        from app.models.elastic_ip import ElasticIp
+        from app.models.provider import Provider
+        from app.services.eip_service import (
+            allocate_eip,
+            associate_eip,
+            sync_security_group_rules,
+        )
+
+        provider = (
+            s.query(Provider).filter_by(id=proj.provider_id).first()
+            if proj.provider_id
+            else None
+        )
+        if not provider and h.provider_id:
+            provider = s.query(Provider).filter_by(id=h.provider_id).first()
+        if not provider:
+            return
+        for ext_ip in external_ips:
+            canvas_id = ext_ip.get("id", "")
+            existing = (
+                s.query(ElasticIp)
+                .filter_by(project_id=p_id, canvas_eip_id=canvas_id)
+                .first()
+            )
+            eip = existing or allocate_eip(s, provider, p_id, canvas_id, h)
+            if eip.state != "associated":
+                associate_eip(s, eip, h)
+            ext_ip["ip"] = eip.public_ip
+            ext_ip["_private_ip"] = eip.private_ip
+        import copy
+        import json
+
+        from sqlalchemy import text
+
+        new_topo = copy.deepcopy(current)
+        s.execute(
+            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+            {"topo": json.dumps(new_topo), "pid": p_id},
+        )
+        s.commit()
+        s.refresh(proj)
+
+        gw_node = next(
+            (
+                n
+                for n in current.get("nodes", [])
+                if n.get("type") == "networkNode"
+                and n.get("data", {}).get("subtype") == "gateway"
+                and n.get("data", {}).get("gatewayMode") == "nat-portforward"
+            ),
+            None,
+        )
+        if gw_node:
+            desired_sg = [
+                {
+                    "project_id": p_id,
+                    "ext_port": int(pf["extPort"]),
+                    "protocol": "tcp",
+                }
+                for pf in gw_node.get("data", {}).get("portForwards", [])
+                if pf.get("extPort")
+            ]
+            sync_security_group_rules(s, provider, desired_sg)
+
+        if provider.type != "ec2" and gw_node:
+            from app.services.eip_service import allocate_transit_ports
+            from app.services.providers import get_provider_driver
+
+            driver = get_provider_driver(provider)
+            pf_list = gw_node.get("data", {}).get("portForwards", [])
+            eip_map = {}
+            for eip_obj in s.query(ElasticIp).filter_by(project_id=p_id):
+                eip_map[eip_obj.canvas_eip_id] = eip_obj
+
+            for canvas_id, eip_obj in eip_map.items():
+                pf_for_eip = [pf for pf in pf_list if pf.get("extIpId") == canvas_id]
+                if not pf_for_eip:
+                    continue
+                eip_obj.port_map = None
+                s.commit()
+                port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
+                driver.update_eip_ports(
+                    provider,
+                    h,
+                    eip_obj.allocation_id,
+                    [
+                        {
+                            "port": int(ep),
+                            "targetPort": tp,
+                            "name": f"pf-{i}",
+                        }
+                        for i, (ep, tp) in enumerate(port_map.items())
+                    ],
+                )
+                logger.info(
+                    "Reconfigure %s: updated EIP LB ports %s",
+                    p_id[:8],
+                    port_map,
+                )
+    except Exception:
+        logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
+        errors.append("EIP allocation/association failed — check server logs")
+
+
+def _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors):
+    """Teardown old BMC and set up new BMC during reconfigure."""
+    from app.services.deploy_service import (
+        _setup_bmc_via_troshkad,
+        _teardown_bmc_via_troshkad,
+    )
+
+    deployed_had_bmc = any(
+        n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
+        for n in deployed.get("nodes", [])
+    )
+    if deployed_had_bmc:
+        try:
+            _teardown_bmc_via_troshkad(h, p_id)
+        except Exception:
+            logger.warning("Reconfigure %s: BMC teardown failed (non-fatal)", p_id[:8])
+    if bmc_config:
+        try:
+            bmc_result = _setup_bmc_via_troshkad(h, p_id, bmc_config)
+            if bmc_result is not True:
+                errors.append(f"BMC setup failed: {bmc_result}")
+        except Exception:
+            logger.warning("Reconfigure %s: BMC setup failed (non-fatal)", p_id[:8])
+            errors.append("BMC setup failed — check server logs")
+
+
+def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
+    """Create and start newly added VMs during reconfigure."""
+    from app.services.deploy_service import (
+        _set_deploy_progress,
+        _vm_domain_name,
+    )
+
+    _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
+
+    def _progress(downloaded, total):
+        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+
+    cache_library_images(current, h, s, progress_callback=_progress)
+    _create_seed_isos_via_troshkad(h, p_id, current)
+    _set_deploy_progress(p_id, {"step": "creating", "detail": "VMs"})
+    for vm_node in added_vms:
+        vd = vm_node.get("data", {})
+        vm_data = {
+            "node_id": vm_node["id"],
+            "name": vd.get("name", "vm"),
+            "vcpus": vd.get("vcpus", 2),
+            "ram_gb": vd.get("ram", 4),
+            "cloud_init": vd.get("cloudInit", False),
+            "boot_devices": vd.get("bootDevices"),
+            "firmware": vd.get("firmware", "bios"),
+            "secure_boot": vd.get("secureBoot", False),
+        }
+        vm_disks_add = _find_vm_disks(vm_node["id"], current)
+        try:
+            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
+            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            # Start if auto-start not disabled
+            no_auto_start = {
+                e["vmId"]
+                for e in current.get("startOrder", [])
+                if e.get("autoStart") is False
+            }
+            if vm_node["id"] not in no_auto_start:
+                vm_name = _vm_domain_name(p_id, vm_node["id"])
+                job_id = start_job(h, _VMS_START_PATH, {"domain_name": vm_name})
+                wait_for_job(h, job_id, timeout=60)
+        except (TroshkadError, RuntimeError) as e:
+            errors.append(f"Failed to add VM {vm_node['id'][:8]}: {e}")
+
+
+def _broadcast_vm_states(h, p_id, current):
+    """Query host for all VM states and broadcast via WebSocket."""
+    from app.services.deploy_service import _vm_domain_name
+
+    try:
+        from app.services.troshkad_client import get_all_vm_states
+
+        batch = get_all_vm_states(h) or {}
+        vm_states = {}
+        for node in (current or {}).get("nodes", []):
+            if node.get("type") != "vmNode":
+                continue
+            dom = _vm_domain_name(p_id, node["id"])
+            raw = batch.get(dom, "unknown")
+            vm_states[node["id"]] = (
+                "running"
+                if raw == "running"
+                else "stopped"
+                if raw == "shut_off"
+                else raw
+            )
+        notify_project(p_id, {"type": "vm-state", "states": vm_states, "progress": {}})
+    except Exception:
+        pass
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -2631,113 +2883,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         errors = []
 
         # Sync EIPs before networking so DNAT rules have private IPs
-        external_ips = current.get("externalIps", [])
-        if external_ips:
-            try:
-                from app.models.elastic_ip import ElasticIp
-                from app.models.provider import Provider
-                from app.services.eip_service import (
-                    allocate_eip,
-                    associate_eip,
-                    sync_security_group_rules,
-                )
-
-                provider = (
-                    s.query(Provider).filter_by(id=proj.provider_id).first()
-                    if proj.provider_id
-                    else None
-                )
-                if not provider and h.provider_id:
-                    provider = s.query(Provider).filter_by(id=h.provider_id).first()
-                if provider:
-                    for ext_ip in external_ips:
-                        canvas_id = ext_ip.get("id", "")
-                        existing = (
-                            s.query(ElasticIp)
-                            .filter_by(project_id=p_id, canvas_eip_id=canvas_id)
-                            .first()
-                        )
-                        eip = existing or allocate_eip(s, provider, p_id, canvas_id, h)
-                        if eip.state != "associated":
-                            associate_eip(s, eip, h)
-                        ext_ip["ip"] = eip.public_ip
-                        ext_ip["_private_ip"] = eip.private_ip
-                    import copy
-                    import json
-
-                    from sqlalchemy import text
-
-                    new_topo = copy.deepcopy(current)
-                    s.execute(
-                        text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                        {"topo": json.dumps(new_topo), "pid": p_id},
-                    )
-                    s.commit()
-                    s.refresh(proj)
-
-                    gw_node = next(
-                        (
-                            n
-                            for n in current.get("nodes", [])
-                            if n.get("type") == "networkNode"
-                            and n.get("data", {}).get("subtype") == "gateway"
-                            and n.get("data", {}).get("gatewayMode")
-                            == "nat-portforward"
-                        ),
-                        None,
-                    )
-                    if gw_node:
-                        desired_sg = [
-                            {
-                                "project_id": p_id,
-                                "ext_port": int(pf["extPort"]),
-                                "protocol": "tcp",
-                            }
-                            for pf in gw_node.get("data", {}).get("portForwards", [])
-                            if pf.get("extPort")
-                        ]
-                        sync_security_group_rules(s, provider, desired_sg)
-
-                    if provider.type != "ec2" and gw_node:
-                        from app.services.eip_service import allocate_transit_ports
-                        from app.services.providers import get_provider_driver
-
-                        driver = get_provider_driver(provider)
-                        pf_list = gw_node.get("data", {}).get("portForwards", [])
-                        eip_map = {}
-                        for eip_obj in s.query(ElasticIp).filter_by(project_id=p_id):
-                            eip_map[eip_obj.canvas_eip_id] = eip_obj
-
-                        for canvas_id, eip_obj in eip_map.items():
-                            pf_for_eip = [
-                                pf for pf in pf_list if pf.get("extIpId") == canvas_id
-                            ]
-                            if not pf_for_eip:
-                                continue
-                            eip_obj.port_map = None
-                            s.commit()
-                            port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
-                            driver.update_eip_ports(
-                                provider,
-                                h,
-                                eip_obj.allocation_id,
-                                [
-                                    {
-                                        "port": int(ep),
-                                        "targetPort": tp,
-                                        "name": f"pf-{i}",
-                                    }
-                                    for i, (ep, tp) in enumerate(port_map.items())
-                                ],
-                            )
-                            logger.info(
-                                "Reconfigure %s: updated EIP LB ports %s",
-                                p_id[:8],
-                                port_map,
-                            )
-            except Exception:
-                logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
-                errors.append("EIP allocation/association failed — check server logs")
+        _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors)
 
         _set_deploy_progress(p_id, {"step": "networking", "detail": "configuring"})
 
@@ -3042,78 +3188,17 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
                 errors.append(f"Failed to reconfigure {dom}: {e}")
 
         if diff["added_vms"]:
-            _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
-
-            def _progress(downloaded, total):
-                pct = (
-                    f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-                )
-                _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
-
-            cache_library_images(current, h, s, progress_callback=_progress)
-            _create_seed_isos_via_troshkad(h, p_id, current)
-            _set_deploy_progress(p_id, {"step": "creating", "detail": "VMs"})
-            for vm_node in diff["added_vms"]:
-                vd = vm_node.get("data", {})
-                vm_data = {
-                    "node_id": vm_node["id"],
-                    "name": vd.get("name", "vm"),
-                    "vcpus": vd.get("vcpus", 2),
-                    "ram_gb": vd.get("ram", 4),
-                    "cloud_init": vd.get("cloudInit", False),
-                    "boot_devices": vd.get("bootDevices"),
-                    "firmware": vd.get("firmware", "bios"),
-                    "secure_boot": vd.get("secureBoot", False),
-                }
-                vm_disks_add = _find_vm_disks(vm_node["id"], current)
-                try:
-                    _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
-                    _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
-                    # Start if auto-start not disabled
-                    no_auto_start = {
-                        e["vmId"]
-                        for e in current.get("startOrder", [])
-                        if e.get("autoStart") is False
-                    }
-                    if vm_node["id"] not in no_auto_start:
-                        vm_name = _vm_domain_name(p_id, vm_node["id"])
-                        job_id = start_job(h, "/vms/start", {"domain_name": vm_name})
-                        wait_for_job(h, job_id, timeout=60)
-                except (TroshkadError, RuntimeError) as e:
-                    errors.append(f"Failed to add VM {vm_node['id'][:8]}: {e}")
+            _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
 
         from app.services.placement import sync_host_capacity
 
         sync_host_capacity(s, h)
 
         # BMC setup/teardown during reconfigure
-        from app.services.deploy_service import (
-            _extract_bmc_config,
-            _setup_bmc_via_troshkad,
-            _teardown_bmc_via_troshkad,
-        )
+        from app.services.deploy_service import _extract_bmc_config
 
         bmc_config = _extract_bmc_config(current, p_id)
-        deployed_had_bmc = any(
-            n.get("type") == "networkNode"
-            and n.get("data", {}).get("networkType") == "bmc"
-            for n in deployed.get("nodes", [])
-        )
-        if deployed_had_bmc:
-            try:
-                _teardown_bmc_via_troshkad(h, p_id)
-            except Exception:
-                logger.warning(
-                    "Reconfigure %s: BMC teardown failed (non-fatal)", p_id[:8]
-                )
-        if bmc_config:
-            try:
-                bmc_result = _setup_bmc_via_troshkad(h, p_id, bmc_config)
-                if bmc_result is not True:
-                    errors.append(f"BMC setup failed: {bmc_result}")
-            except Exception:
-                logger.warning("Reconfigure %s: BMC setup failed (non-fatal)", p_id[:8])
-                errors.append("BMC setup failed — check server logs")
+        _reconfigure_bmc(h, p_id, current, deployed, bmc_config, errors)
 
         s.refresh(proj)
         final_topo = proj.topology or {}
@@ -3153,28 +3238,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
                 "deploy_error": proj.deploy_error,
             },
         )
-        try:
-            from app.services.troshkad_client import get_all_vm_states
-
-            batch = get_all_vm_states(h) or {}
-            vm_states = {}
-            for node in (current or {}).get("nodes", []):
-                if node.get("type") != "vmNode":
-                    continue
-                dom = _vm_domain_name(p_id, node["id"])
-                raw = batch.get(dom, "unknown")
-                vm_states[node["id"]] = (
-                    "running"
-                    if raw == "running"
-                    else "stopped"
-                    if raw == "shut_off"
-                    else raw
-                )
-            notify_project(
-                p_id, {"type": "vm-state", "states": vm_states, "progress": {}}
-            )
-        except Exception:
-            pass
+        _broadcast_vm_states(h, p_id, current)
         logger.info(
             "Reconfigure %s complete%s",
             p_id[:8],
@@ -3320,7 +3384,7 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         should_start = was_running or vdata.get("powerOnAtDeploy", True)
         if should_start:
             try:
-                job_id = start_job(h, "/vms/start", {"domain_name": dom})
+                job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
                 wait_for_job(h, job_id, timeout=60)
             except TroshkadError as e:
                 logger.warning("Failed to start VM %s after redeploy: %s", dom, e)
@@ -3356,7 +3420,9 @@ def cancel_redeploy(
     return {"status": "cancelled"}
 
 
-@router.post("/{project_id}/redeploy")
+@router.post(
+    "/{project_id}/redeploy", responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}}
+)
 def redeploy_project(
     project_id: str,
     user: User = Depends(get_current_user),
@@ -3383,8 +3449,6 @@ def redeploy_project(
         raise HTTPException(status_code=400, detail="Project has no VMs")
 
     # Capture destroy context before resetting state
-    import copy
-
     destroy_ctx = None
     old_host_id = project.host_id
     if project.host_id:
@@ -3394,16 +3458,7 @@ def redeploy_project(
                 status_code=503,
                 detail="Host not reachable — cannot destroy existing VMs. Stop the project first or wait for the host to come online.",
             )
-        destroy_ctx = {
-            "project_id": project.id,
-            "host_id": project.host_id,
-            "vni_map": copy.deepcopy(project.vni_map or {}),
-            "topology": copy.deepcopy(
-                project.deployed_topology or project.topology or {}
-            ),
-            "dns_provider_id": project.dns_provider_id,
-            "domain": project.domain,
-        }
+        destroy_ctx = _build_destroy_context(project)
 
     # Cancel any in-flight deploy thread for this project
     from app.services.deploy_service import _mark_deploy_cancelled
@@ -3419,39 +3474,6 @@ def redeploy_project(
     project.ocp_install_elapsed = None
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
-
-    def _redeploy_bg(pid, ctx, host_id):
-        from app.core.database import SessionLocal
-        from app.services.gc_service import sync_host_capacity
-
-        s = SessionLocal()
-        try:
-            if ctx:
-                destroy_project_sync(ctx, delete_record=False)
-                proj = s.get(Project, pid)
-                if not proj:
-                    return
-                proj.host_id = None
-                s.commit()
-                h = s.query(Host).filter_by(id=ctx["host_id"]).first()
-                if h:
-                    sync_host_capacity(s, h)
-
-            proj = s.get(Project, pid)
-            if not proj:
-                return
-            result = place_project(s, proj, host_id=host_id)
-            if "error" in result:
-                proj.state = "error"
-                proj.deploy_error = result["error"]
-                s.commit()
-                return
-            proj.vni_map = result.get("vni_map")
-            s.commit()
-        finally:
-            s.close()
-
-        deploy_project_async(pid)
 
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_redeploy_bg

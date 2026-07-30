@@ -16,6 +16,7 @@ logging.getLogger("uvicorn.access").propagate = True
 
 from contextlib import asynccontextmanager
 from datetime import UTC
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,154 +29,130 @@ logger = logging.getLogger(__name__)
 
 init_db()
 
+from app.models.user import User  # noqa: E402
 
-@asynccontextmanager
-async def lifespan(app):
-    import asyncio
+AdminUser = Annotated[User, Depends(require_role("admin"))]
 
-    from app.core.redis import get_redis
-    from app.services.health_poller import start_health_poller
-    from app.services.project_timer import start_project_timer
-    from app.services.ws_pubsub import (
-        set_event_loop,
-        start_redis_listener,
-        start_state_poller,
-    )
 
-    set_event_loop(asyncio.get_running_loop())
-
-    # Initialize Redis connection
-    try:
-        r = get_redis()
-        r.ping()
-        logger.info("Redis connected")
-    except Exception as e:
-        logger.warning("Redis not available — falling back to local-only mode: %s", e)
-
-    from app.services.agent_ca_service import ensure_agent_ca
-
-    ensure_agent_ca()
-
-    start_health_poller()
-    start_project_timer()
-    start_state_poller()
-    start_redis_listener()
-
-    from app.services.operator_updater import start_operator_updater
-
-    start_operator_updater()
-
-    # Clear stale OCP health monitor set entries from previous pod
+def _startup_clear_health_monitors():
+    """Clear stale OCP health monitor set entries from previous pod."""
     from app.core.redis import is_redis_available
 
-    if is_redis_available():
+    if not is_redis_available():
+        return
+    try:
+        from app.core.redis import get_redis
+
+        r = get_redis()
+        r.delete("deploy:health_monitors")
+        logger.info("Startup: cleared health monitor set")
+    except Exception:
+        pass
+
+
+def _startup_recover_abandoned_jobs():
+    """Clean up abandoned RQ jobs (workers killed during rollout)."""
+    from app.core.redis import is_redis_available
+
+    if not is_redis_available():
+        return
+    try:
+        from datetime import datetime
+
+        from rq import Queue
+        from rq.job import Job
+
+        from app.core.database import SessionLocal
+        from app.core.redis import get_redis_raw
+        from app.models.project import Project
+
+        r = get_redis_raw()
+        db = SessionLocal()
         try:
-            from app.core.redis import get_redis
+            now_utc = datetime.now(UTC)
+            for qname in ["project_lifecycle", "host_lifecycle", "default"]:
+                q = Queue(qname, connection=r)
+                registry = q.failed_job_registry
+                abandoned_ids = registry.get_job_ids()
+                for jid in abandoned_ids:
+                    try:
+                        j = Job.fetch(jid, connection=r)
+                        if "AbandonedJobError" not in str(j.exc_info or ""):
+                            continue
 
-            r = get_redis()
-            r.delete("deploy:health_monitors")
-            logger.info("Startup: cleared health monitor set")
-        except Exception:
-            pass
+                        pid = j.meta.get("project_id")
+                        func_label = (j.func_name or "unknown").split(".")[-1]
 
-    # Clean up abandoned RQ jobs (workers killed during rollout)
-
-    if is_redis_available():
-        try:
-            from datetime import datetime
-
-            from rq import Queue
-            from rq.job import Job
-
-            from app.core.database import SessionLocal as _SL
-            from app.core.redis import get_redis_raw
-            from app.models.project import Project as _Proj
-
-            r = get_redis_raw()
-            _recovery_db = _SL()
-            try:
-                now_utc = datetime.now(UTC)
-                for qname in ["project_lifecycle", "host_lifecycle", "default"]:
-                    q = Queue(qname, connection=r)
-                    registry = q.failed_job_registry
-                    abandoned_ids = registry.get_job_ids()
-                    for jid in abandoned_ids:
-                        try:
-                            j = Job.fetch(jid, connection=r)
-                            if "AbandonedJobError" not in str(j.exc_info or ""):
+                        # Age out stale jobs (>1 hour since failure)
+                        job_ended = j.ended_at
+                        if job_ended:
+                            if job_ended.tzinfo is None:
+                                job_ended = job_ended.replace(tzinfo=UTC)
+                            age_s = (now_utc - job_ended).total_seconds()
+                            if age_s > 3600:
+                                logger.info(
+                                    "Startup: discarding stale abandoned job %s (%s, %.0fh old)",
+                                    jid[:8],
+                                    func_label,
+                                    age_s / 3600,
+                                )
+                                registry.remove(j)
+                                j.delete()
                                 continue
 
-                            pid = j.meta.get("project_id")
-                            func_label = (j.func_name or "unknown").split(".")[-1]
+                        # Check project state — only re-queue if still in transient state
+                        if pid:
+                            proj = db.get(Project, pid)
+                            if not proj:
+                                logger.info(
+                                    "Startup: discarding abandoned job %s — project %s not found",
+                                    jid[:8],
+                                    pid[:8],
+                                )
+                                registry.remove(j)
+                                j.delete()
+                                continue
+                            if proj.state not in (
+                                "deploying",
+                                "starting",
+                                "stopping",
+                                "reconfiguring",
+                            ):
+                                logger.info(
+                                    "Startup: discarding abandoned job %s — project %s already %s",
+                                    jid[:8],
+                                    pid[:8],
+                                    proj.state,
+                                )
+                                registry.remove(j)
+                                j.delete()
+                                continue
 
-                            # Age out stale jobs (>1 hour since failure)
-                            job_ended = j.ended_at
-                            if job_ended:
-                                if job_ended.tzinfo is None:
-                                    job_ended = job_ended.replace(tzinfo=UTC)
-                                age_s = (now_utc - job_ended).total_seconds()
-                                if age_s > 3600:
-                                    logger.info(
-                                        "Startup: discarding stale abandoned job %s (%s, %.0fh old)",
-                                        jid[:8],
-                                        func_label,
-                                        age_s / 3600,
-                                    )
-                                    registry.remove(j)
-                                    j.delete()
-                                    continue
+                        logger.warning(
+                            "Startup: re-queuing abandoned job %s (%s)",
+                            jid[:8],
+                            func_label,
+                        )
+                        registry.remove(j)
+                        j.requeue()
+                    except Exception:
+                        pass
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Startup: failed to check abandoned jobs")
 
-                            # Check project state — only re-queue if still in a transient state
-                            if pid:
-                                proj = _recovery_db.get(_Proj, pid)
-                                if not proj:
-                                    logger.info(
-                                        "Startup: discarding abandoned job %s — project %s not found",
-                                        jid[:8],
-                                        pid[:8],
-                                    )
-                                    registry.remove(j)
-                                    j.delete()
-                                    continue
-                                if proj.state not in (
-                                    "deploying",
-                                    "starting",
-                                    "stopping",
-                                    "reconfiguring",
-                                ):
-                                    logger.info(
-                                        "Startup: discarding abandoned job %s — project %s already %s",
-                                        jid[:8],
-                                        pid[:8],
-                                        proj.state,
-                                    )
-                                    registry.remove(j)
-                                    j.delete()
-                                    continue
 
-                            logger.warning(
-                                "Startup: re-queuing abandoned job %s (%s)",
-                                jid[:8],
-                                func_label,
-                            )
-                            registry.remove(j)
-                            j.requeue()
-                        except Exception:
-                            pass
-            finally:
-                _recovery_db.close()
-        except Exception:
-            logger.warning("Startup: failed to check abandoned jobs")
-
-    # Reset projects stuck in transient states from a previous crash/restart
+def _startup_reset_stuck_projects():
+    """Reset projects stuck in transient states from a previous crash/restart."""
     from app.core.database import SessionLocal
-    from app.core.redis import enqueue_job
+    from app.core.redis import enqueue_job, is_redis_available
     from app.models.project import Project
 
-    s = SessionLocal()
+    db = SessionLocal()
     try:
         stuck = (
-            s.query(Project)
+            db.query(Project)
             .filter(
                 Project.state.in_(
                     ("deploying", "reconfiguring", "starting", "stopping")
@@ -228,21 +205,22 @@ async def lifespan(app):
                 p.state = "error"
                 p.deploy_error = f"Server restarted while project was {old_state}"
         if stuck:
-            s.commit()
+            db.commit()
     finally:
-        s.close()
+        db.close()
 
-    # Reset hosts stuck in transient agent states from a previous crash/restart
-    from app.models.host import Host as _HostReset
 
-    s2 = SessionLocal()
+def _startup_reset_stuck_hosts():
+    """Reset hosts stuck in transient agent states from a previous crash/restart."""
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+
+    db = SessionLocal()
     try:
         stuck_hosts = (
-            s2.query(_HostReset)
+            db.query(Host)
             .filter(
-                _HostReset.agent_status.in_(
-                    ("waiting_ssh", "installing", "install_failed")
-                )
+                Host.agent_status.in_(("waiting_ssh", "installing", "install_failed"))
             )
             .all()
         )
@@ -254,16 +232,20 @@ async def lifespan(app):
             )
             h.agent_status = "disconnected"
         if stuck_hosts:
-            s2.commit()
+            db.commit()
     finally:
-        s2.close()
+        db.close()
 
-    # Resume stuck pattern captures
+
+def _startup_resume_pattern_captures():
+    """Resume stuck pattern captures."""
+    from app.core.database import SessionLocal
+    from app.core.redis import enqueue_job
     from app.models.pattern import Pattern
 
-    s = SessionLocal()
+    db = SessionLocal()
     try:
-        stuck_patterns = s.query(Pattern).filter(Pattern.state == "capturing").all()
+        stuck_patterns = db.query(Pattern).filter(Pattern.state == "capturing").all()
         for pat in stuck_patterns:
             logger.info(
                 "Startup: resuming pattern capture %s (%s)",
@@ -274,20 +256,25 @@ async def lifespan(app):
 
             enqueue_job(capture_pattern_disks, pat.id, pat.source_project_id, False)
     finally:
-        s.close()
+        db.close()
 
-    # Resume polling for storage pools stuck in "creating" (poller thread died on restart)
+
+def _startup_resume_storage_pools():
+    """Resume storage pool operations, sync SG rules, and retry pattern buffer installs."""
+    from app.core.database import SessionLocal
+    from app.core.redis import enqueue_job
+    from app.models.host import Host
     from app.models.provider import Provider
     from app.models.storage_pool import StoragePool
 
-    s = SessionLocal()
+    db = SessionLocal()
     try:
         creating_pools = (
-            s.query(StoragePool).filter(StoragePool.status == "creating").all()
+            db.query(StoragePool).filter(StoragePool.status == "creating").all()
         )
         for pool in creating_pools:
             if pool.fsx_filesystem_id:
-                provider = s.get(Provider, pool.provider_id)
+                provider = db.get(Provider, pool.provider_id)
                 if provider:
                     creds = provider.get_credentials()
                     from app.services.storage_pool_service import (
@@ -318,12 +305,12 @@ async def lifespan(app):
         from app.services.storage_pool_service import add_sg_rules_for_shared_storage
 
         available_pools = (
-            s.query(StoragePool)
+            db.query(StoragePool)
             .filter(StoragePool.status == "available", StoragePool.mode == "shared-fsx")
             .all()
         )
         for pool in available_pools:
-            provider = s.get(Provider, pool.provider_id)
+            provider = db.get(Provider, pool.provider_id)
             if provider and provider.security_group_id:
                 try:
                     creds = provider.get_credentials()
@@ -339,14 +326,11 @@ async def lifespan(app):
                     )
 
         # Resume stuck pattern buffer installs (agent disconnected but host active)
-        from app.models.host import Host as _Host
-        from app.models.storage_pool import StoragePool
-
         pb_pools = (
-            s.query(StoragePool).filter(StoragePool.worker_host_id.isnot(None)).all()
+            db.query(StoragePool).filter(StoragePool.worker_host_id.isnot(None)).all()
         )
         for pool in pb_pools:
-            pb_host = s.query(_Host).filter_by(id=pool.worker_host_id).first()
+            pb_host = db.query(Host).filter_by(id=pool.worker_host_id).first()
             if (
                 pb_host
                 and pb_host.state == "active"
@@ -364,9 +348,55 @@ async def lifespan(app):
                     queue_name="host_lifecycle",
                 )
 
-        s.commit()
+        db.commit()
     finally:
-        s.close()
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    import asyncio
+
+    from app.core.redis import get_redis
+    from app.services.health_poller import start_health_poller
+    from app.services.project_timer import start_project_timer
+    from app.services.ws_pubsub import (
+        set_event_loop,
+        start_redis_listener,
+        start_state_poller,
+    )
+
+    set_event_loop(asyncio.get_running_loop())
+
+    # Initialize Redis connection
+    try:
+        r = get_redis()
+        r.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning("Redis not available — falling back to local-only mode: %s", e)
+
+    from app.services.agent_ca_service import ensure_agent_ca
+
+    ensure_agent_ca()
+
+    start_health_poller()
+    start_project_timer()
+    start_state_poller()
+    start_redis_listener()
+
+    from app.services.operator_updater import start_operator_updater
+
+    start_operator_updater()
+
+    _startup_clear_health_monitors()
+    _startup_recover_abandoned_jobs()
+
+    _startup_reset_stuck_projects()
+    _startup_reset_stuck_hosts()
+
+    _startup_resume_pattern_captures()
+    _startup_resume_storage_pools()
 
     yield
 
@@ -563,7 +593,7 @@ def ocp_versions():
 
 
 @app.get("/api/v1/debug/threads")
-def debug_threads(user=Depends(require_role("admin"))):
+def debug_threads(user: AdminUser):
     import threading
 
     threads = []
@@ -573,7 +603,7 @@ def debug_threads(user=Depends(require_role("admin"))):
 
 
 @app.get("/api/v1/admin/queue-status")
-def queue_status(user=Depends(require_role("admin"))):
+def queue_status(user: AdminUser):
     """Show job queue depths, active workers, and failed jobs."""
     from app.core.redis import is_redis_available
 
@@ -654,8 +684,8 @@ def queue_status(user=Depends(require_role("admin"))):
 
 @app.get("/api/v1/admin/failed-jobs")
 def list_failed_jobs(
+    user: AdminUser,
     queue_name: str = "deploy",
-    user=Depends(require_role("admin")),
 ):
     """List failed jobs with error details."""
     from app.core.redis import is_redis_available
@@ -695,8 +725,11 @@ def list_failed_jobs(
         return {"error": str(e)}
 
 
-@app.post("/api/v1/admin/failed-jobs/{job_id}/retry")
-def retry_failed_job(job_id: str, user=Depends(require_role("admin"))):
+@app.post(
+    "/api/v1/admin/failed-jobs/{job_id}/retry",
+    responses={400: {"description": "Redis unavailable or job retry failed"}},
+)
+def retry_failed_job(job_id: str, user: AdminUser):
     """Re-queue a failed job."""
     from app.core.redis import get_redis_raw, is_redis_available
 
@@ -714,8 +747,11 @@ def retry_failed_job(job_id: str, user=Depends(require_role("admin"))):
         raise HTTPException(400, f"Failed to retry job: {e}")
 
 
-@app.delete("/api/v1/admin/failed-jobs/{job_id}")
-def delete_failed_job(job_id: str, user=Depends(require_role("admin"))):
+@app.delete(
+    "/api/v1/admin/failed-jobs/{job_id}",
+    responses={400: {"description": "Redis unavailable or job deletion failed"}},
+)
+def delete_failed_job(job_id: str, user: AdminUser):
     """Delete a failed job permanently."""
     from app.core.redis import get_redis_raw, is_redis_available
 

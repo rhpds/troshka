@@ -122,16 +122,8 @@ def _on_job_success(job, connection, result, *args, **kwargs):
             pass
 
 
-def _on_job_failure(job, connection, exc_type, exc_value, traceback):
-    """Called by RQ when a job fails (exception, timeout, or worker crash)."""
-    project_id = job.meta.get("project_id")
-    host_id = job.meta.get("host_id")
-    logger.error(
-        "Job %s failed: %s: %s",
-        job.id[:8],
-        exc_type.__name__ if exc_type else "unknown",
-        exc_value,
-    )
+def _cleanup_host_locks(host_id: str | None, project_id: str | None):
+    """Release deploy tracking and network locks for a host after job failure."""
     if host_id:
         try:
             from app.services.placement import record_deploy_end
@@ -143,57 +135,70 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
             _release_stale_lock(f"lock:network:{host_id}")
         except Exception:
             pass
-    is_abandoned = exc_type and exc_type.__name__ == "AbandonedJobError"
-    if project_id:
-        if not is_abandoned:
-            try:
-                delete_progress(f"deploy:{project_id}")
-                connection.delete(f"job:project:{project_id}")
-            except Exception:
-                pass
-        # Try to find host_id from the project for lock cleanup
-        if not host_id:
-            try:
-                from app.core.database import SessionLocal
-                from app.models.project import Project as _P
+    # If no host_id was on the job, try to find it from the project
+    if not host_id and project_id:
+        try:
+            from app.core.database import SessionLocal
+            from app.models.project import Project as _P
 
-                _s = SessionLocal()
-                _proj = _s.get(_P, project_id)
-                if _proj and _proj.host_id:
-                    _release_stale_lock(f"lock:network:{_proj.host_id}")
-                _s.close()
-            except Exception:
-                pass
-        if not is_abandoned:
-            try:
-                from app.core.database import SessionLocal
-                from app.models.project import Project
+            _s = SessionLocal()
+            _proj = _s.get(_P, project_id)
+            if _proj and _proj.host_id:
+                _release_stale_lock(f"lock:network:{_proj.host_id}")
+            _s.close()
+        except Exception:
+            pass
 
-                s = SessionLocal()
-                p = s.get(Project, project_id)
-                if p and p.state in (
-                    "deploying",
-                    "starting",
-                    "stopping",
-                    "deleting",
-                ):
-                    p.state = "error"
-                    err_msg = str(exc_value).strip() if exc_value else ""
-                    p.deploy_error = (
-                        f"{err_msg}. Please retry."
-                        if err_msg
-                        else "Job failed unexpectedly. Please retry."
-                    )
-                    s.commit()
-                s.close()
-            except Exception:
-                pass
-        else:
-            logger.info(
-                "Job %s abandoned by worker restart, leaving project %s in transient state for recovery",
-                job.id[:8],
-                project_id[:8],
+
+def _set_project_error_state(project_id: str, exc_value):
+    """Set a project to error state after a job failure."""
+    try:
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        s = SessionLocal()
+        p = s.get(Project, project_id)
+        if p and p.state in ("deploying", "starting", "stopping", "deleting"):
+            p.state = "error"
+            err_msg = str(exc_value).strip() if exc_value else ""
+            p.deploy_error = (
+                f"{err_msg}. Please retry."
+                if err_msg
+                else "Job failed unexpectedly. Please retry."
             )
+            s.commit()
+        s.close()
+    except Exception:
+        pass
+
+
+def _on_job_failure(job, connection, exc_type, exc_value, traceback):
+    """Called by RQ when a job fails (exception, timeout, or worker crash)."""
+    project_id = job.meta.get("project_id")
+    host_id = job.meta.get("host_id")
+    logger.error(
+        "Job %s failed: %s: %s",
+        job.id[:8],
+        exc_type.__name__ if exc_type else "unknown",
+        exc_value,
+    )
+    _cleanup_host_locks(host_id, project_id)
+    is_abandoned = exc_type and exc_type.__name__ == "AbandonedJobError"
+    if not project_id:
+        return
+    if not is_abandoned:
+        try:
+            delete_progress(f"deploy:{project_id}")
+            connection.delete(f"job:project:{project_id}")
+        except Exception:
+            pass
+        _set_project_error_state(project_id, exc_value)
+    else:
+        logger.info(
+            "Job %s abandoned by worker restart, leaving project %s in transient state for recovery",
+            job.id[:8],
+            project_id[:8],
+        )
 
 
 def enqueue_job(
@@ -407,7 +412,7 @@ class _InMemoryLock:
                 _mem_locks[name] = threading.Lock()
             self._lock = _mem_locks[name]
 
-    def acquire(self, blocking: bool = True, poll_interval: float = 0.2) -> bool:
+    def acquire(self, blocking: bool = True) -> bool:
         return self._lock.acquire(blocking=blocking, timeout=self.timeout)
 
     def release(self):
@@ -506,6 +511,16 @@ def _ensure_pubsub_listener():
     _pubsub_thread.start()
 
 
+def _collect_pubsub_callbacks(channel: str) -> list:
+    """Collect all registered callbacks matching a channel (exact + wildcard)."""
+    with _pubsub_lock:
+        cbs = list(_pubsub_callbacks.get(channel, []))
+        for pattern, callbacks in _pubsub_callbacks.items():
+            if pattern.endswith("*") and channel.startswith(pattern[:-1]):
+                cbs.extend(callbacks)
+    return cbs
+
+
 def _pubsub_listen_loop():
     try:
         r = get_redis()
@@ -514,24 +529,17 @@ def _pubsub_listen_loop():
         logger.info("Redis pub/sub listener started")
 
         for msg in ps.listen():
-            if msg["type"] not in ("pmessage",):
+            if msg["type"] != "pmessage":
                 continue
-            channel = msg["channel"]
             try:
                 data = json.loads(msg["data"])
             except (json.JSONDecodeError, TypeError):
                 continue
-            with _pubsub_lock:
-                cbs = list(_pubsub_callbacks.get(channel, []))
-                for pattern, callbacks in _pubsub_callbacks.items():
-                    if pattern.endswith("*") and channel.startswith(pattern[:-1]):
-                        cbs.extend(callbacks)
-
-            for cb in cbs:
+            for cb in _collect_pubsub_callbacks(msg["channel"]):
                 try:
-                    cb(channel, data)
+                    cb(msg["channel"], data)
                 except Exception:
-                    logger.exception("Pub/sub callback error on %s", channel)
+                    logger.exception("Pub/sub callback error on %s", msg["channel"])
     except Exception:
         logger.exception("Redis pub/sub listener crashed")
 

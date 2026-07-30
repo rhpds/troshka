@@ -200,6 +200,11 @@ def _cleanup_rate_limit():
             del _ban_history[ip]
 
 
+# ── Path / string constants ──
+
+_VMS_DIR = "/var/lib/troshka/vms"
+_INET_PREFIX = "inet "
+
 # ── NFS health tracking ──
 
 _nfs_healthy = True
@@ -2314,9 +2319,7 @@ def _handle_vm_recert(job, params):
             "node-kubeconfigs/lb-ext.kubeconfig",
         )
         if project_id and os.path.isfile(kubeconfig_src) and not force_expire:
-            kc_dir = os.path.join(
-                _config.get("vm_dir", "/var/lib/troshka/vms"), project_id
-            )
+            kc_dir = os.path.join(_config.get("vm_dir", _VMS_DIR), project_id)
             os.makedirs(kc_dir, exist_ok=True)
             with open(kubeconfig_src) as f:
                 kc_content = f.read()
@@ -2519,6 +2522,36 @@ def _handle_vm_recert(job, params):
 COMMAND_HANDLERS["vms/recert"] = _handle_vm_recert
 
 
+def _detect_namespace_gateway_ip(ns):
+    """Return the first usable global IPv4 address inside a network namespace."""
+    try:
+        out = subprocess.run(
+            ["ip", "netns", "exec", ns, "ip", "-4", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+    except Exception:
+        return ""
+    for line in out.split("\n"):
+        line = line.strip()
+        if not (
+            line.startswith(_INET_PREFIX)
+            and "scope global" in line
+            and "secondary" not in line
+        ):
+            continue
+        addr = line.split()[1].split("/")[0]
+        if (
+            addr == "127.0.0.1"
+            or addr.startswith("169.254")
+            or addr.startswith("192.168.100")
+        ):
+            continue
+        return addr
+    return ""
+
+
 def _handle_oc_exec(job, params):
     """Run an oc command inside the project's network namespace.
 
@@ -2533,39 +2566,14 @@ def _handle_oc_exec(job, params):
 
     ns = f"troshka-{project_id[:8]}"
     kc_path = os.path.join(
-        _config.get("vm_dir", "/var/lib/troshka/vms"),
+        _config.get("vm_dir", _VMS_DIR),
         project_id,
         "kubeconfig",
     )
     if not os.path.isfile(kc_path):
         raise RuntimeError(f"No kubeconfig for project {project_id[:8]}")
 
-    gateway_ip = params.get("gateway_ip", "")
-    if not gateway_ip:
-        try:
-            out = subprocess.run(
-                ["ip", "netns", "exec", ns, "ip", "-4", "addr", "show"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            ).stdout
-            for line in out.split("\n"):
-                line = line.strip()
-                if (
-                    line.startswith("inet ")
-                    and "scope global" in line
-                    and "secondary" not in line
-                ):
-                    addr = line.split()[1].split("/")[0]
-                    if (
-                        addr != "127.0.0.1"
-                        and not addr.startswith("169.254")
-                        and not addr.startswith("192.168.100")
-                    ):
-                        gateway_ip = addr
-                        break
-        except Exception:
-            pass
+    gateway_ip = params.get("gateway_ip", "") or _detect_namespace_gateway_ip(ns)
 
     import shlex
 
@@ -5222,7 +5230,7 @@ def _handle_gc_discover(job, params):
 
     # 1. Scan VM dirs for orphan project dirs (local + shared storage)
     for vms_dir in [
-        "/var/lib/troshka/vms",
+        _VMS_DIR,
         "/var/lib/troshka/shared/vms",
         "/var/lib/troshka/local/vms",
     ]:
@@ -7564,6 +7572,253 @@ def _generate_self_signed_cert(cert_path, key_path, cn, ip):
     os.chmod(key_path, 0o600)
 
 
+def _kill_pid_file(pid_path):
+    """Read a PID file and kill the process. Silently ignores missing/dead processes."""
+    if not os.path.exists(pid_path):
+        return
+    try:
+        with open(pid_path) as f:
+            old_pid = int(f.read().strip())
+        _safe_kill(old_pid, signal.SIGTERM)
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+
+
+def _bmc_start_dnsmasq(job, ns, pid, bridge, bmc_cidr, dhcp_hosts):
+    """Start dnsmasq for DHCP on BMC bridge with static reservations."""
+    net_base = bmc_cidr.rsplit(".", 1)[0]
+    dnsmasq_conf = f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf"
+    dnsmasq_pid_file = f"/run/troshka-dnsmasq-bmc-{pid}.pid"
+    dnsmasq_lease = f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases"
+    conf_lines = [
+        f"interface={bridge}",
+        "bind-interfaces",
+        "except-interface=lo",
+        "no-resolv",
+        "no-hosts",
+        f"pid-file={dnsmasq_pid_file}",
+        f"dhcp-leasefile={dnsmasq_lease}",
+        f"dhcp-range={net_base}.100,{net_base}.199,24h",
+    ]
+    for dh in dhcp_hosts:
+        safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
+        hostname_part = f",{safe_name}" if safe_name else ""
+        conf_lines.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
+    with open(dnsmasq_conf, "w") as f:
+        f.write("\n".join(conf_lines) + "\n")
+
+    _kill_pid_file(dnsmasq_pid_file)
+
+    subprocess.Popen(
+        ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    _job_log(job, f"BMC dnsmasq started with {len(dhcp_hosts)} DHCP reservations")
+
+
+def _bmc_write_sushy_conf(
+    conf_path,
+    bmc_ip,
+    port,
+    pool_name,
+    htpasswd_path,
+    dom_uuid,
+    ssl_cert=None,
+    ssl_key=None,
+):
+    """Write a sushy-emulator config file."""
+    with open(conf_path, "w") as f:
+        f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
+        f.write(f"SUSHY_EMULATOR_LISTEN_PORT = {port}\n")
+        f.write("SUSHY_EMULATOR_LIBVIRT_URI = 'qemu:///system'\n")
+        f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
+        f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
+        f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
+        f.write(f"SUSHY_EMULATOR_STORAGE_POOL = '{pool_name}'\n")
+        f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
+        if ssl_cert:
+            f.write(f"SUSHY_EMULATOR_SSL_CERT = '{ssl_cert}'\n")
+            f.write(f"SUSHY_EMULATOR_SSL_KEY = '{ssl_key}'\n")
+        if dom_uuid:
+            f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
+
+
+def _bmc_start_sushy_instance(
+    job, ns, venv_bin, conf_path, pid_path, bmc_ip, port, domain_name
+):
+    """Start a single sushy-emulator process and record its PID."""
+    _kill_pid_file(pid_path)
+    proc = subprocess.Popen(
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            f"{venv_bin}/sushy-emulator",
+            "--config",
+            conf_path,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    with open(pid_path, "w") as f:
+        f.write(str(proc.pid))
+    _job_log(
+        job,
+        f"sushy-emulator started for {domain_name} at {bmc_ip}:{port} (PID {proc.pid})",
+    )
+
+
+def _bmc_start_sushy_for_vm(job, ns, bmc_dir, venv_bin, vm, pool_name, htpasswd_path):
+    """Start HTTP and SSL sushy-emulator instances for one VM."""
+    domain_name = _validate_domain_name(vm["domain_name"])
+    bmc_ip = _validate_ip(vm["bmc_ip"])
+    vm_short = domain_name.split("-")[-1] if "-" in domain_name else domain_name[:8]
+
+    # Get libvirt UUID for ALLOWED_INSTANCES (sushy uses UUIDs, not names)
+    dom_uuid = ""
+    try:
+        result = subprocess.run(
+            ["virsh", "domuuid", domain_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        dom_uuid = result.stdout.strip()
+    except Exception:
+        pass
+
+    # HTTP on port 8000
+    conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}.conf")
+    _bmc_write_sushy_conf(conf_path, bmc_ip, 8000, pool_name, htpasswd_path, dom_uuid)
+    pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}.pid")
+    _bmc_start_sushy_instance(
+        job, ns, venv_bin, conf_path, pid_path, bmc_ip, 8000, domain_name
+    )
+
+    # SSL on port 8443
+    cert_path = os.path.join(bmc_dir, f"sushy-{vm_short}.crt")
+    key_path = os.path.join(bmc_dir, f"sushy-{vm_short}.key")
+    _generate_self_signed_cert(cert_path, key_path, f"sushy-{domain_name}", bmc_ip)
+    ssl_conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.conf")
+    _bmc_write_sushy_conf(
+        ssl_conf_path,
+        bmc_ip,
+        8443,
+        pool_name,
+        htpasswd_path,
+        dom_uuid,
+        ssl_cert=cert_path,
+        ssl_key=key_path,
+    )
+    ssl_pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.pid")
+    _bmc_start_sushy_instance(
+        job, ns, venv_bin, ssl_conf_path, ssl_pid_path, bmc_ip, 8443, domain_name
+    )
+
+
+def _bmc_start_vbmcd(job, ns, bmc_dir, venv_bin, vms, bmc_username, bmc_password):
+    """Start vbmcd daemon and register VMs for IPMI access."""
+    vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
+    if os.path.isdir(vbmcd_conf_dir):
+        shutil.rmtree(vbmcd_conf_dir)
+    os.makedirs(vbmcd_conf_dir, exist_ok=True)
+
+    vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")
+    with open(vbmcd_conf_path, "w") as f:
+        f.write("[default]\n")
+        f.write(f"config_dir = {vbmcd_conf_dir}\n")
+        f.write(f"pid_file = {bmc_dir}/vbmcd.pid\n")
+        f.write("[log]\n")
+        f.write(f"logfile = {bmc_dir}/vbmcd.log\n")
+
+    vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
+    _bmc_stop_vbmcd(vbmcd_pid_path)
+
+    env = os.environ.copy()
+    env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
+    proc = subprocess.Popen(
+        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        start_new_session=True,
+    )
+    # Don't write PID file -- vbmcd manages its own via pid_file in config.
+    # Wait for vbmcd to be ready (writes its PID file and opens ZMQ port).
+    for _ in range(20):
+        time.sleep(0.5)
+        if os.path.exists(vbmcd_pid_path):
+            break
+
+    _job_log(job, f"vbmcd started (wrapper PID {proc.pid})")
+
+    for vm in vms:
+        domain_name = _validate_domain_name(vm["domain_name"])
+        bmc_ip = _validate_ip(vm["bmc_ip"])
+
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                ns,
+                f"{venv_bin}/vbmc",
+                "add",
+                domain_name,
+                "--port",
+                "623",
+                "--address",
+                bmc_ip,
+                "--username",
+                bmc_username,
+                "--password",
+                bmc_password,
+                "--libvirt-uri",
+                "qemu:///system",
+            ],
+            timeout=30,
+        )
+        _run_cmd(
+            job,
+            ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "start", domain_name],
+            timeout=30,
+        )
+        _job_log(job, f"vbmc registered {domain_name} at {bmc_ip}:623")
+
+
+def _bmc_stop_vbmcd(vbmcd_pid_path):
+    """Stop an existing vbmcd process, waiting for it to exit cleanly."""
+    if not os.path.exists(vbmcd_pid_path):
+        return
+    try:
+        with open(vbmcd_pid_path) as f:
+            old_pid = int(f.read().strip())
+        _safe_kill(old_pid, signal.SIGTERM)
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                os.kill(old_pid, 0)
+            except ProcessLookupError:
+                break
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+    # Only remove PID file if process is confirmed dead
+    try:
+        with open(vbmcd_pid_path) as f:
+            check_pid = int(f.read().strip())
+        os.kill(check_pid, 0)
+    except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+        try:
+            os.remove(vbmcd_pid_path)
+        except FileNotFoundError:
+            pass
+
+
 def _handle_bmc_setup(job, params):
     """Set up virtual BMC endpoints for a project's VMs.
 
@@ -7661,43 +7916,7 @@ def _handle_bmc_setup(job, params):
     # 2b. Start dnsmasq for DHCP on BMC bridge (static reservations)
     dhcp_hosts = params.get("dhcp_hosts", [])
     if dhcp_hosts:
-        net_base = bmc_cidr.rsplit(".", 1)[0]
-        dnsmasq_conf = f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf"
-        dnsmasq_pid_file = f"/run/troshka-dnsmasq-bmc-{pid}.pid"
-        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases"
-        conf_lines = [
-            f"interface={bridge}",
-            "bind-interfaces",
-            "except-interface=lo",
-            "no-resolv",
-            "no-hosts",
-            f"pid-file={dnsmasq_pid_file}",
-            f"dhcp-leasefile={dnsmasq_lease}",
-            f"dhcp-range={net_base}.100,{net_base}.199,24h",
-        ]
-        for dh in dhcp_hosts:
-            safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
-            hostname_part = f",{safe_name}" if safe_name else ""
-            conf_lines.append(f"dhcp-host={dh['mac']},{dh['ip']}{hostname_part}")
-        with open(dnsmasq_conf, "w") as f:
-            f.write("\n".join(conf_lines) + "\n")
-
-        # Kill existing dnsmasq for this BMC network
-        if os.path.exists(dnsmasq_pid_file):
-            try:
-                with open(dnsmasq_pid_file) as f:
-                    old_pid = int(f.read().strip())
-                _safe_kill(old_pid, signal.SIGTERM)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-
-        subprocess.Popen(
-            ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        _job_log(job, f"BMC dnsmasq started with {len(dhcp_hosts)} DHCP reservations")
+        _bmc_start_dnsmasq(job, ns, pid, bridge, bmc_cidr, dhcp_hosts)
 
     # 3. Create htpasswd file for sushy basic auth (bcrypt format required by sushy-tools)
     htpasswd_path = os.path.join(bmc_dir, "htpasswd")
@@ -7736,213 +7955,14 @@ def _handle_bmc_setup(job, params):
     )
     _job_log(job, f"Storage pool {pool_name} created at {vmedia_dir}")
 
-    # 5. Start sushy-emulator per VM
+    # 5. Start sushy-emulator per VM (HTTP + SSL)
     for vm in vms:
-        domain_name = _validate_domain_name(vm["domain_name"])
-        bmc_ip = _validate_ip(vm["bmc_ip"])
-        vm_short = domain_name.split("-")[-1] if "-" in domain_name else domain_name[:8]
-
-        # Get libvirt UUID for ALLOWED_INSTANCES (sushy uses UUIDs, not names)
-        dom_uuid = ""
-        try:
-            result = subprocess.run(
-                ["virsh", "domuuid", domain_name],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            dom_uuid = result.stdout.strip()
-        except Exception:
-            pass
-
-        conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}.conf")
-        with open(conf_path, "w") as f:
-            f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
-            f.write("SUSHY_EMULATOR_LISTEN_PORT = 8000\n")
-            f.write("SUSHY_EMULATOR_LIBVIRT_URI = 'qemu:///system'\n")
-            f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
-            f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
-            f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
-            f.write(f"SUSHY_EMULATOR_STORAGE_POOL = '{pool_name}'\n")
-            f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
-            if dom_uuid:
-                f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
-
-        pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}.pid")
-
-        if os.path.exists(pid_path):
-            try:
-                with open(pid_path) as f:
-                    old_pid = int(f.read().strip())
-                _safe_kill(old_pid, signal.SIGTERM)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-
-        proc = subprocess.Popen(
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                f"{venv_bin}/sushy-emulator",
-                "--config",
-                conf_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        with open(pid_path, "w") as f:
-            f.write(str(proc.pid))
-
-        _job_log(
-            job,
-            f"sushy-emulator started for {domain_name} at {bmc_ip}:8000 (PID {proc.pid})",
+        _bmc_start_sushy_for_vm(
+            job, ns, bmc_dir, venv_bin, vm, pool_name, htpasswd_path
         )
 
-        # Start SSL sushy-emulator on port 8443
-        cert_path = os.path.join(bmc_dir, f"sushy-{vm_short}.crt")
-        key_path = os.path.join(bmc_dir, f"sushy-{vm_short}.key")
-        _generate_self_signed_cert(cert_path, key_path, f"sushy-{domain_name}", bmc_ip)
-
-        ssl_conf_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.conf")
-        with open(ssl_conf_path, "w") as f:
-            f.write(f"SUSHY_EMULATOR_LISTEN_IP = '{bmc_ip}'\n")
-            f.write("SUSHY_EMULATOR_LISTEN_PORT = 8443\n")
-            f.write("SUSHY_EMULATOR_LIBVIRT_URI = 'qemu:///system'\n")
-            f.write("SUSHY_EMULATOR_FEATURE_SET = 'vmedia'\n")
-            f.write("SUSHY_EMULATOR_IGNORE_BOOT_DEVICE = False\n")
-            f.write("SUSHY_EMULATOR_VMEDIA_VERIFY_SSL = False\n")
-            f.write(f"SUSHY_EMULATOR_STORAGE_POOL = '{pool_name}'\n")
-            f.write(f"SUSHY_EMULATOR_AUTH_FILE = '{htpasswd_path}'\n")
-            f.write(f"SUSHY_EMULATOR_SSL_CERT = '{cert_path}'\n")
-            f.write(f"SUSHY_EMULATOR_SSL_KEY = '{key_path}'\n")
-            if dom_uuid:
-                f.write(f"SUSHY_EMULATOR_ALLOWED_INSTANCES = ['{dom_uuid}']\n")
-
-        ssl_pid_path = os.path.join(bmc_dir, f"sushy-{vm_short}-ssl.pid")
-
-        if os.path.exists(ssl_pid_path):
-            try:
-                with open(ssl_pid_path) as f:
-                    old_pid = int(f.read().strip())
-                _safe_kill(old_pid, signal.SIGTERM)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-
-        ssl_proc = subprocess.Popen(
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                f"{venv_bin}/sushy-emulator",
-                "--config",
-                ssl_conf_path,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        with open(ssl_pid_path, "w") as f:
-            f.write(str(ssl_proc.pid))
-
-        _job_log(
-            job,
-            f"sushy-emulator SSL started for {domain_name} at {bmc_ip}:8443 (PID {ssl_proc.pid})",
-        )
-
-    # 5. Start vbmcd and register VMs for IPMI
-    vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
-    if os.path.isdir(vbmcd_conf_dir):
-        shutil.rmtree(vbmcd_conf_dir)
-    os.makedirs(vbmcd_conf_dir, exist_ok=True)
-
-    vbmcd_conf_path = os.path.join(bmc_dir, "virtualbmc.conf")
-    with open(vbmcd_conf_path, "w") as f:
-        f.write("[default]\n")
-        f.write(f"config_dir = {vbmcd_conf_dir}\n")
-        f.write(f"pid_file = {bmc_dir}/vbmcd.pid\n")
-        f.write("[log]\n")
-        f.write(f"logfile = {bmc_dir}/vbmcd.log\n")
-
-    vbmcd_pid_path = os.path.join(bmc_dir, "vbmcd.pid")
-    if os.path.exists(vbmcd_pid_path):
-        try:
-            with open(vbmcd_pid_path) as f:
-                old_pid = int(f.read().strip())
-            _safe_kill(old_pid, signal.SIGTERM)
-            # Wait for process to exit before removing PID file
-            for _ in range(10):
-                time.sleep(0.5)
-                try:
-                    os.kill(old_pid, 0)
-                except ProcessLookupError:
-                    break
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-        # Only remove PID file if process is confirmed dead
-        try:
-            with open(vbmcd_pid_path) as f:
-                check_pid = int(f.read().strip())
-            os.kill(check_pid, 0)
-        except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
-            try:
-                os.remove(vbmcd_pid_path)
-            except FileNotFoundError:
-                pass
-
-    env = os.environ.copy()
-    env["VIRTUALBMC_CONFIG"] = vbmcd_conf_path
-    proc = subprocess.Popen(
-        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        start_new_session=True,
-    )
-    # Don't write PID file — vbmcd manages its own via pid_file in config.
-    # Wait for vbmcd to be ready (writes its PID file and opens ZMQ port).
-    for _ in range(20):
-        time.sleep(0.5)
-        if os.path.exists(vbmcd_pid_path):
-            break
-
-    _job_log(job, f"vbmcd started (wrapper PID {proc.pid})")
-
-    for vm in vms:
-        domain_name = _validate_domain_name(vm["domain_name"])
-        bmc_ip = _validate_ip(vm["bmc_ip"])
-
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                f"{venv_bin}/vbmc",
-                "add",
-                domain_name,
-                "--port",
-                "623",
-                "--address",
-                bmc_ip,
-                "--username",
-                bmc_username,
-                "--password",
-                bmc_password,
-                "--libvirt-uri",
-                "qemu:///system",
-            ],
-            timeout=30,
-        )
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", ns, f"{venv_bin}/vbmc", "start", domain_name],
-            timeout=30,
-        )
-        _job_log(job, f"vbmc registered {domain_name} at {bmc_ip}:623")
+    # 6. Start vbmcd and register VMs for IPMI
+    _bmc_start_vbmcd(job, ns, bmc_dir, venv_bin, vms, bmc_username, bmc_password)
 
     return {
         "status": "ok",
@@ -10215,8 +10235,8 @@ def handle_container_states(handler, params):
                         if "scope global" in ip_line:
                             # Format: "2: eth0    inet 10.0.0.5/24 ..."
                             addr_part = (
-                                ip_line.split("inet ")[1].split("/")[0]
-                                if "inet " in ip_line
+                                ip_line.split(_INET_PREFIX)[1].split("/")[0]
+                                if _INET_PREFIX in ip_line
                                 else ""
                             )
                             if addr_part:

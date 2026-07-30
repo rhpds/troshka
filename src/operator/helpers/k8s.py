@@ -8,6 +8,8 @@ CRD_GROUP = "troshka.redhat.com"
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 _PREFIX_RE = re.compile(r"^\d{1,2}$")
 CRD_VERSION = "v1alpha1"
+_APPS_API_VERSION = "apps/v1"
+_NET_ANNOTATION_KEY = "k8s.v1.cni.cncf.io/networks"
 _IMAGE_TAG = os.environ.get("IMAGE_TAG", "latest")
 TOOLS_IMAGE = f"quay.io/redhat-gpte/troshka-tools:{_IMAGE_TAG}"
 DNSMASQ_IMAGE = f"quay.io/redhat-gpte/troshka-dnsmasq:{_IMAGE_TAG}"
@@ -66,7 +68,7 @@ def _dnsmasq_ip_from_cidr(cidr):
     return ".".join(octets), parts[1]
 
 
-def build_dnsmasq_deployment(network_cr, dnsmasq_config):
+def build_dnsmasq_deployment(network_cr):
     spec = network_cr["spec"]
     name = network_cr["metadata"]["name"]
     namespace = network_cr["metadata"]["namespace"]
@@ -74,7 +76,7 @@ def build_dnsmasq_deployment(network_cr, dnsmasq_config):
 
     dep_name = f"dnsmasq-{name}"
 
-    annotations = {"k8s.v1.cni.cncf.io/networks": nad_name}
+    annotations = {_NET_ANNOTATION_KEY: nad_name}
     labels = {"app": "troshka-dnsmasq", "troshka-network": name}
 
     cidr = spec.get("cidr", "")
@@ -90,7 +92,7 @@ def build_dnsmasq_deployment(network_cr, dnsmasq_config):
         setup_cmd = f"ip addr add {dnsmasq_ip}/{prefix} dev net1 && ip link set net1 up"
 
     return {
-        "apiVersion": "apps/v1",
+        "apiVersion": _APPS_API_VERSION,
         "kind": "Deployment",
         "metadata": {
             "name": dep_name,
@@ -222,11 +224,11 @@ def build_exec_deployment(
         "troshka-project": name,
     }
     annotations = {
-        "k8s.v1.cni.cncf.io/networks": cluster_nad_name,
+        _NET_ANNOTATION_KEY: cluster_nad_name,
     }
 
     deployment = {
-        "apiVersion": "apps/v1",
+        "apiVersion": _APPS_API_VERSION,
         "kind": "Deployment",
         "metadata": {
             "name": dep_name,
@@ -290,10 +292,10 @@ def build_gateway_deployment(project_cr, all_network_nads, gateway_ips=None):
         "app": f"troshka-gateway-{project_id}",
         "troshka-role": "gateway",
     }
-    annotations = {"k8s.v1.cni.cncf.io/networks": net_annotation}
+    annotations = {_NET_ANNOTATION_KEY: net_annotation}
 
     return {
-        "apiVersion": "apps/v1",
+        "apiVersion": _APPS_API_VERSION,
         "kind": "Deployment",
         "metadata": {
             "name": dep_name,

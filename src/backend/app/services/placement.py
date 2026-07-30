@@ -128,6 +128,32 @@ def record_deploy_end(host_id: str):
         pass
 
 
+def _check_eip_capacity(db: Session, host: Host, required_eips: int) -> bool:
+    """Return True if the host (and its provider) have enough EIP capacity."""
+    from app.services.eip_service import get_host_eip_usage
+
+    eip_used = get_host_eip_usage(db, host.id)
+    if host.max_eips - eip_used < required_eips:
+        return False
+    if host.provider_id:
+        from app.models.elastic_ip import ElasticIp
+        from app.models.provider import Provider as _Prov
+
+        prov = db.query(_Prov).filter_by(id=host.provider_id).first()
+        if prov and prov.max_eips is not None:
+            total_provider_eips = (
+                db.query(func.count(ElasticIp.id))
+                .filter(
+                    ElasticIp.provider_id == prov.id,
+                    ElasticIp.state == "associated",
+                )
+                .scalar()
+            )
+            if total_provider_eips + required_eips > prov.max_eips:
+                return False
+    return True
+
+
 def find_available_host(
     db: Session,
     required_vcpus: int,
@@ -164,28 +190,8 @@ def find_available_host(
         free_vcpus = alloc_vcpus - host.used_vcpus
         free_ram = alloc_ram - host.used_ram_mb
         if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
-            if required_eips > 0:
-                from app.services.eip_service import get_host_eip_usage
-
-                eip_used = get_host_eip_usage(db, host.id)
-                if host.max_eips - eip_used < required_eips:
-                    continue
-                if host.provider_id:
-                    from app.models.elastic_ip import ElasticIp
-                    from app.models.provider import Provider as _Prov
-
-                    prov = db.query(_Prov).filter_by(id=host.provider_id).first()
-                    if prov and prov.max_eips is not None:
-                        total_provider_eips = (
-                            db.query(func.count(ElasticIp.id))
-                            .filter(
-                                ElasticIp.provider_id == prov.id,
-                                ElasticIp.state == "associated",
-                            )
-                            .scalar()
-                        )
-                        if total_provider_eips + required_eips > prov.max_eips:
-                            continue
+            if required_eips > 0 and not _check_eip_capacity(db, host, required_eips):
+                continue
 
             inflight = _get_inflight_deploys(host.id)
             candidates.append((host, free_vcpus, free_ram, inflight))

@@ -9,10 +9,12 @@ from kubevirt_driver import KubeVirtDriver
 driver = KubeVirtDriver()
 
 USERNAME = os.environ.get("SUSHY_USERNAME", "admin")
-PASSWORD = os.environ.get(
-    "SUSHY_PASSWORD", "redhat"
-)  # NOSONAR — default overridden by env var at deploy time
+PASSWORD = os.environ["SUSHY_PASSWORD"]  # required — set by operator at deploy time
 LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
+
+_AUTH_REALM = 'Basic realm="Redfish"'
+_SYSTEMS_PREFIX = "/redfish/v1/Systems/"
+_NOT_FOUND_BODY = {"error": "Not found"}
 
 
 def _check_auth(handler):
@@ -38,7 +40,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not _check_auth(self):
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="Redfish"')
+            self.send_header("WWW-Authenticate", _AUTH_REALM)
             self.end_headers()
             return
 
@@ -56,9 +58,9 @@ class RedfishHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if path == "/redfish/v1/Systems":
+        if path == _SYSTEMS_PREFIX.rstrip("/"):
             systems = driver.get_systems()
-            members = [{"@odata.id": f"/redfish/v1/Systems/{s}"} for s in systems]
+            members = [{"@odata.id": f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
             _send_json(
                 self,
                 {
@@ -70,8 +72,8 @@ class RedfishHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if path.startswith("/redfish/v1/Systems/"):
-            identity = path.split("/redfish/v1/Systems/")[1].split("/")[0]
+        if path.startswith(_SYSTEMS_PREFIX):
+            identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
 
             if path.endswith(identity):
                 power = driver.get_power_state(identity)
@@ -97,7 +99,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
                         },
                         "Actions": {
                             "#ComputerSystem.Reset": {
-                                "target": f"/redfish/v1/Systems/{identity}/Actions/ComputerSystem.Reset",
+                                "target": f"{_SYSTEMS_PREFIX}{identity}/Actions/ComputerSystem.Reset",
                                 "ResetType@Redfish.AllowableValues": [
                                     "On",
                                     "ForceOff",
@@ -111,19 +113,19 @@ class RedfishHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        _send_json(self, {"error": "Not found"}, 404)
+        _send_json(self, _NOT_FOUND_BODY, 404)
 
     def do_PATCH(self):
         if not _check_auth(self):
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="Redfish"')
+            self.send_header("WWW-Authenticate", _AUTH_REALM)
             self.end_headers()
             return
 
         path = self.path.rstrip("/")
 
-        if path.startswith("/redfish/v1/Systems/"):
-            identity = path.split("/redfish/v1/Systems/")[1].split("/")[0]
+        if path.startswith(_SYSTEMS_PREFIX):
+            identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             boot = body.get("Boot", {})
@@ -135,19 +137,19 @@ class RedfishHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        _send_json(self, {"error": "Not found"}, 404)
+        _send_json(self, _NOT_FOUND_BODY, 404)
 
     def do_POST(self):
         if not _check_auth(self):
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="Redfish"')
+            self.send_header("WWW-Authenticate", _AUTH_REALM)
             self.end_headers()
             return
 
         path = self.path.rstrip("/")
 
         if "/Actions/ComputerSystem.Reset" in path:
-            identity = path.split("/redfish/v1/Systems/")[1].split("/")[0]
+            identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length)) if length else {}
             reset_type = body.get("ResetType", "On")
@@ -157,7 +159,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        _send_json(self, {"error": "Not found"}, 404)
+        _send_json(self, _NOT_FOUND_BODY, 404)
 
     def log_message(self, format, *args):
         pass

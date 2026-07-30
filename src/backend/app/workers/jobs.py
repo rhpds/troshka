@@ -11,17 +11,46 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
-    """Start infrastructure (networks, EIPs) then a single VM.
+def _reassociate_eips(s, project_id: str, topology: dict, host):
+    """Re-associate allocated EIPs and update topology with current IPs.
 
-    Previously a closure in projects.py that captured p_id, h_id, target_vm_id.
+    Returns the (possibly updated) topology dict.
     """
     import json
 
     from sqlalchemy import text
 
-    from app.core.database import SessionLocal
     from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import associate_eip
+
+    project_eips = (
+        s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+    )
+    for eip in project_eips:
+        try:
+            associate_eip(s, eip, host)
+            for ext_ip in topology.get("externalIps", []):
+                if ext_ip.get("id") == eip.canvas_eip_id:
+                    ext_ip["_private_ip"] = eip.private_ip
+                    ext_ip["ip"] = eip.public_ip
+        except Exception:
+            logger.warning("Failed to re-associate EIP %s", eip.public_ip)
+
+    if project_eips:
+        s.execute(
+            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+            {"topo": json.dumps(topology), "pid": project_id},
+        )
+        s.commit()
+    return topology
+
+
+def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
+    """Start infrastructure (networks, EIPs) then a single VM.
+
+    Previously a closure in projects.py that captured p_id, h_id, target_vm_id.
+    """
+    from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
     from app.services.deploy_service import (
@@ -29,7 +58,6 @@ def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
         _setup_networks_via_troshkad,
         cache_library_images,
     )
-    from app.services.eip_service import associate_eip
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
     from app.services.ws_pubsub import notify_project
 
@@ -43,27 +71,9 @@ def job_start_infra_then_vm(project_id: str, host_id: str, target_vm_id: str):
         topology = proj.topology or {}
         vni_map = proj.vni_map or {}
 
-        project_eips = (
-            s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
-        )
-        for eip in project_eips:
-            try:
-                associate_eip(s, eip, h)
-                for ext_ip in topology.get("externalIps", []):
-                    if ext_ip.get("id") == eip.canvas_eip_id:
-                        ext_ip["_private_ip"] = eip.private_ip
-                        ext_ip["ip"] = eip.public_ip
-            except Exception:
-                logger.warning("Failed to re-associate EIP %s", eip.public_ip)
-
-        if project_eips:
-            s.execute(
-                text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                {"topo": json.dumps(topology), "pid": project_id},
-            )
-            s.commit()
-            s.refresh(proj)
-            topology = proj.topology or {}
+        topology = _reassociate_eips(s, project_id, topology, h)
+        s.refresh(proj)
+        topology = proj.topology or {}
 
         cache_library_images(topology, h, s)
 

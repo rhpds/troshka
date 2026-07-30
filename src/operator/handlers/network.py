@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import kopf
 import logging
@@ -13,6 +14,80 @@ from helpers.dnsmasq import generate_dnsmasq_config
 logger = logging.getLogger(__name__)
 
 
+async def _patch_scc_users(custom_api, sa_ref, scc_names, action, namespace):
+    """Add or remove a service account ref from SCC users lists with retry on 409."""
+    for scc_name in scc_names:
+        for attempt in range(5):
+            try:
+                scc = custom_api.get_cluster_custom_object(
+                    group="security.openshift.io",
+                    version="v1",
+                    plural="securitycontextconstraints",
+                    name=scc_name,
+                )
+                users = scc.get("users", []) or []
+                if action == "add" and sa_ref not in users:
+                    users.append(sa_ref)
+                    custom_api.patch_cluster_custom_object(
+                        group="security.openshift.io",
+                        version="v1",
+                        plural="securitycontextconstraints",
+                        name=scc_name,
+                        body={"users": users},
+                    )
+                    logger.info(f"Added {sa_ref} to {scc_name} SCC")
+                elif action == "remove" and sa_ref in users:
+                    users.remove(sa_ref)
+                    custom_api.patch_cluster_custom_object(
+                        group="security.openshift.io",
+                        version="v1",
+                        plural="securitycontextconstraints",
+                        name=scc_name,
+                        body={"users": users},
+                    )
+                    logger.info(f"Removed {sa_ref} from {scc_name} SCC")
+                break
+            except client.ApiException as e:
+                if e.status == 409 and attempt < 4:
+                    await asyncio.sleep(0.2 * (attempt + 1))
+                    continue
+                verb = "patch" if action == "add" else "clean"
+                logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
+                break
+            except Exception as e:
+                verb = "patch" if action == "add" else "clean"
+                logger.warning(f"Could not {verb} SCC {scc_name} for {namespace}: {e}")
+                break
+
+
+async def _create_deployment_with_stale_cleanup(
+    apps_api, namespace, dep_name, deployment_body
+):
+    """Create a deployment, handling stale 409 by waiting for deletion then retrying."""
+    try:
+        apps_api.create_namespaced_deployment(namespace=namespace, body=deployment_body)
+        logger.info(f"Created deployment {dep_name}")
+    except client.ApiException as e:
+        if e.status == 409:
+            logger.info(f"Deployment {dep_name} exists (stale), waiting for deletion")
+            for _ in range(30):
+                try:
+                    apps_api.read_namespaced_deployment(
+                        name=dep_name, namespace=namespace
+                    )
+                    await asyncio.sleep(2)
+                except client.ApiException as ge:
+                    if ge.status == 404:
+                        break
+                    raise
+            apps_api.create_namespaced_deployment(
+                namespace=namespace, body=deployment_body
+            )
+            logger.info(f"Created deployment {dep_name} (after stale cleanup)")
+        else:
+            raise
+
+
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
     """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
     try:
@@ -21,7 +96,7 @@ def _cleanup_legacy_pod(core_api, namespace, pod_name):
         if not any(o.kind == "ReplicaSet" for o in owners):
             core_api.delete_namespaced_pod(name=pod_name, namespace=namespace)
             logger.info(f"Deleted legacy standalone Pod {pod_name}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 404:
             raise
 
@@ -40,43 +115,18 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
                 metadata=client.V1ObjectMeta(name="troshka-network"),
             ),
         )
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 409:
             raise
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    for scc_name in ("troshka-network-pods", "troshka-gateway"):
-        for attempt in range(5):
-            try:
-                scc = custom_api.get_cluster_custom_object(
-                    group="security.openshift.io",
-                    version="v1",
-                    plural="securitycontextconstraints",
-                    name=scc_name,
-                )
-                users = scc.get("users", []) or []
-                if sa_ref not in users:
-                    users.append(sa_ref)
-                    custom_api.patch_cluster_custom_object(
-                        group="security.openshift.io",
-                        version="v1",
-                        plural="securitycontextconstraints",
-                        name=scc_name,
-                        body={"users": users},
-                    )
-                    logger.info(f"Added {sa_ref} to {scc_name} SCC")
-                break
-            except client.exceptions.ApiException as e:
-                if e.status == 409 and attempt < 4:
-                    import asyncio
-
-                    await asyncio.sleep(0.2 * (attempt + 1))
-                    continue
-                logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
-                break
-            except Exception as e:
-                logger.warning(f"Could not patch SCC {scc_name} for {namespace}: {e}")
-                break
+    await _patch_scc_users(
+        custom_api,
+        sa_ref,
+        ("troshka-network-pods", "troshka-gateway"),
+        "add",
+        namespace,
+    )
 
     nad = build_nad(body)
     try:
@@ -88,7 +138,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             body=nad,
         )
         logger.info(f"Created NAD {nad['metadata']['name']}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 409:
             raise
 
@@ -102,7 +152,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     )
     try:
         api.create_namespaced_config_map(namespace=namespace, body=cm_body)
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 409:
             raise
 
@@ -110,31 +160,10 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
     dep_name = f"dnsmasq-{name}"
     _cleanup_legacy_pod(api, namespace, dep_name)
 
-    dnsmasq_dep = build_dnsmasq_deployment(body, dnsmasq_conf)
-    try:
-        apps_api.create_namespaced_deployment(namespace=namespace, body=dnsmasq_dep)
-        logger.info(f"Created dnsmasq deployment for {name}")
-    except client.exceptions.ApiException as e:
-        if e.status == 409:
-            import asyncio as _asyncio
-
-            logger.info(
-                f"Dnsmasq deployment {dep_name} exists (stale), waiting for deletion"
-            )
-            for _ in range(30):
-                try:
-                    apps_api.read_namespaced_deployment(
-                        name=dep_name, namespace=namespace
-                    )
-                    await _asyncio.sleep(2)
-                except client.exceptions.ApiException as ge:
-                    if ge.status == 404:
-                        break
-                    raise
-            apps_api.create_namespaced_deployment(namespace=namespace, body=dnsmasq_dep)
-            logger.info(f"Created dnsmasq deployment {dep_name} (after stale cleanup)")
-        else:
-            raise
+    dnsmasq_dep = build_dnsmasq_deployment(body)
+    await _create_deployment_with_stale_cleanup(
+        apps_api, namespace, dep_name, dnsmasq_dep
+    )
 
     patch.status["ready"] = True
     patch.status["nadName"] = f"{name}-nad"
@@ -158,7 +187,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
             body={"data": {"dnsmasq.conf": dnsmasq_conf}},
         )
         logger.info(f"Updated ConfigMap {cm_name}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status == 404:
             api.create_namespaced_config_map(
                 namespace=namespace,
@@ -181,7 +210,9 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "kubectl.kubernetes.io/restartedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                            "kubectl.kubernetes.io/restartedAt": datetime.datetime.now(
+                                datetime.timezone.utc
+                            ).isoformat()
                         }
                     }
                 }
@@ -199,38 +230,13 @@ async def network_delete(spec, meta, namespace, name, **_):
     custom_api = client.CustomObjectsApi()
 
     sa_ref = f"system:serviceaccount:{namespace}:troshka-network"
-    for scc_name in ("troshka-network-pods", "troshka-gateway"):
-        for attempt in range(5):
-            try:
-                scc = custom_api.get_cluster_custom_object(
-                    group="security.openshift.io",
-                    version="v1",
-                    plural="securitycontextconstraints",
-                    name=scc_name,
-                )
-                users = scc.get("users", []) or []
-                if sa_ref in users:
-                    users.remove(sa_ref)
-                    custom_api.patch_cluster_custom_object(
-                        group="security.openshift.io",
-                        version="v1",
-                        plural="securitycontextconstraints",
-                        name=scc_name,
-                        body={"users": users},
-                    )
-                    logger.info(f"Removed {sa_ref} from {scc_name} SCC")
-                break
-            except client.exceptions.ApiException as e:
-                if e.status == 409 and attempt < 4:
-                    import asyncio
-
-                    await asyncio.sleep(0.2 * (attempt + 1))
-                    continue
-                logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
-                break
-            except Exception as e:
-                logger.warning(f"Could not clean SCC {scc_name} for {namespace}: {e}")
-                break
+    await _patch_scc_users(
+        custom_api,
+        sa_ref,
+        ("troshka-network-pods", "troshka-gateway"),
+        "remove",
+        namespace,
+    )
 
     nad_name = f"{name}-nad"
     try:
@@ -242,7 +248,7 @@ async def network_delete(spec, meta, namespace, name, **_):
             name=nad_name,
         )
         logger.info(f"Deleted NAD {nad_name}")
-    except client.exceptions.ApiException as e:
+    except client.ApiException as e:
         if e.status != 404:
             logger.warning(f"Failed to delete NAD {nad_name}: {e}")
 
@@ -250,13 +256,13 @@ async def network_delete(spec, meta, namespace, name, **_):
         try:
             apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
             logger.info(f"Deleted deployment {dep_name}")
-        except client.exceptions.ApiException as e:
+        except client.ApiException as e:
             if e.status != 404:
                 logger.warning(f"Failed to delete deployment {dep_name}: {e}")
 
     for resource_name in [f"dnsmasq-{name}"]:
         try:
             api.delete_namespaced_config_map(name=resource_name, namespace=namespace)
-        except client.exceptions.ApiException as e:
+        except client.ApiException as e:
             if e.status != 404:
                 logger.warning(f"Failed to delete configmap {resource_name}: {e}")
