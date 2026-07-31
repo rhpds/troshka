@@ -33,7 +33,7 @@ rules:
   # Services — NodePort for SSH/agent, ClusterIP for vncd, EIP port forwards
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["create", "delete", "get", "list", "patch"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
   # PVCs — Ceph-NFS storage pools, extend
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
