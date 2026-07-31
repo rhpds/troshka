@@ -9062,15 +9062,14 @@ class TestProjectUpdateHandler:
                 return fn
         raise RuntimeError("Could not find project_update in kopf mock call args")
 
-    @pytest.mark.asyncio
     @patch("handlers.project._handle_capture")
-    async def test_happy_path_valid_annotation(self, mock_handle_capture):
+    def test_happy_path_valid_annotation(self, mock_handle_capture):
         """Valid capture annotation triggers _handle_capture."""
         from handlers.project import CAPTURE_ANNOTATION
 
         fn = self._get_project_update_fn()
 
-        mock_handle_capture.return_value = None  # AsyncMock auto-created by patch
+        mock_handle_capture.return_value = None
 
         capture_config = {"s3Config": {"bucket": "test"}, "disks": []}
         meta = {
@@ -9079,20 +9078,21 @@ class TestProjectUpdateHandler:
         status = {"phase": "Running"}
         patch_obj = MagicMock()
 
-        await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         mock_handle_capture.assert_called_once_with(
             capture_config, "ns1", "proj-1", patch_obj
         )
 
-    @pytest.mark.asyncio
-    async def test_missing_annotation_is_noop(self):
+    def test_missing_annotation_is_noop(self):
         """No capture annotation means no action."""
         fn = self._get_project_update_fn()
 
@@ -9100,18 +9100,19 @@ class TestProjectUpdateHandler:
         status = {"phase": "Running"}
         patch_obj = MagicMock()
 
-        result = await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        result = asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_none_annotations_is_noop(self):
+    def test_none_annotations_is_noop(self):
         """annotations=None should be treated as empty."""
         fn = self._get_project_update_fn()
 
@@ -9119,18 +9120,19 @@ class TestProjectUpdateHandler:
         status = {"phase": "Running"}
         patch_obj = MagicMock()
 
-        result = await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        result = asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_no_annotations_key_is_noop(self):
+    def test_no_annotations_key_is_noop(self):
         """No annotations key at all should be treated as empty."""
         fn = self._get_project_update_fn()
 
@@ -9138,19 +9140,20 @@ class TestProjectUpdateHandler:
         status = {"phase": "Running"}
         patch_obj = MagicMock()
 
-        result = await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        result = asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         assert result is None
 
-    @pytest.mark.asyncio
     @patch("handlers.project._handle_capture")
-    async def test_invalid_json_does_not_call_handle_capture(self, mock_handle_capture):
+    def test_invalid_json_does_not_call_handle_capture(self, mock_handle_capture):
         """Invalid JSON in annotation logs error, does not call _handle_capture."""
         from handlers.project import CAPTURE_ANNOTATION
 
@@ -9160,20 +9163,21 @@ class TestProjectUpdateHandler:
         status = {"phase": "Running"}
         patch_obj = MagicMock()
 
-        result = await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        result = asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         mock_handle_capture.assert_not_called()
         assert result is None
 
-    @pytest.mark.asyncio
     @patch("handlers.project._handle_capture")
-    async def test_capturing_phase_skips(self, mock_handle_capture):
+    def test_capturing_phase_skips(self, mock_handle_capture):
         """If phase is already 'Capturing', skip processing."""
         from handlers.project import CAPTURE_ANNOTATION
 
@@ -9184,20 +9188,21 @@ class TestProjectUpdateHandler:
         status = {"phase": "Capturing"}
         patch_obj = MagicMock()
 
-        result = await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        result = asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         mock_handle_capture.assert_not_called()
         assert result is None
 
-    @pytest.mark.asyncio
     @patch("handlers.project._handle_capture")
-    async def test_empty_status_phase_proceeds(self, mock_handle_capture):
+    def test_empty_status_phase_proceeds(self, mock_handle_capture):
         """Empty status (no phase key) should proceed with capture."""
         from handlers.project import CAPTURE_ANNOTATION
 
@@ -9210,12 +9215,14 @@ class TestProjectUpdateHandler:
         status = {}
         patch_obj = MagicMock()
 
-        await fn(
-            status=status,
-            meta=meta,
-            namespace="ns1",
-            name="proj-1",
-            patch=patch_obj,
+        asyncio.run(
+            fn(
+                status=status,
+                meta=meta,
+                namespace="ns1",
+                name="proj-1",
+                patch=patch_obj,
+            )
         )
 
         mock_handle_capture.assert_called_once()
