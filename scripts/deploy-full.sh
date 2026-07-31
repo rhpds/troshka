@@ -29,9 +29,7 @@ echo "  Watching image build (run $IMAGE_RUN)..."
 gh run watch "$IMAGE_RUN" --exit-status 2>&1 | tail -3
 echo "  CI complete"
 
-# Snapshot current backend image digest before promote
-OLD_DIGEST=$(oc get deploy troshka-backend -n troshka --kubeconfig="$KC" \
-  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+# (ArgoCD detection uses registry digest, not before/after diff)
 
 echo ""
 echo "=== Step 3: Promote images ==="
@@ -103,20 +101,27 @@ fi
 
 echo ""
 echo "=== Step 5: Wait for ArgoCD (infra01) ==="
-for i in $(seq 1 40); do
-  CUR_DIGEST=$(oc get deploy troshka-backend -n troshka --kubeconfig="$KC" \
-    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
-  if [ -n "$CUR_DIGEST" ] && [ "$CUR_DIGEST" != "$OLD_DIGEST" ]; then
-    echo "  ArgoCD updated backend image"
-    oc rollout status deploy/troshka-backend -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
-    break
-  fi
-  if [ "$i" -eq 40 ]; then
-    echo "  Timed out (10 min) — image may already be current"
-  fi
-  echo "  Waiting for ArgoCD... ($((i * 15))s)"
-  sleep 15
-done
+EXPECTED_BACKEND=$(skopeo inspect --format '{{.Digest}}' \
+  "docker://quay.io/redhat-gpte/troshka-backend:production" 2>/dev/null || echo "")
+if [ -z "$EXPECTED_BACKEND" ]; then
+  echo "  WARNING: Could not fetch backend production digest, skipping wait"
+else
+  echo "  Expected digest: ${EXPECTED_BACKEND:0:19}..."
+  for i in $(seq 1 40); do
+    POD_IMAGE=$(oc get pods -n troshka --kubeconfig="$KC" \
+      -l app=troshka-backend -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
+    if echo "$POD_IMAGE" | grep -qF "$EXPECTED_BACKEND"; then
+      echo "  ArgoCD updated backend image"
+      oc rollout status deploy/troshka-backend -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
+      break
+    fi
+    if [ "$i" -eq 40 ]; then
+      echo "  Timed out (10 min) — check ArgoCD manually"
+    fi
+    echo "  Waiting for ArgoCD... ($((i * 15))s)"
+    sleep 15
+  done
+fi
 
 echo ""
 echo "=== Done ==="
