@@ -98,22 +98,49 @@ if [ "$SKIP_OPERATORS" = false ]; then
     done
   fi
   echo ""
-  echo "=== Step 4b: Restart per-project pods (vnc-proxy, dnsmasq, gateway, bmc) ==="
+  echo "=== Step 4b: Restart stale per-project pods ==="
+
+  ROLE_MAP=("vnc-proxy:troshka-vnc-proxy" "dnsmasq:troshka-dnsmasq" "gateway:troshka-gateway" "bmc:troshka-bmc")
+  declare -A ROLE_DIGESTS
+  for entry in "${ROLE_MAP[@]}"; do
+    role="${entry%%:*}"
+    img="${entry##*:}"
+    ROLE_DIGESTS[$role]=$(skopeo inspect --format '{{.Digest}}' \
+      "docker://quay.io/redhat-gpte/${img}:production" 2>/dev/null || echo "")
+  done
+
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
-    deploys=$(oc get deploy --all-namespaces -l troshka-role \
-      --kubeconfig="$kc" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name --no-headers 2>/dev/null || echo "")
-    count=$(echo "$deploys" | grep -c . 2>/dev/null || echo "0")
-    if [ "$count" -eq 0 ] || [ -z "$deploys" ]; then
-      printf "  %s: no project pods\n" "$cluster"
-      continue
-    fi
-    printf "  %s: %s deployments... " "$cluster" "$count"
-    echo "$deploys" | while read -r ns name; do
-      [ -z "$ns" ] && continue
-      oc rollout restart "deploy/$name" -n "$ns" --kubeconfig="$kc" 2>/dev/null || true
+    restarted=0
+
+    for entry in "${ROLE_MAP[@]}"; do
+      role="${entry%%:*}"
+      expected="${ROLE_DIGESTS[$role]}"
+      [ -z "$expected" ] && continue
+
+      pod_image=$(oc get pods --all-namespaces -l "troshka-role=$role" \
+        -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' \
+        --kubeconfig="$kc" 2>/dev/null || echo "")
+
+      if [ -z "$pod_image" ] || echo "$pod_image" | grep -qF "$expected"; then
+        continue
+      fi
+
+      deploys=$(oc get deploy --all-namespaces -l "troshka-role=$role" \
+        -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
+        --no-headers --kubeconfig="$kc" 2>/dev/null || echo "")
+      while read -r ns name; do
+        [ -z "$ns" ] && continue
+        oc rollout restart "deploy/$name" -n "$ns" --kubeconfig="$kc" 2>/dev/null || true
+        restarted=$((restarted + 1))
+      done <<< "$deploys"
     done
-    echo "restarted"
+
+    if [ "$restarted" -eq 0 ]; then
+      printf "  %s: all current\n" "$cluster"
+    else
+      printf "  %s: restarted %d deployments\n" "$cluster" "$restarted"
+    fi
   done
 fi
 
