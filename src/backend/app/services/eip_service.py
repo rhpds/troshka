@@ -27,7 +27,7 @@ def allocate_eip(
 
     eip_id = str(uuid.uuid4())
     driver = get_provider_driver(provider)
-    result = driver.allocate_eip(provider, host, eip_id)
+    result = driver.allocate_eip(provider, host, eip_id, project_id=project_id)
 
     eip = ElasticIp(
         id=eip_id,
@@ -132,6 +132,10 @@ def release_eip(db: Session, eip: ElasticIp) -> None:
     ns = None
     if provider.type == "ocpvirt":
         ns = provider.get_credentials().get("namespace", "troshka")
+    elif provider.type == "kubevirt" and eip.project_id:
+        from app.services.providers.kubevirt import _project_ns
+
+        ns = _project_ns(provider, eip.project_id)
     driver.release_eip(provider, eip.allocation_id, namespace=ns)
 
     logger.info("Released EIP %s (%s)", eip.public_ip, eip.allocation_id)

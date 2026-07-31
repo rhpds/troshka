@@ -17,6 +17,10 @@ OPERATOR_DIR = os.path.join(
 )
 
 
+def _operator_ns(provider):
+    return provider.get_credentials().get("namespace", "troshka-operator")
+
+
 def _project_ns(provider, project_id):
     creds = provider.get_credentials()
     prefix = creds.get("project_prefix", "troshka-")
@@ -525,8 +529,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def create_console_record(self, provider, host, hostname, ip_address):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        namespace = _operator_ns(provider)
 
         svc_name = f"vnc-{hostname}"
         svc_body = {
@@ -582,8 +585,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def delete_console_record(self, provider, host, hostname, ip_address):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        namespace = _operator_ns(provider)
         try:
             core_api.delete_namespaced_service(
                 name=f"vnc-{hostname}", namespace=namespace
@@ -603,8 +605,7 @@ class KubeVirtDriver(ProviderDriver):
 
     def delete_console(self, provider):
         custom_api, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        namespace = _operator_ns(provider)
         try:
             svcs = core_api.list_namespaced_service(
                 namespace=namespace, label_selector="app=troshka-vnc"
@@ -634,10 +635,12 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-    def allocate_eip(self, provider, host, eip_id):
-        custom_api, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
+        _, core_api, _ = _get_k8s_clients(provider)
+        namespace = (
+            _project_ns(provider, project_id) if project_id else _operator_ns(provider)
+        )
+        project_short = project_id[:8] if project_id else eip_id[:8]
 
         svc_name = f"troshka-eip-{eip_id[:8]}"
         svc_body = {
@@ -654,7 +657,7 @@ class KubeVirtDriver(ProviderDriver):
             "spec": {
                 "type": "LoadBalancer",
                 "ports": [{"port": 443, "targetPort": 443, "protocol": "TCP"}],
-                "selector": {"app": f"troshka-gateway-{eip_id[:8]}"},
+                "selector": {"app": f"troshka-gateway-{project_short}"},
             },
         }
         core_api.create_namespaced_service(namespace=namespace, body=svc_body)
@@ -673,17 +676,15 @@ class KubeVirtDriver(ProviderDriver):
 
     def release_eip(self, provider, allocation_id, namespace=None):
         _, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        ns = namespace or creds.get("namespace", "troshka")
+        ns = namespace or _operator_ns(provider)
         try:
             core_api.delete_namespaced_service(name=allocation_id, namespace=ns)
         except Exception:
             pass
 
-    def update_eip_ports(self, provider, host, allocation_id, ports):
+    def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         _, core_api, _ = _get_k8s_clients(provider)
-        creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        ns = namespace or _operator_ns(provider)
         svc_ports = [
             {
                 "port": p["port"],
@@ -694,7 +695,7 @@ class KubeVirtDriver(ProviderDriver):
         ]
         core_api.patch_namespaced_service(
             name=allocation_id,
-            namespace=namespace,
+            namespace=ns,
             body={"spec": {"ports": svc_ports}},
         )
 

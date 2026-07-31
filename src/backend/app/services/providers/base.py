@@ -66,9 +66,11 @@ class ProviderDriver:
         """Delete an SSH key pair. No-op if provider doesn't manage key pairs."""
         pass
 
-    def allocate_eip(self, provider, host, eip_id):
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
         """Allocate an external IP.
-        Returns dict with keys: public_ip, allocation_id."""
+        Returns dict with keys: public_ip, allocation_id.
+        project_id is needed by kubevirt to create the LB Service in the project namespace.
+        """
         raise NotImplementedError
 
     def associate_eip(self, provider, host, allocation_id):
@@ -82,9 +84,10 @@ class ProviderDriver:
         namespace is provider-specific context (k8s namespace for OCP Virt)."""
         raise NotImplementedError
 
-    def update_eip_ports(self, provider, host, allocation_id, ports):
+    def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         """Update port mappings on an EIP infra resource.
         ports is a list of dicts: [{port, targetPort, name}].
+        namespace is provider-specific context (k8s namespace for kubevirt).
         No-op for providers that don't need it."""
         pass
 

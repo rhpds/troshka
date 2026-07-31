@@ -1011,7 +1011,7 @@ class OCPVirtDriver(ProviderDriver):
             body=patch,
         )
 
-    def allocate_eip(self, provider, host, eip_id):
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
         from kubernetes import client
 
         creds = provider.get_credentials()
@@ -1081,7 +1081,7 @@ class OCPVirtDriver(ProviderDriver):
             if e.status != 404:
                 raise
 
-    def update_eip_ports(self, provider, host, allocation_id, ports):
+    def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
         _, core_api = _get_k8s_clients(creds)

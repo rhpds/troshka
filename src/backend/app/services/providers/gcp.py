@@ -695,7 +695,7 @@ class GCPDriver(ProviderDriver):
         # GCP doesn't have cloud-managed key pairs — SSH keys are in metadata
         pass
 
-    def allocate_eip(self, provider, host, eip_id):
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
         from google.cloud import compute_v1
 
         creds_dict = provider.get_credentials()
@@ -799,6 +799,6 @@ class GCPDriver(ProviderDriver):
             else:
                 raise
 
-    def update_eip_ports(self, provider, host, allocation_id, ports):
+    def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         # GCP uses firewall rules for port control, not per-EIP configuration
         pass

@@ -2396,6 +2396,9 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
         ndata.pop("resolvedS3Path", None)
         ndata.pop("presignedUrl", None)
         ndata.pop("ciGeneratedUserData", None)
+
+    _allocate_kubevirt_eips(project_id, project, clean_topo, db)
+
     bmc_config = _extract_bmc_config(clean_topo, project_id)
     if bmc_config:
         clean_topo["bmc"] = {
@@ -2424,6 +2427,104 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
     _delete_deploy_progress(project_id)
     notify_project(project_id, {"type": "project-state", "state": "active"})
     logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
+
+
+def _allocate_kubevirt_eips(project_id, project, topology, db):
+    """Allocate MetalLB EIPs for a kubevirt native project after operator deploy."""
+    external_ips = topology.get("externalIps", [])
+    if not external_ips:
+        return
+
+    from app.models.elastic_ip import ElasticIp
+    from app.models.host import Host
+    from app.models.provider import Provider
+    from app.services.eip_service import allocate_eip, associate_eip
+    from app.services.providers import get_provider_driver
+
+    provider = (
+        db.query(Provider).filter_by(id=project.provider_id).first()
+        if project.provider_id
+        else None
+    )
+    host = (
+        db.query(Host).filter_by(id=project.host_id).first()
+        if project.host_id
+        else None
+    )
+    if not host and not provider:
+        logger.warning("Deploy %s: no provider/host for EIP allocation", project_id[:8])
+        return
+    if not provider and host:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        logger.warning("Deploy %s: no provider for EIP allocation", project_id[:8])
+        return
+
+    driver = get_provider_driver(provider)
+    logger.info(
+        "Deploy %s: allocating %d MetalLB EIPs", project_id[:8], len(external_ips)
+    )
+
+    for ext_ip in external_ips:
+        canvas_id = ext_ip.get("id", "")
+        try:
+            existing = (
+                db.query(ElasticIp)
+                .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+                .first()
+            )
+            if existing:
+                eip = existing
+            else:
+                eip = allocate_eip(db, provider, project_id, canvas_id, host)
+
+            if eip.state != "associated":
+                associate_eip(db, eip, host)
+
+            ext_ip["ip"] = eip.public_ip
+
+            pf_for_eip = []
+            for node in topology.get("nodes", []):
+                node_data = node.get("data", {})
+                if node_data.get("subtype") == "gateway":
+                    pf_for_eip = [
+                        pf
+                        for pf in node_data.get("portForwards", [])
+                        if pf.get("extIpId") == canvas_id
+                    ]
+                    break
+            if pf_for_eip:
+                from app.services.providers.kubevirt import _project_ns
+
+                ns = _project_ns(provider, project_id)
+                driver.update_eip_ports(
+                    provider,
+                    host,
+                    eip.allocation_id,
+                    [
+                        {
+                            "port": int(pf.get("extPort", 443)),
+                            "target_port": int(
+                                pf.get("intPort", pf.get("extPort", 443))
+                            ),
+                            "name": f"pf-{i}",
+                        }
+                        for i, pf in enumerate(pf_for_eip)
+                    ],
+                    namespace=ns,
+                )
+            logger.info(
+                "Deploy %s: EIP %s allocated (%s)",
+                project_id[:8],
+                canvas_id[:8],
+                eip.public_ip,
+            )
+        except Exception:
+            logger.exception(
+                "Deploy %s: EIP allocation failed for %s (non-fatal)",
+                project_id[:8],
+                canvas_id[:8],
+            )
 
 
 def _handle_kubevirt_deploy_error(project_id, project, status, db, notify_project):
@@ -6525,6 +6626,18 @@ def _destroy_kubevirt_native(project_id, host, session, delete_record):
         if delete_record:
             _delete_project_record(project_id)
         return
+
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import release_eip
+
+    project_eips = session.query(ElasticIp).filter_by(project_id=project_id).all()
+    for eip in project_eips:
+        try:
+            release_eip(session, eip)
+        except Exception:
+            logger.warning(
+                "Destroy %s: failed to release EIP %s", project_id[:8], eip.public_ip
+            )
 
     driver = get_provider_driver(provider)
     try:

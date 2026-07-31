@@ -1072,7 +1072,7 @@ let _latestVmStates: Record<string, string> = {};
 let _lastSavedTopologyKey = "";
 useCanvasStore.subscribe((state) => {
   if (!state.currentProjectId) return;
-  if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping") return;
+  if (state.projectState === "deploying" || state.projectState === "starting" || state.projectState === "stopping" || state.projectState === "reconfiguring") return;
   if (_loadingProject) return;
   if (state.nodes.length === 0) return;
 

@@ -104,7 +104,7 @@ class EC2Driver(ProviderDriver):
         ec2 = _get_ec2_client(credentials=creds)
         ec2.delete_key_pair(KeyName=key_pair_name)
 
-    def allocate_eip(self, provider, host, eip_id):
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
         from app.services.provisioner import _get_ec2_client
 
         creds = provider.get_credentials()

@@ -854,7 +854,7 @@ class AzureDriver(ProviderDriver):
         # Azure doesn't have cloud-managed key pairs — SSH keys are in VM config
         pass
 
-    def allocate_eip(self, provider, host, eip_id):
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
         creds_dict = provider.get_credentials()
         rg = provider.azure_resource_group
         location = provider.azure_location or provider.default_region
@@ -950,7 +950,7 @@ class AzureDriver(ProviderDriver):
             lambda: network_client.public_ip_addresses.begin_delete(rg, allocation_id),
         )
 
-    def update_eip_ports(self, provider, host, allocation_id, ports):
+    def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         """Update NSG rules for port forwarding on an EIP.
 
         Azure uses NSG rules rather than per-IP port mappings.

@@ -2657,6 +2657,12 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         if err:
             return
 
+        # Sync EIPs (allocate new, release removed)
+        errors: list[str] = []
+        _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors)
+        if errors:
+            logger.warning("Reconfigure %s: EIP errors: %s", p_id[:8], errors)
+
         # Finalize
         _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         _delete_deploy_progress(p_id)
@@ -2725,6 +2731,11 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
         eip_obj.port_map = None
         s.commit()
         port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
+        ns = None
+        if provider.type == "kubevirt":
+            from app.services.providers.kubevirt import _project_ns
+
+            ns = _project_ns(provider, p_id)
         driver.update_eip_ports(
             provider,
             h,
@@ -2737,6 +2748,7 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
                 }
                 for i, (ep, tp) in enumerate(port_map.items())
             ],
+            namespace=ns,
         )
         logger.info(
             "Reconfigure %s: updated EIP LB ports %s",
