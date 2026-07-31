@@ -41,6 +41,7 @@ function ConsolePage() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
   const mountedRef = useRef(true);
+  const reconnectTimestamps = useRef<number[]>([]);
 
   // Suppress noVNC async errors that Next.js dev mode catches
   useEffect(() => {
@@ -142,13 +143,16 @@ function ConsolePage() {
         _activeToken = wsUrl;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
-      r.addEventListener("disconnect", (ev: Record<string, unknown>) => {
+      r.addEventListener("disconnect", () => {
         _activeRfb = null;
         _activeToken = null;
         if (!mountedRef.current) return;
-        const detail = ev.detail as { clean?: boolean; reason?: string } | undefined;
-        if (detail?.reason?.includes("Superseded")) {
-          setStatus("Connected in another tab");
+        const now = Date.now();
+        const recent = reconnectTimestamps.current.filter((t) => now - t < 10000);
+        recent.push(now);
+        reconnectTimestamps.current = recent;
+        if (recent.length > 3) {
+          setStatus("Connection interrupted");
           return;
         }
         setStatus("Reconnecting...");
@@ -634,9 +638,24 @@ function ConsolePage() {
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
-            pointerEvents: "none",
+            pointerEvents: displayStatus === "Connection interrupted" ? "auto" : "none",
           }}>
-            {startingRef.current ? (
+            {displayStatus === "Connection interrupted" ? (
+              <>
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                </svg>
+                <span style={{ fontSize: 13 }}>Connection interrupted</span>
+                <button
+                  onClick={() => { reconnectTimestamps.current = []; pollForPort(); }}
+                  style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #555", background: "rgba(255,255,255,0.08)", color: "#fff", cursor: "pointer", fontSize: 13 }}
+                >
+                  Reconnect
+                </button>
+              </>
+            ) : startingRef.current ? (
               <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2" strokeLinecap="round" style={{ animation: "vkb-spin 1s linear infinite" }}>
                 <path d="M12 2a10 10 0 0 1 10 10" />
               </svg>
