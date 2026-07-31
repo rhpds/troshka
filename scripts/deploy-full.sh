@@ -101,18 +101,38 @@ fi
 
 echo ""
 echo "=== Step 5: Wait for ArgoCD (infra01) ==="
-EXPECTED_BACKEND=$(skopeo inspect --format '{{.Digest}}' \
-  "docker://quay.io/redhat-gpte/troshka-backend:production" 2>/dev/null || echo "")
-if [ -z "$EXPECTED_BACKEND" ]; then
-  echo "  WARNING: Could not fetch backend production digest, skipping wait"
-else
-  echo "  Expected digest: ${EXPECTED_BACKEND:0:19}..."
+ARGO_IMAGES=("troshka-backend" "troshka-frontend")
+ARGO_LABELS=("app.kubernetes.io/name=troshka-backend" "app.kubernetes.io/name=troshka-frontend")
+ARGO_DEPLOYS=("troshka-backend" "troshka-frontend")
+
+ARGO_DIGESTS=()
+ALL_OK=true
+for img in "${ARGO_IMAGES[@]}"; do
+  digest=$(skopeo inspect --format '{{.Digest}}' \
+    "docker://quay.io/redhat-gpte/${img}:production" 2>/dev/null || echo "")
+  ARGO_DIGESTS+=("$digest")
+  if [ -z "$digest" ]; then
+    echo "  WARNING: Could not fetch ${img} production digest"
+    ALL_OK=false
+  fi
+done
+
+if [ "$ALL_OK" = true ]; then
   for i in $(seq 1 40); do
-    POD_IMAGE=$(oc get pods -n troshka --kubeconfig="$KC" \
-      -l app.kubernetes.io/name=troshka-backend -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
-    if echo "$POD_IMAGE" | grep -qF "$EXPECTED_BACKEND"; then
-      echo "  ArgoCD updated backend image"
-      oc rollout status deploy/troshka-backend -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
+    ALL_MATCH=true
+    for idx in "${!ARGO_IMAGES[@]}"; do
+      pod_image=$(oc get pods -n troshka --kubeconfig="$KC" \
+        -l "${ARGO_LABELS[$idx]}" -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
+      if ! echo "$pod_image" | grep -qF "${ARGO_DIGESTS[$idx]}"; then
+        ALL_MATCH=false
+        break
+      fi
+    done
+    if [ "$ALL_MATCH" = true ]; then
+      echo "  ArgoCD synced all images"
+      for dep in "${ARGO_DEPLOYS[@]}"; do
+        oc rollout status "deploy/${dep}" -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
+      done
       break
     fi
     if [ "$i" -eq 40 ]; then
