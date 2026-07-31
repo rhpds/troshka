@@ -1102,7 +1102,7 @@ class TestCleanupKubevirtK8sResources:
         provider = _make_provider(type="kubevirt")
         creds = {"namespace": "op-ns", "cache_namespace": "cache-ns"}
 
-        result = _cleanup_kubevirt_k8s_resources(provider, "prov-0001", creds)
+        result = _cleanup_kubevirt_k8s_resources(provider, creds)
 
         assert result is mock_core
         mock_apps_api_cls.return_value.delete_namespaced_deployment.assert_called_once()
@@ -1124,7 +1124,7 @@ class TestCleanupKubevirtK8sResources:
         provider = _make_provider(type="kubevirt")
         creds = {"namespace": "op-ns"}
 
-        result = _cleanup_kubevirt_k8s_resources(provider, "prov-0001", creds)
+        result = _cleanup_kubevirt_k8s_resources(provider, creds)
 
         assert result is None
 
@@ -1155,7 +1155,7 @@ class TestCleanupKubevirtK8sResources:
         creds = {"namespace": "op-ns", "cache_namespace": "cache-ns"}
 
         # Should not raise — individual failures are silenced
-        result = _cleanup_kubevirt_k8s_resources(provider, "prov-0001", creds)
+        result = _cleanup_kubevirt_k8s_resources(provider, creds)
 
         assert result is mock_core
 
@@ -1175,7 +1175,7 @@ class TestCleanupKubevirtK8sResources:
         provider = _make_provider(type="kubevirt")
         creds = {}  # no namespace/cache_namespace → use defaults
 
-        _cleanup_kubevirt_k8s_resources(provider, "prov-0001", creds)
+        _cleanup_kubevirt_k8s_resources(provider, creds)
 
         # Should use defaults: "troshka-operator" and "troshka-cache"
         delete_ns_calls = mock_core.delete_namespace.call_args_list

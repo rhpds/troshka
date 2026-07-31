@@ -415,9 +415,7 @@ def update_provider(
     return _build_provider_response(provider)
 
 
-def _cleanup_kubevirt_k8s_resources(
-    provider: Provider, provider_id: str, creds: dict
-) -> Any | None:
+def _cleanup_kubevirt_k8s_resources(provider: Provider, creds: dict) -> Any | None:
     """Delete operator deployment, CRDs, and namespaces from the K8s cluster.
 
     Returns the core_api client (or None if connection failed).
@@ -466,12 +464,12 @@ def _cleanup_kubevirt_k8s_resources(
 
         logger.info(
             "Cleaned up kubevirt operator resources for provider %s",
-            provider_id[:8],
+            provider.id[:8],
         )
     except Exception as e:
         logger.warning(
             "Failed to clean up kubevirt resources for %s: %s",
-            provider_id[:8],
+            provider.id[:8],
             e,
         )
     return core_api
@@ -521,7 +519,7 @@ def delete_provider(
 
     if provider.type == "kubevirt":
         creds = provider.get_credentials()
-        core_api = _cleanup_kubevirt_k8s_resources(provider, provider_id, creds)
+        core_api = _cleanup_kubevirt_k8s_resources(provider, creds)
         _cleanup_kubevirt_db_resources(db, provider, creds, core_api)
     elif provider.hosts:
         raise HTTPException(
