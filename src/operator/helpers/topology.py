@@ -88,6 +88,7 @@ def extract_vms(topology):
                 },
                 "recertEnabled": data.get("recertEnabled", False),
                 "bmcEnabled": data.get("bmcEnabled", False),
+                "bmcIp": data.get("bmcIp", ""),
                 "bootOrder": data.get("bootDevices", []),
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),

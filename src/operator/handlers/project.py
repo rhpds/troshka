@@ -1547,6 +1547,14 @@ def _ensure_bmc_deployment(vm_items, namespace):
 
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
+
+    # Enrich bmcIp from topology when VM CRs have empty values
+    if any(not v["bmcIp"] for v in bmc_vms):
+        topo_ips = _get_bmc_ips_from_topology(custom_api, namespace)
+        for v in bmc_vms:
+            if not v["bmcIp"] and v["vmId"] in topo_ips:
+                v["bmcIp"] = topo_ips[v["vmId"]]
+
     _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
 
     bmc_nad = _find_bmc_nad(namespace, custom_api)
@@ -1583,9 +1591,36 @@ def _get_bmc_credentials(custom_api, namespace):
                 data = node.get("data", {})
                 if data.get("networkType") == "bmc":
                     return {
-                        "username": data.get("bmcUsername", "admin"),
-                        "password": data.get("bmcPassword", "redhat"),
+                        "username": data.get("bmcUsername", ""),
+                        "password": data.get("bmcPassword", ""),
                     }
+    except Exception:
+        pass
+    return {}
+
+
+def _get_bmc_ips_from_topology(custom_api, namespace):
+    """Extract per-VM bmcIp from the TroshkaProject CR topology."""
+    try:
+        projects = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural="troshkaprojects",
+            ),
+        )
+        for proj in projects.get("items", []):
+            topology = proj.get("spec", {}).get("topology", {})
+            ips = {}
+            for node in topology.get("nodes", []):
+                data = node.get("data", {})
+                if node.get("type") == "vmNode" and data.get("bmcIp"):
+                    vm_id = data.get("id", node.get("id", ""))
+                    ips[vm_id] = data["bmcIp"]
+            if ips:
+                return ips
     except Exception:
         pass
     return {}
