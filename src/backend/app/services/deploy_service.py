@@ -2399,6 +2399,15 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
 
     _allocate_kubevirt_eips(project_id, project, clean_topo, db)
 
+    # Read domain UUIDs from TroshkaVM CRs (assigned by KubeVirt at VM creation)
+    kv_domain_uuids = _read_kubevirt_domain_uuids(project, db)
+    for node in clean_topo.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") == "vmNode":
+            vm_id = ndata.get("id", node.get("id", ""))
+            if vm_id in kv_domain_uuids:
+                ndata["domainUuid"] = kv_domain_uuids[vm_id]
+
     bmc_config = _extract_bmc_config(clean_topo, project_id)
     if bmc_config:
         clean_topo["bmc"] = {
@@ -2407,8 +2416,8 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
             "vms": {
                 vm["node_id"]: {
                     "ip": vm["bmc_ip"],
-                    "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{vm['bmc_ip']}",
-                    "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{vm['bmc_ip']}",
+                    "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{kv_domain_uuids.get(vm['node_id'], 'troshka-vm-' + vm['node_id'][:8])}",
+                    "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{kv_domain_uuids.get(vm['node_id'], 'troshka-vm-' + vm['node_id'][:8])}",
                     "ipmi_address": f"{vm['bmc_ip']}:623",
                 }
                 for vm in bmc_config["vms"]
@@ -2526,6 +2535,45 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
             )
 
     _patch_kubevirt_gateway_forwards(provider, project_id, topology)
+
+
+def _read_kubevirt_domain_uuids(project, db):
+    """Read domain UUIDs from TroshkaVM CR statuses (KubeVirt VM metadata.uid)."""
+    from app.models.host import Host
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import (
+        CRD_GROUP,
+        CRD_VERSION,
+        _get_k8s_clients,
+        _project_ns,
+    )
+
+    host = (
+        db.query(Host).filter_by(id=project.host_id).first()
+        if project.host_id
+        else None
+    )
+    if not host:
+        return {}
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return {}
+    try:
+        custom_api, _, _ = _get_k8s_clients(provider)
+        ns = _project_ns(provider, project.id)
+        vms = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP, version=CRD_VERSION, namespace=ns, plural="troshkavms"
+        )
+        result = {}
+        for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+            vm_id = vm.get("spec", {}).get("vmId", "")
+            domain_uuid = vm.get("status", {}).get("domainUuid", "")
+            if vm_id and domain_uuid:
+                result[vm_id] = domain_uuid
+        return result
+    except Exception:
+        logger.warning("Failed to read KubeVirt domain UUIDs for %s", project.id[:8])
+        return {}
 
 
 def _patch_kubevirt_gateway_forwards(provider, project_id, topology):

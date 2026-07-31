@@ -1527,6 +1527,7 @@ def _ensure_bmc_deployment(vm_items, namespace):
                     "vmId": spec.get("vmId", ""),
                     "smbiosUuid": spec.get("smbiosUuid", ""),
                     "bmcIp": spec.get("bmcIp", ""),
+                    "domainUuid": vm.get("status", {}).get("domainUuid", ""),
                 }
             )
     if not bmc_vms:

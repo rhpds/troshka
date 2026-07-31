@@ -82,13 +82,14 @@ class RedfishHandler(BaseHTTPRequestHandler):
                 mem = driver.get_total_memory(identity)
                 cpus = driver.get_total_cpus(identity)
                 boot_enabled = driver.get_boot_override_enabled(identity)
+                smbios_uuid = driver.get_uuid(identity)
                 _send_json(
                     self,
                     {
                         "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
                         "Id": identity,
                         "Name": identity,
-                        "UUID": identity,
+                        "UUID": smbios_uuid,
                         "PowerState": power,
                         "MemorySummary": {"TotalSystemMemoryGiB": mem / 1024},
                         "ProcessorSummary": {"Count": cpus},

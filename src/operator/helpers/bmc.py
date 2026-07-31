@@ -13,9 +13,12 @@ def build_bmc_deployment(
     vm_map = {}
     bmc_ips = []
     for vm in bmc_vms:
-        uuid = vm.get("smbiosUuid", vm.get("vmId", ""))
+        domain_uuid = vm.get("domainUuid", "")
         kv_name = f"troshka-vm-{vm.get('vmId', '')[:8]}"
-        vm_map[uuid] = kv_name
+        if domain_uuid:
+            vm_map[domain_uuid] = kv_name
+        else:
+            vm_map[kv_name] = kv_name
         if vm.get("bmcIp"):
             bmc_ips.append(vm["bmcIp"])
 

@@ -589,7 +589,7 @@ def _find_bmc_nad(namespace, custom_api):
     return None
 
 
-def _setup_bmc(spec, namespace, core_api, custom_api):
+def _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=""):
     """Set up BMC service account, RBAC, SCC, and deployment if bmcEnabled."""
     if not spec.get("bmcEnabled"):
         return
@@ -608,6 +608,7 @@ def _setup_bmc(spec, namespace, core_api, custom_api):
             "vmId": spec["vmId"],
             "smbiosUuid": spec.get("smbiosUuid", ""),
             "bmcIp": spec.get("bmcIp", ""),
+            "domainUuid": domain_uuid,
         }
     ]
     existing_bmc = None
@@ -717,7 +718,22 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         existing_kv_name,
     )
 
-    _setup_bmc(spec, namespace, core_api, custom_api)
+    # Read back the KubeVirt VM's UID as the domain UUID (same pattern as
+    # troshkad reading domain_uuid from virsh define)
+    try:
+        created_vm = custom_api.get_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_vm_name,
+        )
+        domain_uuid = created_vm["metadata"]["uid"]
+    except Exception:
+        domain_uuid = ""
+    patch.status["domainUuid"] = domain_uuid
+
+    _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=domain_uuid)
 
     patch.status["state"] = (
         "Running" if spec.get("powerOnAtDeploy", True) else "Stopped"
@@ -993,7 +1009,20 @@ async def vm_update(
             raise
         logger.info(f"KubeVirt VM {kv_name} already exists after reconfigure")
 
-    _setup_bmc(new_spec, namespace, core_api, custom_api)
+    try:
+        recreated_vm = custom_api.get_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+        )
+        domain_uuid = recreated_vm["metadata"]["uid"]
+    except Exception:
+        domain_uuid = status.get("domainUuid", "")
+    patch.status["domainUuid"] = domain_uuid
+
+    _setup_bmc(new_spec, namespace, core_api, custom_api, domain_uuid=domain_uuid)
 
     power_on = new_spec.get("powerOnAtDeploy", True)
     patch.status["state"] = "Running" if power_on else "Stopped"

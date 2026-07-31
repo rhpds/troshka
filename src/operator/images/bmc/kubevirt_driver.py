@@ -304,6 +304,17 @@ class KubeVirtDriver:
             for iface in interfaces
         ]
 
+    def get_uuid(self, identity):
+        vm = self._get_vm(identity)
+        return (
+            vm.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("domain", {})
+            .get("firmware", {})
+            .get("uuid", identity)
+        )
+
     def get_bios_version(self, identity):
         return "KubeVirt BIOS"
 
@@ -317,13 +328,5 @@ class KubeVirtDriver:
         )
         systems = []
         for vm in vms.get("items", []):  # type: ignore[union-attr]
-            uuid = (
-                vm.get("spec", {})  # type: ignore[union-attr]
-                .get("template", {})
-                .get("spec", {})
-                .get("domain", {})
-                .get("firmware", {})
-                .get("uuid", vm["metadata"]["name"])
-            )
-            systems.append(uuid)
+            systems.append(vm["metadata"]["uid"])
         return systems
