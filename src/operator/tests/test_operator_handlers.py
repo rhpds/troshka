@@ -1160,6 +1160,50 @@ class TestRemoveSaFromSccs:
         _remove_sa_from_sccs(custom_api, "ns1", "my-sa", ["scc-1"])
 
 
+class TestProjectDeleteSccCleanup:
+    def test_removes_all_sa_refs_from_sccs(self):
+        from handlers.project import _remove_sa_from_sccs
+
+        custom_api = MagicMock()
+        scc_data = {
+            "troshka-network-pods": {
+                "users": ["system:serviceaccount:test-ns:troshka-network"]
+            },
+            "troshka-gateway": {
+                "users": [
+                    "system:serviceaccount:test-ns:troshka-network",
+                    "system:serviceaccount:test-ns:troshka-bmc",
+                ]
+            },
+            "troshka-privileged-jobs": {
+                "users": ["system:serviceaccount:test-ns:troshka-recert"]
+            },
+        }
+        custom_api.get_cluster_custom_object.side_effect = (
+            lambda group, version, plural, name: scc_data[name]
+        )
+
+        _remove_sa_from_sccs(
+            custom_api,
+            "test-ns",
+            "troshka-network",
+            ("troshka-network-pods", "troshka-gateway"),
+        )
+        _remove_sa_from_sccs(custom_api, "test-ns", "troshka-bmc", ("troshka-gateway",))
+        _remove_sa_from_sccs(
+            custom_api, "test-ns", "troshka-recert", ("troshka-privileged-jobs",)
+        )
+
+        assert custom_api.patch_cluster_custom_object.call_count == 4
+        patched_sccs = [
+            c.kwargs["name"]
+            for c in custom_api.patch_cluster_custom_object.call_args_list
+        ]
+        assert patched_sccs.count("troshka-gateway") == 2
+        assert patched_sccs.count("troshka-network-pods") == 1
+        assert patched_sccs.count("troshka-privileged-jobs") == 1
+
+
 class TestStopAllVms:
     def test_patches_vms_to_stop(self):
         from handlers.project import _stop_all_vms
@@ -3806,17 +3850,30 @@ class TestBuildBmcDeployment:
         assert dep["metadata"]["name"] == "bmc-proj1"
         assert dep["metadata"]["namespace"] == "ns1"
 
-    def test_vm_map_env(self):
+    def test_vm_map_env_with_domain_uuid(self):
         from helpers.bmc import build_bmc_deployment
 
-        bmc_vms = [{"vmId": "vm12345678", "smbiosUuid": "uuid-1", "bmcIp": "10.0.1.10"}]
+        bmc_vms = [
+            {"vmId": "vm12345678", "domainUuid": "dom-uuid-1", "bmcIp": "10.0.1.10"}
+        ]
         dep = build_bmc_deployment("proj1", "ns1", bmc_vms, "bmc-nad", {})
 
         env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
         vm_map_env = [e for e in env if e["name"] == "SUSHY_VM_MAP"][0]
         vm_map = json.loads(vm_map_env["value"])
-        assert "uuid-1" in vm_map
-        assert vm_map["uuid-1"] == "troshka-vm-vm123456"
+        assert "dom-uuid-1" in vm_map
+        assert vm_map["dom-uuid-1"] == "troshka-vm-vm123456"
+
+    def test_vm_map_env_fallback_no_domain_uuid(self):
+        from helpers.bmc import build_bmc_deployment
+
+        bmc_vms = [{"vmId": "vm12345678", "bmcIp": "10.0.1.10"}]
+        dep = build_bmc_deployment("proj1", "ns1", bmc_vms, "bmc-nad", {})
+
+        env = dep["spec"]["template"]["spec"]["containers"][0]["env"]
+        vm_map_env = [e for e in env if e["name"] == "SUSHY_VM_MAP"][0]
+        vm_map = json.loads(vm_map_env["value"])
+        assert "troshka-vm-vm123456" in vm_map
 
     def test_bmc_ips_env(self):
         from helpers.bmc import build_bmc_deployment
@@ -4103,7 +4160,7 @@ class TestKubeVirtDriverSetPowerState:
 
 class TestKubeVirtDriverGetSystems:
     @patch("images.bmc.kubevirt_driver.config")
-    def test_lists_systems(self, mock_config):
+    def test_lists_systems_by_uid(self, mock_config):
         from images.bmc.kubevirt_driver import KubeVirtDriver
 
         driver = KubeVirtDriver.__new__(KubeVirtDriver)
@@ -4112,39 +4169,25 @@ class TestKubeVirtDriverGetSystems:
         driver.vm_map = {}
         driver.custom_api.list_namespaced_custom_object.return_value = {
             "items": [
-                {
-                    "metadata": {"name": "vm-1"},
-                    "spec": {
-                        "template": {
-                            "spec": {"domain": {"firmware": {"uuid": "uuid-1234"}}}
-                        }
-                    },
-                }
+                {"metadata": {"name": "vm-1", "uid": "uid-1234"}},
             ]
         }
 
         result = driver.get_systems()
-        assert result == ["uuid-1234"]
+        assert result == ["uid-1234"]
 
     @patch("images.bmc.kubevirt_driver.config")
-    def test_fallback_to_name(self, mock_config):
+    def test_uses_vm_map_keys_when_populated(self, mock_config):
         from images.bmc.kubevirt_driver import KubeVirtDriver
 
         driver = KubeVirtDriver.__new__(KubeVirtDriver)
         driver.custom_api = MagicMock()
         driver.namespace = "ns1"
-        driver.vm_map = {}
-        driver.custom_api.list_namespaced_custom_object.return_value = {
-            "items": [
-                {
-                    "metadata": {"name": "vm-1"},
-                    "spec": {"template": {"spec": {"domain": {"firmware": {}}}}},
-                }
-            ]
-        }
+        driver.vm_map = {"dom-uuid-1": "troshka-vm-vm1", "dom-uuid-2": "troshka-vm-vm2"}
+        driver.custom_api.list_namespaced_custom_object.return_value = {"items": []}
 
         result = driver.get_systems()
-        assert result == ["vm-1"]
+        assert sorted(result) == ["dom-uuid-1", "dom-uuid-2"]
 
     @patch("images.bmc.kubevirt_driver.config")
     def test_empty_list(self, mock_config):
@@ -5421,30 +5464,23 @@ class TestKubeVirtDriverGetters:
         result = d.get_boot_override_enabled("uuid1")
         assert result == "Once"
 
-    def test_get_systems(self):
+    def test_get_systems_from_vm_map(self):
         d = self._make_driver()
+        d.custom_api.list_namespaced_custom_object.return_value = {"items": []}
+        systems = d.get_systems()
+        assert systems == ["uuid1"]
+
+    def test_get_systems_from_api(self):
+        d = self._make_driver()
+        d.vm_map = {}
         d.custom_api.list_namespaced_custom_object.return_value = {
             "items": [
-                {
-                    "metadata": {"name": "vm-1"},
-                    "spec": {
-                        "template": {
-                            "spec": {"domain": {"firmware": {"uuid": "uuid1"}}}
-                        }
-                    },
-                },
-                {
-                    "metadata": {"name": "vm-2"},
-                    "spec": {
-                        "template": {
-                            "spec": {"domain": {"firmware": {"uuid": "uuid2"}}}
-                        }
-                    },
-                },
+                {"metadata": {"name": "vm-1", "uid": "uid-1"}},
+                {"metadata": {"name": "vm-2", "uid": "uid-2"}},
             ]
         }
         systems = d.get_systems()
-        assert set(systems) == {"uuid1", "uuid2"}
+        assert set(systems) == {"uid-1", "uid-2"}
 
     def test_get_boot_mode_uefi(self):
         d = self._make_driver()

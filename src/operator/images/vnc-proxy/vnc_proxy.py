@@ -1,13 +1,23 @@
-"""WebSocket VNC proxy — relays noVNC to KubeVirt VNC subresource API.
+"""WebSocket VNC proxy — multiplexes one upstream KubeVirt VNC connection
+across multiple browser clients for shared console viewing.
 
-Keeps the client WebSocket alive across VM restarts by reconnecting to
-KubeVirt server-side, so noVNC never sees a disconnect during reboots.
+Late-joining clients get a cached RFB handshake replay, then receive
+the same framebuffer broadcast as all other viewers. Input from any
+client is forwarded upstream (if two people type simultaneously, that's
+their problem).
+
+When the upstream drops (VM reboot/stop), all clients are closed and
+the frontend reconnects naturally.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import ssl
+import struct
+from typing import Any
 
 import websockets
 from kubernetes import client, config
@@ -43,12 +53,205 @@ def _read_token():
     return K8S_TOKEN
 
 
-async def _client_alive(ws_client):
-    try:
-        await asyncio.wait_for(ws_client.ping(), timeout=2)
-        return True
-    except Exception:
-        return False
+def _make_ssl_context():
+    ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    if os.path.exists(ca_path):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.load_verify_locations(ca_path)
+    else:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # NOSONAR — dev/test only
+    return ctx
+
+
+async def _recv_bytes(ws) -> bytes:
+    msg = await ws.recv()
+    return msg if isinstance(msg, bytes) else msg.encode()
+
+
+async def _send_bytes(ws, data):
+    await ws.send(data if isinstance(data, bytes) else data.encode())
+
+
+class _SharedSession:
+    """Single upstream VNC connection shared by multiple browser clients."""
+
+    def __init__(self, vm_name: str):
+        self.vm_name = vm_name
+        self.upstream = None
+        self.clients: dict[int, Any] = {}
+        self._next_id = 0
+        self._server_handshake: list[bytes] = []
+        self._fb_width = 0
+        self._fb_height = 0
+        self._handshake_done = asyncio.Event()
+        self._broadcast_task: asyncio.Task | None = None
+        self._closing = False
+
+    async def join(self, ws_client) -> None:
+        """Add a client to this session. Blocks until client disconnects."""
+        cid = self._next_id
+        self._next_id += 1
+
+        if not self.upstream:
+            try:
+                await self._connect_and_handshake(ws_client)
+            except Exception:
+                self._closing = True
+                self._handshake_done.set()
+                raise
+            self.clients[cid] = ws_client
+            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+            logger.info(f"First client {cid} joined session for {self.vm_name}")
+        else:
+            await self._handshake_done.wait()
+            if self._closing:
+                raise ConnectionError("Session closed")
+            await self._replay_handshake(ws_client)
+            self.clients[cid] = ws_client
+            await self._request_full_update()
+            logger.info(
+                f"Client {cid} joined session for {self.vm_name} "
+                f"({len(self.clients)} viewers)"
+            )
+
+        try:
+            async for msg in ws_client:
+                if isinstance(msg, bytes) and self.upstream and not self._closing:
+                    try:
+                        await self.upstream.send(msg)
+                    except Exception:
+                        break
+        except Exception:
+            pass
+        finally:
+            self.clients.pop(cid, None)
+            logger.info(
+                f"Client {cid} left session for {self.vm_name} "
+                f"({len(self.clients)} remaining)"
+            )
+            if not self.clients:
+                await self._teardown()
+
+    async def _connect_and_handshake(self, first_client):
+        """Establish upstream and relay real RFB handshake with the first client."""
+        headers = {"Authorization": f"Bearer {_read_token()}"}
+        url = _get_kubevirt_vnc_url(self.vm_name)
+
+        self.upstream = await websockets.connect(
+            url,
+            additional_headers=headers,
+            ssl=_make_ssl_context(),
+            subprotocols=[websockets.Subprotocol("binary")],
+            max_size=None,
+            compression=None,
+        )
+        logger.info(f"Upstream VNC connected for {self.vm_name}")
+
+        # Step 1: Version exchange
+        srv_version = await _recv_bytes(self.upstream)
+        self._server_handshake.append(srv_version)
+        await first_client.send(srv_version)
+        cli_version = await first_client.recv()
+        await _send_bytes(self.upstream, cli_version)
+
+        # Step 2: Security types
+        srv_security = await _recv_bytes(self.upstream)
+        self._server_handshake.append(srv_security)
+        await first_client.send(srv_security)
+        cli_security = await first_client.recv()
+        await _send_bytes(self.upstream, cli_security)
+
+        # Step 3: Security result
+        srv_result = await _recv_bytes(self.upstream)
+        self._server_handshake.append(srv_result)
+        await first_client.send(srv_result)
+
+        # Step 4: Shared flag (client → server only)
+        cli_shared = await first_client.recv()
+        await _send_bytes(self.upstream, cli_shared)
+
+        # Step 5: ServerInit
+        srv_init = await _recv_bytes(self.upstream)
+        self._server_handshake.append(srv_init)
+        await first_client.send(srv_init)
+
+        if len(srv_init) >= 4:
+            self._fb_width, self._fb_height = struct.unpack(">HH", srv_init[:4])
+
+        self._handshake_done.set()
+
+    async def _replay_handshake(self, ws_client):
+        """Replay cached RFB handshake for a late-joining client."""
+        hs = self._server_handshake
+
+        # Version exchange
+        await ws_client.send(hs[0])
+        await ws_client.recv()
+
+        # Security types
+        await ws_client.send(hs[1])
+        await ws_client.recv()
+
+        # Security result
+        await ws_client.send(hs[2])
+
+        # Shared flag
+        await ws_client.recv()
+
+        # ServerInit
+        await ws_client.send(hs[3])
+
+    async def _request_full_update(self):
+        """Ask QEMU for a non-incremental framebuffer update so the new client sees something."""
+        if self.upstream and self._fb_width and self._fb_height:
+            msg = struct.pack(">BBHHHH", 3, 0, 0, 0, self._fb_width, self._fb_height)
+            try:
+                await self.upstream.send(msg)
+            except Exception:
+                pass
+
+    async def _broadcast_loop(self):
+        """Read upstream VNC frames and send to all connected clients."""
+        if not self.upstream:
+            return
+        try:
+            async for msg in self.upstream:
+                dead = []
+                for cid, ws in list(self.clients.items()):
+                    try:
+                        await asyncio.wait_for(ws.send(msg), timeout=5)
+                    except Exception:
+                        dead.append(cid)
+                for cid in dead:
+                    self.clients.pop(cid, None)
+                    logger.info(f"Dropped slow/dead client {cid} for {self.vm_name}")
+        except Exception as e:
+            logger.info(f"Upstream VNC dropped for {self.vm_name}: {e}")
+        finally:
+            self._closing = True
+            for ws in list(self.clients.values()):
+                try:
+                    await ws.close(1001, "VNC upstream closed")
+                except Exception:
+                    pass
+
+    async def _teardown(self):
+        self._closing = True
+        if self._broadcast_task:
+            self._broadcast_task.cancel()
+        if self.upstream:
+            try:
+                await self.upstream.close()
+            except Exception:
+                pass
+            self.upstream = None
+        logger.info(f"Session for {self.vm_name} torn down")
+
+
+_sessions: dict[str, _SharedSession] = {}
+_sessions_lock = asyncio.Lock()
 
 
 async def _proxy(ws_client):
@@ -59,95 +262,26 @@ async def _proxy(ws_client):
         return
 
     vm_name = parts[0]
-    logger.info(f"VNC proxy request for {vm_name}")
+    logger.info(f"VNC client connecting for {vm_name}")
 
-    vnc_url = _get_kubevirt_vnc_url(vm_name)
+    async with _sessions_lock:
+        session = _sessions.get(vm_name)
+        if not session or session._closing:
+            session = _SharedSession(vm_name)
+            _sessions[vm_name] = session
 
-    _ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-    if os.path.exists(_ca_path):
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_ctx.load_verify_locations(_ca_path)
-    else:
-        ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = (
-            ssl.CERT_NONE
-        )  # NOSONAR — dev/test only, CA always present in-cluster
-
-    max_retries = 30
-    for attempt in range(max_retries):
-        headers = {"Authorization": f"Bearer {_read_token()}"}
+    try:
+        await session.join(ws_client)
+    except Exception as e:
+        logger.error(f"VNC session error for {vm_name}: {e}")
         try:
-            async with websockets.connect(
-                vnc_url,
-                additional_headers=headers,
-                ssl=ssl_ctx,
-                subprotocols=["binary"],
-                max_size=None,
-                compression=None,
-            ) as ws_kubevirt:
-                if attempt:
-                    logger.info(
-                        f"Reconnected to KubeVirt VNC for {vm_name} (attempt {attempt + 1})"
-                    )
-                else:
-                    logger.info(f"Connected to KubeVirt VNC for {vm_name}")
-
-                async def client_to_kv():
-                    try:
-                        async for msg in ws_client:
-                            await ws_kubevirt.send(msg)
-                    except websockets.exceptions.ConnectionClosed:
-                        pass
-
-                async def kv_to_client():
-                    try:
-                        async for msg in ws_kubevirt:
-                            await ws_client.send(msg)
-                    except websockets.exceptions.ConnectionClosed:
-                        pass
-
-                t1 = asyncio.create_task(client_to_kv())
-                t2 = asyncio.create_task(kv_to_client())
-                _done, pending = await asyncio.wait(
-                    [t1, t2], return_when=asyncio.FIRST_COMPLETED
-                )
-                for t in pending:
-                    t.cancel()
-                for t in pending:
-                    try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
-                        pass
-
-            if not await _client_alive(ws_client):
-                logger.info(f"Client disconnected for {vm_name}")
-                return
-
-            logger.info(f"KubeVirt VNC dropped for {vm_name}, reconnecting...")
-            await asyncio.sleep(2)
-            continue
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info(f"Client disconnected for {vm_name}")
-            return
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.info(
-                    f"VNC for {vm_name} not ready (attempt {attempt + 1}), retrying in 3s: {e}"
-                )
-                if not await _client_alive(ws_client):
-                    logger.info(f"Client disconnected while waiting for {vm_name}")
-                    return
-                await asyncio.sleep(3)
-            else:
-                logger.error(
-                    f"VNC proxy giving up on {vm_name} after {max_retries} attempts: {e}"
-                )
-                try:
-                    await ws_client.close(1011, str(e))
-                except Exception:
-                    pass
+            await ws_client.close(1011, str(e)[:120])
+        except Exception:
+            pass
+    finally:
+        async with _sessions_lock:
+            if _sessions.get(vm_name) is session and not session.clients:
+                _sessions.pop(vm_name, None)
 
 
 async def main():
@@ -160,7 +294,7 @@ async def main():
         ping_timeout=10,
         compression=None,
     ):
-        logger.info(f"VNC proxy listening on port {LISTEN_PORT}")
+        logger.info(f"VNC proxy (multiplexer) listening on port {LISTEN_PORT}")
         await asyncio.Future()
 
 

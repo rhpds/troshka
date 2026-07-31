@@ -1755,6 +1755,12 @@ async def project_delete(namespace, name, **_):
         "troshka-network",
         ("troshka-network-pods", "troshka-gateway"),
     )
+    _remove_sa_from_sccs(
+        custom_api, namespace, "troshka-bmc", ("troshka-gateway",)
+    )
+    _remove_sa_from_sccs(
+        custom_api, namespace, "troshka-recert", ("troshka-privileged-jobs",)
+    )
 
     logger.info(f"TroshkaProject {name} cleanup complete")
 

@@ -22,6 +22,32 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+_logger = logging.getLogger(__name__)
+_POD_NAME = os.environ.get("HOSTNAME", "local")
+
+
+def _log_job_context(prefix: str, job, worker_name: str):
+    """Log a structured routing line for job start/end."""
+    project_id = job.meta.get("project_id", "")
+    host_id = job.meta.get("host_id", "")
+    func_name = (job.func_name or "").rsplit(".", 1)[-1]
+    parts = [f"job={job.id[:8]}", f"func={func_name}"]
+    if project_id:
+        parts.append(f"project={project_id[:8]}")
+    if host_id:
+        parts.append(f"host={host_id[:8]}")
+    parts.append(f"worker={worker_name}")
+    _logger.info("%s %s", prefix, " ".join(parts))
+
+
+def _save_worker_meta(job):
+    """Store the worker pod name on the job for post-mortem lookup."""
+    job.meta["worker_pod"] = _POD_NAME
+    try:
+        job.save_meta()
+    except Exception:
+        pass
+
 
 def run_worker():
     """Start an RQ worker that listens on deploy, provision, and default queues."""
@@ -38,19 +64,38 @@ def run_worker():
 
     conn = Redis.from_url(url)
     queues = ["project_lifecycle", "host_lifecycle", "default"]
+    worker_name = f"{_POD_NAME}.{os.getpid()}"
 
-    logger = logging.getLogger(__name__)
-
-    # macOS: fork() crashes the ObjC runtime — use SimpleWorker (no fork)
-    # Linux: use regular Worker (fork gives job isolation)
     if platform.system() == "Darwin":
-        logger.info("macOS detected — using SimpleWorker (no fork)")
-        worker_class = SimpleWorker
-    else:
-        worker_class = Worker
+        _logger.info("macOS detected — using SimpleWorker (no fork)")
 
-    logger.info("Starting RQ worker on queues: %s", ", ".join(queues))
-    w = worker_class(queues, connection=conn)
+        class _TroshkaSimpleWorker(SimpleWorker):
+            def perform_job(self, job, queue):
+                _log_job_context(">> START", job, self.name)
+                _save_worker_meta(job)
+                result = super().perform_job(job, queue)
+                _log_job_context("<< DONE " if result else "<< FAIL ", job, self.name)
+                return result
+
+        worker_class = _TroshkaSimpleWorker
+    else:
+
+        class _TroshkaWorker(Worker):
+            def perform_job(self, job, queue):
+                _log_job_context(">> START", job, self.name)
+                _save_worker_meta(job)
+                result = super().perform_job(job, queue)
+                _log_job_context("<< DONE " if result else "<< FAIL ", job, self.name)
+                return result
+
+        worker_class = _TroshkaWorker
+
+    _logger.info(
+        "Starting worker on pod %s, queues: %s",
+        _POD_NAME,
+        ", ".join(queues),
+    )
+    w = worker_class(queues, connection=conn, name=worker_name)
     w.work()
 
 

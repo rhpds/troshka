@@ -652,19 +652,22 @@ def _collect_worker_info(r):
     try:
         for w in Worker.all(connection=r):
             cj = w.get_current_job()
-            workers.append(
-                {
-                    "name": w.name,
-                    "state": w.get_state(),
-                    "queues": [q.name for q in w.queues],
-                    "current_job": str(w.get_current_job_id() or ""),
-                    "current_queue": cj.origin if cj else "",
-                    "current_func": ((cj.func_name or "").split(".")[-1] if cj else ""),
-                    "successful_count": w.successful_job_count,
-                    "failed_count": w.failed_job_count,
-                    "total_working_time": w.total_working_time,
-                }
-            )
+            info: dict = {
+                "name": w.name,
+                "state": w.get_state(),
+                "queues": [q.name for q in w.queues],
+                "current_job": str(w.get_current_job_id() or ""),
+                "current_queue": cj.origin if cj else "",
+                "current_func": ((cj.func_name or "").split(".")[-1] if cj else ""),
+                "successful_count": w.successful_job_count,
+                "failed_count": w.failed_job_count,
+                "total_working_time": w.total_working_time,
+            }
+            if cj:
+                meta = cj.meta or {}
+                info["current_project"] = (meta.get("project_id") or "")[:8]
+                info["current_host"] = (meta.get("host_id") or "")[:8]
+            workers.append(info)
     except Exception:
         pass
     return workers
@@ -733,6 +736,7 @@ def list_failed_jobs(
         for jid in failed_ids[:50]:
             try:
                 job = Job.fetch(jid, connection=r)
+                meta = job.meta or {}
                 jobs.append(
                     {
                         "id": jid,
@@ -743,6 +747,9 @@ def list_failed_jobs(
                             job.enqueued_at.isoformat() if job.enqueued_at else None
                         ),
                         "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+                        "project": (meta.get("project_id") or "")[:8],
+                        "host": (meta.get("host_id") or "")[:8],
+                        "worker_pod": meta.get("worker_pod", ""),
                     }
                 )
             except Exception:

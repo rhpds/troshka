@@ -1776,6 +1776,7 @@ def _handle_vm_reconfigure(job, params):
         )
         if graphics is not None:
             graphics.set("listen", vnc_listen)
+            graphics.set("sharePolicy", "force-shared")
             listen_elem = graphics.find("listen")
             if listen_elem is not None:
                 listen_elem.set("address", vnc_listen)
@@ -1785,6 +1786,7 @@ def _handle_vm_reconfigure(job, params):
             graphics.set("port", "-1")
             graphics.set("autoport", "yes")
             graphics.set("listen", vnc_listen)
+            graphics.set("sharePolicy", "force-shared")
             listen_sub = ET.SubElement(graphics, "listen")
             listen_sub.set("type", "address")
             listen_sub.set("address", vnc_listen)

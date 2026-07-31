@@ -207,12 +207,13 @@ def enqueue_job(
     queue_name: str = QUEUE_DEPLOY,
     job_timeout: int = 7200,
     project_id: str | None = None,
+    host_id: str | None = None,
     **kwargs,
 ):
     """Enqueue a function for execution by an RQ worker.
 
     Falls back to running in a daemon thread when Redis is unavailable.
-    Pass project_id to track queue position for the project.
+    Pass project_id/host_id to track queue position and enable job routing logs.
     """
     if is_redis_available():
         try:
@@ -224,6 +225,8 @@ def enqueue_job(
             meta = {}
             if project_id:
                 meta["project_id"] = project_id
+            if host_id:
+                meta["host_id"] = host_id
             job = q.enqueue(
                 func,
                 *args,
@@ -234,11 +237,13 @@ def enqueue_job(
                 **kwargs,
             )
             logger.info(
-                "Enqueued job %s: %s.%s (queue=%s)",
+                "Enqueued job %s: %s.%s (queue=%s, project=%s, host=%s)",
                 job.id[:8],
                 func.__module__,
                 func.__qualname__,
                 queue_name,
+                (project_id or "")[:8],
+                (host_id or "")[:8],
             )
             if project_id:
                 get_redis().set(f"job:project:{project_id}", job.id, ex=7200)

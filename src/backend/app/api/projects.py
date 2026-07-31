@@ -1532,7 +1532,14 @@ def start_vm(
         from app.core.redis import enqueue_job
         from app.workers.jobs import job_start_infra_then_vm
 
-        enqueue_job(job_start_infra_then_vm, p_id, h_id, target_vm_id)
+        enqueue_job(
+            job_start_infra_then_vm,
+            p_id,
+            h_id,
+            target_vm_id,
+            project_id=p_id,
+            host_id=h_id,
+        )
         return {"action": "start", "success": True, "starting_project": True}
 
     # Start VM in background — re-cache images if needed, then virsh start
@@ -1573,7 +1580,9 @@ def start_vm(
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_cache_and_start_vm
 
-    enqueue_job(job_cache_and_start_vm, p_id, h_id, vm_id)
+    enqueue_job(
+        job_cache_and_start_vm, p_id, h_id, vm_id, project_id=p_id, host_id=h_id
+    )
     return {"action": "start", "success": True}
 
 
@@ -2414,7 +2423,14 @@ def reconfigure_project(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_do_reconfigure_bg, p_id, h_id, list(restart_vm_ids), project_id=p_id)
+    enqueue_job(
+        _do_reconfigure_bg,
+        p_id,
+        h_id,
+        list(restart_vm_ids),
+        project_id=p_id,
+        host_id=h_id,
+    )
     return {"status": "reconfiguring"}
 
 
@@ -3460,7 +3476,9 @@ def redeploy_vm(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_do_redeploy_bg, p_id, host_id, target_vm_id, project_id=p_id)
+    enqueue_job(
+        _do_redeploy_bg, p_id, host_id, target_vm_id, project_id=p_id, host_id=host_id
+    )
     return {"status": "redeploying"}
 
 
@@ -3682,7 +3700,12 @@ def redeploy_project(
     from app.workers.jobs import job_redeploy_bg
 
     enqueue_job(
-        job_redeploy_bg, project.id, destroy_ctx, old_host_id, project_id=project.id
+        job_redeploy_bg,
+        project.id,
+        destroy_ctx,
+        old_host_id,
+        project_id=project.id,
+        host_id=old_host_id,
     )
 
     return {"status": "deploying"}

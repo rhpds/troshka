@@ -24,26 +24,10 @@ fi
 
 echo ""
 echo "=== Step 2: Wait for CI ==="
-for i in $(seq 1 60); do
-  status=$(gh run list --limit 2 --json status,workflowName --jq '
-    [.[] | select(.workflowName == "Build and Push Container Images" or .workflowName == "Backend CI")]
-    | map(.status) | if all(. == "completed") then "done" else "running" end
-  ')
-  if [ "$status" = "done" ]; then
-    conclusions=$(gh run list --limit 2 --json conclusion,workflowName --jq '
-      [.[] | select(.workflowName == "Build and Push Container Images" or .workflowName == "Backend CI")]
-      | map("\(.workflowName): \(.conclusion)") | join(", ")
-    ')
-    echo "  CI complete: $conclusions"
-    if echo "$conclusions" | grep -q "failure"; then
-      echo "  CI FAILED — aborting"
-      exit 1
-    fi
-    break
-  fi
-  echo "  Waiting for CI... ($((i * 10))s)"
-  sleep 10
-done
+IMAGE_RUN=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId' -w "Build and Push Container Images")
+echo "  Watching image build (run $IMAGE_RUN)..."
+gh run watch "$IMAGE_RUN" --exit-status 2>&1 | tail -3
+echo "  CI complete"
 
 # Snapshot current backend image digest before promote
 OLD_DIGEST=$(oc get deploy troshka-backend -n troshka --kubeconfig="$KC" \
@@ -55,15 +39,66 @@ echo "=== Step 3: Promote images ==="
 
 if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
-  echo "=== Step 4: Restart operators ==="
+  echo "=== Step 4: Restart stale operators ==="
+
+  # Get the expected digest from the freshly-promoted production tag
+  EXPECTED_DIGEST=$(skopeo inspect --format '{{.Digest}}' \
+    "docker://quay.io/redhat-gpte/troshka-operator:production" 2>/dev/null || echo "")
+  if [ -z "$EXPECTED_DIGEST" ]; then
+    echo "  WARNING: Could not fetch production digest from registry, restarting all"
+  else
+    echo "  Production digest: ${EXPECTED_DIGEST:0:19}..."
+  fi
+
+  OPERATOR_KUBECONFIGS=()
   for kc in ~/secrets/ocpv{01,03,05,06,07,08,09,10}*.kubeconfig; do
+    [ -f "$kc" ] && OPERATOR_KUBECONFIGS+=("$kc")
+  done
+  OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig")
+
+  RESTARTED_CLUSTERS=()
+  for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
     printf "  %s: " "$cluster"
+
+    # Get the running operator's image reference (includes @sha256: if pulled by digest)
+    RUNNING_IMAGE=$(oc get deploy troshka-operator -n troshka-operator --kubeconfig="$kc" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "unknown")
+
+    if [ -n "$EXPECTED_DIGEST" ] && echo "$RUNNING_IMAGE" | grep -qF "$EXPECTED_DIGEST"; then
+      echo "current"
+      continue
+    fi
+
     oc rollout restart deployment/troshka-operator -n troshka-operator --kubeconfig="$kc" 2>&1 | grep -o "restarted"
+    RESTARTED_CLUSTERS+=("$kc|$cluster")
   done
-  printf "  ocpvdev01: "
-  oc rollout restart deployment/troshka-operator -n troshka-operator \
-    --kubeconfig="$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig" 2>&1 | grep -o "restarted"
+
+  # Verify restarted operators picked up the new image
+  if [ ${#RESTARTED_CLUSTERS[@]} -gt 0 ] && [ -n "$EXPECTED_DIGEST" ]; then
+    echo ""
+    echo "  Verifying ${#RESTARTED_CLUSTERS[@]} restarted operator(s)..."
+    sleep 10
+    for entry in "${RESTARTED_CLUSTERS[@]}"; do
+      kc="${entry%%|*}"
+      cluster="${entry##*|}"
+      printf "    %s: " "$cluster"
+      VERIFIED=false
+      for attempt in 1 2 3 4 5 6; do
+        NEW_IMAGE=$(oc get pods -n troshka-operator --kubeconfig="$kc" \
+          -l app=troshka-operator -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
+        if echo "$NEW_IMAGE" | grep -qF "$EXPECTED_DIGEST"; then
+          echo "verified"
+          VERIFIED=true
+          break
+        fi
+        sleep 5
+      done
+      if [ "$VERIFIED" = false ]; then
+        echo "NOT verified (may still be rolling out)"
+      fi
+    done
+  fi
 fi
 
 echo ""

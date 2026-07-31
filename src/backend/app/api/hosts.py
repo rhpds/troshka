@@ -421,6 +421,7 @@ def add_host(
         region,
         nfs_kwargs,
         queue_name="host_lifecycle",
+        host_id=host_id,
     )
 
     return host
@@ -859,7 +860,9 @@ def install_agent(
 
     from app.core.redis import enqueue_job
 
-    enqueue_job(_install_bg, h_id, h_ip, h_key, queue_name="host_lifecycle")
+    enqueue_job(
+        _install_bg, h_id, h_ip, h_key, queue_name="host_lifecycle", host_id=h_id
+    )
     return {"status": "installing"}
 
 
