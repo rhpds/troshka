@@ -147,12 +147,14 @@ function ConsolePage() {
         _activeRfb = null;
         _activeToken = null;
         if (!mountedRef.current) return;
+        if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
         const now = Date.now();
-        const recent = reconnectTimestamps.current.filter((t) => now - t < 10000);
+        const recent = reconnectTimestamps.current.filter((t) => now - t < 15000);
         recent.push(now);
         reconnectTimestamps.current = recent;
         if (recent.length > 3) {
           setStatus("Connection interrupted");
+          setWsUrl(null);
           return;
         }
         setStatus("Reconnecting...");
