@@ -2541,19 +2541,16 @@ def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
                     all_forwards.append(f"{ext_port}:{int_ip}:{int_port}")
             break
 
-    if not all_forwards:
-        return
-
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
+    forwards_str = ",".join(all_forwards)
     try:
-        _, core_api, api_client = _get_k8s_clients(provider)
+        _, _core_api, api_client = _get_k8s_clients(provider)
         from kubernetes import client as k8s_client
 
         apps_api = k8s_client.AppsV1Api(api_client)
         ns = _project_ns(provider, project_id)
         dep_name = f"gateway-{ns}"
-        forwards_str = ",".join(all_forwards)
 
         apps_api.patch_namespaced_deployment(
             name=dep_name,
