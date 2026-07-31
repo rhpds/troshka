@@ -35,7 +35,6 @@ for i in $(seq 1 60); do
       | map("\(.workflowName): \(.conclusion)") | join(", ")
     ')
     echo "  CI complete: $conclusions"
-    # Check for failures
     if echo "$conclusions" | grep -q "failure"; then
       echo "  CI FAILED — aborting"
       exit 1
@@ -45,6 +44,10 @@ for i in $(seq 1 60); do
   printf "\r  Waiting for CI... (%ds)" "$((i * 10))"
   sleep 10
 done
+
+# Snapshot current backend pod before promote
+OLD_POD=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
+  | grep "backend.*Running" | awk '{print $1}' | head -1)
 
 echo ""
 echo "=== Step 3: Promote images ==="
@@ -65,16 +68,25 @@ fi
 
 echo ""
 echo "=== Step 5: Wait for ArgoCD (infra01) ==="
-for i in $(seq 1 30); do
-  age=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
-    | grep "backend.*Running" | awk '{print $5}')
-  if echo "$age" | grep -qE "^[0-9]+s$|^[01]m"; then
-    echo "  Backend updated ($age)"
-    break
-  fi
-  printf "\r  Waiting for ArgoCD... (%ds)" "$((i * 15))"
-  sleep 15
-done
+if [ -z "$OLD_POD" ]; then
+  echo "  Could not snapshot old pod — skipping wait"
+else
+  for i in $(seq 1 40); do
+    CURRENT_POD=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
+      | grep "backend.*Running" | awk '{print $1}' | head -1)
+    if [ -n "$CURRENT_POD" ] && [ "$CURRENT_POD" != "$OLD_POD" ]; then
+      age=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
+        | grep "backend.*Running" | awk '{print $5}' | head -1)
+      echo "  Backend updated: $CURRENT_POD ($age)"
+      break
+    fi
+    if [ "$i" -eq 40 ]; then
+      echo "  Timed out waiting for ArgoCD (10 min) — pod may already be current"
+    fi
+    printf "\r  Waiting for ArgoCD... (%ds)" "$((i * 15))"
+    sleep 15
+  done
+fi
 
 echo ""
 echo "=== Done ==="
