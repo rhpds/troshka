@@ -89,5 +89,16 @@ repos:
             package-lock\.json
           )
 
+  # SonarQube analysis (skips gracefully if not on VPN or token not set)
+  - repo: local
+    hooks:
+      - id: sonarqube-check
+        name: SonarQube analysis
+        entry: scripts/sonarqube-check.sh
+        language: system
+        files: ^src/
+        pass_filenames: false
+        stages: [pre-push]
+
 fail_fast: false
 minimum_pre_commit_version: "2.20.0"
