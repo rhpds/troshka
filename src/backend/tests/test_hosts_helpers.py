@@ -1331,7 +1331,7 @@ class TestWaitForRunningInstance(unittest.TestCase):
             {"state": "running", "public_ip": "9.0.1.2"},
         ]
         drv.start_host.side_effect = RuntimeError("API error")
-        mock_time.side_effect = [0, 1]
+        mock_time.side_effect = [0, 1, 2]
 
         ip, st = _wait_for_running_instance(drv, prov, "host-12345678", "i-abc")
 
