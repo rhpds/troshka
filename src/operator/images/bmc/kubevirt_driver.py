@@ -326,6 +326,8 @@ class KubeVirtDriver:
             plural=_VM_PLURAL,
             label_selector="app=troshka",
         )
+        if self.vm_map:
+            return list(self.vm_map.keys())
         systems = []
         for vm in vms.get("items", []):  # type: ignore[union-attr]
             systems.append(vm["metadata"]["uid"])
