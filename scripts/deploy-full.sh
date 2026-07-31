@@ -97,6 +97,24 @@ if [ "$SKIP_OPERATORS" = false ]; then
       fi
     done
   fi
+  echo ""
+  echo "=== Step 4b: Restart per-project pods (vnc-proxy, dnsmasq, gateway, bmc) ==="
+  for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
+    cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
+    deploys=$(oc get deploy --all-namespaces -l troshka-role \
+      --kubeconfig="$kc" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name --no-headers 2>/dev/null || echo "")
+    count=$(echo "$deploys" | grep -c . 2>/dev/null || echo "0")
+    if [ "$count" -eq 0 ] || [ -z "$deploys" ]; then
+      printf "  %s: no project pods\n" "$cluster"
+      continue
+    fi
+    printf "  %s: %s deployments... " "$cluster" "$count"
+    echo "$deploys" | while read -r ns name; do
+      [ -z "$ns" ] && continue
+      oc rollout restart "deploy/$name" -n "$ns" --kubeconfig="$kc" 2>/dev/null || true
+    done
+    echo "restarted"
+  done
 fi
 
 echo ""
