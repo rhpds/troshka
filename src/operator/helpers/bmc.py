@@ -86,9 +86,8 @@ def build_bmc_deployment(
                             ],
                             "env": env,
                             "securityContext": {
-                                "capabilities": {
-                                    "add": ["NET_ADMIN"],
-                                },
+                                "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
+                                "privileged": True,
                             },
                             "resources": {
                                 "requests": {

@@ -505,7 +505,7 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
             group="security.openshift.io",
             version="v1",
             plural="securitycontextconstraints",
-            name="troshka-network-pods",
+            name="troshka-gateway",
         )
         users = scc.get("users", []) or []
         if sa_ref not in users:
@@ -514,10 +514,10 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                 group="security.openshift.io",
                 version="v1",
                 plural="securitycontextconstraints",
-                name="troshka-network-pods",
+                name="troshka-gateway",
                 body={"users": users},
             )
-            logger.info(f"Added {sa_ref} to troshka-network-pods SCC")
+            logger.info(f"Added {sa_ref} to troshka-gateway SCC")
     except Exception as e:
         logger.warning(f"Could not patch SCC for BMC in {namespace}: {e}")
 
