@@ -2732,33 +2732,52 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
         pf_for_eip = [pf for pf in pf_list if pf.get("extIpId") == canvas_id]
         if not pf_for_eip:
             continue
-        eip_obj.port_map = None
-        s.commit()
-        port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
+
         ns = None
         if provider.type == "kubevirt":
             from app.services.providers.kubevirt import _project_ns
 
             ns = _project_ns(provider, p_id)
-        driver.update_eip_ports(
-            provider,
-            h,
-            eip_obj.allocation_id,
-            [
-                {
-                    "port": int(ep),
-                    "targetPort": tp,
-                    "name": f"pf-{i}",
-                }
-                for i, (ep, tp) in enumerate(port_map.items())
-            ],
-            namespace=ns,
-        )
-        logger.info(
-            "Reconfigure %s: updated EIP LB ports %s",
-            p_id[:8],
-            port_map,
-        )
+            driver.update_eip_ports(
+                provider,
+                h,
+                eip_obj.allocation_id,
+                [
+                    {
+                        "port": int(pf.get("extPort", 443)),
+                        "targetPort": int(pf.get("extPort", 443)),
+                        "name": f"pf-{i}",
+                    }
+                    for i, pf in enumerate(pf_for_eip)
+                ],
+                namespace=ns,
+            )
+            logger.info(
+                "Reconfigure %s: updated EIP LB ports (kubevirt direct)",
+                p_id[:8],
+            )
+        else:
+            eip_obj.port_map = None
+            s.commit()
+            port_map = allocate_transit_ports(s, eip_obj, h, pf_for_eip)
+            driver.update_eip_ports(
+                provider,
+                h,
+                eip_obj.allocation_id,
+                [
+                    {
+                        "port": int(ep),
+                        "targetPort": tp,
+                        "name": f"pf-{i}",
+                    }
+                    for i, (ep, tp) in enumerate(port_map.items())
+                ],
+            )
+            logger.info(
+                "Reconfigure %s: updated EIP LB ports %s",
+                p_id[:8],
+                port_map,
+            )
 
 
 def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
