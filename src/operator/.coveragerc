@@ -1,0 +1,6 @@
+[run]
+source =
+    handlers
+    helpers
+    operator.py
+    images

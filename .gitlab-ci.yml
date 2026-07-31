@@ -30,11 +30,14 @@ test-operator:
   script:
     - cd src/operator
     - pip install --upgrade pip
-    - pip install kubernetes pytest pytest-cov
-    - pytest tests/ --cov=handlers --cov=helpers --cov-report=xml:../../operator-coverage.xml -v || true
+    - pip install kubernetes kopf pytest pytest-cov
+    - pytest tests/ --cov-config=.coveragerc --cov --cov-report=xml:../../operator-coverage.xml -v || true
     - cd ../..
     - sed -i 's|<source>handlers</source>|<source>src/operator/handlers</source>|' operator-coverage.xml || true
     - sed -i 's|<source>helpers</source>|<source>src/operator/helpers</source>|' operator-coverage.xml || true
+    - sed -i 's|<source>images</source>|<source>src/operator/images</source>|' operator-coverage.xml || true
+    - sed -i 's|<source>\./operator\.py</source>|<source>src/operator</source>|' operator-coverage.xml || true
+    - sed -i 's|<source>operator\.py</source>|<source>src/operator</source>|' operator-coverage.xml || true
   artifacts:
     paths:
       - operator-coverage.xml
