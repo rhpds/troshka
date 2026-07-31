@@ -10615,9 +10615,7 @@ class TestOcpMonitorFreshInstall:
     ):
         from app.services.deploy_service import _ocp_monitor_fresh_install
 
-        # First call to time.time() sets deadline = 1000 + 7200 = 8200
-        # Second call (in while loop) returns 9000 > 8200, so loop exits immediately
-        mock_time.side_effect = [1000.0, 9000.0]
+        mock_time.side_effect = [1000.0, 9000.0, 9001.0, 9002.0]
         host = MagicMock()
         push_fn = MagicMock()
 
