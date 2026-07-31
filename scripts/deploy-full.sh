@@ -109,7 +109,7 @@ else
   echo "  Expected digest: ${EXPECTED_BACKEND:0:19}..."
   for i in $(seq 1 40); do
     POD_IMAGE=$(oc get pods -n troshka --kubeconfig="$KC" \
-      -l app=troshka-backend -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
+      -l app.kubernetes.io/name=troshka-backend -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' 2>/dev/null || echo "")
     if echo "$POD_IMAGE" | grep -qF "$EXPECTED_BACKEND"; then
       echo "  ArgoCD updated backend image"
       oc rollout status deploy/troshka-backend -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
