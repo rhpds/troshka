@@ -2663,6 +2663,10 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         if errors:
             logger.warning("Reconfigure %s: EIP errors: %s", p_id[:8], errors)
 
+        from app.services.deploy_service import _patch_kubevirt_gateway_forwards
+
+        _patch_kubevirt_gateway_forwards(provider, p_id, current)
+
         # Finalize
         _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         _delete_deploy_progress(p_id)

@@ -2504,9 +2504,7 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
                     [
                         {
                             "port": int(pf.get("extPort", 443)),
-                            "target_port": int(
-                                pf.get("intPort", pf.get("extPort", 443))
-                            ),
+                            "target_port": int(pf.get("extPort", 443)),
                             "name": f"pf-{i}",
                         }
                         for i, pf in enumerate(pf_for_eip)
@@ -2525,6 +2523,71 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
                 project_id[:8],
                 canvas_id[:8],
             )
+
+    _patch_kubevirt_gateway_forwards(provider, project_id, topology)
+
+
+def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
+    """Patch the gateway Deployment with PORT_FORWARDS env var for DNAT rules."""
+    all_forwards = []
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") == "gateway":
+            for pf in node_data.get("portForwards", []):
+                ext_port = pf.get("extPort", "")
+                int_ip = pf.get("intIp", "")
+                int_port = pf.get("intPort", "")
+                if ext_port and int_ip and int_port:
+                    all_forwards.append(f"{ext_port}:{int_ip}:{int_port}")
+            break
+
+    if not all_forwards:
+        return
+
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    try:
+        _, core_api, api_client = _get_k8s_clients(provider)
+        from kubernetes import client as k8s_client
+
+        apps_api = k8s_client.AppsV1Api(api_client)
+        ns = _project_ns(provider, project_id)
+        dep_name = f"gateway-{ns}"
+        forwards_str = ",".join(all_forwards)
+
+        apps_api.patch_namespaced_deployment(
+            name=dep_name,
+            namespace=ns,
+            body={
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [
+                                {
+                                    "name": "gateway",
+                                    "env": [
+                                        {
+                                            "name": "PORT_FORWARDS",
+                                            "value": forwards_str,
+                                        },
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+        )
+        logger.info(
+            "Deploy %s: patched gateway with port forwards: %s",
+            project_id[:8],
+            forwards_str,
+        )
+    except Exception:
+        logger.exception(
+            "Deploy %s: failed to patch gateway port forwards (non-fatal)",
+            project_id[:8],
+        )
 
 
 def _handle_kubevirt_deploy_error(project_id, project, status, db, notify_project):

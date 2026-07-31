@@ -19,11 +19,23 @@ for addr in "${ADDRS[@]}"; do
 done
 
 nft add table inet nat
+nft add chain inet nat prerouting '{ type nat hook prerouting priority -100 ; }'
 nft add chain inet nat postrouting '{ type nat hook postrouting priority 100 ; }'
 nft add rule inet nat postrouting oifname "eth0" masquerade
 
 nft add table inet filter
 nft add chain inet filter forward '{ type filter hook forward priority 0 ; policy accept ; }'
+
+# Port forwarding DNAT rules (format: extPort:intIp:intPort,...)
+IFS=',' read -ra FORWARDS <<< "${PORT_FORWARDS:-}"
+for fwd in "${FORWARDS[@]}"; do
+  [[ -z "$fwd" ]] && continue
+  IFS=':' read -r ext_port int_ip int_port <<< "$fwd"
+  if [[ -n "$ext_port" && -n "$int_ip" && -n "$int_port" ]]; then
+    nft add rule inet nat prerouting tcp dport "$ext_port" dnat to "${int_ip}:${int_port}"
+    echo "Port forward: :${ext_port} -> ${int_ip}:${int_port}"
+  fi
+done
 
 echo "Gateway ready: NAT on eth0, forwarding enabled"
 

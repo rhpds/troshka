@@ -269,10 +269,13 @@ def build_exec_deployment(
     return deployment
 
 
-def build_gateway_deployment(project_cr, all_network_nads, gateway_ips=None):
+def build_gateway_deployment(
+    project_cr, all_network_nads, gateway_ips=None, port_forwards=None
+):
     """Build a single gateway deployment for the project, attached to all networks.
 
     gateway_ips: dict of {nad_name: {"ip": "10.0.0.1", "cidr": "10.0.0.0/24"}}
+    port_forwards: list of {"extPort": str, "intIp": str, "intPort": str}
     """
     namespace = project_cr["metadata"]["namespace"]
     project_id = project_cr["spec"].get("projectId", namespace)[:8]
@@ -287,6 +290,17 @@ def build_gateway_deployment(project_cr, all_network_nads, gateway_ips=None):
             if gw:
                 prefix = gw["cidr"].split("/")[1] if "/" in gw["cidr"] else "24"
                 gw_addrs.append(f"{gw['ip']}/{prefix}")
+
+    forwards_str = ""
+    if port_forwards:
+        parts = []
+        for pf in port_forwards:
+            ep = pf.get("extPort", "")
+            iip = pf.get("intIp", "")
+            ip = pf.get("intPort", "")
+            if ep and iip and ip:
+                parts.append(f"{ep}:{iip}:{ip}")
+        forwards_str = ",".join(parts)
 
     labels = {
         "app": f"troshka-gateway-{project_id}",
@@ -326,6 +340,10 @@ def build_gateway_deployment(project_cr, all_network_nads, gateway_ips=None):
                                 {
                                     "name": "GATEWAY_ADDRS",
                                     "value": ",".join(gw_addrs),
+                                },
+                                {
+                                    "name": "PORT_FORWARDS",
+                                    "value": forwards_str,
                                 },
                             ],
                         }

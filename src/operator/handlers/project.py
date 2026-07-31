@@ -548,11 +548,24 @@ async def _setup_gateway(core_api, apps_api, networks, namespace, name, body):
                 }
 
     if gateway_nads:
+        port_forwards = _extract_port_forwards(body)
         _cleanup_legacy_pod(core_api, namespace, f"gateway-{namespace}")
         await _ensure_deployment_gone(apps_api, namespace, f"gateway-{namespace}")
-        gw_dep = build_gateway_deployment(body, gateway_nads, gateway_ips)
+        gw_dep = build_gateway_deployment(
+            body, gateway_nads, gateway_ips, port_forwards=port_forwards
+        )
         apps_api.create_namespaced_deployment(namespace=namespace, body=gw_dep)
         logger.info(f"Created gateway deployment for {name}")
+
+
+def _extract_port_forwards(project_cr):
+    """Extract port forwards from the topology in the TroshkaProject CR."""
+    topology = project_cr.get("spec", {}).get("topology", {})
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if data.get("subtype") == "gateway":
+            return data.get("portForwards", [])
+    return []
 
 
 async def _setup_exec_pod(
