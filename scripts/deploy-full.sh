@@ -41,13 +41,13 @@ for i in $(seq 1 60); do
     fi
     break
   fi
-  printf "\r  Waiting for CI... (%ds)" "$((i * 10))"
+  echo "  Waiting for CI... ($((i * 10))s)"
   sleep 10
 done
 
-# Snapshot current backend pod before promote
-OLD_POD=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
-  | grep "backend.*Running" | awk '{print $1}' | head -1)
+# Snapshot current backend image digest before promote
+OLD_DIGEST=$(oc get deploy troshka-backend -n troshka --kubeconfig="$KC" \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
 
 echo ""
 echo "=== Step 3: Promote images ==="
@@ -68,25 +68,20 @@ fi
 
 echo ""
 echo "=== Step 5: Wait for ArgoCD (infra01) ==="
-if [ -z "$OLD_POD" ]; then
-  echo "  Could not snapshot old pod — skipping wait"
-else
-  for i in $(seq 1 40); do
-    CURRENT_POD=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
-      | grep "backend.*Running" | awk '{print $1}' | head -1)
-    if [ -n "$CURRENT_POD" ] && [ "$CURRENT_POD" != "$OLD_POD" ]; then
-      age=$(oc get pods -n troshka --kubeconfig="$KC" 2>/dev/null \
-        | grep "backend.*Running" | awk '{print $5}' | head -1)
-      echo "  Backend updated: $CURRENT_POD ($age)"
-      break
-    fi
-    if [ "$i" -eq 40 ]; then
-      echo "  Timed out waiting for ArgoCD (10 min) — pod may already be current"
-    fi
-    printf "\r  Waiting for ArgoCD... (%ds)" "$((i * 15))"
-    sleep 15
-  done
-fi
+for i in $(seq 1 40); do
+  CUR_DIGEST=$(oc get deploy troshka-backend -n troshka --kubeconfig="$KC" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
+  if [ -n "$CUR_DIGEST" ] && [ "$CUR_DIGEST" != "$OLD_DIGEST" ]; then
+    echo "  ArgoCD updated backend image"
+    oc rollout status deploy/troshka-backend -n troshka --kubeconfig="$KC" --timeout=120s 2>/dev/null || true
+    break
+  fi
+  if [ "$i" -eq 40 ]; then
+    echo "  Timed out (10 min) — image may already be current"
+  fi
+  echo "  Waiting for ArgoCD... ($((i * 15))s)"
+  sleep 15
+done
 
 echo ""
 echo "=== Done ==="

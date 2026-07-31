@@ -8,8 +8,8 @@ from kubevirt_driver import KubeVirtDriver
 
 driver = KubeVirtDriver()
 
-USERNAME = os.environ.get("SUSHY_USERNAME", "admin")
-PASSWORD = os.environ["SUSHY_PASSWORD"]  # required — set by operator at deploy time
+USERNAME = os.environ["SUSHY_USERNAME"]
+PASSWORD = os.environ["SUSHY_PASSWORD"]
 LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 
 _AUTH_REALM = 'Basic realm="Redfish"'

@@ -1553,13 +1553,42 @@ def _ensure_bmc_deployment(vm_items, namespace):
     if not bmc_nad:
         return
 
-    bmc_dep = build_bmc_deployment(project_label, namespace, bmc_vms, bmc_nad, {})
+    credentials = _get_bmc_credentials(custom_api, namespace)
+    bmc_dep = build_bmc_deployment(
+        project_label, namespace, bmc_vms, bmc_nad, credentials
+    )
     try:
         apps_api.create_namespaced_deployment(namespace=namespace, body=bmc_dep)
         logger.info(f"Recreated missing BMC deployment for {namespace}")
     except ApiException as e:
         if e.status != 409:
             logger.warning(f"Failed to recreate BMC deployment for {namespace}: {e}")
+
+
+def _get_bmc_credentials(custom_api, namespace):
+    """Extract BMC credentials from the TroshkaProject CR topology."""
+    try:
+        projects = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural="troshkaprojects",
+            ),
+        )
+        for proj in projects.get("items", []):
+            topology = proj.get("spec", {}).get("topology", {})
+            for node in topology.get("nodes", []):
+                data = node.get("data", {})
+                if data.get("networkType") == "bmc":
+                    return {
+                        "username": data.get("bmcUsername", "admin"),
+                        "password": data.get("bmcPassword", "redhat"),
+                    }
+    except Exception:
+        pass
+    return {}
 
 
 def _delete_custom_resources(

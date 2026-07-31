@@ -28,17 +28,17 @@ def build_bmc_deployment(
     if bmc_ips:
         env.append({"name": "SUSHY_BMC_IPS", "value": ",".join(bmc_ips)})
 
-    if credentials:
+    if credentials.get("username") and credentials.get("password"):
         env.append(
             {
                 "name": "SUSHY_USERNAME",
-                "value": credentials.get("username", "admin"),
+                "value": credentials["username"],
             }
         )
         env.append(
             {
                 "name": "SUSHY_PASSWORD",
-                "value": credentials.get("password", "redhat"),
+                "value": credentials["password"],
             }
         )
 

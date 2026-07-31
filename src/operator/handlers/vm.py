@@ -619,7 +619,12 @@ def _setup_bmc(spec, namespace, core_api, custom_api):
         pass
     if not existing_bmc:
         _cleanup_legacy_pod(core_api, namespace, f"bmc-{project_label}")
-        bmc_dep = build_bmc_deployment(project_label, namespace, bmc_vms, bmc_nad, {})
+        from handlers.project import _get_bmc_credentials
+
+        credentials = _get_bmc_credentials(custom_api, namespace)
+        bmc_dep = build_bmc_deployment(
+            project_label, namespace, bmc_vms, bmc_nad, credentials
+        )
         try:
             apps_api.create_namespaced_deployment(namespace=namespace, body=bmc_dep)
             logger.info(f"Created BMC deployment for {namespace}")
