@@ -683,21 +683,21 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
+        from kubernetes import client as k8s_client
+
         _, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or _operator_ns(provider)
-        svc_ports = [
-            {
-                "port": p["port"],
-                "targetPort": p.get("target_port", p["port"]),
-                "protocol": "TCP",
-            }
+        svc = core_api.read_namespaced_service(name=allocation_id, namespace=ns)
+        svc.spec.ports = [  # type: ignore[union-attr]
+            k8s_client.V1ServicePort(
+                name=p.get("name", f"port-{p['port']}"),
+                port=p["port"],
+                target_port=p.get("target_port", p["port"]),
+                protocol=p.get("protocol", "TCP"),
+            )
             for p in ports
         ]
-        core_api.patch_namespaced_service(
-            name=allocation_id,
-            namespace=ns,
-            body={"spec": {"ports": svc_ports}},
-        )
+        core_api.replace_namespaced_service(name=allocation_id, namespace=ns, body=svc)
 
     def create_route_access(
         self, provider, host, project_id, vm_name, int_ip, port, target_port=None

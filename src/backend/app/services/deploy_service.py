@@ -2506,6 +2506,7 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
                             "port": int(pf.get("extPort", 443)),
                             "target_port": int(pf.get("extPort", 443)),
                             "name": f"pf-{i}",
+                            "protocol": pf.get("proto", "tcp").upper(),
                         }
                         for i, pf in enumerate(pf_for_eip)
                     ],
@@ -2538,7 +2539,8 @@ def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
                 int_ip = pf.get("intIp", "")
                 int_port = pf.get("intPort", "")
                 if ext_port and int_ip and int_port:
-                    all_forwards.append(f"{ext_port}:{int_ip}:{int_port}")
+                    proto = pf.get("proto", "tcp")
+                    all_forwards.append(f"{ext_port}:{int_ip}:{int_port}:{proto}")
             break
 
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns

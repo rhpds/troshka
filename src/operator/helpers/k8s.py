@@ -299,7 +299,8 @@ def build_gateway_deployment(
             iip = pf.get("intIp", "")
             ip = pf.get("intPort", "")
             if ep and iip and ip:
-                parts.append(f"{ep}:{iip}:{ip}")
+                proto = pf.get("proto", "tcp")
+                parts.append(f"{ep}:{iip}:{ip}:{proto}")
         forwards_str = ",".join(parts)
 
     labels = {

@@ -2745,8 +2745,9 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
                 [
                     {
                         "port": int(pf.get("extPort", 443)),
-                        "targetPort": int(pf.get("extPort", 443)),
+                        "target_port": int(pf.get("extPort", 443)),
                         "name": f"pf-{i}",
+                        "protocol": pf.get("proto", "tcp").upper(),
                     }
                     for i, pf in enumerate(pf_for_eip)
                 ],

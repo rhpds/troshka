@@ -26,14 +26,15 @@ nft add rule inet nat postrouting oifname "eth0" masquerade
 nft add table inet filter
 nft add chain inet filter forward '{ type filter hook forward priority 0 ; policy accept ; }'
 
-# Port forwarding DNAT rules (format: extPort:intIp:intPort,...)
+# Port forwarding DNAT rules (format: extPort:intIp:intPort:proto,...)
 IFS=',' read -ra FORWARDS <<< "${PORT_FORWARDS:-}"
 for fwd in "${FORWARDS[@]}"; do
   [[ -z "$fwd" ]] && continue
-  IFS=':' read -r ext_port int_ip int_port <<< "$fwd"
+  IFS=':' read -r ext_port int_ip int_port proto <<< "$fwd"
+  proto="${proto:-tcp}"
   if [[ -n "$ext_port" && -n "$int_ip" && -n "$int_port" ]]; then
-    nft add rule inet nat prerouting tcp dport "$ext_port" dnat ip to "${int_ip}:${int_port}"
-    echo "Port forward: :${ext_port} -> ${int_ip}:${int_port}"
+    nft add rule inet nat prerouting "$proto" dport "$ext_port" dnat ip to "${int_ip}:${int_port}"
+    echo "Port forward: ${proto}/:${ext_port} -> ${int_ip}:${int_port}"
   fi
 done
 
