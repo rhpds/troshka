@@ -93,8 +93,10 @@ class _SharedSession:
         """Add a client to this session. Blocks until client disconnects."""
         cid = self._next_id
         self._next_id += 1
+        is_first = False
 
         if not self.upstream:
+            is_first = True
             try:
                 await self._connect_and_handshake(ws_client)
             except Exception:
@@ -119,6 +121,8 @@ class _SharedSession:
         try:
             async for msg in ws_client:
                 if isinstance(msg, bytes) and self.upstream and not self._closing:
+                    if not is_first and len(msg) > 0 and msg[0] in (0, 2):
+                        continue
                     try:
                         await self.upstream.send(msg)
                     except Exception:
