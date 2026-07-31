@@ -142,14 +142,18 @@ function ConsolePage() {
         _activeToken = wsUrl;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
-      r.addEventListener("disconnect", () => {
+      r.addEventListener("disconnect", (ev: Record<string, unknown>) => {
         _activeRfb = null;
         _activeToken = null;
-        if (mountedRef.current) {
-          setStatus("Reconnecting...");
-          setWsUrl(null);
-          reconnectTimer.current = setTimeout(pollForPort, 3000);
+        if (!mountedRef.current) return;
+        const detail = ev.detail as { clean?: boolean; reason?: string } | undefined;
+        if (detail?.reason?.includes("Superseded")) {
+          setStatus("Connected in another tab");
+          return;
         }
+        setStatus("Reconnecting...");
+        setWsUrl(null);
+        reconnectTimer.current = setTimeout(pollForPort, 3000);
       });
     } catch {
       if (mountedRef.current) {
