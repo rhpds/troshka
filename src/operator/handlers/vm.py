@@ -988,6 +988,8 @@ async def vm_update(
             raise
         logger.info(f"KubeVirt VM {kv_name} already exists after reconfigure")
 
+    _setup_bmc(new_spec, namespace, core_api, custom_api)
+
     power_on = new_spec.get("powerOnAtDeploy", True)
     patch.status["state"] = "Running" if power_on else "Stopped"
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]

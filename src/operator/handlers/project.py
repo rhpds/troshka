@@ -1422,6 +1422,9 @@ async def project_status_check(status, namespace, name, patch, **_):
             for vm_id, msg in scheduling_errors.items():
                 logger.warning(f"VM {vm_id} scheduling error: {msg}")
 
+    if phase == "Running":
+        _ensure_bmc_deployment(vm_items, namespace)
+
     if phase == "Deploying":
         # Phase 1: Recert (if needed) — all Jobs run in parallel
         recert_cfgs = status.get("recertConfig")
@@ -1511,6 +1514,52 @@ async def project_status_check(status, namespace, name, patch, **_):
                 "detail": "",
             }
             logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
+
+
+def _ensure_bmc_deployment(vm_items, namespace):
+    """Verify BMC deployment exists if any VM has bmcEnabled. Recreate if missing."""
+    bmc_vms = []
+    for vm in vm_items:
+        spec = vm.get("spec", {})
+        if spec.get("bmcEnabled"):
+            bmc_vms.append(
+                {
+                    "vmId": spec.get("vmId", ""),
+                    "smbiosUuid": spec.get("smbiosUuid", ""),
+                    "bmcIp": spec.get("bmcIp", ""),
+                }
+            )
+    if not bmc_vms:
+        return
+
+    apps_api = client.AppsV1Api()
+    project_label = namespace.replace("troshka-", "")
+    dep_name = f"bmc-{project_label}"
+    try:
+        apps_api.read_namespaced_deployment(name=dep_name, namespace=namespace)
+        return
+    except ApiException as e:
+        if e.status != 404:
+            return
+
+    from handlers.vm import _ensure_bmc_sa_and_rbac, _find_bmc_nad
+    from helpers.bmc import build_bmc_deployment
+
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+    _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
+
+    bmc_nad = _find_bmc_nad(namespace, custom_api)
+    if not bmc_nad:
+        return
+
+    bmc_dep = build_bmc_deployment(project_label, namespace, bmc_vms, bmc_nad, {})
+    try:
+        apps_api.create_namespaced_deployment(namespace=namespace, body=bmc_dep)
+        logger.info(f"Recreated missing BMC deployment for {namespace}")
+    except ApiException as e:
+        if e.status != 409:
+            logger.warning(f"Failed to recreate BMC deployment for {namespace}: {e}")
 
 
 def _delete_custom_resources(
