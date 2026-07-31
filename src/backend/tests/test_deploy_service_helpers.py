@@ -9496,3 +9496,1575 @@ class TestStartVmsViaTroshkad:
         assert failed == []
         # Both VMs started (bastion via order, worker via unordered)
         assert mock_start.call_count == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _finalize_kubevirt_deploy (uncovered lines ~2388-2426)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestFinalizeKubevirtDeployExtended:
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
+    def test_basic_finalize_no_bmc_no_ocp(
+        self, mock_ocp, mock_bmc, mock_notify, mock_del
+    ):
+        from app.services.deploy_service import _finalize_kubevirt_deploy
+
+        project = MagicMock()
+        project.state = "deploying"
+        db = MagicMock()
+        topology = {
+            "nodes": [{"data": {"resolvedS3Path": "/s3", "presignedUrl": "http://x"}}]
+        }
+        pid = "proj-12345678"
+
+        _finalize_kubevirt_deploy(pid, project, topology, db)
+
+        assert project.state == "active"
+        assert project.deploy_error is None
+        assert project.deploy_progress is None
+        db.commit.assert_called()
+        mock_del.assert_called_once_with(pid)
+        mock_notify.assert_called_once()
+        call_args = mock_notify.call_args[0]
+        assert call_args[0] == pid
+        assert call_args[1]["type"] == "project-state"
+        assert call_args[1]["state"] == "active"
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=True)
+    @patch("app.services.deploy_service._extract_bmc_config")
+    def test_finalize_with_bmc_and_ocp_monitor(
+        self, mock_bmc, mock_ocp, mock_notify, mock_del
+    ):
+        from app.services.deploy_service import _finalize_kubevirt_deploy
+
+        mock_bmc.return_value = {
+            "bmc_network": {"bmcUsername": "root", "bmcPassword": "secret"},
+            "vms": [{"node_id": "vm-1", "bmc_ip": "10.0.1.100"}],
+        }
+        project = MagicMock()
+        project.state = "deploying"
+        db = MagicMock()
+        topology = {"nodes": []}
+        pid = "proj-bmc12345"
+
+        _finalize_kubevirt_deploy(pid, project, topology, db)
+
+        assert project.state == "active"
+        assert project.ocp_status == "monitoring"
+        assert project.ocp_status_detail is None
+        assert project.ocp_install_elapsed is None
+        # deployed_topology should have bmc section
+        deployed = project.deployed_topology
+        assert "bmc" in deployed
+        assert deployed["bmc"]["username"] == "root"
+        assert deployed["bmc"]["password"] == "secret"
+        assert "vm-1" in deployed["bmc"]["vms"]
+        vm_bmc = deployed["bmc"]["vms"]["vm-1"]
+        assert "redfish_url" in vm_bmc
+        assert "ipmi_address" in vm_bmc
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
+    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    def test_finalize_cleans_s3_from_topology(
+        self, mock_bmc, mock_ocp, mock_notify, mock_del
+    ):
+        from app.services.deploy_service import _finalize_kubevirt_deploy
+
+        project = MagicMock()
+        db = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "data": {
+                        "resolvedS3Path": "s3://bucket/key",
+                        "presignedUrl": "https://s3.example.com/key?token=abc",
+                        "ciGeneratedUserData": "some-data",
+                        "label": "disk1",
+                    },
+                },
+            ],
+        }
+        pid = "proj-clean1234"
+
+        _finalize_kubevirt_deploy(pid, project, topology, db)
+
+        # The cleaned topology should not have S3 or presigned fields
+        cleaned = project.deployed_topology
+        node_data = cleaned["nodes"][0]["data"]
+        assert "resolvedS3Path" not in node_data
+        assert "presignedUrl" not in node_data
+        assert "ciGeneratedUserData" not in node_data
+        assert node_data["label"] == "disk1"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _handle_kubevirt_deploy_error (uncovered lines ~2429-2441)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestHandleKubevirtDeployErrorExtended:
+    def test_error_from_status_error_field(self):
+        from app.services.deploy_service import _handle_kubevirt_deploy_error
+
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+        pid = "proj-err12345"
+        status = {"error": "disk import failed"}
+
+        _handle_kubevirt_deploy_error(pid, project, status, db, notify_fn)
+
+        assert project.state == "error"
+        assert project.deploy_error == "disk import failed"
+        db.commit.assert_called_once()
+        notify_fn.assert_called_once()
+        msg = notify_fn.call_args[0][1]
+        assert msg["state"] == "error"
+        assert msg["deploy_error"] == "disk import failed"
+
+    def test_error_from_status_message_field(self):
+        from app.services.deploy_service import _handle_kubevirt_deploy_error
+
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+        status = {"message": "namespace stuck terminating"}
+
+        _handle_kubevirt_deploy_error("proj-2", project, status, db, notify_fn)
+
+        assert project.deploy_error == "namespace stuck terminating"
+
+    def test_error_fallback_default_message(self):
+        from app.services.deploy_service import _handle_kubevirt_deploy_error
+
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+        status = {}
+
+        _handle_kubevirt_deploy_error("proj-3", project, status, db, notify_fn)
+
+        assert project.deploy_error == "Operator reported an error"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _push_kubevirt_deploy_progress (uncovered lines ~2444-2465)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPushKubevirtDeployProgressExtended:
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_pushes_progress_when_changed(self, mock_get, mock_set):
+        from app.services.deploy_service import _push_kubevirt_deploy_progress
+
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+        pid = "proj-push1234"
+
+        _push_kubevirt_deploy_progress(
+            pid,
+            project,
+            "images",
+            "downloading disks",
+            42,
+            ["disk1: downloading"],
+            db,
+            notify_fn,
+        )
+
+        mock_set.assert_called_once()
+        db.commit.assert_called_once()
+        notify_fn.assert_called_once()
+        msg = notify_fn.call_args[0][1]
+        assert msg["type"] == "deploy-progress"
+        assert msg["step"] == "images"
+        assert msg["detail"] == "downloading disks"
+        assert msg["percent"] == 42
+
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("app.services.deploy_service._get_deploy_progress_data")
+    def test_no_push_when_same_as_last(self, mock_get, mock_set):
+        from app.services.deploy_service import _push_kubevirt_deploy_progress
+
+        mock_get.return_value = {"step": "images", "detail": "same", "percent": 50}
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+
+        _push_kubevirt_deploy_progress(
+            "pid", project, "images", "same", 50, ["x"], db, notify_fn
+        )
+
+        mock_set.assert_not_called()
+        notify_fn.assert_not_called()
+
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_no_push_when_no_detail_and_no_dv_lines(self, mock_get, mock_set):
+        from app.services.deploy_service import _push_kubevirt_deploy_progress
+
+        project = MagicMock()
+        db = MagicMock()
+        notify_fn = MagicMock()
+
+        _push_kubevirt_deploy_progress(
+            "pid", project, "deploying", "", 0, [], db, notify_fn
+        )
+
+        mock_set.assert_not_called()
+        notify_fn.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _compute_deploy_step (uncovered lines ~2352-2365)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestComputeDeployStepExtended:
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_with_dv_lines_not_done(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        status = {}
+        dv_lines = ["disk1: downloading 50%", "disk2: waiting"]
+        progress = {"stage": "", "detail": "", "percent": 30}
+
+        step, detail, percent = _compute_deploy_step("pid", status, dv_lines, progress)
+
+        assert step == "images"
+        assert "disk1" in detail
+        assert percent == 30
+
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_all_disks_done_with_op_stage(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        status = {"vmStates": {"vm1": "Running", "vm2": "Stopped"}}
+        dv_lines = ["disk1: done", "disk2: done"]
+        progress = {"stage": "Starting VMs", "detail": "2/2 ready", "percent": 90}
+
+        step, detail, percent = _compute_deploy_step("pid", status, dv_lines, progress)
+
+        assert step == "starting vms"
+        assert "2/2" in detail
+        assert percent == 90
+
+    @patch(
+        "app.services.deploy_service._get_deploy_progress_data",
+        return_value={"step": "deploying", "detail": "old"},
+    )
+    def test_no_dv_lines_no_progress_falls_back(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        step, detail, percent = _compute_deploy_step("pid", {}, [], None)
+
+        assert step == "deploying"
+        assert percent == 0
+
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
+    def test_certificate_stage(self, mock_get):
+        from app.services.deploy_service import _compute_deploy_step
+
+        status = {}
+        dv_lines = ["disk1: done"]
+        progress = {
+            "stage": "Certificate Renewal",
+            "detail": "renewing certs",
+            "percent": 80,
+        }
+
+        step, detail, percent = _compute_deploy_step("pid", status, dv_lines, progress)
+
+        assert step == "certificate renewal"
+        assert detail == "renewing certs"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _extract_bastion_info (uncovered lines ~4656-4674)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestExtractBastionInfoExtended:
+    def test_with_bastion_node(self):
+        from app.services.deploy_service import _extract_bastion_info
+
+        nodes = [
+            {
+                "type": "vmNode",
+                "data": {
+                    "label": "bastion",
+                    "nics": [{"ip": "10.0.0.5"}, {"ip": "10.0.1.5"}],
+                    "ciCloudUserPassword": "s3cret",
+                },
+            },
+            {"type": "vmNode", "data": {"label": "worker1", "nics": []}},
+        ]
+        bastion, ip, pw = _extract_bastion_info(nodes)
+        assert bastion is not None
+        assert ip == "10.0.0.5"
+        assert pw == "s3cret"
+
+    def test_no_bastion_node(self):
+        from app.services.deploy_service import _extract_bastion_info
+
+        nodes = [
+            {
+                "type": "vmNode",
+                "data": {"label": "worker1", "nics": [{"ip": "10.0.0.2"}]},
+            },
+        ]
+        bastion, ip, pw = _extract_bastion_info(nodes)
+        assert bastion is None
+        assert ip == ""
+        assert pw == ""
+
+    def test_bastion_no_ip(self):
+        from app.services.deploy_service import _extract_bastion_info
+
+        nodes = [
+            {
+                "type": "vmNode",
+                "data": {"label": "bastion", "nics": [{"mac": "aa:bb:cc:dd:ee:ff"}]},
+            },
+        ]
+        bastion, ip, pw = _extract_bastion_info(nodes)
+        assert bastion is not None
+        assert ip == ""
+
+    def test_bastion_no_password(self):
+        from app.services.deploy_service import _extract_bastion_info
+
+        nodes = [
+            {
+                "type": "vmNode",
+                "data": {"label": "bastion", "nics": [{"ip": "10.0.0.1"}]},
+            },
+        ]
+        bastion, ip, pw = _extract_bastion_info(nodes)
+        assert pw == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _start_vm_monitor (uncovered lines ~4227-4254)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestStartVmMonitorExtended:
+    @patch("app.services.deploy_service.threading")
+    @patch("app.services.deploy_service.add_to_set")
+    @patch("app.services.deploy_service.is_in_set", return_value=False)
+    def test_starts_monitor_for_ocp_monitor_vm(self, mock_in_set, mock_add, mock_thr):
+        from app.services.deploy_service import _start_vm_monitor
+
+        node = {
+            "id": "vm-ocp-1",
+            "type": "vmNode",
+            "data": {"ocpMonitor": True, "label": "sno1", "ocpKubeconfig": "kc-data"},
+        }
+        result = _start_vm_monitor("proj-1234", "host-1234", node, 1000.0)
+
+        assert result is True
+        mock_add.assert_called_once()
+        mock_thr.Thread.assert_called_once()
+        mock_thr.Thread.return_value.start.assert_called_once()
+
+    @patch("app.services.deploy_service.is_in_set", return_value=True)
+    def test_skips_already_monitored(self, mock_in_set):
+        from app.services.deploy_service import _start_vm_monitor
+
+        node = {
+            "id": "vm-ocp-2",
+            "type": "vmNode",
+            "data": {"ocpMonitor": True, "label": "sno2"},
+        }
+        result = _start_vm_monitor("proj-1234", "host-1234", node, 1000.0)
+
+        assert result is True
+
+    def test_skips_non_monitor_vm(self):
+        from app.services.deploy_service import _start_vm_monitor
+
+        node = {
+            "id": "vm-worker",
+            "type": "vmNode",
+            "data": {"label": "worker1"},
+        }
+        result = _start_vm_monitor("proj-1234", "host-1234", node, 1000.0)
+
+        assert result is False
+
+    @patch("app.services.deploy_service.threading")
+    @patch("app.services.deploy_service.add_to_set")
+    @patch("app.services.deploy_service.is_in_set", return_value=False)
+    def test_starts_monitor_for_bastion_browser_vm(
+        self, mock_in_set, mock_add, mock_thr
+    ):
+        from app.services.deploy_service import _start_vm_monitor
+
+        node = {
+            "id": "vm-bastion-1",
+            "type": "vmNode",
+            "data": {"configureBastionBrowser": True, "label": "bastion"},
+        }
+        result = _start_vm_monitor("proj-1234", "host-1234", node, 1000.0)
+
+        assert result is True
+        mock_add.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# maybe_start_ocp_health_monitor (uncovered lines ~4257-4274)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestMaybeStartOcpHealthMonitor:
+    @patch("app.services.deploy_service._start_vm_monitor", return_value=True)
+    @patch("app.services.deploy_service._resolve_monitor_context")
+    def test_starts_monitors_for_vm_candidates(self, mock_ctx, mock_start):
+        from app.services.deploy_service import maybe_start_ocp_health_monitor
+
+        host = MagicMock()
+        host.id = "host-1"
+        topo = {
+            "nodes": [
+                {"id": "vm-1", "type": "vmNode", "data": {"ocpMonitor": True}},
+                {"id": "vm-2", "type": "vmNode", "data": {"label": "worker"}},
+                {"id": "net-1", "type": "networkNode", "data": {}},
+            ],
+        }
+        mock_ctx.return_value = (MagicMock(), host, topo, 1000.0)
+
+        maybe_start_ocp_health_monitor("proj-12345678")
+
+        # Only vmNode entries passed to _start_vm_monitor
+        assert mock_start.call_count == 2
+
+    @patch("app.services.deploy_service._resolve_monitor_context", return_value=None)
+    def test_no_context_returns_early(self, mock_ctx):
+        from app.services.deploy_service import maybe_start_ocp_health_monitor
+
+        maybe_start_ocp_health_monitor("proj-no-ctx")
+        # No error, just returns
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _check_vm_route_http (line 4740)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCheckVmRouteHttpExtended:
+    def test_returns_http_code(self):
+        from app.services.deploy_service import _check_vm_route_http
+
+        oc_fn = MagicMock(return_value="200")
+        result = _check_vm_route_http(oc_fn, "console-openshift-console.apps")
+        assert result == "200"
+
+    def test_strips_whitespace(self):
+        from app.services.deploy_service import _check_vm_route_http
+
+        oc_fn = MagicMock(return_value="  403\n")
+        result = _check_vm_route_http(oc_fn, "oauth-openshift.apps")
+        assert result == "403"
+
+    def test_none_result_returns_000(self):
+        from app.services.deploy_service import _check_vm_route_http
+
+        oc_fn = MagicMock(return_value=None)
+        result = _check_vm_route_http(oc_fn, "console")
+        assert result == "000"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _check_vm_console_and_oauth (uncovered lines ~4765-4779)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCheckVmConsoleAndOauthExtended:
+    @patch("app.services.deploy_service._check_vm_route_http")
+    def test_both_ready(self, mock_route):
+        from app.services.deploy_service import _check_vm_console_and_oauth
+
+        mock_route.side_effect = ["200", "302"]
+        push_fn = MagicMock()
+        _t = MagicMock()
+
+        result = _check_vm_console_and_oauth(MagicMock(), push_fn, _t)
+
+        assert result is True
+        # Last push should say ready
+        last_call = push_fn.call_args_list[-1]
+        assert "ready" in last_call[0][1]
+
+    @patch("app.services.deploy_service._check_vm_route_http")
+    def test_console_not_ready(self, mock_route):
+        from app.services.deploy_service import _check_vm_console_and_oauth
+
+        mock_route.return_value = "000"
+        push_fn = MagicMock()
+        _t = MagicMock()
+
+        result = _check_vm_console_and_oauth(MagicMock(), push_fn, _t)
+
+        assert result is False
+        _t.sleep.assert_called_once_with(10)
+
+    @patch("app.services.deploy_service._check_vm_route_http")
+    def test_console_ready_oauth_not(self, mock_route):
+        from app.services.deploy_service import _check_vm_console_and_oauth
+
+        mock_route.side_effect = ["200", "000"]
+        push_fn = MagicMock()
+        _t = MagicMock()
+
+        result = _check_vm_console_and_oauth(MagicMock(), push_fn, _t)
+
+        assert result is False
+        # Should mention OAuth
+        oauth_push = push_fn.call_args_list[-1]
+        assert "OAuth" in oauth_push[0][1]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_restart_ingress (uncovered lines ~4939-4944)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmRestartIngress:
+    def test_restart_calls_oc(self):
+        from app.services.deploy_service import _ocp_vm_restart_ingress
+
+        oc_fn = MagicMock()
+        push_fn = MagicMock()
+
+        _ocp_vm_restart_ingress(oc_fn, push_fn)
+
+        push_fn.assert_called_once_with("console", "restarting ingress router")
+        oc_fn.assert_called_once()
+        assert "rollout restart" in oc_fn.call_args[0][0]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_final_csr_sweep (uncovered lines ~4947-4955)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmFinalCsrSweep:
+    @patch("time.sleep")
+    def test_approves_until_none(self, mock_sleep):
+        from app.services.deploy_service import _ocp_vm_final_csr_sweep
+
+        approve_fn = MagicMock(side_effect=[3, 2, 0])
+        push_fn = MagicMock()
+
+        _ocp_vm_final_csr_sweep(approve_fn, push_fn)
+
+        assert approve_fn.call_count == 3
+        assert push_fn.call_count == 2  # Only pushes when approved > 0
+
+    @patch("time.sleep")
+    def test_no_csrs_to_approve(self, mock_sleep):
+        from app.services.deploy_service import _ocp_vm_final_csr_sweep
+
+        approve_fn = MagicMock(return_value=0)
+        push_fn = MagicMock()
+
+        _ocp_vm_final_csr_sweep(approve_fn, push_fn)
+
+        assert approve_fn.call_count == 1
+        push_fn.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_wait_for_api (uncovered lines ~4922-4936)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmWaitForApi:
+    @patch("time.sleep")
+    def test_api_ready(self, mock_sleep):
+        from app.services.deploy_service import _ocp_vm_wait_for_api
+
+        oc_fn = MagicMock(return_value="node1   Ready   master   10d   v1.29.0")
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        result = _ocp_vm_wait_for_api(oc_fn, push_fn, deadline)
+
+        assert result is True
+
+    @patch("time.sleep")
+    def test_api_timeout(self, mock_sleep):
+        from app.services.deploy_service import _ocp_vm_wait_for_api
+
+        oc_fn = MagicMock(side_effect=Exception("connection refused"))
+        push_fn = MagicMock()
+        # Deadline already passed
+        deadline = time.time() - 1
+
+        result = _ocp_vm_wait_for_api(oc_fn, push_fn, deadline)
+
+        assert result is False
+        # Should push timeout message
+        last_call = push_fn.call_args_list[-1]
+        assert "timeout" in last_call[0][0] or "not reachable" in last_call[0][1]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_wait_for_operators (uncovered lines ~4690-4714)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmWaitForOperators:
+    @patch("time.sleep")
+    def test_all_operators_available(self, mock_sleep):
+        from app.services.deploy_service import _ocp_vm_wait_for_operators
+
+        co_output = (
+            "authentication   4.16.0   True   False   False   10d\n"
+            "console          4.16.0   True   False   False   10d\n"
+            "ingress          4.16.0   True   False   False   10d\n"
+        )
+        oc_fn = MagicMock(return_value=co_output)
+        approve_fn = MagicMock(return_value=0)
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        _ocp_vm_wait_for_operators(oc_fn, approve_fn, push_fn, deadline)
+
+        # Should have pushed operators status at least once
+        push_calls = [c for c in push_fn.call_args_list if c[0][0] == "operators"]
+        assert len(push_calls) >= 1
+        assert "3/3" in push_calls[-1][0][1]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_poll_with_csrs (uncovered lines ~4716-4738)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmPollWithCsrs:
+    @patch("app.services.deploy_service._ocp_vm_wait_for_operators")
+    @patch("time.sleep")
+    def test_nodes_ready_then_operators(self, mock_sleep, mock_wait_ops):
+        from app.services.deploy_service import _ocp_vm_poll_with_csrs
+
+        node_output = "master-0   Ready   control-plane,master   10d   v1.29.0"
+        oc_fn = MagicMock(return_value=node_output)
+        approve_fn = MagicMock(return_value=0)
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        _ocp_vm_poll_with_csrs(oc_fn, approve_fn, push_fn, deadline)
+
+        mock_wait_ops.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _setup_bastion_kubeconfig (uncovered lines ~4861-4881)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestSetupBastionKubeconfig:
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_with_kubeconfig_content(self, mock_exec):
+        from app.services.deploy_service import _setup_bastion_kubeconfig
+
+        host = MagicMock()
+        kc_path, effective = _setup_bastion_kubeconfig(
+            host,
+            "proj-1",
+            "vm-1",
+            "10.0.0.5",
+            "pass123",
+            "apiVersion: v1\nkind: Config",
+        )
+
+        assert kc_path == "/tmp/troshka-kc-vm-1.yaml"
+        assert effective == kc_path
+        mock_exec.assert_called_once()
+        # Should be base64-encoding the kubeconfig
+        call_cmd = mock_exec.call_args[0][4]
+        assert "base64" in call_cmd
+
+    def test_without_kubeconfig_content(self):
+        from app.services.deploy_service import _setup_bastion_kubeconfig
+
+        host = MagicMock()
+        kc_path, effective = _setup_bastion_kubeconfig(
+            host, "proj-1", "vm-1", "10.0.0.5", "pass123", None
+        )
+
+        assert kc_path is None
+        assert effective == "/home/cloud-user/ocp-install/auth/kubeconfig"
+
+    def test_with_empty_string_kubeconfig(self):
+        from app.services.deploy_service import _setup_bastion_kubeconfig
+
+        host = MagicMock()
+        kc_path, effective = _setup_bastion_kubeconfig(
+            host, "proj-1", "vm-1", "10.0.0.5", "pass123", ""
+        )
+
+        assert kc_path is None
+        assert effective == "/home/cloud-user/ocp-install/auth/kubeconfig"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _make_oc_and_csr_helpers (uncovered lines ~4884-4919)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestMakeOcAndCsrHelpers:
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_oc_helper_sets_kubeconfig(self, mock_exec):
+        from app.services.deploy_service import _make_oc_and_csr_helpers
+
+        mock_exec.return_value = "node1   Ready"
+        host = MagicMock()
+
+        _oc, _approve = _make_oc_and_csr_helpers(
+            host, "proj-1", "10.0.0.5", "pw", "/tmp/kc.yaml", "sno1"
+        )
+
+        result = _oc("oc get nodes")
+        assert result == "node1   Ready"
+        call_cmd = mock_exec.call_args[0][4]
+        assert "KUBECONFIG=/tmp/kc.yaml" in call_cmd
+        assert "oc get nodes" in call_cmd
+
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_approve_csrs_finds_pending(self, mock_exec):
+        from app.services.deploy_service import _make_oc_and_csr_helpers
+
+        csr_output = "csr-abc   1h   kubernetes.io/kube-apiserver-client   Pending\ncsr-def   1h   kubernetes.io/kubelet-serving   Approved"
+        mock_exec.side_effect = [
+            csr_output,  # get csr
+            "approved",  # approve csr-abc
+        ]
+        host = MagicMock()
+
+        _oc, _approve = _make_oc_and_csr_helpers(
+            host, "proj-1", "10.0.0.5", "pw", "/tmp/kc.yaml", "sno1"
+        )
+
+        count = _approve()
+        assert count == 1
+
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_approve_csrs_empty_result(self, mock_exec):
+        from app.services.deploy_service import _make_oc_and_csr_helpers
+
+        mock_exec.return_value = ""
+        host = MagicMock()
+
+        _oc, _approve = _make_oc_and_csr_helpers(
+            host, "proj-1", "10.0.0.5", "pw", "/tmp/kc.yaml", "sno1"
+        )
+
+        count = _approve()
+        assert count == 0
+
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_approve_csrs_none_result(self, mock_exec):
+        from app.services.deploy_service import _make_oc_and_csr_helpers
+
+        mock_exec.return_value = None
+        host = MagicMock()
+
+        _oc, _approve = _make_oc_and_csr_helpers(
+            host, "proj-1", "10.0.0.5", "pw", "/tmp/kc.yaml", "sno1"
+        )
+
+        count = _approve()
+        assert count == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _configure_bastion_and_cleanup (uncovered lines ~4804-4858)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestConfigureBastionAndCleanup:
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_cleanup_temp_kubeconfig_when_no_browser(self, mock_exec):
+        from app.services.deploy_service import _configure_bastion_and_cleanup
+
+        nodes = [
+            {"id": "vm-1", "data": {"label": "sno1"}},
+        ]
+        host = MagicMock()
+        oc_fn = MagicMock()
+        push_fn = MagicMock()
+
+        _configure_bastion_and_cleanup(
+            nodes,
+            "vm-1",
+            "/tmp/kc.yaml",
+            host,
+            "proj-1",
+            "10.0.0.5",
+            "pw",
+            oc_fn,
+            push_fn,
+        )
+
+        # Should have cleaned up the temp kubeconfig
+        mock_exec.assert_called_once()
+        assert "rm -f /tmp/kc.yaml" in mock_exec.call_args[0][4]
+
+    def test_no_cleanup_when_no_kc_path(self):
+        from app.services.deploy_service import _configure_bastion_and_cleanup
+
+        nodes = [{"id": "vm-1", "data": {"label": "sno1"}}]
+        host = MagicMock()
+        oc_fn = MagicMock()
+        push_fn = MagicMock()
+
+        # Should not raise when kc_path is None
+        _configure_bastion_and_cleanup(
+            nodes, "vm-1", None, host, "proj-1", "10.0.0.5", "pw", oc_fn, push_fn
+        )
+
+    @patch("app.services.deploy_service._verify_bastion_browser", return_value=True)
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_configure_browser_when_flag_set(self, mock_exec, mock_verify):
+        from app.services.deploy_service import _configure_bastion_and_cleanup
+
+        nodes = [
+            {"id": "vm-1", "data": {"label": "sno1", "configureBastionBrowser": True}},
+        ]
+        host = MagicMock()
+        oc_fn = MagicMock()
+        push_fn = MagicMock()
+
+        _configure_bastion_and_cleanup(
+            nodes,
+            "vm-1",
+            "/tmp/kc.yaml",
+            host,
+            "proj-1",
+            "10.0.0.5",
+            "pw",
+            oc_fn,
+            push_fn,
+        )
+
+        # Should have copied kubeconfig and refreshed CA trust
+        assert mock_exec.call_count >= 1
+        # Should NOT have cleaned up kc_path (browser flag is set, kc stays)
+        cleanup_calls = [c for c in mock_exec.call_args_list if "rm -f" in str(c)]
+        assert len(cleanup_calls) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_vm_wait_for_console (uncovered lines ~4782-4801)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpVmWaitForConsole:
+    @patch("app.services.deploy_service._check_vm_console_and_oauth", return_value=True)
+    @patch("time.sleep")
+    def test_console_ready(self, mock_sleep, mock_check):
+        from app.services.deploy_service import _ocp_vm_wait_for_console
+
+        oc_fn = MagicMock(return_value="console   4.16.0   True   False   False   10d")
+        approve_fn = MagicMock(return_value=0)
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        _ocp_vm_wait_for_console(oc_fn, approve_fn, push_fn, deadline)
+
+        mock_check.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_push_status (uncovered but partially tested — add missing paths)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpPushStatusWithItems:
+    @patch("app.services.deploy_service.notify_project")
+    @patch("app.core.database.SessionLocal")
+    def test_with_items(self, mock_sl, mock_notify):
+        from app.services.deploy_service import _ocp_push_status
+
+        mock_db = MagicMock()
+        mock_sl.return_value = mock_db
+        mock_project = MagicMock()
+        mock_db.get.return_value = mock_project
+
+        _ocp_push_status(
+            "proj-1", "nodes", "2/3 ready", items=["node1: Ready", "node2: Ready"]
+        )
+
+        msg = mock_notify.call_args[0][1]
+        assert msg["items"] == ["node1: Ready", "node2: Ready"]
+        assert msg["phase"] == "nodes"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_report_final_status (covers code in finalization)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpReportFinalStatusExtended:
+    @patch("app.services.deploy_service._ocp_update_status")
+    def test_all_ready(self, mock_update):
+        from app.services.deploy_service import _ocp_report_final_status
+
+        push_fn = MagicMock()
+
+        _ocp_report_final_status("proj-1", True, True, True, "5m 30s", 330, push_fn)
+
+        push_fn.assert_called_once_with("ready", "cluster ready")
+        mock_update.assert_called_once_with("proj-1", "ready", 330)
+
+    @patch("app.services.deploy_service._ocp_update_status")
+    def test_nodes_not_ready(self, mock_update):
+        from app.services.deploy_service import _ocp_report_final_status
+
+        push_fn = MagicMock()
+
+        _ocp_report_final_status("proj-1", False, True, True, "30m 00s", 1800, push_fn)
+
+        call_args = push_fn.call_args[0]
+        assert call_args[0] == "warning"
+        assert "nodes" in call_args[1]
+        mock_update.assert_called_once_with("proj-1", "warning", 1800)
+
+    @patch("app.services.deploy_service._ocp_update_status")
+    def test_multiple_not_ready(self, mock_update):
+        from app.services.deploy_service import _ocp_report_final_status
+
+        push_fn = MagicMock()
+
+        _ocp_report_final_status("proj-1", False, False, True, "30m 00s", 1800, push_fn)
+
+        call_args = push_fn.call_args[0]
+        assert "nodes" in call_args[1]
+        assert "operators" in call_args[1]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_extract_topology_info
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpExtractTopologyInfoExtended:
+    def test_full_topology(self):
+        from app.services.deploy_service import _ocp_extract_topology_info
+
+        topology = {
+            "nodes": [
+                {
+                    "type": "vmNode",
+                    "id": "vm-bastion",
+                    "data": {
+                        "label": "bastion",
+                        "nics": [{"ip": "10.0.0.5"}],
+                        "ciCloudUserPassword": "redhat",
+                    },
+                },
+                {
+                    "type": "vmNode",
+                    "id": "vm-master0",
+                    "data": {"label": "master-0", "os": "rhcos"},
+                },
+                {
+                    "type": "vmNode",
+                    "id": "vm-master1",
+                    "data": {"label": "master-1", "os": "rhcos"},
+                },
+                {
+                    "type": "networkNode",
+                    "id": "net-1",
+                    "data": {"dnsRecords": [{"name": "api.ocp.example.com"}]},
+                },
+            ],
+        }
+
+        bastion, ip, pw, cp_names, dns_domain = _ocp_extract_topology_info(topology)
+
+        assert bastion is not None
+        assert ip == "10.0.0.5"
+        assert pw == "redhat"
+        assert len(cp_names) == 2
+        assert "master-0" in cp_names
+        assert "master-1" in cp_names
+        assert dns_domain == "ocp.example.com"
+
+    def test_no_bastion_no_dns(self):
+        from app.services.deploy_service import _ocp_extract_topology_info
+
+        topology = {
+            "nodes": [
+                {
+                    "type": "vmNode",
+                    "id": "vm-sno",
+                    "data": {"label": "sno", "os": "rhcos"},
+                },
+            ],
+        }
+
+        bastion, ip, pw, cp_names, dns_domain = _ocp_extract_topology_info(topology)
+
+        assert bastion is None
+        assert ip == ""
+        assert dns_domain == "ocp.ocp.local"
+        assert len(cp_names) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_wait_for_direct_oc (uncovered lines ~5164-5180)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpWaitForDirectOcExtended:
+    @patch("app.services.deploy_service._exec_oc")
+    @patch("time.sleep")
+    def test_api_ready_immediately(self, mock_sleep, mock_exec_oc):
+        from app.services.deploy_service import _ocp_wait_for_direct_oc
+
+        mock_exec_oc.return_value = "master-0   Ready   control-plane"
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        result = _ocp_wait_for_direct_oc(MagicMock(), "proj-1", push_fn, deadline)
+
+        assert result is True
+
+    @patch("app.services.deploy_service._exec_oc")
+    @patch("time.sleep")
+    def test_api_timeout(self, mock_sleep, mock_exec_oc):
+        from app.services.deploy_service import _ocp_wait_for_direct_oc
+
+        mock_exec_oc.side_effect = Exception("connection refused")
+        push_fn = MagicMock()
+        deadline = time.time() - 1  # Already expired
+
+        result = _ocp_wait_for_direct_oc(MagicMock(), "proj-1", push_fn, deadline)
+
+        assert result is False
+        last_push = push_fn.call_args_list[-1]
+        assert "timeout" in last_push[0][0]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_monitor_fresh_install (uncovered lines ~5543-5601)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpMonitorFreshInstall:
+    @patch("app.services.deploy_service._ocp_update_status")
+    @patch("app.services.deploy_service._ocp_parse_install_phases")
+    @patch("app.services.deploy_service._check_install_terminal_state")
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("app.services.deploy_service._ocp_wait_for_install_log")
+    @patch("time.sleep")
+    def test_install_completes(
+        self,
+        mock_sleep,
+        mock_wait_log,
+        mock_exec,
+        mock_terminal,
+        mock_parse,
+        mock_update,
+    ):
+        from app.services.deploy_service import _ocp_monitor_fresh_install
+
+        mock_exec.return_value = "some install log output"
+        mock_terminal.return_value = ("complete", 300)
+        host = MagicMock()
+        push_fn = MagicMock()
+
+        result = _ocp_monitor_fresh_install(
+            host, "proj-1", "10.0.0.5", "pw", ["master-0"], push_fn, time.time()
+        )
+
+        assert result == ("complete", 300)
+
+    @patch("app.services.deploy_service._ocp_update_status")
+    @patch("app.services.deploy_service._ocp_parse_install_phases")
+    @patch(
+        "app.services.deploy_service._check_install_terminal_state", return_value=None
+    )
+    @patch("app.services.deploy_service._exec_on_bastion", return_value=None)
+    @patch("app.services.deploy_service._ocp_wait_for_install_log")
+    @patch("time.sleep")
+    @patch("time.time")
+    def test_install_timeout(
+        self,
+        mock_time,
+        mock_sleep,
+        mock_wait_log,
+        mock_exec,
+        mock_terminal,
+        mock_parse,
+        mock_update,
+    ):
+        from app.services.deploy_service import _ocp_monitor_fresh_install
+
+        # First call to time.time() sets deadline = 1000 + 7200 = 8200
+        # Second call (in while loop) returns 9000 > 8200, so loop exits immediately
+        mock_time.side_effect = [1000.0, 9000.0]
+        host = MagicMock()
+        push_fn = MagicMock()
+
+        result = _ocp_monitor_fresh_install(
+            host, "proj-1", "10.0.0.5", "pw", ["master-0"], push_fn, 500.0
+        )
+
+        assert result == ("timeout", None)
+        mock_update.assert_called_with("proj-1", "error")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_wait_for_nodes_ready (uncovered lines ~5604-5636)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpWaitForNodesReady:
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep")
+    def test_nodes_become_ready(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_wait_for_nodes_ready
+
+        mock_exec.return_value = (
+            "master-0   Ready   control-plane,master   10d   v1.29.0"
+        )
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        result = _ocp_wait_for_nodes_ready(
+            host, "proj-1", "10.0.0.5", "pw", ["master-0"], push_fn, deadline
+        )
+
+        assert result is True
+
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch(
+        "app.services.deploy_service._exec_on_bastion",
+        return_value="error: connection refused",
+    )
+    @patch("time.sleep")
+    def test_api_error_waiting(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_wait_for_nodes_ready
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() - 1  # Already expired
+
+        result = _ocp_wait_for_nodes_ready(
+            host, "proj-1", "10.0.0.5", "pw", ["master-0"], push_fn, deadline
+        )
+
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_wait_for_operators (uncovered lines ~5639-5676)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpWaitForOperatorsBastion:
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep")
+    def test_operators_become_available(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_wait_for_operators
+
+        mock_exec.return_value = (
+            "authentication   4.16.0   True   False   False   10d\n"
+            "console          4.16.0   True   False   False   10d\n"
+        )
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        result = _ocp_wait_for_operators(
+            host, "proj-1", "10.0.0.5", "pw", push_fn, deadline
+        )
+
+        assert result is True
+
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch(
+        "app.services.deploy_service._exec_on_bastion",
+        return_value="error: API unavailable",
+    )
+    @patch("time.sleep")
+    def test_operators_timeout(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_wait_for_operators
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() - 1
+
+        result = _ocp_wait_for_operators(
+            host, "proj-1", "10.0.0.5", "pw", push_fn, deadline
+        )
+
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_wait_for_console_route (uncovered lines ~5735-5788)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpWaitForConsoleRoute:
+    @patch("app.services.deploy_service._ocp_check_console_route", return_value=True)
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep")
+    def test_console_ready_pattern_deploy(
+        self, mock_sleep, mock_exec, mock_approve, mock_console
+    ):
+        from app.services.deploy_service import _ocp_wait_for_console_route
+
+        mock_exec.return_value = "console   4.16.0   True   False   False   10d"
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+        topology = {
+            "nodes": [{"type": "storageNode", "data": {"source": "pattern"}}],
+        }
+
+        result = _ocp_wait_for_console_route(
+            host, "proj-1", "10.0.0.5", "pw", push_fn, deadline, topology
+        )
+
+        assert result is True
+
+    @patch("app.services.deploy_service._approve_csrs_if_due", return_value=0)
+    @patch(
+        "app.services.deploy_service._exec_on_bastion",
+        return_value="error: no such resource",
+    )
+    @patch("time.sleep")
+    def test_console_timeout(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_wait_for_console_route
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() - 1
+        topology = {"nodes": []}
+
+        result = _ocp_wait_for_console_route(
+            host, "proj-1", "10.0.0.5", "pw", push_fn, deadline, topology
+        )
+
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_ping_cp_nodes (uncovered lines ~5868-5907)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpPingCpNodes:
+    @patch("app.services.deploy_service._approve_pending_csrs", return_value=0)
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep")
+    def test_all_nodes_reachable(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_ping_cp_nodes
+
+        mock_exec.return_value = "up"
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() + 100
+
+        _ocp_ping_cp_nodes(
+            host,
+            "proj-1",
+            "10.0.0.5",
+            "pw",
+            ["master-0", "master-1"],
+            push_fn,
+            deadline,
+        )
+
+        # Should push 2/2 reachable
+        ping_pushes = [c for c in push_fn.call_args_list if c[0][0] == "nodes"]
+        assert len(ping_pushes) >= 1
+        last_push = ping_pushes[-1]
+        assert "2/2" in last_push[0][1]
+
+    @patch("app.services.deploy_service._approve_pending_csrs", return_value=0)
+    @patch("app.services.deploy_service._exec_on_bastion", return_value="down")
+    @patch("time.sleep")
+    def test_nodes_not_reachable_timeout(self, mock_sleep, mock_exec, mock_approve):
+        from app.services.deploy_service import _ocp_ping_cp_nodes
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        deadline = time.time() - 1
+
+        _ocp_ping_cp_nodes(
+            host, "proj-1", "10.0.0.5", "pw", ["master-0"], push_fn, deadline
+        )
+
+        assert push_fn.call_count <= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_final_csr_sweep (uncovered lines ~5910-5924)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpFinalCsrSweep:
+    @patch("app.services.deploy_service._ocp_post_pattern_cert_refresh")
+    @patch("app.services.deploy_service._approve_pending_csrs", return_value=0)
+    @patch("time.sleep")
+    def test_sweep_no_csrs(self, mock_sleep, mock_approve, mock_refresh):
+        from app.services.deploy_service import _ocp_final_csr_sweep
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        topology = {"nodes": []}
+
+        _ocp_final_csr_sweep(host, "proj-1", "10.0.0.5", "pw", topology, push_fn)
+
+        # Should have called approve once and stopped
+        assert mock_approve.call_count == 1
+        # No pattern deploy, no cert refresh
+        mock_refresh.assert_not_called()
+
+    @patch("app.services.deploy_service._ocp_post_pattern_cert_refresh")
+    @patch("app.services.deploy_service._approve_pending_csrs")
+    @patch("time.sleep")
+    def test_sweep_with_pattern_deploy(self, mock_sleep, mock_approve, mock_refresh):
+        from app.services.deploy_service import _ocp_final_csr_sweep
+
+        mock_approve.side_effect = [2, 0]
+        host = MagicMock()
+        push_fn = MagicMock()
+        topology = {
+            "nodes": [{"type": "storageNode", "data": {"patternId": "pat-123"}}],
+        }
+
+        _ocp_final_csr_sweep(host, "proj-1", "10.0.0.5", "pw", topology, push_fn)
+
+        assert mock_approve.call_count == 2
+        mock_refresh.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ocp_post_pattern_cert_refresh (uncovered lines ~5791-5845)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestOcpPostPatternCertRefresh:
+    @patch("app.services.deploy_service._verify_bastion_browser")
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("app.core.database.SessionLocal")
+    def test_refresh_with_recert_pattern(self, mock_sl, mock_exec, mock_verify):
+        from app.services.deploy_service import _ocp_post_pattern_cert_refresh
+
+        # Mock DB to return a pattern with recert=True
+        mock_db = MagicMock()
+        mock_sl.return_value = mock_db
+        mock_pattern = MagicMock()
+        mock_pattern.recert = True
+        mock_db.query.return_value.filter_by.return_value.first.return_value = (
+            mock_pattern
+        )
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        topology = {
+            "nodes": [
+                {"type": "storageNode", "data": {"patternId": "pat-123"}},
+                {"type": "vmNode", "data": {"os": "rhcos"}},
+            ],
+        }
+
+        _ocp_post_pattern_cert_refresh(
+            host, "proj-1", "10.0.0.5", "pw", topology, push_fn
+        )
+
+        # Should have run cert refresh
+        push_fn.assert_any_call("certs", "refreshing bastion certificates")
+        mock_verify.assert_called_once()
+
+    def test_skip_when_no_bastion_ip(self):
+        from app.services.deploy_service import _ocp_post_pattern_cert_refresh
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        topology = {"nodes": []}
+
+        _ocp_post_pattern_cert_refresh(host, "proj-1", "", "pw", topology, push_fn)
+
+        push_fn.assert_not_called()
+
+    @patch("app.services.deploy_service._verify_bastion_browser")
+    @patch("app.services.deploy_service._exec_on_bastion")
+    def test_refresh_for_single_rhcos_no_recert(self, mock_exec, mock_verify):
+        from app.services.deploy_service import _ocp_post_pattern_cert_refresh
+
+        host = MagicMock()
+        push_fn = MagicMock()
+        topology = {
+            "nodes": [
+                {"type": "vmNode", "data": {"os": "rhcos"}},
+            ],
+        }
+
+        _ocp_post_pattern_cert_refresh(
+            host, "proj-1", "10.0.0.5", "pw", topology, push_fn
+        )
+
+        # Single RHCOS VM triggers refresh even without recert pattern
+        push_fn.assert_any_call("certs", "refreshing bastion certificates")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _monitor_ocp_vm_health wrapper (uncovered lines ~4628-4653)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestMonitorOcpVmHealth:
+    @patch("app.services.deploy_service.remove_from_set")
+    @patch(
+        "app.services.deploy_service._ocp_vm_health_inner",
+        side_effect=Exception("boom"),
+    )
+    @patch("app.core.database.SessionLocal")
+    def test_exception_cleanup(self, mock_sl, mock_inner, mock_remove):
+        from app.services.deploy_service import _monitor_ocp_vm_health
+
+        mock_db = MagicMock()
+        mock_sl.return_value = mock_db
+
+        _monitor_ocp_vm_health("proj-1", "host-1", "vm-1", "sno1", "kc-content", 1000.0)
+
+        mock_remove.assert_called_once_with("deploy:health_monitors", "proj-1:vm-1")
+        mock_db.close.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _collect_dv_progress skip-unfriendly path (line 2337)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCollectDvProgressSkipUnfriendly:
+    @patch("app.services.deploy_service._fill_missing_disk_labels")
+    @patch("app.services.deploy_service._best_dv_status", return_value={})
+    @patch("app.services.deploy_service._build_clone_name_map", return_value={})
+    @patch("app.services.deploy_service._format_dv_status_line")
+    def test_skip_dv_without_friendly_name(
+        self, mock_format, mock_clone, mock_best, mock_fill
+    ):
+        """DVs that aren't in golden or clone name maps are skipped (line 2337)."""
+        from app.services.deploy_service import _collect_dv_progress
+
+        provider = MagicMock()
+        topology = {"nodes": []}
+
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients"
+        ) as mock_k8s, patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-proj-1234",
+        ):
+            mock_custom = MagicMock()
+            mock_k8s.return_value = (mock_custom, None, None)
+            # Return a DV that has no matching golden or clone name
+            mock_custom.list_namespaced_custom_object.return_value = {
+                "items": [
+                    {
+                        "metadata": {
+                            "namespace": "troshka-cache",
+                            "name": "unknown-dv",
+                        },
+                        "status": {"phase": "Succeeded"},
+                    }
+                ]
+            }
+
+            _collect_dv_progress("proj-1234", provider, topology)
+
+            # _format_dv_status_line should NOT be called (unknown DV skipped)
+            mock_format.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _best_dv_status edge cases
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestBestDvStatusEdgeCases:
+    def test_keeps_most_advanced_status(self):
+        from app.services.deploy_service import _best_dv_status
+
+        lines = [
+            "disk1: waiting",
+            "disk1: downloading",
+            "disk1: done",
+            "disk2: scheduled",
+        ]
+        result = _best_dv_status(lines)
+        assert result["disk1"] == "done"
+        assert result["disk2"] == "scheduled"
+
+    def test_empty_list(self):
+        from app.services.deploy_service import _best_dv_status
+
+        result = _best_dv_status([])
+        assert result == {}
+
+    def test_unknown_status(self):
+        from app.services.deploy_service import _best_dv_status
+
+        lines = ["disk1: something-unknown"]
+        result = _best_dv_status(lines)
+        assert result["disk1"] == "something-unknown"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _fill_missing_disk_labels
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestFillMissingDiskLabelsExtended:
+    def test_adds_waiting_for_missing_disks(self):
+        from app.services.deploy_service import _fill_missing_disk_labels
+
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {"source": "pattern", "label": "boot-disk"},
+                },
+                {
+                    "type": "storageNode",
+                    "data": {"source": "library", "label": "data-disk"},
+                },
+                {
+                    "type": "storageNode",
+                    "data": {"source": "blank", "label": "scratch"},
+                },
+                {"type": "vmNode", "data": {"label": "vm1"}},
+            ],
+        }
+        best = {"boot-disk": "done"}
+
+        _fill_missing_disk_labels(topology, best)
+
+        assert best["boot-disk"] == "done"  # unchanged
+        assert best["data-disk"] == "waiting"  # added
+        assert "scratch" not in best  # blank source not added

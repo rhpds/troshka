@@ -869,3 +869,899 @@ def test_import_vm_snapshot_not_found():
     )
     assert resp.status_code == 404
     assert "Snapshot not found" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Helper: create a host + project with host_id for VM operation tests
+# ---------------------------------------------------------------------------
+from app.models.host import Host
+
+
+def _create_host(**kwargs):
+    """Create a Host record in the DB and return its ID."""
+    db = TestSession()
+    defaults = {
+        "id": str(uuid.uuid4()),
+        "state": "active",
+        "agent_status": "connected",
+        "ip_address": "10.0.0.1",
+        "private_key": "fake-key",
+        "host_type": "shared",
+        "total_vcpus": 64,
+        "total_ram_mb": 131072,
+    }
+    defaults.update(kwargs)
+    h = Host(**defaults)
+    db.add(h)
+    db.commit()
+    hid = h.id
+    db.close()
+    return hid
+
+
+def _create_project_with_host(
+    name="proj-with-host",
+    state="active",
+    topology=None,
+    host_kwargs=None,
+    **proj_kwargs,
+):
+    """Create a project with a host_id set, return (project_id, host_id)."""
+    hid = _create_host(**(host_kwargs or {}))
+    pid = _create_project(
+        name=name, state=state, topology=topology, host_id=hid, **proj_kwargs
+    )
+    return pid, hid
+
+
+# ---------------------------------------------------------------------------
+# VM exec endpoint validation — POST /projects/{id}/vms/{vm_id}/exec
+# ---------------------------------------------------------------------------
+def test_exec_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{fake_id}/vms/{fake_vm}/exec",
+        json={"command": "echo hi"},
+    )
+    assert resp.status_code == 404
+
+
+def test_exec_vm_wrong_state():
+    pid = _create_project(name="exec-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "echo hi"},
+    )
+    assert resp.status_code == 409
+    assert "not accessible" in resp.json()["detail"]
+
+
+def test_exec_vm_no_host():
+    pid = _create_project(name="exec-no-host", state="active")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "echo hi"},
+    )
+    assert resp.status_code == 503
+    assert "Host not available" in resp.json()["detail"]
+
+
+def test_exec_vm_no_command():
+    pid, _ = _create_project_with_host(name="exec-no-cmd")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": ""},
+    )
+    assert resp.status_code == 400
+    assert "Command is required" in resp.json()["detail"]
+
+
+def test_exec_vm_project_must_be_active():
+    """Exec requires active or stopped state."""
+    pid = _create_project(name="exec-deploying", state="deploying")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "hostname"},
+    )
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM stop — POST /projects/{id}/vms/{vm_id}/stop — validation
+# ---------------------------------------------------------------------------
+def test_stop_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/stop")
+    assert resp.status_code == 404
+
+
+def test_stop_vm_wrong_state():
+    pid = _create_project(name="stop-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/stop")
+    assert resp.status_code == 409
+
+
+def test_stop_vm_no_host():
+    pid = _create_project(name="stop-vm-no-host", state="active")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/stop")
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# VM start — POST /projects/{id}/vms/{vm_id}/start — validation
+# ---------------------------------------------------------------------------
+def test_start_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/start")
+    assert resp.status_code == 404
+
+
+def test_start_vm_wrong_state():
+    pid = _create_project(name="start-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/start")
+    assert resp.status_code == 409
+
+
+def test_start_vm_no_host():
+    pid = _create_project(name="start-vm-no-host", state="active")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/start")
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# VM forcestop — POST /projects/{id}/vms/{vm_id}/forcestop — validation
+# ---------------------------------------------------------------------------
+def test_forcestop_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/forcestop")
+    assert resp.status_code == 404
+
+
+def test_forcestop_vm_wrong_state():
+    pid = _create_project(name="forcestop-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/forcestop")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM restart — POST /projects/{id}/vms/{vm_id}/restart — validation
+# ---------------------------------------------------------------------------
+def test_restart_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/restart")
+    assert resp.status_code == 404
+
+
+def test_restart_vm_wrong_state():
+    pid = _create_project(name="restart-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/restart")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM console — GET /projects/{id}/vms/{vm_id}/console — validation
+# ---------------------------------------------------------------------------
+def test_console_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/console")
+    assert resp.status_code == 404
+
+
+def test_console_vm_wrong_state():
+    pid = _create_project(name="console-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/console")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM status — GET /projects/{id}/vms/{vm_id}/status — validation
+# ---------------------------------------------------------------------------
+def test_vm_status_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/status")
+    assert resp.status_code == 404
+
+
+def test_vm_status_wrong_state():
+    pid = _create_project(name="status-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/status")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM ready — GET /projects/{id}/vms/{vm_id}/ready — validation
+# ---------------------------------------------------------------------------
+def test_vm_ready_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/ready")
+    assert resp.status_code == 404
+
+
+def test_vm_ready_wrong_state():
+    pid = _create_project(name="ready-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/ready")
+    assert resp.status_code == 409
+
+
+def test_vm_ready_vm_not_found():
+    """VM ready endpoint returns 404 if vm_id is not in topology."""
+    topo = {
+        "nodes": [{"id": "v1", "type": "vmNode", "data": {"name": "vm1"}}],
+        "edges": [],
+    }
+    pid, _ = _create_project_with_host(name="ready-vm-not-found", topology=topo)
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/ready")
+    assert resp.status_code == 404
+    assert "VM not found" in resp.json()["detail"]
+
+
+def test_vm_ready_no_ip():
+    """VM ready returns not ready when VM has no IP configured."""
+    vm_id = str(uuid.uuid4())
+    topo = {
+        "nodes": [
+            {
+                "id": vm_id,
+                "type": "vmNode",
+                "data": {"name": "vm1", "nics": [], "ciCloudUserPassword": "pw123"},
+            }
+        ],
+        "edges": [],
+    }
+    pid, _ = _create_project_with_host(name="ready-vm-no-ip", topology=topo)
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{vm_id}/ready")
+    assert resp.status_code == 200
+    assert resp.json()["ready"] is False
+    assert "no IP" in resp.json()["reason"]
+
+
+def test_vm_ready_no_password():
+    """VM ready returns not ready when VM has no password."""
+    vm_id = str(uuid.uuid4())
+    topo = {
+        "nodes": [
+            {
+                "id": vm_id,
+                "type": "vmNode",
+                "data": {
+                    "name": "vm1",
+                    "nics": [{"id": "nic1", "ip": "192.168.1.10"}],
+                    "ciCloudUserPassword": "",
+                },
+            }
+        ],
+        "edges": [],
+    }
+    pid, _ = _create_project_with_host(name="ready-vm-no-pw", topology=topo)
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{vm_id}/ready")
+    assert resp.status_code == 200
+    assert resp.json()["ready"] is False
+    assert "no password" in resp.json()["reason"]
+
+
+# ---------------------------------------------------------------------------
+# VM file upload — PUT /projects/{id}/vms/{vm_id}/files — validation
+# ---------------------------------------------------------------------------
+def test_upload_file_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.put(
+        f"/api/v1/projects/{fake_id}/vms/{fake_vm}/files",
+        params={"remote_path": "/tmp/test.txt"},
+        files={"file": ("test.txt", b"hello", "text/plain")},
+    )
+    assert resp.status_code == 404
+
+
+def test_upload_file_wrong_state():
+    pid = _create_project(name="upload-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.put(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/files",
+        params={"remote_path": "/tmp/test.txt"},
+        files={"file": ("test.txt", b"hello", "text/plain")},
+    )
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# VM file download — GET /projects/{id}/vms/{vm_id}/files — validation
+# ---------------------------------------------------------------------------
+def test_download_file_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(
+        f"/api/v1/projects/{fake_id}/vms/{fake_vm}/files",
+        params={"remote_path": "/etc/hostname"},
+    )
+    assert resp.status_code == 404
+
+
+def test_download_file_wrong_state():
+    pid = _create_project(name="download-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/files",
+        params={"remote_path": "/etc/hostname"},
+    )
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Container ops — validation via _get_project_and_host
+# ---------------------------------------------------------------------------
+def test_container_logs_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_cid = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{fake_id}/containers/{fake_cid}/logs")
+    assert resp.status_code == 404
+
+
+def test_container_logs_wrong_state():
+    pid = _create_project(name="cont-logs-draft", state="draft")
+    fake_cid = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/containers/{fake_cid}/logs")
+    assert resp.status_code == 409
+
+
+def test_container_start_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/containers/{fake_cid}/start")
+    assert resp.status_code == 404
+
+
+def test_container_start_wrong_state():
+    pid = _create_project(name="cont-start-draft", state="draft")
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/containers/{fake_cid}/start")
+    assert resp.status_code == 409
+
+
+def test_container_stop_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/containers/{fake_cid}/stop")
+    assert resp.status_code == 404
+
+
+def test_container_stop_wrong_state():
+    pid = _create_project(name="cont-stop-draft", state="draft")
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/containers/{fake_cid}/stop")
+    assert resp.status_code == 409
+
+
+def test_container_restart_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/containers/{fake_cid}/restart")
+    assert resp.status_code == 404
+
+
+def test_container_restart_wrong_state():
+    pid = _create_project(name="cont-restart-draft", state="draft")
+    fake_cid = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/containers/{fake_cid}/restart")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Reconfigure — deeper validation
+# ---------------------------------------------------------------------------
+def test_reconfigure_with_host_no_key():
+    """Reconfigure returns 503 if host has no private key (non-kubevirt)."""
+    hid = _create_host(private_key=None, ip_address="10.0.0.2")
+    pid = _create_project(name="reconfig-no-key", state="active", host_id=hid)
+    resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
+    assert resp.status_code == 503
+    assert "Host not available" in resp.json()["detail"]
+
+
+def test_reconfigure_bmc_no_connected_vm():
+    """Reconfigure rejects BMC network with no connected VMs."""
+    topo = {
+        "nodes": [
+            {
+                "id": "bmc-net",
+                "type": "networkNode",
+                "data": {"name": "bmc", "networkType": "bmc", "subtype": "network"},
+            },
+        ],
+        "edges": [],  # No edges — BMC net is disconnected
+    }
+    pid, _ = _create_project_with_host(
+        name="reconfig-bmc-no-vm", state="active", topology=topo
+    )
+    resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
+    assert resp.status_code == 400
+    assert "BMC network requires" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Deploy — additional validation paths
+# ---------------------------------------------------------------------------
+def test_deploy_bmc_no_connected_vm():
+    """Deploy rejects topology with BMC network but no connected VM."""
+    topo = {
+        "nodes": [
+            {
+                "id": "v1",
+                "type": "vmNode",
+                "data": {"name": "vm1", "vcpus": 2, "ram": 4},
+            },
+            {
+                "id": "bmc-net",
+                "type": "networkNode",
+                "data": {"name": "bmc", "networkType": "bmc", "subtype": "network"},
+            },
+        ],
+        "edges": [],  # BMC net not connected to any VM
+    }
+    pid = _create_project(name="deploy-bmc-no-vm", topology=topo)
+    resp = client.post(f"/api/v1/projects/{pid}/deploy")
+    assert resp.status_code == 400
+    assert "BMC network requires" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Kubeconfigs — access denied path (line 804)
+# ---------------------------------------------------------------------------
+def test_list_kubeconfigs_multiple_vms():
+    """Kubeconfigs returns only VMs that have ocpKubeconfig."""
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"name": "sno1", "label": "SNO-1", "ocpKubeconfig": "kc1"},
+            },
+            {
+                "id": "vm2",
+                "type": "vmNode",
+                "data": {"name": "sno2", "label": "SNO-2"},
+            },
+            {
+                "id": "vm3",
+                "type": "vmNode",
+                "data": {"name": "sno3", "label": "SNO-3", "ocpKubeconfig": "kc3"},
+            },
+            {
+                "id": "net1",
+                "type": "networkNode",
+                "data": {"name": "net1"},
+            },
+        ],
+        "edges": [],
+    }
+    pid = _create_project(name="kc-multi-vms", topology=topo)
+    resp = client.get(f"/api/v1/projects/{pid}/kubeconfigs")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+    vm_ids = {entry["vm_id"] for entry in data}
+    assert "vm1" in vm_ids
+    assert "vm3" in vm_ids
+    assert "vm2" not in vm_ids
+
+
+def test_list_kubeconfigs_uses_deployed_topology():
+    """Kubeconfigs prefers deployed_topology when available."""
+    topo = {
+        "nodes": [{"id": "vm1", "type": "vmNode", "data": {"name": "draft-vm"}}],
+        "edges": [],
+    }
+    deployed = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "name": "deployed-vm",
+                    "label": "Deployed",
+                    "ocpKubeconfig": "kc",
+                },
+            }
+        ],
+        "edges": [],
+    }
+    pid = _create_project(
+        name="kc-deployed-topo", topology=topo, deployed_topology=deployed
+    )
+    resp = client.get(f"/api/v1/projects/{pid}/kubeconfigs")
+    assert resp.status_code == 200
+    data = resp.json()
+    # deployed_topology has ocpKubeconfig, topology does not
+    assert len(data) == 1
+    assert data[0]["vm_name"] == "Deployed"
+
+
+# ---------------------------------------------------------------------------
+# Force stop — more validation
+# ---------------------------------------------------------------------------
+def test_force_stop_no_host():
+    """Force-stop returns 503 when project has no host."""
+    pid = _create_project(name="force-stop-no-host", state="active")
+    resp = client.post(f"/api/v1/projects/{pid}/force-stop")
+    assert resp.status_code == 503
+    assert "Host not available" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Redeploy VM — POST /projects/{id}/vms/{vm_id}/redeploy — validation
+# ---------------------------------------------------------------------------
+def test_redeploy_vm_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{fake_id}/vms/{fake_vm}/redeploy")
+    assert resp.status_code == 404
+
+
+def test_redeploy_vm_wrong_state():
+    pid = _create_project(name="redeploy-vm-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/redeploy")
+    assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Redeploy project — additional paths
+# ---------------------------------------------------------------------------
+def test_redeploy_project_stopped():
+    """Redeploy from stopped state returns 400 for no topology."""
+    pid = _create_project(
+        name="redeploy-stopped-no-topo", state="stopped", topology=None
+    )
+    resp = client.post(f"/api/v1/projects/{pid}/redeploy")
+    assert resp.status_code == 400
+    assert "no topology" in resp.json()["detail"]
+
+
+def test_redeploy_project_error_state_no_vms():
+    """Redeploy from error state with empty topology returns 400."""
+    pid = _create_project(
+        name="redeploy-error-empty",
+        state="error",
+        topology={"nodes": [], "edges": []},
+    )
+    resp = client.post(f"/api/v1/projects/{pid}/redeploy")
+    assert resp.status_code == 400
+    assert "no VMs" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Undeploy — additional paths
+# ---------------------------------------------------------------------------
+def test_undeploy_active_project_no_host():
+    """Undeploy an active project with no host should still work."""
+    pid = _create_project(name="undeploy-active-no-host", state="active")
+    resp = client.post(f"/api/v1/projects/{pid}/undeploy")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "draft"
+
+
+def test_undeploy_stopped_project_no_host():
+    """Undeploy a stopped project with no host."""
+    pid = _create_project(name="undeploy-stopped-no-host", state="stopped")
+    resp = client.post(f"/api/v1/projects/{pid}/undeploy")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "draft"
+
+
+# ---------------------------------------------------------------------------
+# Delete project — active project without host (draft-like)
+# ---------------------------------------------------------------------------
+def test_delete_project_active_no_host():
+    """Delete an active project with no host_id should succeed as draft delete."""
+    pid = _create_project(name="delete-active-no-host", state="active")
+    resp = client.delete(f"/api/v1/projects/{pid}")
+    assert resp.status_code == 200
+    # Verify it's gone
+    resp2 = client.get(f"/api/v1/projects/{pid}")
+    assert resp2.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Project PATCH — clock_target
+# ---------------------------------------------------------------------------
+def test_update_project_clock_target():
+    pid = _create_project(name="clock-update")
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"clock_target": "2025-01-15T00:00:00Z"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["clock_target"] is not None
+    assert "2025-01-15" in resp.json()["clock_target"]
+
+
+def test_update_project_clear_clock_target():
+    pid = _create_project(name="clock-clear")
+    client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"clock_target": "2025-01-15T00:00:00Z"},
+    )
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"clock_target": None},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["clock_target"] is None
+
+
+# ---------------------------------------------------------------------------
+# Project PATCH — host_type
+# ---------------------------------------------------------------------------
+def test_update_project_host_type():
+    pid = _create_project(name="host-type-update")
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"host_type": "dedicated"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["host_type"] == "dedicated"
+
+
+# ---------------------------------------------------------------------------
+# Project PATCH — poweroff_mode
+# ---------------------------------------------------------------------------
+def test_update_project_poweroff_mode():
+    pid = _create_project(name="poweroff-update")
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"poweroff_mode": "parallel"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["poweroff_mode"] == "parallel"
+
+
+# ---------------------------------------------------------------------------
+# from-template with template_yaml (inline) — validation
+# ---------------------------------------------------------------------------
+def test_from_template_invalid_bmc_ip():
+    """from-template rejects invalid bastion BMC IP."""
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_yaml": {
+                "vms": {"vm1": {"vcpus": 2, "ram": 4096}},
+                "networks": {"net1": {"cidr": "192.168.1.0/24"}},
+            },
+            "bastion_bmc_ip": "not-an-ip",
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid bastion BMC IP" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Exec with method param — validation
+# ---------------------------------------------------------------------------
+def test_exec_vm_stopped_state_allowed():
+    """Exec is allowed on stopped projects (should pass state check)."""
+    pid, _ = _create_project_with_host(name="exec-stopped-proj", state="stopped")
+    fake_vm = str(uuid.uuid4())
+    # Will fail at troshkad level (503) since there's no real host
+    # but should pass the state validation
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "echo test", "method": "guest-agent"},
+    )
+    # We expect 503 (troshkad unreachable), not 409 (state check)
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Host with missing private_key/ip — _get_project_and_host
+# ---------------------------------------------------------------------------
+def test_vm_op_host_no_ip():
+    """VM operations return 503 if host has no IP address."""
+    hid = _create_host(ip_address=None, private_key="some-key")
+    pid = _create_project(name="vm-op-host-no-ip", state="active", host_id=hid)
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/stop")
+    assert resp.status_code == 503
+    assert "Host not available" in resp.json()["detail"]
+
+
+def test_vm_op_host_no_private_key():
+    """VM operations return 503 if host has no private key."""
+    hid = _create_host(private_key=None, ip_address="10.0.0.3")
+    pid = _create_project(name="vm-op-host-no-key", state="active", host_id=hid)
+    fake_vm = str(uuid.uuid4())
+    resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/status")
+    assert resp.status_code == 503
+    assert "Host not available" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Import template — with inline template_yaml containing vms + networks
+# ---------------------------------------------------------------------------
+def test_import_template_valid():
+    """Import a minimal valid template into a draft project."""
+    pid = _create_project(name="import-valid")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "vms": {
+                    "vm1": {
+                        "vcpus": 2,
+                        "ram": 4096,
+                        "disks": [{"name": "disk1", "size": 20}],
+                    }
+                },
+                "networks": {"net1": {"cidr": "192.168.1.0/24"}},
+            }
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["topology"] is not None
+    assert len(data["topology"]["nodes"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Deploy progress — with different project states
+# ---------------------------------------------------------------------------
+def test_get_deploy_progress_active():
+    pid = _create_project(name="progress-active", state="active")
+    resp = client.get(f"/api/v1/projects/{pid}/deploy-progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "active"
+
+
+def test_get_deploy_progress_stopped():
+    pid = _create_project(name="progress-stopped", state="stopped")
+    resp = client.get(f"/api/v1/projects/{pid}/deploy-progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "stopped"
+
+
+def test_get_deploy_progress_deploying():
+    pid = _create_project(name="progress-deploying", state="deploying")
+    resp = client.get(f"/api/v1/projects/{pid}/deploy-progress")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "deploying"
+
+
+# ---------------------------------------------------------------------------
+# VM states — with topology nodes but no host
+# ---------------------------------------------------------------------------
+def test_vm_states_no_host_with_topology():
+    topo = {
+        "nodes": [
+            {"id": "v1", "type": "vmNode", "data": {"name": "vm1"}},
+            {"id": "v2", "type": "vmNode", "data": {"name": "vm2"}},
+        ],
+        "edges": [],
+    }
+    pid = _create_project(name="vm-states-topo", topology=topo)
+    resp = client.get(f"/api/v1/projects/{pid}/vm-states")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"states": {}}
+
+
+# ---------------------------------------------------------------------------
+# from-template with template_yaml — success path
+# ---------------------------------------------------------------------------
+def test_from_template_inline_yaml():
+    """from-template with inline template_yaml creates a project."""
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_yaml": {
+                "vms": {"vm1": {"vcpus": 2, "ram": 4096}},
+                "networks": {"net1": {"cidr": "192.168.1.0/24"}},
+            },
+            "name": f"inline-template-{uuid.uuid4().hex[:8]}",
+        },
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "id" in data
+    assert "name" in data
+
+
+# ---------------------------------------------------------------------------
+# Export — with deployed_topology (uses deployed over topology)
+# ---------------------------------------------------------------------------
+def test_export_template_with_clock_target():
+    """Export includes clock_target when set on project."""
+    import datetime
+
+    topo = {
+        "nodes": [
+            {"id": "v1", "type": "vmNode", "data": {"name": "vm-clock"}},
+        ],
+        "edges": [],
+    }
+    pid = _create_project(name="export-clock", topology=topo)
+    # Set clock_target via DB
+    db = TestSession()
+    project = db.query(Project).filter_by(id=pid).first()
+    project.clock_target = datetime.datetime(2025, 1, 15, tzinfo=datetime.UTC)
+    db.commit()
+    db.close()
+    resp = client.post(f"/api/v1/projects/{pid}/export-template")
+    assert resp.status_code == 200
+    assert "clock_target" in resp.text
+    assert "2025-01-15" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Topology update — single bastion browser OK
+# ---------------------------------------------------------------------------
+def test_update_topology_single_bastion_browser_ok():
+    """Topology with single bastion browser should succeed."""
+    pid = _create_project(name="bastion-single-ok")
+    topo = {
+        "nodes": [
+            {
+                "id": "v1",
+                "type": "vmNode",
+                "data": {"name": "vm1", "configureBastionBrowser": True},
+            },
+            {
+                "id": "v2",
+                "type": "vmNode",
+                "data": {"name": "vm2", "configureBastionBrowser": False},
+            },
+        ],
+        "edges": [],
+    }
+    resp = client.patch(f"/api/v1/projects/{pid}", json={"topology": topo})
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Exec — method parameter variants
+# ---------------------------------------------------------------------------
+def test_exec_use_ssh_flag():
+    """use_ssh flag should be interpreted as method=ssh."""
+    pid, _ = _create_project_with_host(name="exec-use-ssh")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "whoami", "use_ssh": True},
+    )
+    # Should fail at troshkad level, not at validation
+    assert resp.status_code == 503
+
+
+def test_exec_console_text_method():
+    """console-text method should work (maps to console with force_tty)."""
+    pid, _ = _create_project_with_host(name="exec-console-text")
+    fake_vm = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{pid}/vms/{fake_vm}/exec",
+        json={"command": "whoami", "method": "console-text"},
+    )
+    # Should fail at troshkad level, not at validation
+    assert resp.status_code == 503

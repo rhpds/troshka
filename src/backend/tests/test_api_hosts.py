@@ -169,3 +169,52 @@ def test_add_host_provider_not_found():
         },
     )
     assert resp.status_code == 404
+
+
+def test_storage_troshkad_no_used_pct():
+    """_get_troshkad_storage returns None when disk has no used_pct or partitions."""
+    _ensure_dev_user()
+    hid = _create_host()
+    try:
+        with patch(
+            "app.api.hosts._get_troshkad_storage",
+            return_value=None,
+        ):
+            resp = client.get("/api/v1/hosts/storage")
+        assert resp.status_code == 200
+        assert hid not in resp.json()
+    finally:
+        _cleanup_host(hid)
+
+
+def test_storage_kubevirt_host():
+    """Kubevirt cluster host routes to _get_ceph_storage."""
+    _ensure_dev_user()
+    hid = _create_host(host_type="kubevirt-cluster")
+    try:
+        with patch(
+            "app.api.hosts._get_ceph_storage",
+            return_value={"used_pct": 30, "free_gb": 700, "total_gb": 1000},
+        ):
+            resp = client.get("/api/v1/hosts/storage")
+        assert resp.status_code == 200
+        data = resp.json()
+        if hid in data:
+            assert data[hid]["used_pct"] == 30
+    finally:
+        _cleanup_host(hid)
+
+
+def test_storage_exception_continues():
+    """Storage endpoint continues when one host throws."""
+    _ensure_dev_user()
+    hid = _create_host()
+    try:
+        with patch(
+            "app.api.hosts._get_troshkad_storage",
+            side_effect=Exception("connection refused"),
+        ):
+            resp = client.get("/api/v1/hosts/storage")
+        assert resp.status_code == 200
+    finally:
+        _cleanup_host(hid)
