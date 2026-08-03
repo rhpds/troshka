@@ -41,7 +41,7 @@ function ConsolePage() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
   const mountedRef = useRef(true);
-  const reconnectTimestamps = useRef<number[]>([]);
+  const disconnectCount = useRef(0);
 
   // Suppress noVNC async errors that Next.js dev mode catches
   useEffect(() => {
@@ -143,16 +143,20 @@ function ConsolePage() {
         _activeToken = wsUrl;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
-      r.addEventListener("disconnect", () => {
+      r.addEventListener("disconnect", (ev: Record<string, unknown>) => {
         _activeRfb = null;
         _activeToken = null;
         if (!mountedRef.current) return;
         if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
-        const now = Date.now();
-        const recent = reconnectTimestamps.current.filter((t) => now - t < 15000);
-        recent.push(now);
-        reconnectTimestamps.current = recent;
-        if (recent.length > 3) {
+        const detail = ev.detail as { clean?: boolean; reason?: string } | undefined;
+        const reason = detail?.reason || "";
+        if (reason.includes("Superseded") || reason.includes("4010")) {
+          setStatus("Connected in another tab");
+          setWsUrl(null);
+          return;
+        }
+        disconnectCount.current += 1;
+        if (disconnectCount.current > 3) {
           setStatus("Connection interrupted");
           setWsUrl(null);
           return;
@@ -640,18 +644,18 @@ function ConsolePage() {
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
-            pointerEvents: displayStatus === "Connection interrupted" ? "auto" : "none",
+            pointerEvents: (displayStatus === "Connection interrupted" || displayStatus === "Connected in another tab") ? "auto" : "none",
           }}>
-            {displayStatus === "Connection interrupted" ? (
+            {(displayStatus === "Connection interrupted" || displayStatus === "Connected in another tab") ? (
               <>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={displayStatus === "Connected in another tab" ? "#fbbf24" : "#ef4444"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" />
                   <line x1="8" y1="21" x2="16" y2="21" />
                   <line x1="12" y1="17" x2="12" y2="21" />
                 </svg>
-                <span style={{ fontSize: 13 }}>Connection interrupted</span>
+                <span style={{ fontSize: 13, color: displayStatus === "Connected in another tab" ? "#fbbf24" : undefined }}>{displayStatus}</span>
                 <button
-                  onClick={() => { reconnectTimestamps.current = []; pollForPort(); }}
+                  onClick={() => { disconnectCount.current = 0; pollForPort(); }}
                   style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #555", background: "rgba(255,255,255,0.08)", color: "#fff", cursor: "pointer", fontSize: 13 }}
                 >
                   Reconnect
