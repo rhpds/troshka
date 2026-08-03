@@ -131,18 +131,7 @@ class KubeVirtDriver:
             body={"spec": {"running": running}},
         )
 
-    def _wait_for_pending_vmedia(self, identity):
-        """Block until any pending vmedia DV import is done."""
-        state = self._vmedia_state.get(identity)
-        if not state:
-            return
-        event = state.get("_dv_event")
-        if event and not event.is_set():
-            event.wait(timeout=_VMEDIA_POLL_TIMEOUT)
-
     def set_power_state(self, identity, state):
-        if state in ("On", "ForceOn"):
-            self._wait_for_pending_vmedia(identity)
         running = state in ("On", "ForceOn")
         self._patch_vm_running(identity, running)
         if state in ("ForceOff", "GracefulShutdown"):
