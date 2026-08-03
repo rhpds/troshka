@@ -1,4 +1,5 @@
 """Tests for BMC entrypoint (Redfish emulator)."""
+
 import base64
 import json
 import os
@@ -11,9 +12,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "images", "bmc"
 
 # Must mock KubeVirtDriver before importing entrypoint
 _mock_driver = MagicMock()
-with patch.dict(sys.modules, {"kubevirt_driver": MagicMock(KubeVirtDriver=lambda: _mock_driver)}):
+with patch.dict(
+    sys.modules, {"kubevirt_driver": MagicMock(KubeVirtDriver=lambda: _mock_driver)}
+):
     os.environ.setdefault("SUSHY_PASSWORD", "test-pass")
     import entrypoint
+
     entrypoint.driver = _mock_driver
 
 
@@ -104,6 +108,7 @@ class TestRedfishDoGet:
         _mock_driver.get_total_memory.return_value = 4096
         _mock_driver.get_total_cpus.return_value = 4
         _mock_driver.get_boot_override_enabled.return_value = "Continuous"
+        _mock_driver.get_uuid.return_value = "550e8400-e29b-41d4-a716-446655440000"
 
         handler = _make_handler("GET", "/redfish/v1/Systems/vm-1")
         entrypoint.RedfishHandler.do_GET(handler)
@@ -118,11 +123,31 @@ class TestRedfishDoGet:
         entrypoint.RedfishHandler.do_GET(handler)
         handler.send_response.assert_called_with(404)
 
-    def test_unauthorized(self):
+    def test_service_root_no_auth_required(self):
         handler = _make_handler("GET", "/redfish/v1", auth=False)
         handler.headers["Authorization"] = ""
         entrypoint.RedfishHandler.do_GET(handler)
+        written = handler.wfile.write.call_args[0][0]
+        data = json.loads(written)
+        assert data["Id"] == "RootService"
+
+    def test_systems_list_no_auth_required(self):
+        _mock_driver.get_systems.return_value = ["vm-1"]
+        handler = _make_handler("GET", "/redfish/v1/Systems", auth=False)
+        handler.headers["Authorization"] = ""
+        entrypoint.RedfishHandler.do_GET(handler)
+        written = handler.wfile.write.call_args[0][0]
+        data = json.loads(written)
+        assert data["Members@odata.count"] == 1
+
+    def test_system_detail_unauthorized(self):
+        handler = _make_handler("GET", "/redfish/v1/Systems/vm-1", auth=False)
+        handler.headers["Authorization"] = ""
+        entrypoint.RedfishHandler.do_GET(handler)
         handler.send_response.assert_called_with(401)
+        written = handler.wfile.write.call_args[0][0]
+        data = json.loads(written)
+        assert "Authentication required" in data["error"]["message"]
 
 
 # ── RedfishHandler.do_PATCH tests ──
@@ -130,10 +155,17 @@ class TestRedfishDoGet:
 
 class TestRedfishDoPatch:
     def test_set_boot_device(self):
-        body = {"Boot": {"BootSourceOverrideTarget": "Pxe", "BootSourceOverrideEnabled": "Once"}}
+        body = {
+            "Boot": {
+                "BootSourceOverrideTarget": "Pxe",
+                "BootSourceOverrideEnabled": "Once",
+            }
+        }
         handler = _make_handler("PATCH", "/redfish/v1/Systems/vm-1", body)
         entrypoint.RedfishHandler.do_PATCH(handler)
-        _mock_driver.set_boot_device.assert_called_with("vm-1", "Pxe", boot_enabled="Once")
+        _mock_driver.set_boot_device.assert_called_with(
+            "vm-1", "Pxe", boot_enabled="Once"
+        )
         handler.send_response.assert_called_with(204)
 
     def test_patch_not_found(self):
@@ -415,12 +447,15 @@ class TestMainBlock:
 
         mock_kv = MagicMock(KubeVirtDriver=lambda: MagicMock())
 
-        with patch.dict(sys.modules, {"kubevirt_driver": mock_kv}), \
-             patch("http.server.HTTPServer", side_effect=[http_srv, https_srv]) as mock_httpd, \
-             patch("ssl.SSLContext") as mock_ctx_cls, \
-             patch("threading.Thread") as mock_thread_cls, \
-             patch("subprocess.run"), \
-             patch("builtins.print"):
+        with patch.dict(sys.modules, {"kubevirt_driver": mock_kv}), patch(
+            "http.server.HTTPServer", side_effect=[http_srv, https_srv]
+        ) as mock_httpd, patch("ssl.SSLContext") as mock_ctx_cls, patch(
+            "threading.Thread"
+        ) as mock_thread_cls, patch(
+            "subprocess.run"
+        ), patch(
+            "builtins.print"
+        ):
 
             ctx_instance = MagicMock()
             mock_ctx_cls.return_value = ctx_instance

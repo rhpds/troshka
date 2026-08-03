@@ -14,7 +14,15 @@ LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 
 _AUTH_REALM = 'Basic realm="Redfish"'
 _SYSTEMS_PREFIX = "/redfish/v1/Systems/"
-_NOT_FOUND_BODY = {"error": "Not found"}
+_NOT_FOUND_BODY = {"error": {"code": "Base.1.0.GeneralError", "message": "Not found"}}
+_AUTH_ERROR_BODY = {
+    "error": {
+        "code": "Base.1.0.GeneralError",
+        "message": "Authentication required",
+    }
+}
+
+_PUBLIC_PATHS = frozenset(["/redfish/v1", "/redfish/v1/Systems"])
 
 
 def _check_auth(handler):
@@ -25,6 +33,22 @@ def _check_auth(handler):
         return False
     decoded = base64.b64decode(auth[6:]).decode()
     return decoded == f"{USERNAME}:{PASSWORD}"
+
+
+def _require_auth(handler):
+    """Return True if auth passes. Send 401 JSON response and return False otherwise."""
+    if handler.path.rstrip("/") in _PUBLIC_PATHS:
+        return True
+    if _check_auth(handler):
+        return True
+    body = json.dumps(_AUTH_ERROR_BODY).encode()
+    handler.send_response(401)
+    handler.send_header("WWW-Authenticate", _AUTH_REALM)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+    return False
 
 
 def _send_json(handler, data, status=200):
@@ -38,10 +62,7 @@ def _send_json(handler, data, status=200):
 
 class RedfishHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if not _check_auth(self):
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", _AUTH_REALM)
-            self.end_headers()
+        if not _require_auth(self):
             return
 
         path = self.path.rstrip("/")
@@ -117,10 +138,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
         _send_json(self, _NOT_FOUND_BODY, 404)
 
     def do_PATCH(self):
-        if not _check_auth(self):
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", _AUTH_REALM)
-            self.end_headers()
+        if not _require_auth(self):
             return
 
         path = self.path.rstrip("/")
@@ -141,10 +159,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
         _send_json(self, _NOT_FOUND_BODY, 404)
 
     def do_POST(self):
-        if not _check_auth(self):
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", _AUTH_REALM)
-            self.end_headers()
+        if not _require_auth(self):
             return
 
         path = self.path.rstrip("/")
