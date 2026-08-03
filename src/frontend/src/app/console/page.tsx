@@ -41,7 +41,6 @@ function ConsolePage() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const RFBClass = useRef<unknown>(null);
   const mountedRef = useRef(true);
-  const disconnectCount = useRef(0);
 
   // Suppress noVNC async errors that Next.js dev mode catches
   useEffect(() => {
@@ -95,12 +94,17 @@ function ConsolePage() {
   }, [projectId, vmId]);
 
   // Fetch console WebSocket URL from API, retry if VM not running
-  const fetchConsoleUrl = useCallback(async (): Promise<string | null> => {
+  const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<string | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
-      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console`);
+      const q = force ? "?force=true" : "";
+      const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
+      if (data.in_use) {
+        setStatus("Console in use by another session");
+        return null;
+      }
       if (data.ws_url) return data.ws_url;
     } catch { /* ignore */ }
     return null;
@@ -143,24 +147,11 @@ function ConsolePage() {
         _activeToken = wsUrl;
         if (mountedRef.current) { startingRef.current = false; setStatus("Connected"); }
       });
-      r.addEventListener("disconnect", (ev: Record<string, unknown>) => {
+      r.addEventListener("disconnect", () => {
         _activeRfb = null;
         _activeToken = null;
         if (!mountedRef.current) return;
         if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
-        const detail = ev.detail as { clean?: boolean; reason?: string } | undefined;
-        const reason = detail?.reason || "";
-        if (reason.includes("in use") || reason.includes("Superseded") || reason.includes("4010")) {
-          setStatus("Console in use by another session");
-          setWsUrl(null);
-          return;
-        }
-        disconnectCount.current += 1;
-        if (disconnectCount.current > 3) {
-          setStatus("Connection interrupted");
-          setWsUrl(null);
-          return;
-        }
         setStatus("Reconnecting...");
         setWsUrl(null);
         reconnectTimer.current = setTimeout(pollForPort, 3000);
@@ -644,21 +635,21 @@ function ConsolePage() {
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
-            pointerEvents: (displayStatus === "Connection interrupted" || displayStatus === "Console in use by another session") ? "auto" : "none",
+            pointerEvents: displayStatus === "Console in use by another session" ? "auto" : "none",
           }}>
-            {(displayStatus === "Connection interrupted" || displayStatus === "Console in use by another session") ? (
+            {displayStatus === "Console in use by another session" ? (
               <>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={displayStatus === "Console in use by another session" ? "#fbbf24" : "#ef4444"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" />
                   <line x1="8" y1="21" x2="16" y2="21" />
                   <line x1="12" y1="17" x2="12" y2="21" />
                 </svg>
-                <span style={{ fontSize: 13, color: displayStatus === "Console in use by another session" ? "#fbbf24" : undefined }}>{displayStatus}</span>
+                <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
                 <button
-                  onClick={() => { disconnectCount.current = 0; pollForPort(); }}
-                  style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #555", background: "rgba(255,255,255,0.08)", color: "#fff", cursor: "pointer", fontSize: 13 }}
+                  onClick={() => { fetchConsoleUrl(true).then((url) => { if (url) setWsUrl(url); }); }}
+                  style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #ef4444", background: "rgba(239,68,68,0.15)", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
                 >
-                  Reconnect
+                  Force Connect
                 </button>
               </>
             ) : startingRef.current ? (

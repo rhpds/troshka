@@ -37,7 +37,12 @@ def build_vnc_proxy_deployment(project_name, namespace, owner_body=None):
                                 {
                                     "containerPort": 8080,
                                     "protocol": "TCP",
-                                }
+                                },
+                                {
+                                    "containerPort": 8081,
+                                    "protocol": "TCP",
+                                    "name": "status",
+                                },
                             ],
                             "env": [
                                 {"name": "NAMESPACE", "value": namespace},
@@ -70,7 +75,10 @@ def build_vnc_service(project_name, namespace, owner_body=None):
         },
         "spec": {
             "type": "ClusterIP",
-            "ports": [{"port": 8080, "targetPort": 8080, "protocol": "TCP"}],
+            "ports": [
+                {"port": 8080, "targetPort": 8080, "protocol": "TCP"},
+                {"port": 8081, "targetPort": 8081, "protocol": "TCP", "name": "status"},
+            ],
             "selector": {"app": f"vnc-proxy-{project_name}"},
         },
     }

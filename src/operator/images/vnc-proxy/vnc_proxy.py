@@ -187,7 +187,54 @@ async def _proxy(ws_client: Any) -> None:
             _active_sessions.pop(vm_name, None)
 
 
+STATUS_PORT = int(os.environ.get("STATUS_PORT", "8081"))
+
+
+async def _handle_status(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """HTTP endpoint: GET /active/{vm_name} → 200 if in use, 404 if free."""
+    try:
+        request_line = await asyncio.wait_for(reader.readline(), timeout=5)
+        parts = request_line.decode().strip().split()
+        path = parts[1] if len(parts) > 1 else "/"
+        while True:
+            line = await asyncio.wait_for(reader.readline(), timeout=5)
+            if line == b"\r\n" or line == b"\n" or not line:
+                break
+
+        if path.startswith("/active/"):
+            vm_name = path[8:]
+            if vm_name in _active_sessions:
+                body = b'{"in_use":true}'
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + body)
+            else:
+                body = b'{"in_use":false}'
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n" + body)
+        elif path.startswith("/kick/"):
+            vm_name = path[6:]
+            ws = _active_sessions.pop(vm_name, None)
+            if ws:
+                try:
+                    asyncio.ensure_future(ws.close(4010, "Kicked"))
+                except Exception:
+                    pass
+                logger.info(f"Kicked session for {vm_name}")
+                body = b'{"kicked":true}'
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + body)
+            else:
+                body = b'{"kicked":false}'
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n" + body)
+        else:
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"active\":" + str(len(_active_sessions)).encode() + b"}")
+    except Exception:
+        pass
+    finally:
+        writer.close()
+
+
 async def main() -> None:
+    status_server = await asyncio.start_server(_handle_status, "0.0.0.0", STATUS_PORT)
+    logger.info(f"VNC status endpoint on port {STATUS_PORT}")
+
     async with websockets.serve(
         _proxy,
         "0.0.0.0",
@@ -198,7 +245,8 @@ async def main() -> None:
         compression=None,
     ):
         logger.info(f"VNC proxy listening on port {LISTEN_PORT}")
-        await asyncio.Future()
+        async with status_server:
+            await asyncio.Future()
 
 
 if __name__ == "__main__":
