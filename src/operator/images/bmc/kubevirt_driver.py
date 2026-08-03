@@ -402,6 +402,8 @@ class KubeVirtDriver:
         self.eject_image(identity)
         self._cleanup_stale_vmedia(identity, dv_name)
 
+        proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
+
         dv_spec = {
             "apiVersion": f"{_CDI_API_GROUP}/{_CDI_API_VERSION}",
             "kind": "DataVolume",
