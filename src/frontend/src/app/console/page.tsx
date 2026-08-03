@@ -93,7 +93,8 @@ function ConsolePage() {
       .catch(() => {});
   }, [projectId, vmId]);
 
-  // Fetch console WebSocket URL from API, retry if VM not running
+  // Fetch console WebSocket URL from API
+  // Returns ws_url string, "IN_USE" sentinel, or null (VM not ready)
   const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<string | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
@@ -101,10 +102,7 @@ function ConsolePage() {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
-      if (data.in_use) {
-        setStatus("Console in use by another session");
-        return null;
-      }
+      if (data.in_use) return "IN_USE";
       if (data.ws_url) return data.ws_url;
     } catch { /* ignore */ }
     return null;
@@ -113,10 +111,14 @@ function ConsolePage() {
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleUrl().then((url) => {
+    fetchConsoleUrl().then((result) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (url) {
-        setWsUrl(url);
+      if (result === "IN_USE") {
+        setStatus("Console in use by another session");
+        return;
+      }
+      if (result) {
+        setWsUrl(result);
       } else {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
       }
