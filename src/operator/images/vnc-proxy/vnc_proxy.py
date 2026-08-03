@@ -82,13 +82,14 @@ async def _proxy(ws_client: Any) -> None:
     vm_name = parts[0]
     logger.info(f"VNC client connecting for {vm_name}")
 
-    old_ws = _active_sessions.get(vm_name)
-    if old_ws:
-        logger.info(f"Superseding existing session for {vm_name}")
+    existing = _active_sessions.get(vm_name)
+    if existing:
+        logger.info(f"Rejecting connection for {vm_name} — already in use")
         try:
-            await old_ws.close(4010, "Superseded")
+            await ws_client.close(4010, "Console in use by another session")
         except Exception:
             pass
+        return
 
     _active_sessions[vm_name] = ws_client
 

@@ -150,8 +150,8 @@ function ConsolePage() {
         if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
         const detail = ev.detail as { clean?: boolean; reason?: string } | undefined;
         const reason = detail?.reason || "";
-        if (reason.includes("Superseded") || reason.includes("4010")) {
-          setStatus("Connected in another tab");
+        if (reason.includes("in use") || reason.includes("Superseded") || reason.includes("4010")) {
+          setStatus("Console in use by another session");
           setWsUrl(null);
           return;
         }
@@ -644,16 +644,16 @@ function ConsolePage() {
             position: "absolute", inset: 0,
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: "#000", color: "#555", gap: 12,
-            pointerEvents: (displayStatus === "Connection interrupted" || displayStatus === "Connected in another tab") ? "auto" : "none",
+            pointerEvents: (displayStatus === "Connection interrupted" || displayStatus === "Console in use by another session") ? "auto" : "none",
           }}>
-            {(displayStatus === "Connection interrupted" || displayStatus === "Connected in another tab") ? (
+            {(displayStatus === "Connection interrupted" || displayStatus === "Console in use by another session") ? (
               <>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={displayStatus === "Connected in another tab" ? "#fbbf24" : "#ef4444"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke={displayStatus === "Console in use by another session" ? "#fbbf24" : "#ef4444"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" />
                   <line x1="8" y1="21" x2="16" y2="21" />
                   <line x1="12" y1="17" x2="12" y2="21" />
                 </svg>
-                <span style={{ fontSize: 13, color: displayStatus === "Connected in another tab" ? "#fbbf24" : undefined }}>{displayStatus}</span>
+                <span style={{ fontSize: 13, color: displayStatus === "Console in use by another session" ? "#fbbf24" : undefined }}>{displayStatus}</span>
                 <button
                   onClick={() => { disconnectCount.current = 0; pollForPort(); }}
                   style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #555", background: "rgba(255,255,255,0.08)", color: "#fff", cursor: "pointer", fontSize: 13 }}
