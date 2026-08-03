@@ -2,14 +2,16 @@
 set -euo pipefail
 
 # Full deploy cycle: push → wait CI → promote → restart operators → wait ArgoCD
-# Usage: scripts/deploy-full.sh [--skip-push] [--skip-operators]
+# Usage: scripts/deploy-full.sh [--skip-push] [--skip-operators] [--skip-project-pods]
 
 SKIP_PUSH=false
 SKIP_OPERATORS=false
+SKIP_PROJECT_PODS=false
 for arg in "$@"; do
   case "$arg" in
     --skip-push) SKIP_PUSH=true ;;
     --skip-operators) SKIP_OPERATORS=true ;;
+    --skip-project-pods) SKIP_PROJECT_PODS=true ;;
   esac
 done
 
@@ -35,6 +37,12 @@ echo ""
 echo "=== Step 3: Promote images ==="
 ./scripts/promote-to-production.sh | grep -E "^  |^Done"
 
+OPERATOR_KUBECONFIGS=()
+for kc in ~/secrets/ocpv{01,03,05,06,07,08,09,10}*.kubeconfig; do
+  [ -f "$kc" ] && OPERATOR_KUBECONFIGS+=("$kc")
+done
+OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig")
+
 if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
   echo "=== Step 4: Restart stale operators ==="
@@ -47,12 +55,6 @@ if [ "$SKIP_OPERATORS" = false ]; then
   else
     echo "  Production digest: ${EXPECTED_DIGEST:0:19}..."
   fi
-
-  OPERATOR_KUBECONFIGS=()
-  for kc in ~/secrets/ocpv{01,03,05,06,07,08,09,10}*.kubeconfig; do
-    [ -f "$kc" ] && OPERATOR_KUBECONFIGS+=("$kc")
-  done
-  OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig")
 
   RESTARTED_CLUSTERS=()
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
@@ -97,6 +99,9 @@ if [ "$SKIP_OPERATORS" = false ]; then
       fi
     done
   fi
+fi
+
+if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
   echo ""
   echo "=== Step 4b: Restart stale per-project pods ==="
 

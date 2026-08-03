@@ -94,7 +94,6 @@ function ConsolePage() {
   }, [projectId, vmId]);
 
   // Fetch console WebSocket URL from API
-  // Returns ws_url string, "IN_USE" sentinel, or null (VM not ready)
   const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<string | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
@@ -102,28 +101,58 @@ function ConsolePage() {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
-      if (data.in_use) return "IN_USE";
       if (data.ws_url) return data.ws_url;
     } catch { /* ignore */ }
     return null;
   }, [projectId, vmId, projectDeleted]);
 
+  // Pre-flight: open a plain WebSocket to check if session is available
+  // If proxy rejects with 4010, the session is in use — no noVNC needed
+  const preflightCheck = useCallback((url: string): Promise<"ok" | "in_use" | "error"> => {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(url);
+      const timer = setTimeout(() => {
+        ws.close();
+        resolve("ok");
+      }, 800);
+      ws.onclose = (e) => {
+        clearTimeout(timer);
+        if (e.code === 4010) {
+          resolve("in_use");
+        } else {
+          resolve("error");
+        }
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        resolve("error");
+      };
+    });
+  }, []);
+
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleUrl().then((result) => {
+    fetchConsoleUrl().then((url) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (result === "IN_USE") {
-        setStatus("Console in use by another session");
+      if (!url) {
+        reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      if (result) {
-        setWsUrl(result);
-      } else {
-        reconnectTimer.current = setTimeout(pollForPort, 3000);
-      }
+      preflightCheck(url).then((result) => {
+        if (!mountedRef.current) return;
+        if (result === "in_use") {
+          setStatus("Console in use by another session");
+          return;
+        }
+        if (result === "ok") {
+          setWsUrl(url);
+        } else {
+          reconnectTimer.current = setTimeout(pollForPort, 3000);
+        }
+      });
     });
-  }, [fetchConsoleUrl, projectDeleted]);
+  }, [fetchConsoleUrl, preflightCheck, projectDeleted]);
 
   const createRfb = useCallback(() => {
     if (!wsUrl || !canvasRef.current || !RFBClass.current || !mountedRef.current) return;
@@ -648,7 +677,7 @@ function ConsolePage() {
                 </svg>
                 <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
                 <button
-                  onClick={() => { fetchConsoleUrl(true).then((url) => { if (url) setWsUrl(url); }); }}
+                  onClick={() => { fetchConsoleUrl().then((url) => { if (url) setWsUrl(url); }); }}
                   style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #ef4444", background: "rgba(239,68,68,0.15)", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
                 >
                   Force Connect
