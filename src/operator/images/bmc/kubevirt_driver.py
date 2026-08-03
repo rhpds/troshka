@@ -352,14 +352,55 @@ class KubeVirtDriver:
     def get_vmedia_state(self, identity):
         return self._vmedia_state.get(identity, {})
 
+    def _cleanup_stale_vmedia(self, identity, dv_name):
+        """Remove leftover DV and CDROM from a previous attempt."""
+        try:
+            self.custom_api.delete_namespaced_custom_object(
+                group=_CDI_API_GROUP,
+                version=_CDI_API_VERSION,
+                namespace=self.namespace,
+                plural=_DV_PLURAL,
+                name=dv_name,
+            )
+            time.sleep(2)
+        except Exception:
+            pass
+
+        try:
+            name = self._kv_name(identity)
+            vm = self._get_vm(identity)
+            volumes = vm.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])  # type: ignore[union-attr]
+            disks = vm.get("spec", {}).get("template", {}).get("spec", {}).get("domain", {}).get("devices", {}).get("disks", [])  # type: ignore[union-attr]
+            new_volumes = [v for v in volumes if v.get("name") != _VMEDIA_VOL_NAME]
+            new_disks = [d for d in disks if d.get("name") != _VMEDIA_VOL_NAME]
+            if len(new_volumes) != len(volumes) or len(new_disks) != len(disks):
+                self.custom_api.patch_namespaced_custom_object(
+                    group=_KUBEVIRT_API_GROUP,
+                    version=_KUBEVIRT_API_VERSION,
+                    namespace=self.namespace,
+                    plural=_VM_PLURAL,
+                    name=name,
+                    body={
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "volumes": new_volumes,
+                                    "domain": {"devices": {"disks": new_disks}},
+                                }
+                            }
+                        }
+                    },
+                )
+        except Exception:
+            pass
+
     def insert_image(self, identity, image_url, proxy_base_url):
         """Create a CDI DataVolume from the proxy URL and attach as CDROM."""
         name = self._kv_name(identity)
         dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
 
         self.eject_image(identity)
-
-        proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
+        self._cleanup_stale_vmedia(identity, dv_name)
 
         dv_spec = {
             "apiVersion": f"{_CDI_API_GROUP}/{_CDI_API_VERSION}",
