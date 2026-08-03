@@ -2,7 +2,9 @@
 
 import json
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
+import urllib.request
+from http.server import BaseHTTPRequestHandler
 
 from kubevirt_driver import KubeVirtDriver
 
@@ -14,6 +16,7 @@ LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 
 _AUTH_REALM = 'Basic realm="Redfish"'
 _SYSTEMS_PREFIX = "/redfish/v1/Systems/"
+_MANAGERS_PREFIX = "/redfish/v1/Managers/"
 _NOT_FOUND_BODY = {"error": {"code": "Base.1.0.GeneralError", "message": "Not found"}}
 _AUTH_ERROR_BODY = {
     "error": {
@@ -22,7 +25,9 @@ _AUTH_ERROR_BODY = {
     }
 }
 
-_PUBLIC_PATHS = frozenset(["/redfish/v1", "/redfish/v1/Systems"])
+_PUBLIC_PATHS = frozenset(
+    ["/redfish/v1", "/redfish/v1/Systems", "/redfish/v1/Managers"]
+)
 
 
 def _check_auth(handler):
@@ -37,7 +42,8 @@ def _check_auth(handler):
 
 def _require_auth(handler):
     """Return True if auth passes. Send 401 JSON response and return False otherwise."""
-    if handler.path.rstrip("/") in _PUBLIC_PATHS:
+    path = handler.path.rstrip("/")
+    if path in _PUBLIC_PATHS or path.startswith("/vmedia/"):
         return True
     if _check_auth(handler):
         return True
@@ -60,6 +66,16 @@ def _send_json(handler, data, status=200):
     handler.wfile.write(body)
 
 
+def _get_pod_ip():
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except Exception:
+        return "127.0.0.1"
+
+
+_POD_IP = _get_pod_ip()
+
+
 class RedfishHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not _require_auth(self):
@@ -67,6 +83,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
 
         path = self.path.rstrip("/")
 
+        # ── Service Root ──
         if path == "/redfish/v1":
             _send_json(
                 self,
@@ -75,10 +92,12 @@ class RedfishHandler(BaseHTTPRequestHandler):
                     "Id": "RootService",
                     "Name": "Troshka Redfish Service",
                     "Systems": {"@odata.id": "/redfish/v1/Systems"},
+                    "Managers": {"@odata.id": "/redfish/v1/Managers"},
                 },
             )
             return
 
+        # ── Systems Collection ──
         if path == _SYSTEMS_PREFIX.rstrip("/"):
             systems = driver.get_systems()
             members = [{"@odata.id": f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
@@ -93,6 +112,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # ── System Detail ──
         if path.startswith(_SYSTEMS_PREFIX):
             identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
 
@@ -119,6 +139,11 @@ class RedfishHandler(BaseHTTPRequestHandler):
                             "BootSourceOverrideTarget": boot_dev,
                             "BootSourceOverrideMode": boot_mode,
                         },
+                        "Links": {
+                            "ManagedBy": [
+                                {"@odata.id": f"{_MANAGERS_PREFIX}{identity}"}
+                            ]
+                        },
                         "Actions": {
                             "#ComputerSystem.Reset": {
                                 "target": f"{_SYSTEMS_PREFIX}{identity}/Actions/ComputerSystem.Reset",
@@ -134,6 +159,117 @@ class RedfishHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+
+        # ── Managers Collection ──
+        if path == _MANAGERS_PREFIX.rstrip("/"):
+            systems = driver.get_systems()
+            members = [{"@odata.id": f"{_MANAGERS_PREFIX}{s}"} for s in systems]
+            _send_json(
+                self,
+                {
+                    "@odata.type": "#ManagerCollection.ManagerCollection",
+                    "Name": "Manager Collection",
+                    "Members": members,
+                    "Members@odata.count": len(members),
+                },
+            )
+            return
+
+        # ── Manager Detail / VirtualMedia ──
+        if path.startswith(_MANAGERS_PREFIX):
+            parts = path[len(_MANAGERS_PREFIX) :].split("/")
+            identity = parts[0]
+            sub = "/".join(parts[1:]) if len(parts) > 1 else ""
+
+            if not sub:
+                _send_json(
+                    self,
+                    {
+                        "@odata.type": "#Manager.v1_0_0.Manager",
+                        "Id": identity,
+                        "Name": f"Manager for {identity}",
+                        "ManagerType": "BMC",
+                        "VirtualMedia": {
+                            "@odata.id": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia"
+                        },
+                        "Links": {
+                            "ManagerForServers": [
+                                {"@odata.id": f"{_SYSTEMS_PREFIX}{identity}"}
+                            ]
+                        },
+                    },
+                )
+                return
+
+            if sub == "VirtualMedia":
+                _send_json(
+                    self,
+                    {
+                        "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
+                        "Name": "Virtual Media Collection",
+                        "Members": [
+                            {
+                                "@odata.id": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"
+                            }
+                        ],
+                        "Members@odata.count": 1,
+                    },
+                )
+                return
+
+            if sub == "VirtualMedia/Cd":
+                state = driver.get_vmedia_state(identity)
+                _send_json(
+                    self,
+                    {
+                        "@odata.type": "#VirtualMedia.v1_0_0.VirtualMedia",
+                        "Id": "Cd",
+                        "Name": "Virtual CD",
+                        "MediaTypes": ["CD", "DVD"],
+                        "Image": state.get("url", ""),
+                        "Inserted": state.get("inserted", False),
+                        "WriteProtected": True,
+                        "Actions": {
+                            "#VirtualMedia.InsertMedia": {
+                                "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia"
+                            },
+                            "#VirtualMedia.EjectMedia": {
+                                "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia"
+                            },
+                        },
+                    },
+                )
+                return
+
+        # ── Virtual Media Download Proxy ──
+        if path.startswith("/vmedia/download/"):
+            identity = path.split("/vmedia/download/")[1]
+            state = driver.get_vmedia_state(identity)
+            url = state.get("url", "") if state else ""
+            if not url:
+                _send_json(self, _NOT_FOUND_BODY, 404)
+                return
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=300) as resp:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    length = resp.headers.get("Content-Length")
+                    if length:
+                        self.send_header("Content-Length", length)
+                    self.end_headers()
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except Exception as e:
+                _send_json(
+                    self,
+                    {"error": {"code": "Base.1.0.GeneralError", "message": str(e)}},
+                    502,
+                )
+            return
 
         _send_json(self, _NOT_FOUND_BODY, 404)
 
@@ -174,6 +310,61 @@ class RedfishHandler(BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+
+        # ── VirtualMedia Actions ──
+        if path.startswith(_MANAGERS_PREFIX) and "VirtualMedia/Cd/Actions/" in path:
+            parts = path[len(_MANAGERS_PREFIX) :].split("/")
+            identity = parts[0]
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+
+            if path.endswith("VirtualMedia.InsertMedia"):
+                image_url = body.get("Image", "")
+                if not image_url:
+                    _send_json(
+                        self,
+                        {
+                            "error": {
+                                "code": "Base.1.0.GeneralError",
+                                "message": "Image URL is required",
+                            }
+                        },
+                        400,
+                    )
+                    return
+                proxy_base = f"http://{_POD_IP}:{LISTEN_PORT}"
+                driver._vmedia_state[identity] = {
+                    "url": image_url,
+                    "inserted": False,
+                    "dv_name": "",
+                }
+                try:
+                    driver.insert_image(identity, image_url, proxy_base)
+                except Exception as e:
+                    driver._vmedia_state.pop(identity, None)
+                    _send_json(
+                        self,
+                        {
+                            "error": {
+                                "code": "Base.1.0.GeneralError",
+                                "message": str(e),
+                            }
+                        },
+                        500,
+                    )
+                    return
+                self.send_response(204)
+                self.end_headers()
+                return
+
+            if path.endswith("VirtualMedia.EjectMedia"):
+                try:
+                    driver.eject_image(identity)
+                except Exception:
+                    pass
+                self.send_response(204)
+                self.end_headers()
+                return
 
         _send_json(self, _NOT_FOUND_BODY, 404)
 
@@ -236,19 +427,18 @@ def _configure_network():
 if __name__ == "__main__":
     import ssl
     import threading
+    from http.server import ThreadingHTTPServer
 
     _configure_network()
 
-    # HTTP server on existing port (default 8000)
-    http_server = HTTPServer(("0.0.0.0", LISTEN_PORT), RedfishHandler)
+    http_server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), RedfishHandler)
 
-    # HTTPS server on port 8443
     ssl_port = int(os.environ.get("SUSHY_SSL_PORT", "8443"))
     cert_path = "/tmp/sushy.crt"
     key_path = "/tmp/sushy.key"
     _generate_self_signed_cert(cert_path, key_path)
 
-    https_server = HTTPServer(("0.0.0.0", ssl_port), RedfishHandler)
+    https_server = ThreadingHTTPServer(("0.0.0.0", ssl_port), RedfishHandler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert_path, key_path)
     https_server.socket = ctx.wrap_socket(https_server.socket, server_side=True)

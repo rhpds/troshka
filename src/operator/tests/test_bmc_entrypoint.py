@@ -15,6 +15,7 @@ _mock_driver = MagicMock()
 with patch.dict(
     sys.modules, {"kubevirt_driver": MagicMock(KubeVirtDriver=lambda: _mock_driver)}
 ):
+    os.environ.setdefault("SUSHY_USERNAME", "test-user")
     os.environ.setdefault("SUSHY_PASSWORD", "test-pass")
     import entrypoint
 
@@ -448,7 +449,7 @@ class TestMainBlock:
         mock_kv = MagicMock(KubeVirtDriver=lambda: MagicMock())
 
         with patch.dict(sys.modules, {"kubevirt_driver": mock_kv}), patch(
-            "http.server.HTTPServer", side_effect=[http_srv, https_srv]
+            "http.server.ThreadingHTTPServer", side_effect=[http_srv, https_srv]
         ) as mock_httpd, patch("ssl.SSLContext") as mock_ctx_cls, patch(
             "threading.Thread"
         ) as mock_thread_cls, patch(
@@ -490,3 +491,130 @@ class TestMainBlock:
 
             # HTTP serve_forever called (interrupted by KeyboardInterrupt)
             http_srv.serve_forever.assert_called_once()
+
+
+# ── Manager endpoints ──
+
+
+class TestManagerEndpoints:
+    def test_service_root_includes_managers(self):
+        handler = _make_handler("GET", "/redfish/v1")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Managers"]["@odata.id"] == "/redfish/v1/Managers"
+
+    def test_managers_collection(self):
+        _mock_driver.get_systems.return_value = ["vm-1", "vm-2"]
+        handler = _make_handler("GET", "/redfish/v1/Managers")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Members@odata.count"] == 2
+
+    def test_managers_collection_no_auth(self):
+        _mock_driver.get_systems.return_value = ["vm-1"]
+        handler = _make_handler("GET", "/redfish/v1/Managers", auth=False)
+        handler.headers["Authorization"] = ""
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Members@odata.count"] == 1
+
+    def test_manager_detail(self):
+        handler = _make_handler("GET", "/redfish/v1/Managers/vm-1")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["ManagerType"] == "BMC"
+        assert "VirtualMedia" in data
+
+    def test_system_detail_has_managed_by(self):
+        _mock_driver.get_power_state.return_value = "On"
+        _mock_driver.get_boot_device.return_value = "Hdd"
+        _mock_driver.get_boot_mode.return_value = "UEFI"
+        _mock_driver.get_total_memory.return_value = 4096
+        _mock_driver.get_total_cpus.return_value = 4
+        _mock_driver.get_boot_override_enabled.return_value = "Continuous"
+        _mock_driver.get_uuid.return_value = "test-uuid"
+        handler = _make_handler("GET", "/redfish/v1/Systems/vm-1")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Links"]["ManagedBy"][0]["@odata.id"] == "/redfish/v1/Managers/vm-1"
+
+
+# ── VirtualMedia endpoints ──
+
+
+class TestVirtualMediaEndpoints:
+    def test_vmedia_collection(self):
+        handler = _make_handler("GET", "/redfish/v1/Managers/vm-1/VirtualMedia")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Members@odata.count"] == 1
+        assert "Cd" in data["Members"][0]["@odata.id"]
+
+    def test_vmedia_cd_detail_empty(self):
+        _mock_driver.get_vmedia_state.return_value = {}
+        handler = _make_handler("GET", "/redfish/v1/Managers/vm-1/VirtualMedia/Cd")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Inserted"] is False
+        assert data["Image"] == ""
+
+    def test_vmedia_cd_detail_inserted(self):
+        _mock_driver.get_vmedia_state.return_value = {
+            "url": "http://example.com/boot.iso",
+            "inserted": True,
+        }
+        handler = _make_handler("GET", "/redfish/v1/Managers/vm-1/VirtualMedia/Cd")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Inserted"] is True
+        assert data["Image"] == "http://example.com/boot.iso"
+
+    def test_insert_media(self):
+        _mock_driver.insert_image.return_value = None
+        _mock_driver._vmedia_state = {}
+        body = {"Image": "http://192.168.100.50/boot.iso"}
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Managers/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia",
+            body,
+        )
+        entrypoint.RedfishHandler.do_POST(handler)
+        _mock_driver.insert_image.assert_called_once()
+        handler.send_response.assert_called_with(204)
+
+    def test_insert_media_no_url(self):
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Managers/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia",
+            {},
+        )
+        entrypoint.RedfishHandler.do_POST(handler)
+        handler.send_response.assert_called_with(400)
+
+    def test_eject_media(self):
+        _mock_driver.eject_image.return_value = None
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Managers/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia",
+        )
+        entrypoint.RedfishHandler.do_POST(handler)
+        _mock_driver.eject_image.assert_called_once_with("vm-1")
+        handler.send_response.assert_called_with(204)
+
+    def test_insert_media_unauthorized(self):
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Managers/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia",
+            {"Image": "http://example.com/boot.iso"},
+            auth=False,
+        )
+        handler.headers["Authorization"] = ""
+        entrypoint.RedfishHandler.do_POST(handler)
+        handler.send_response.assert_called_with(401)
+
+    def test_vmedia_download_no_auth_required(self):
+        _mock_driver.get_vmedia_state.return_value = None
+        handler = _make_handler("GET", "/vmedia/download/vm-1", auth=False)
+        handler.headers["Authorization"] = ""
+        entrypoint.RedfishHandler.do_GET(handler)
+        handler.send_response.assert_called_with(404)

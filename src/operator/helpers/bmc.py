@@ -28,6 +28,10 @@ def build_bmc_deployment(
         {"name": "SUSHY_LISTEN_PORT", "value": "8000"},
     ]
 
+    storage_class = os.environ.get("SUSHY_STORAGE_CLASS", "")
+    if storage_class:
+        env.append({"name": "SUSHY_STORAGE_CLASS", "value": storage_class})
+
     if bmc_ips:
         env.append({"name": "SUSHY_BMC_IPS", "value": ",".join(bmc_ips)})
 

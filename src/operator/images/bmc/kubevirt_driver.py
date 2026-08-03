@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 
 from kubernetes import client, config
 
@@ -10,13 +11,26 @@ _KUBEVIRT_API_VERSION = "v1"
 _VM_PLURAL = "virtualmachines"
 _VMI_PLURAL = "virtualmachineinstances"
 
+_CDI_API_GROUP = "cdi.kubevirt.io"
+_CDI_API_VERSION = "v1beta1"
+_DV_PLURAL = "datavolumes"
+
+_VMEDIA_VOL_NAME = "vmedia-cd"
+_VMEDIA_DV_SUFFIX = "-vmedia-cd"
+_VMEDIA_DV_SIZE = "5Gi"
+_VMEDIA_POLL_INTERVAL = 5
+_VMEDIA_POLL_TIMEOUT = 300
+
 
 class KubeVirtDriver:
     def __init__(self):
         config.load_incluster_config()
         self.custom_api = client.CustomObjectsApi()
+        self.core_api = client.CoreV1Api()
         self.namespace = os.environ.get("SUSHY_NAMESPACE", "default")
         self.vm_map = json.loads(os.environ.get("SUSHY_VM_MAP", "{}"))
+        self.storage_class = os.environ.get("SUSHY_STORAGE_CLASS", "")
+        self._vmedia_state = {}
 
     def _kv_name(self, identity):
         identity = identity.strip("/")
@@ -332,3 +346,171 @@ class KubeVirtDriver:
         for vm in vms.get("items", []):  # type: ignore[union-attr]
             systems.append(vm["metadata"]["uid"])
         return systems
+
+    # ── Virtual Media ──
+
+    def get_vmedia_state(self, identity):
+        return self._vmedia_state.get(identity, {})
+
+    def insert_image(self, identity, image_url, proxy_base_url):
+        """Create a CDI DataVolume from the proxy URL and attach as CDROM."""
+        name = self._kv_name(identity)
+        dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
+
+        self.eject_image(identity)
+
+        proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
+
+        dv_spec = {
+            "apiVersion": f"{_CDI_API_GROUP}/{_CDI_API_VERSION}",
+            "kind": "DataVolume",
+            "metadata": {"name": dv_name, "namespace": self.namespace},
+            "spec": {
+                "source": {"http": {"url": proxy_url}},
+                "pvc": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "volumeMode": "Filesystem",
+                    "resources": {"requests": {"storage": _VMEDIA_DV_SIZE}},
+                },
+            },
+        }
+        if self.storage_class:
+            dv_spec["spec"]["pvc"]["storageClassName"] = self.storage_class
+
+        self.custom_api.create_namespaced_custom_object(
+            group=_CDI_API_GROUP,
+            version=_CDI_API_VERSION,
+            namespace=self.namespace,
+            plural=_DV_PLURAL,
+            body=dv_spec,
+        )
+
+        deadline = time.monotonic() + _VMEDIA_POLL_TIMEOUT
+        while time.monotonic() < deadline:
+            dv = self.custom_api.get_namespaced_custom_object(
+                group=_CDI_API_GROUP,
+                version=_CDI_API_VERSION,
+                namespace=self.namespace,
+                plural=_DV_PLURAL,
+                name=dv_name,
+            )
+            phase = dv.get("status", {}).get("phase", "")  # type: ignore[union-attr]
+            if phase == "Succeeded":
+                break
+            if phase in ("Failed", "Error"):
+                raise RuntimeError(f"DataVolume {dv_name} failed: {phase}")
+            time.sleep(_VMEDIA_POLL_INTERVAL)
+        else:
+            raise RuntimeError(
+                f"DataVolume {dv_name} did not complete in {_VMEDIA_POLL_TIMEOUT}s"
+            )
+
+        vm = self._get_vm(identity)
+        volumes = list(
+            vm.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
+        )
+        disks = list(
+            vm.get("spec", {})
+            .get("template", {})
+            .get("spec", {})
+            .get("domain", {})
+            .get("devices", {})
+            .get("disks", [])
+        )
+
+        volumes.append(
+            {
+                "name": _VMEDIA_VOL_NAME,
+                "dataVolume": {"name": dv_name},
+            }
+        )
+        disks.append(
+            {
+                "name": _VMEDIA_VOL_NAME,
+                "cdrom": {"bus": "sata"},
+            }
+        )
+
+        self.custom_api.patch_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version=_KUBEVIRT_API_VERSION,
+            namespace=self.namespace,
+            plural=_VM_PLURAL,
+            name=name,
+            body={
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "volumes": volumes,
+                            "domain": {"devices": {"disks": disks}},
+                        }
+                    }
+                }
+            },
+        )
+
+        self._vmedia_state[identity] = {
+            "url": image_url,
+            "inserted": True,
+            "dv_name": dv_name,
+        }
+
+    def eject_image(self, identity):
+        """Remove CDROM from VM and delete the DataVolume."""
+        state = self._vmedia_state.pop(identity, None)
+        if not state:
+            return
+
+        name = self._kv_name(identity)
+        dv_name = state["dv_name"]
+
+        try:
+            vm = self._get_vm(identity)
+            volumes = [
+                v
+                for v in vm.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("volumes", [])
+                if v.get("name") != _VMEDIA_VOL_NAME
+            ]
+            disks = [
+                d
+                for d in vm.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("domain", {})
+                .get("devices", {})
+                .get("disks", [])
+                if d.get("name") != _VMEDIA_VOL_NAME
+            ]
+            self.custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API_GROUP,
+                version=_KUBEVIRT_API_VERSION,
+                namespace=self.namespace,
+                plural=_VM_PLURAL,
+                name=name,
+                body={
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "volumes": volumes,
+                                "domain": {"devices": {"disks": disks}},
+                            }
+                        }
+                    }
+                },
+            )
+        except Exception:
+            pass
+
+        try:
+            self.custom_api.delete_namespaced_custom_object(
+                group=_CDI_API_GROUP,
+                version=_CDI_API_VERSION,
+                namespace=self.namespace,
+                plural=_DV_PLURAL,
+                name=dv_name,
+            )
+        except Exception:
+            pass

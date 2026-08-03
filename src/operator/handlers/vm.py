@@ -538,6 +538,16 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                         ],
                         "verbs": ["get", "list", "patch"],
                     },
+                    {
+                        "apiGroups": ["cdi.kubevirt.io"],
+                        "resources": ["datavolumes"],
+                        "verbs": ["create", "get", "list", "delete"],
+                    },
+                    {
+                        "apiGroups": [""],
+                        "resources": ["persistentvolumeclaims"],
+                        "verbs": ["get", "list"],
+                    },
                 ],
             },
         )
