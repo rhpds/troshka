@@ -100,22 +100,21 @@ if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
   echo "=== Step 4b: Restart stale per-project pods ==="
 
-  ROLE_MAP=("vnc-proxy:troshka-vnc-proxy" "dnsmasq:troshka-dnsmasq" "gateway:troshka-gateway" "bmc:troshka-bmc")
-  declare -A ROLE_DIGESTS
-  for entry in "${ROLE_MAP[@]}"; do
-    role="${entry%%:*}"
-    img="${entry##*:}"
-    ROLE_DIGESTS[$role]=$(skopeo inspect --format '{{.Digest}}' \
-      "docker://quay.io/redhat-gpte/${img}:production" 2>/dev/null || echo "")
+  ROLE_NAMES=("vnc-proxy" "dnsmasq" "gateway" "bmc")
+  ROLE_IMAGES=("troshka-vnc-proxy" "troshka-dnsmasq" "troshka-gateway" "troshka-bmc")
+  ROLE_DIGESTS=()
+  for img in "${ROLE_IMAGES[@]}"; do
+    ROLE_DIGESTS+=($(skopeo inspect --format '{{.Digest}}' \
+      "docker://quay.io/redhat-gpte/${img}:production" 2>/dev/null || echo ""))
   done
 
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
     restarted=0
 
-    for entry in "${ROLE_MAP[@]}"; do
-      role="${entry%%:*}"
-      expected="${ROLE_DIGESTS[$role]}"
+    for idx in "${!ROLE_NAMES[@]}"; do
+      role="${ROLE_NAMES[$idx]}"
+      expected="${ROLE_DIGESTS[$idx]}"
       [ -z "$expected" ] && continue
 
       pod_image=$(oc get pods --all-namespaces -l "troshka-role=$role" \
