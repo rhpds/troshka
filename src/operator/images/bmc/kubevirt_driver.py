@@ -131,7 +131,18 @@ class KubeVirtDriver:
             body={"spec": {"running": running}},
         )
 
+    def _wait_for_pending_vmedia(self, identity):
+        """Block until any pending vmedia DV import is done."""
+        state = self._vmedia_state.get(identity)
+        if not state:
+            return
+        event = state.get("_dv_event")
+        if event and not event.is_set():
+            event.wait(timeout=_VMEDIA_POLL_TIMEOUT)
+
     def set_power_state(self, identity, state):
+        if state in ("On", "ForceOn"):
+            self._wait_for_pending_vmedia(identity)
         running = state in ("On", "ForceOn")
         self._patch_vm_running(identity, running)
         if state in ("ForceOff", "GracefulShutdown"):
@@ -394,8 +405,45 @@ class KubeVirtDriver:
         except Exception:
             pass
 
+    def _wait_for_dv(self, dv_name):
+        """Poll a DataVolume until Succeeded, Failed, or timeout."""
+        import threading
+
+        event = threading.Event()
+        result = {"phase": "Pending", "error": ""}
+
+        def _poll():
+            deadline = time.monotonic() + _VMEDIA_POLL_TIMEOUT
+            while time.monotonic() < deadline:
+                try:
+                    dv = self.custom_api.get_namespaced_custom_object(
+                        group=_CDI_API_GROUP,
+                        version=_CDI_API_VERSION,
+                        namespace=self.namespace,
+                        plural=_DV_PLURAL,
+                        name=dv_name,
+                    )
+                    phase = dv.get("status", {}).get("phase", "")  # type: ignore[union-attr]
+                    result["phase"] = phase
+                    if phase == "Succeeded":
+                        event.set()
+                        return
+                    if phase in ("Failed", "Error"):
+                        result["error"] = f"DataVolume {dv_name} failed: {phase}"
+                        event.set()
+                        return
+                except Exception:
+                    pass
+                time.sleep(_VMEDIA_POLL_INTERVAL)
+            result["error"] = f"DataVolume {dv_name} timed out"
+            event.set()
+
+        t = threading.Thread(target=_poll, daemon=True)
+        t.start()
+        return event, result
+
     def insert_image(self, identity, image_url, proxy_base_url):
-        """Create a CDI DataVolume from the proxy URL and attach as CDROM."""
+        """Create CDI DataVolume, attach CDROM to VM, return immediately."""
         name = self._kv_name(identity)
         dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
 
@@ -428,25 +476,7 @@ class KubeVirtDriver:
             body=dv_spec,
         )
 
-        deadline = time.monotonic() + _VMEDIA_POLL_TIMEOUT
-        while time.monotonic() < deadline:
-            dv = self.custom_api.get_namespaced_custom_object(
-                group=_CDI_API_GROUP,
-                version=_CDI_API_VERSION,
-                namespace=self.namespace,
-                plural=_DV_PLURAL,
-                name=dv_name,
-            )
-            phase = dv.get("status", {}).get("phase", "")  # type: ignore[union-attr]
-            if phase == "Succeeded":
-                break
-            if phase in ("Failed", "Error"):
-                raise RuntimeError(f"DataVolume {dv_name} failed: {phase}")
-            time.sleep(_VMEDIA_POLL_INTERVAL)
-        else:
-            raise RuntimeError(
-                f"DataVolume {dv_name} did not complete in {_VMEDIA_POLL_TIMEOUT}s"
-            )
+        event, result = self._wait_for_dv(dv_name)
 
         vm = self._get_vm(identity)
         volumes = list(
@@ -496,6 +526,8 @@ class KubeVirtDriver:
             "url": image_url,
             "inserted": True,
             "dv_name": dv_name,
+            "_dv_event": event,
+            "_dv_result": result,
         }
 
     def eject_image(self, identity):
