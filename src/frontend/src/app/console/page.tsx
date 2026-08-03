@@ -677,7 +677,13 @@ function ConsolePage() {
                 </svg>
                 <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
                 <button
-                  onClick={() => { fetchConsoleUrl().then((url) => { if (url) setWsUrl(url); }); }}
+                  onClick={() => {
+                    fetchConsoleUrl().then((url) => {
+                      if (!url) return;
+                      const forceUrl = url.replace(/\/([^/]+)$/, "/force/$1");
+                      setWsUrl(forceUrl);
+                    });
+                  }}
                   style={{ padding: "6px 16px", borderRadius: 6, border: "1px solid #ef4444", background: "rgba(239,68,68,0.15)", color: "#ef4444", cursor: "pointer", fontSize: 13 }}
                 >
                   Force Connect

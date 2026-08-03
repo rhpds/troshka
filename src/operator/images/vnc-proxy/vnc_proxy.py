@@ -79,11 +79,19 @@ async def _proxy(ws_client: Any) -> None:
         await ws_client.close(1008, "Missing VM name in path")
         return
 
-    vm_name = parts[0]
-    logger.info(f"VNC client connecting for {vm_name}")
+    force = parts[0] == "force" and len(parts) > 1
+    vm_name = parts[1] if force else parts[0]
+    logger.info(f"VNC client connecting for {vm_name}{' (force)' if force else ''}")
 
     existing = _active_sessions.get(vm_name)
-    if existing:
+    if existing and force:
+        logger.info(f"Force-kicking existing session for {vm_name}")
+        try:
+            await existing.close(4010, "Kicked")
+        except Exception:
+            pass
+        _active_sessions.pop(vm_name, None)
+    elif existing:
         logger.info(f"Rejecting connection for {vm_name} — already in use")
         try:
             await ws_client.close(4010, "Console in use by another session")
