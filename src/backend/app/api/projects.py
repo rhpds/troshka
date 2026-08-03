@@ -1342,36 +1342,34 @@ def _check_library_items_ready(topology: dict, db: Session):
                     )
 
 
-def _check_vnc_session(driver, provider, ns: str, svc_url: str, vm_name: str) -> bool:
-    """Check if a VNC session is active for a VM via the proxy's status endpoint."""
-    try:
-        from app.services.providers.kubevirt import _get_k8s_clients
+def _vnc_proxy_request(provider, ns: str, path: str) -> str:
+    """Call the vnc-proxy status endpoint via k8s API service proxy."""
+    from app.services.providers.kubevirt import _get_k8s_clients
 
-        _, core_api, _ = _get_k8s_clients(provider)
-        resp = core_api.connect_get_namespaced_service_proxy_with_path(
-            name=f"vnc-proxy-project-{ns.replace('troshka-', '')}:8081",
-            namespace=ns,
-            path=f"active/{vm_name}",
-        )
+    _, core_api, _ = _get_k8s_clients(provider)
+    api_client = core_api.api_client
+    svc_name = f"vnc-proxy-project-{ns.replace('troshka-', '')}"
+    url = f"/api/v1/namespaces/{ns}/services/{svc_name}:8081/proxy/{path}"
+    resp = api_client.call_api(url, "GET")  # type: ignore[arg-type]
+    return resp[0].data.decode() if resp and resp[0] else ""  # type: ignore[union-attr]
+
+
+def _check_vnc_session(provider, ns: str, vm_name: str) -> bool:
+    """Check if a VNC session is active for a VM."""
+    try:
         import json
 
-        data = json.loads(resp) if isinstance(resp, str) else {}
+        raw = _vnc_proxy_request(provider, ns, f"active/{vm_name}")
+        data = json.loads(raw) if raw else {}
         return data.get("in_use", False)
     except Exception:
         return False
 
 
-def _kick_vnc_session(driver, provider, ns: str, svc_url: str, vm_name: str):
-    """Force-disconnect an active VNC session via the proxy's kick endpoint."""
+def _kick_vnc_session(provider, ns: str, vm_name: str):
+    """Force-disconnect an active VNC session."""
     try:
-        from app.services.providers.kubevirt import _get_k8s_clients
-
-        _, core_api, _ = _get_k8s_clients(provider)
-        core_api.connect_get_namespaced_service_proxy_with_path(
-            name=f"vnc-proxy-project-{ns.replace('troshka-', '')}:8081",
-            namespace=ns,
-            path=f"kick/{vm_name}",
-        )
+        _vnc_proxy_request(provider, ns, f"kick/{vm_name}")
     except Exception:
         pass
 
@@ -1836,11 +1834,10 @@ def get_vm_console(
             return {"error": "Console not ready — VNC proxy route not yet available"}
 
         ns = f"troshka-{project_id[:8]}"
-        svc_url = f"http://vnc-proxy-project-{project_id[:8]}.{ns}.svc:8081"
-        in_use = _check_vnc_session(driver, provider, ns, svc_url, kv_vm_name)
+        in_use = _check_vnc_session(provider, ns, kv_vm_name)
 
         if in_use and force:
-            _kick_vnc_session(driver, provider, ns, svc_url, kv_vm_name)
+            _kick_vnc_session(provider, ns, kv_vm_name)
         elif in_use:
             return {"in_use": True}
 
