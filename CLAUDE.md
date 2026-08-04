@@ -225,6 +225,24 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 - Monotonically increasing, never recycled — high-water mark persisted to `.vni_hwm` file
 - Never use the `Network.vni` column (it's unused)
 
+### Multi-Host Network Mesh
+- Projects that exceed a single host's capacity (or use anti-affinity) are deployed across multiple hosts
+- **WireGuard mesh**: per-project encrypted tunnels between hosts, VXLAN runs inside for L2 adjacency
+- **Model**: `ProjectMeshPeer` stores WireGuard keys/endpoints/addresses per host per project
+- **Placement**: `find_multihost_placement()` bin-packs VMs with affinity group support; `select_network_host()` picks the host running dnsmasq/nftables
+- **Affinity**: `affinityGroup` on VM node data — VMs with the same group land on the same host
+- **Anti-affinity**: `separateHost` (group name) on VM node data — VMs with the same group land on different hosts. Forces multi-host even when one host has capacity. Auto-finds a pool with 2+ hosts if no provider set.
+- **Network host**: one host runs dnsmasq/chronyd/nftables (full namespace); remote hosts have VXLAN+bridge only via `/mesh/join-network`
+- **Private IPs**: same-pool hosts use `private_ip` for WireGuard endpoints (pod network), not public IPs
+- **Data format**: `project.host_assignments` is `{vm_node_id: host_id}` (flattened). Deploy service unflattens to `{host_id: [vm_ids]}` for orchestration.
+- **Deploy flow**: placement → mesh setup → network host setup → remote VXLAN → per-host image cache → seeds → disks → VM define → VM start
+- **Teardown**: stop VMs all hosts → teardown remote VXLAN → teardown network host → teardown WireGuard → delete mesh peers
+- **FDB entries**: must be added AFTER `ip link set vxlan netns` — moving interface to namespace clears host-namespace FDB
+- **Stale domains**: multi-host deploy cleans up stale domains before VM creation (same as single-host)
+- Troshkad endpoints: `POST /commands/mesh/setup`, `POST /commands/mesh/join-network`, `DELETE /mesh/teardown`, `GET /mesh/status`
+- Security group rules: WireGuard UDP 51820-51850 added to AWS SG, GCP firewall, Azure NSG
+- `wireguard-tools` package in agent install (dnf install is always run, no conditional)
+
 ### Topology Remapping (Patterns/Deploy)
 - When cloning topology, remap ALL ID references:
   - Node IDs, edge source/target, edge sourceHandle/targetHandle
