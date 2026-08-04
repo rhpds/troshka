@@ -424,8 +424,38 @@ def place_project(
             )
     if not host:
         # Try multi-host placement before auto-provisioning
+        multihost_provider = project.provider_id
+        multihost_pool = storage_pool_id
+
+        # Anti-affinity needs 2+ hosts — auto-find a provider/pool if not set
+        if has_anti_affinity and not multihost_provider and not multihost_pool:
+            from app.models.storage_pool import StoragePool
+
+            pools = (
+                db.query(StoragePool).filter(StoragePool.status == "available").all()
+            )
+            for pool in pools:
+                host_count = (
+                    db.query(Host)
+                    .filter(
+                        Host.storage_pool_id == pool.id,
+                        Host.state == "active",
+                        Host.agent_status == "connected",
+                        Host.host_type != "pattern_buffer",
+                    )
+                    .count()
+                )
+                if host_count >= 2:
+                    multihost_pool = pool.id
+                    break
+            if not multihost_pool:
+                return {
+                    "error": "Anti-affinity requires a provider with multiple hosts. "
+                    "Select a provider with 2+ hosts or remove anti-affinity."
+                }
+
         host_assignments = find_multihost_placement(
-            db, project.topology, storage_pool_id, project.provider_id
+            db, project.topology, multihost_pool, multihost_provider
         )
         if host_assignments:
             network_host_id = select_network_host(host_assignments, project.topology)
