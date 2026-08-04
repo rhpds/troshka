@@ -402,11 +402,22 @@ def place_project(
         )
         if host_assignments:
             network_host_id = select_network_host(host_assignments, project.topology)
-            host_ips = {}
+            hosts_in_mesh = []
             for hid in host_assignments:
                 h = db.query(Host).filter_by(id=hid).first()
                 if h:
-                    host_ips[hid] = h.private_ip or h.ip_address
+                    hosts_in_mesh.append(h)
+
+            same_pool = (
+                len(set(h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id))
+                <= 1
+            )
+            host_ips = {}
+            for h in hosts_in_mesh:
+                if same_pool and h.private_ip:
+                    host_ips[h.id] = h.private_ip
+                else:
+                    host_ips[h.id] = h.ip_address
 
             vni_map = allocate_vnis_for_project(db, project.topology)
 
