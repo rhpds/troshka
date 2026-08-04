@@ -139,8 +139,8 @@ function ConsolePage() {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      // Pre-flight with ?check=1 — vncd validates token but doesn't consume it
-      preflightCheck(url + "?check=1").then((result) => {
+      // Pre-flight via /check/ path — vncd validates token but doesn't consume it
+      preflightCheck(url.replace("/ws/", "/check/")).then((result) => {
         if (!mountedRef.current) return;
         if (result === "in_use") {
           setStatus("Console in use by another session");

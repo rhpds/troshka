@@ -113,16 +113,14 @@ def _build_ssl_context(conf: dict) -> ssl.SSLContext:
 
 async def _handle_connection(websocket, conf: dict):
     path = websocket.request.path if hasattr(websocket, "request") else ""
-    if not path.startswith("/ws/"):
+    check_only = path.startswith("/check/")
+    if check_only:
+        token = path[7:]
+    elif path.startswith("/ws/"):
+        token = path[4:]
+    else:
         await websocket.close(4000, "Invalid path")
         return
-    token_path = path[4:]
-    # Support ?check=1 for pre-flight session availability check
-    check_only = False
-    token = token_path
-    if "?check=1" in token_path:
-        check_only = True
-        token = token_path.split("?")[0]
 
     secret = conf["token"]
     claims = _verify_jwt(token, secret)
