@@ -392,6 +392,16 @@ export default function PropertiesPanel() {
                 />
               </div>
             </div>
+            <div className="props-field">
+              <label className="props-label">Affinity Group</label>
+              <input
+                className="props-input"
+                type="text"
+                placeholder="none"
+                value={(data as Record<string, any>).affinityGroup as string || ""}
+                onChange={(e) => update("affinityGroup", e.target.value || undefined)}
+              />
+            </div>
             </>)}
           </div>
           <div className="props-divider" />
