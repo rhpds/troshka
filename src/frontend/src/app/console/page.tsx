@@ -133,13 +133,32 @@ function ConsolePage() {
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleUrl().then((url) => {
+    fetchConsoleUrl().then((preflightUrl) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (!url) {
+      if (!preflightUrl) {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      setWsUrl(url);
+      preflightCheck(preflightUrl).then((result) => {
+        if (!mountedRef.current) return;
+        if (result === "in_use") {
+          setStatus("Console in use by another session");
+          return;
+        }
+        if (result === "ok") {
+          // Pre-flight consumed its token — fetch a fresh one for noVNC
+          fetchConsoleUrl().then((noVncUrl) => {
+            if (!mountedRef.current) return;
+            if (noVncUrl) {
+              setWsUrl(noVncUrl);
+            } else {
+              reconnectTimer.current = setTimeout(pollForPort, 3000);
+            }
+          });
+        } else {
+          reconnectTimer.current = setTimeout(pollForPort, 3000);
+        }
+      });
     });
   }, [fetchConsoleUrl, preflightCheck, projectDeleted]);
 
