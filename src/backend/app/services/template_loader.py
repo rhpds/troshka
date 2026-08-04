@@ -548,9 +548,11 @@ def _generate_topology_from_vms(
         if vm_cfg.get("network_config"):
             vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
 
-        # Affinity group
+        # Affinity group and anti-affinity
         if vm_cfg.get("affinity_group"):
             vm_data["affinityGroup"] = vm_cfg["affinity_group"]
+        if vm_cfg.get("separate_host"):
+            vm_data["separateHost"] = True
 
         vm_node = {
             "id": _id(),
@@ -1094,9 +1096,11 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         if d.get("ciNetworkConfig"):
             vm_out["network_config"] = d["ciNetworkConfig"]
 
-        # Affinity group
+        # Affinity group and anti-affinity
         if d.get("affinityGroup"):
             vm_out["affinity_group"] = d["affinityGroup"]
+        if d.get("separateHost"):
+            vm_out["separate_host"] = True
 
         # Disks — find storage nodes connected to this VM
         disk_controllers = d.get("diskControllers", [])

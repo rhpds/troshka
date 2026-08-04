@@ -255,7 +255,10 @@ def find_multihost_placement(
 
     affinity_groups: dict[str, list[dict]] = {}
     ungrouped: list[dict] = []
+    anti_affinity_ids: set[str] = set()
     for node in vm_nodes:
+        if node.get("data", {}).get("separateHost"):
+            anti_affinity_ids.add(node["id"])
         ag = node.get("data", {}).get("affinityGroup")
         if ag:
             affinity_groups.setdefault(ag, []).append(node)
@@ -319,12 +322,15 @@ def find_multihost_placement(
             key=lambda hid: host_remaining[hid]["ram_mb"],
             reverse=True,
         )
+        unit_has_anti = bool(anti_affinity_ids & set(unit["vm_ids"]))
         for hid in sorted_hosts:
             remaining = host_remaining[hid]
             if (
                 remaining["ram_mb"] >= unit["ram_mb"]
                 and remaining["vcpus"] >= unit["vcpus"]
             ):
+                if unit_has_anti and (anti_affinity_ids & set(assignments[hid])):
+                    continue
                 assignments[hid].extend(unit["vm_ids"])
                 remaining["ram_mb"] -= unit["ram_mb"]
                 remaining["vcpus"] -= unit["vcpus"]
@@ -365,6 +371,13 @@ def place_project(
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
+    # Check for anti-affinity (separateHost) — forces multi-host placement
+    has_anti_affinity = any(
+        n.get("data", {}).get("separateHost")
+        for n in project.topology.get("nodes", [])
+        if n.get("type") in ("vmNode", "containerNode")
+    )
+
     # Admin-specified host override
     if host_id:
         host = db.query(Host).filter_by(id=host_id).first()
@@ -379,15 +392,17 @@ def place_project(
         if not storage_pool_id:
             storage_pool_id = _auto_select_pool(db)
 
-        host = find_available_host(
-            db,
-            reqs["total_vcpus"],
-            reqs["total_ram_mb"],
-            reqs["requested_eips"],
-            storage_pool_id=storage_pool_id,
-            provider_id=project.provider_id,
-        )
-        if not host and storage_pool_id:
+        host = None
+        if not has_anti_affinity:
+            host = find_available_host(
+                db,
+                reqs["total_vcpus"],
+                reqs["total_ram_mb"],
+                reqs["requested_eips"],
+                storage_pool_id=storage_pool_id,
+                provider_id=project.provider_id,
+            )
+        if not host and not has_anti_affinity and storage_pool_id:
             host = find_available_host(
                 db,
                 reqs["total_vcpus"],

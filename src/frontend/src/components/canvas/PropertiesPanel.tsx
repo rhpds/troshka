@@ -402,6 +402,16 @@ export default function PropertiesPanel() {
                 onChange={(e) => update("affinityGroup", e.target.value || undefined)}
               />
             </div>
+            <div className="props-field">
+              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={(data as Record<string, any>).separateHost as boolean ?? false}
+                  onChange={(e) => update("separateHost", e.target.checked || undefined)}
+                />
+                Separate Host
+              </label>
+            </div>
             </>)}
           </div>
           <div className="props-divider" />
