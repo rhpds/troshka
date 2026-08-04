@@ -1089,6 +1089,7 @@ def deploy_project(
 
     # Multi-host deployment
     if result.get("multi_host"):
+        project.state = "deploying"
         project.mesh_network_host_id = result["network_host_id"]
         project.host_id = result["network_host_id"]  # backward compat
         project.vni_map = result["vni_map"]
