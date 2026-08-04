@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import uuid
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
@@ -29,6 +30,6 @@ class ProjectMeshPeer(Base):
     wg_address: Mapped[str] = mapped_column(String(32), nullable=False)
     wg_port: Mapped[int] = mapped_column(Integer, nullable=False)
     is_network_host: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
