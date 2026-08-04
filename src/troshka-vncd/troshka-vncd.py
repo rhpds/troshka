@@ -154,10 +154,6 @@ async def _handle_connection(websocket, conf: dict):
         await websocket.close(4003, "VNC not available")
         return
 
-    if domain_name in _active_sessions:
-        await websocket.close(4010, "Session in use")
-        return
-
     logger.info("Console: %s -> 127.0.0.1:%d", domain_name, vnc_port)
 
     try:
