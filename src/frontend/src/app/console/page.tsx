@@ -119,6 +119,8 @@ function ConsolePage() {
         clearTimeout(timer);
         if (e.code === 4010) {
           resolve("in_use");
+        } else if (e.code === 4000) {
+          resolve("ok");
         } else {
           resolve("error");
         }
