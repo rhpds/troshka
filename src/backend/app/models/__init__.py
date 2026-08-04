@@ -10,6 +10,7 @@ from app.models.library import (
     LibraryItemDisk,
     LibraryShare,
 )
+from app.models.mesh_peer import ProjectMeshPeer
 from app.models.network import Network, SecurityRule
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.portal import ProjectPortalToken
@@ -50,4 +51,5 @@ __all__ = [
     "ProjectPortalToken",
     "RegistryCredential",
     "SystemConfig",
+    "ProjectMeshPeer",
 ]

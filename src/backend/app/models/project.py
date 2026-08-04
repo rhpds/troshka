@@ -54,6 +54,11 @@ class Project(Base):
         JSONB, nullable=True, default=lambda: {"nodes": [], "edges": []}
     )
     vni_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    mesh_subnet_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mesh_network_host_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hosts.id"), nullable=True
+    )
+    host_assignments: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deployed_topology: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     deploy_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     deploy_step: Mapped[str | None] = mapped_column(String(30), nullable=True)
