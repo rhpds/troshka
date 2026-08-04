@@ -4836,6 +4836,204 @@ def _handle_network_full_teardown(job, params):
 COMMAND_HANDLERS["networks/full-teardown"] = _handle_network_full_teardown
 
 
+def _handle_mesh_setup(job, params):
+    """Set up WireGuard interface for a project mesh.
+    Params:
+        project_id: str
+        wg_private_key: str (base64)
+        wg_address: str (e.g. "10.252.1.1/24")
+        wg_port: int
+        peers: list of {public_key, endpoint, allowed_ips}
+    """
+    project_id = params["project_id"]
+    pid = project_id[:8]
+    wg_iface = f"wg-{pid}"
+
+    os.makedirs("/var/lib/troshka/mesh", exist_ok=True)
+    conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
+
+    conf_lines = [
+        "[Interface]",
+        f"PrivateKey = {params['wg_private_key']}",
+        f"ListenPort = {params['wg_port']}",
+        "",
+    ]
+    for peer in params["peers"]:
+        conf_lines.extend(
+            [
+                "[Peer]",
+                f"PublicKey = {peer['public_key']}",
+                f"Endpoint = {peer['endpoint']}",
+                f"AllowedIPs = {peer['allowed_ips']}",
+                "PersistentKeepalive = 25",
+                "",
+            ]
+        )
+
+    with open(conf_path, "w") as f:
+        f.write("\n".join(conf_lines))
+    os.chmod(conf_path, 0o600)
+
+    _run(["ip", "link", "del", wg_iface], check=False)
+    _run(["ip", "link", "add", wg_iface, "type", "wireguard"])
+    _run(["wg", "setconf", wg_iface, conf_path])
+    _run(["ip", "addr", "add", params["wg_address"], "dev", wg_iface])
+    _run(["ip", "link", "set", wg_iface, "up"])
+
+    for peer in params["peers"]:
+        peer_ip = peer["allowed_ips"].split("/")[0]
+        rc = _run(["ping", "-c", "3", "-W", "2", peer_ip], check=False).returncode
+        if rc != 0:
+            logger.warning(
+                "Mesh peer %s not yet reachable (may connect later)", peer_ip
+            )
+
+    return {"status": "ok", "interface": wg_iface}
+
+
+COMMAND_HANDLERS["mesh/setup"] = _handle_mesh_setup
+
+
+def _handle_mesh_join_network(job, params):
+    """Set up VXLAN + bridge on a remote (non-network) host.
+    Params:
+        project_id: str
+        wg_local_ip: str -- this host's WireGuard tunnel IP (e.g. "10.252.1.2")
+        networks: list of {vni, bridge_name, wg_peer_ips}
+    """
+    project_id = params["project_id"]
+    pid = project_id[:8]
+    ns = f"troshka-{pid}"
+    wg_local_ip = params["wg_local_ip"]
+
+    _run(["ip", "netns", "add", ns], check=False)
+    _run(["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
+
+    for net in params["networks"]:
+        vni = net["vni"]
+        bridge = net["bridge_name"]
+        vxlan_if = f"vxlan-{vni}"
+        peers = net["wg_peer_ips"]
+
+        _run(
+            [
+                "ip",
+                "link",
+                "add",
+                vxlan_if,
+                "type",
+                "vxlan",
+                "id",
+                str(vni),
+                "local",
+                wg_local_ip,
+                "dstport",
+                "4789",
+                "nolearning",
+            ]
+        )
+
+        for peer_ip in peers:
+            if peer_ip != wg_local_ip:
+                _run(
+                    [
+                        "bridge",
+                        "fdb",
+                        "append",
+                        "00:00:00:00:00:00",
+                        "dev",
+                        vxlan_if,
+                        "dst",
+                        peer_ip,
+                    ]
+                )
+
+        _run(["ip", "link", "set", vxlan_if, "netns", ns])
+
+        _run(["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"])
+        _run(
+            ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge]
+        )
+        _run(["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"])
+        _run(["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"])
+
+        _run(["ip", "link", "add", bridge, "type", "bridge"], check=False)
+        _run(
+            [
+                "ip",
+                "link",
+                "set",
+                bridge,
+                "type",
+                "bridge",
+                "forward_delay",
+                "99",
+                "ageing_time",
+                "0",
+            ],
+            check=False,
+        )
+        _run(["ip", "link", "set", bridge, "up"], check=False)
+
+    return {"status": "ok", "namespace": ns}
+
+
+COMMAND_HANDLERS["mesh/join-network"] = _handle_mesh_join_network
+
+
+@route("DELETE", "/mesh/teardown")
+def handle_mesh_teardown(handler, params):
+    project_id = params.get("project_id")
+    if not project_id:
+        handler._send_json(400, {"error": "project_id required"})
+        return
+
+    pid = project_id[:8]
+    wg_iface = f"wg-{pid}"
+    ns = f"troshka-{pid}"
+    conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
+
+    _run(["ip", "link", "del", wg_iface], check=False)
+
+    if os.path.exists(conf_path):
+        os.remove(conf_path)
+
+    handler._send_json(200, {"status": "ok"})
+
+
+@route("GET", "/mesh/status")
+def handle_mesh_status(handler, params):
+    result = {}
+    mesh_dir = "/var/lib/troshka/mesh"
+    if not os.path.isdir(mesh_dir):
+        handler._send_json(200, {"projects": {}})
+        return
+
+    for fname in os.listdir(mesh_dir):
+        if not fname.endswith(".conf"):
+            continue
+        project_id = fname[:-5]
+        pid = project_id[:8]
+        wg_iface = f"wg-{pid}"
+
+        try:
+            out = subprocess.check_output(
+                ["wg", "show", wg_iface, "latest-handshakes"],
+                text=True,
+                timeout=5,
+            )
+            peers = {}
+            for line in out.strip().split("\n"):
+                if "\t" in line:
+                    pubkey, ts = line.split("\t", 1)
+                    peers[pubkey] = int(ts)
+            result[project_id] = {"interface": wg_iface, "peers": peers}
+        except Exception:
+            result[project_id] = {"interface": wg_iface, "error": "not running"}
+
+    handler._send_json(200, {"projects": result})
+
+
 def _handle_network_add_dnat(job, params):
     """Add two-hop nftables DNAT for external access to a VM inside a project namespace.
 
@@ -6808,6 +7006,8 @@ _SKIP_DRAIN = {
     "vm/ssh-exec",
     "vm/guest-exec",
     "containers/states",
+    "mesh/setup",
+    "mesh/join-network",
 }
 
 
