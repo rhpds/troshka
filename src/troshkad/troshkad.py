@@ -4934,11 +4934,17 @@ def _handle_mesh_join_network(job, params):
             ],
         )
 
+        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns])
+
         for peer_ip in peers:
             if peer_ip != wg_local_ip:
                 _run_cmd(
                     job,
                     [
+                        "ip",
+                        "netns",
+                        "exec",
+                        ns,
                         "bridge",
                         "fdb",
                         "append",
@@ -4949,8 +4955,6 @@ def _handle_mesh_join_network(job, params):
                         peer_ip,
                     ],
                 )
-
-        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns])
 
         _run_cmd(
             job,
