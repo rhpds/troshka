@@ -89,8 +89,8 @@ try:
             if vncd_bytes and h.host_type != 'pattern_buffer':
                 try:
                     push_vncd_update(h, vncd_bytes)
-                except Exception:
-                    pass
+                except Exception as ve:
+                    print(f'  vncd update failed: {ve}')
         except TroshkadError:
             pass  # agent may be mid-restart from a previous push — just poll
 
