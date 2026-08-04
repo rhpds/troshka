@@ -1067,6 +1067,47 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                     }
                 )
 
+    # Collect snapshot disks
+    from app.models.library import LibraryItemDisk
+
+    for node in nodes:
+        if node.get("type") != "storageNode":
+            continue
+        data = node.get("data", {})
+        if data.get("source") != "snapshot":
+            continue
+        snapshot_item_id = data.get("snapshotItemId")
+        if not snapshot_item_id:
+            continue
+        snap_disks = (
+            db_session.query(LibraryItemDisk)
+            .filter_by(
+                library_item_id=snapshot_item_id, format=data.get("format", "qcow2")
+            )
+            .order_by(LibraryItemDisk.boot_order)
+            .all()
+        )
+        for sd in snap_disks:
+            if sd.s3_key:
+                parts = sd.s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
+                orig_disk_id = parts[0] if parts else sd.id
+                cache_path = _snapshot_cache_path(
+                    snapshot_item_id, orig_disk_id, sd.format
+                )
+                items_to_cache.append(
+                    {
+                        "item_id": sd.id,
+                        "name": data.get("label")
+                        or data.get("name")
+                        or snapshot_item_id[:8],
+                        "s3_key": sd.s3_key,
+                        "cache_path": cache_path,
+                        "expected_size": sd.size_bytes,
+                        "source": "local",
+                        "source_provider_id": None,
+                    }
+                )
+
     seen_ids = set()
     deduped = []
     for ic in items_to_cache:
