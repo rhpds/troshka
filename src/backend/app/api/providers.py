@@ -1735,6 +1735,7 @@ def create_network_gcp(
         ("troshka-allow-console", "tcp", ["443"]),
         ("troshka-allow-agent", "tcp", ["31337"]),
         ("troshka-allow-vxlan", "udp", ["4789"]),
+        ("troshka-allow-wireguard", "udp", ["51820-51850"]),
     ]
     for fw_name, protocol, ports in fw_rules:
         fw = compute_v1.Firewall(
@@ -1913,6 +1914,17 @@ def create_network_azure(
                 "source_port_range": "*",
                 "destination_address_prefix": "VirtualNetwork",
                 "destination_port_range": "4789",
+            },
+            {
+                "name": "troshka-allow-wireguard",
+                "priority": 140,
+                "direction": "Inbound",
+                "access": "Allow",
+                "protocol": "Udp",
+                "source_address_prefix": "VirtualNetwork",
+                "source_port_range": "*",
+                "destination_address_prefix": "VirtualNetwork",
+                "destination_port_range": "51820-51850",
             },
         ],
     }

@@ -165,6 +165,14 @@ def ensure_security_group(
                 "ToPort": 4789,
                 "UserIdGroupPairs": [{"GroupId": sg_id, "Description": "VXLAN mesh"}],
             },
+            {
+                "IpProtocol": "udp",
+                "FromPort": 51820,
+                "ToPort": 51850,
+                "UserIdGroupPairs": [
+                    {"GroupId": sg_id, "Description": "WireGuard mesh"}
+                ],
+            },
         ],
     )
     client.create_tags(
