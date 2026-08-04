@@ -3297,7 +3297,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     from app.models.project import Project
     from app.services.placement import record_deploy_end, record_deploy_start
 
-    # Clear cancellation flag for this deploy
+    # Clear cancellation flag and stale error from previous deploy
     _clear_deploy_cancelled(project_id)
 
     _host_id_for_inflight: str | None = None
@@ -3306,6 +3306,9 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         project = s.query(Project).filter_by(id=project_id).first()
         if not project or project.state != "deploying":
             return
+        if project.deploy_error:
+            project.deploy_error = None
+            s.commit()
         if resume_from:
             logger.info(
                 "Deploy %s: resuming from step '%s'", project_id[:8], resume_from
