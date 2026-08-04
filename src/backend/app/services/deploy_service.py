@@ -3176,12 +3176,21 @@ def _deploy_multihost(project_id: str, project, db):
         db.commit()
         return
 
-    # Get host IPs
-    host_ips = {}
+    # Get host IPs — prefer private_ip when hosts share a storage pool
+    hosts_in_mesh = []
     for hid in host_assignments:
         h = db.query(Host).filter_by(id=hid).first()
         if h:
-            host_ips[hid] = h.ip_address
+            hosts_in_mesh.append(h)
+    same_pool = (
+        len(set(h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id)) <= 1
+    )
+    host_ips = {}
+    for h in hosts_in_mesh:
+        if same_pool and h.private_ip:
+            host_ips[h.id] = h.private_ip
+        else:
+            host_ips[h.id] = h.ip_address
 
     topology = project.topology or {}
     vni_map = project.vni_map or {}
