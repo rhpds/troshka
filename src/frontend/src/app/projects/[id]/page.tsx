@@ -524,7 +524,11 @@ export default function ProjectCanvasPage() {
         useCanvasStore.setState({ topologyDirty: false });
         const userStr = localStorage.getItem("troshka-user");
         const isAdmin = userStr ? JSON.parse(userStr).role === "admin" : false;
-        showToast(`Deploying ${data.requirements.vm_count} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
+        if (data.multi_host) {
+          showToast(`Deploying across ${data.host_count} hosts`);
+        } else {
+          showToast(`Deploying ${data.requirements?.vm_count || ""} VM(s)${isAdmin ? ` to ${data.host_ip}` : ""}`);
+        }
       } else {
         setProjectState("draft");
         setAlertMsg(data.detail || "Deployment failed");
