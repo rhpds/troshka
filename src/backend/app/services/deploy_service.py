@@ -3180,8 +3180,18 @@ def _deploy_multihost(project_id: str, project, db):
     """Multi-host deploy orchestration: mesh → networks → VMs per host."""
     logger.info("Deploy %s: starting multi-host orchestration", project_id[:8])
 
-    # Fetch host assignments from project JSONB
-    host_assignments = project.host_assignments or {}
+    # Fetch host assignments from project JSONB ({vm_id: host_id}) and
+    # rebuild to {host_id: [vm_ids]} for deploy orchestration
+    raw_assignments = project.host_assignments or {}
+    if not raw_assignments:
+        logger.error("Deploy %s: no host assignments found", project_id[:8])
+        project.state = "error"
+        project.deploy_error = "No host assignments found for multi-host deploy"
+        db.commit()
+        return
+    host_assignments: dict[str, list[str]] = {}
+    for vm_id, hid in raw_assignments.items():
+        host_assignments.setdefault(hid, []).append(vm_id)
     if not host_assignments:
         logger.error("Deploy %s: no host assignments found", project_id[:8])
         project.state = "error"
