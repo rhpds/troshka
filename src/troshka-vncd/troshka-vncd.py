@@ -30,6 +30,7 @@ logger = logging.getLogger("vncd")
 
 _consumed: set[str] = set()
 _consumed_expiry: dict[str, float] = {}
+_active_sessions: set[str] = set()
 
 CERT_CHECK_INTERVAL = 3600
 
@@ -115,7 +116,13 @@ async def _handle_connection(websocket, conf: dict):
     if not path.startswith("/ws/"):
         await websocket.close(4000, "Invalid path")
         return
-    token = path[4:]
+    token_path = path[4:]
+    # Support ?check=1 for pre-flight session availability check
+    check_only = False
+    token = token_path
+    if "?check=1" in token_path:
+        check_only = True
+        token = token_path.split("?")[0]
 
     secret = conf["token"]
     claims = _verify_jwt(token, secret)
@@ -126,6 +133,16 @@ async def _handle_connection(websocket, conf: dict):
     if token in _consumed:
         await websocket.close(4001, "Token already used")
         return
+
+    if check_only:
+        # Pre-flight: don't consume token, just check availability
+        domain_name = claims.get("domain_name", "")
+        if domain_name in _active_sessions:
+            await websocket.close(4010, "Session in use")
+        else:
+            await websocket.close(4000, "Available")
+        return
+
     _consumed.add(token)
     _consumed_expiry[token] = claims["exp"]
 
@@ -139,6 +156,10 @@ async def _handle_connection(websocket, conf: dict):
         await websocket.close(4003, "VNC not available")
         return
 
+    if domain_name in _active_sessions:
+        await websocket.close(4010, "Session in use")
+        return
+
     logger.info("Console: %s -> 127.0.0.1:%d", domain_name, vnc_port)
 
     try:
@@ -146,6 +167,8 @@ async def _handle_connection(websocket, conf: dict):
     except Exception:
         await websocket.close(4004, "Cannot connect to VNC")
         return
+
+    _active_sessions.add(domain_name)
 
     async def _ws_to_vnc():
         try:
@@ -173,6 +196,7 @@ async def _handle_connection(websocket, conf: dict):
     except Exception:
         pass
     finally:
+        _active_sessions.discard(domain_name)
         writer.close()
         try:
             await websocket.close()

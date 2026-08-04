@@ -133,28 +133,22 @@ function ConsolePage() {
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleUrl().then((preflightUrl) => {
+    fetchConsoleUrl().then((url) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (!preflightUrl) {
+      if (!url) {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      preflightCheck(preflightUrl).then((result) => {
+      // Pre-flight with ?check=1 — vncd validates token but doesn't consume it
+      preflightCheck(url + "?check=1").then((result) => {
         if (!mountedRef.current) return;
         if (result === "in_use") {
           setStatus("Console in use by another session");
           return;
         }
         if (result === "ok") {
-          // Pre-flight consumed its token — fetch a fresh one for noVNC
-          fetchConsoleUrl().then((noVncUrl) => {
-            if (!mountedRef.current) return;
-            if (noVncUrl) {
-              setWsUrl(noVncUrl);
-            } else {
-              reconnectTimer.current = setTimeout(pollForPort, 3000);
-            }
-          });
+          // Same token works — pre-flight didn't consume it
+          setWsUrl(url);
         } else {
           reconnectTimer.current = setTimeout(pollForPort, 3000);
         }
