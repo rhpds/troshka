@@ -4874,16 +4874,16 @@ def _handle_mesh_setup(job, params):
         f.write("\n".join(conf_lines))
     os.chmod(conf_path, 0o600)
 
-    _run(["ip", "link", "del", wg_iface], check=False)
-    _run(["ip", "link", "add", wg_iface, "type", "wireguard"])
-    _run(["wg", "setconf", wg_iface, conf_path])
-    _run(["ip", "addr", "add", params["wg_address"], "dev", wg_iface])
-    _run(["ip", "link", "set", wg_iface, "up"])
+    _run_cmd(job, ["ip", "link", "del", wg_iface], check=False)
+    _run_cmd(job, ["ip", "link", "add", wg_iface, "type", "wireguard"])
+    _run_cmd(job, ["wg", "setconf", wg_iface, conf_path])
+    _run_cmd(job, ["ip", "addr", "add", params["wg_address"], "dev", wg_iface])
+    _run_cmd(job, ["ip", "link", "set", wg_iface, "up"])
 
     for peer in params["peers"]:
         peer_ip = peer["allowed_ips"].split("/")[0]
-        rc = _run(["ping", "-c", "3", "-W", "2", peer_ip], check=False).returncode
-        if rc != 0:
+        proc = _run_cmd(job, ["ping", "-c", "3", "-W", "2", peer_ip], check=False)
+        if proc.returncode != 0:
             logger.warning(
                 "Mesh peer %s not yet reachable (may connect later)", peer_ip
             )
@@ -4906,8 +4906,8 @@ def _handle_mesh_join_network(job, params):
     ns = f"troshka-{pid}"
     wg_local_ip = params["wg_local_ip"]
 
-    _run(["ip", "netns", "add", ns], check=False)
-    _run(["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
+    _run_cmd(job, ["ip", "netns", "add", ns], check=False)
+    _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
 
     for net in params["networks"]:
         vni = net["vni"]
@@ -4915,7 +4915,8 @@ def _handle_mesh_join_network(job, params):
         vxlan_if = f"vxlan-{vni}"
         peers = net["wg_peer_ips"]
 
-        _run(
+        _run_cmd(
+            job,
             [
                 "ip",
                 "link",
@@ -4930,12 +4931,13 @@ def _handle_mesh_join_network(job, params):
                 "dstport",
                 "4789",
                 "nolearning",
-            ]
+            ],
         )
 
         for peer_ip in peers:
             if peer_ip != wg_local_ip:
-                _run(
+                _run_cmd(
+                    job,
                     [
                         "bridge",
                         "fdb",
@@ -4945,20 +4947,36 @@ def _handle_mesh_join_network(job, params):
                         vxlan_if,
                         "dst",
                         peer_ip,
-                    ]
+                    ],
                 )
 
-        _run(["ip", "link", "set", vxlan_if, "netns", ns])
+        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns])
 
-        _run(["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"])
-        _run(
-            ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "master", bridge]
+        _run_cmd(
+            job,
+            ["ip", "netns", "exec", ns, "ip", "link", "add", bridge, "type", "bridge"],
         )
-        _run(["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"])
-        _run(["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"])
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                ns,
+                "ip",
+                "link",
+                "set",
+                vxlan_if,
+                "master",
+                bridge,
+            ],
+        )
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", vxlan_if, "up"])
+        _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge, "up"])
 
-        _run(["ip", "link", "add", bridge, "type", "bridge"], check=False)
-        _run(
+        _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], check=False)
+        _run_cmd(
+            job,
             [
                 "ip",
                 "link",
@@ -4973,7 +4991,7 @@ def _handle_mesh_join_network(job, params):
             ],
             check=False,
         )
-        _run(["ip", "link", "set", bridge, "up"], check=False)
+        _run_cmd(job, ["ip", "link", "set", bridge, "up"], check=False)
 
     return {"status": "ok", "namespace": ns}
 
@@ -4993,7 +5011,7 @@ def handle_mesh_teardown(handler, params):
     ns = f"troshka-{pid}"
     conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
 
-    _run(["ip", "link", "del", wg_iface], check=False)
+    subprocess.run(["ip", "link", "del", wg_iface], capture_output=True, check=False)
 
     if os.path.exists(conf_path):
         os.remove(conf_path)
