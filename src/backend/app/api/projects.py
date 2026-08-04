@@ -994,6 +994,7 @@ def deploy_project(
     project_id: str,
     storage_pool_id: str | None = None,
     host_id: str | None = None,
+    provider_id: str | None = None,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1078,6 +1079,10 @@ def deploy_project(
                 status_code=400,
                 detail=f"Host is not available (state={target_host.state}, agent={target_host.agent_status})",
             )
+
+    if provider_id and not project.provider_id:
+        project.provider_id = provider_id
+        db.commit()
 
     result = place_project(
         db, project, storage_pool_id=storage_pool_id, host_id=host_id

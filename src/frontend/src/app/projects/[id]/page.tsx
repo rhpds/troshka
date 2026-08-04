@@ -146,8 +146,15 @@ export default function ProjectCanvasPage() {
     fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
       setIsAdmin(d.role === "admin");
       if (d.role === "admin") {
-        fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
-          const active = hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer");
+        Promise.all([
+          fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
+          fetch("/api/v1/providers/").then(r => r.ok ? r.json() : []),
+        ]).then(([hosts, providers]) => {
+          const provMap = new Map<string, string>();
+          for (const p of providers) provMap.set(p.id, p.name);
+          const active = hosts
+            .filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer")
+            .map((h: any) => ({ ...h, provider_name: provMap.get(h.provider_id) || null }));
           setAvailableHosts(active);
         });
       }
@@ -438,7 +445,7 @@ export default function ProjectCanvasPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
-  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null; provider_type: string | null}[]>([]);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null; provider_id: string | null; provider_name: string | null; provider_type: string | null}[]>([]);
   const [migrateTarget, setMigrateTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migrateSourceHost, setMigrateSourceHost] = useState<{instance_id: string | null; ip_address: string} | null>(null);
@@ -514,7 +521,11 @@ export default function ProjectCanvasPage() {
       await saveTopology();
       setProjectState("deploying");
       const deployParams = new URLSearchParams();
-      if (deployHostId) deployParams.set("host_id", deployHostId);
+      if (deployHostId?.startsWith("provider:")) {
+        deployParams.set("provider_id", deployHostId.slice(9));
+      } else if (deployHostId) {
+        deployParams.set("host_id", deployHostId);
+      }
       const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
       const resp = await fetch(`/api/v1/projects/${projectId}/deploy${deployQs}`, {
         method: "POST",
@@ -690,6 +701,17 @@ export default function ProjectCanvasPage() {
                   color: "var(--pf-t--global--text--color--regular)",
                 }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
                   <option value="">Auto (best host)</option>
+                  {(() => {
+                    const providers = new Map<string, {id: string; name: string; type: string}>();
+                    for (const h of availableHosts) {
+                      if (h.provider_id && h.provider_name && !providers.has(h.provider_id)) {
+                        providers.set(h.provider_id, {id: h.provider_id, name: h.provider_name, type: h.provider_type || ""});
+                      }
+                    }
+                    return Array.from(providers.values()).map((p) => (
+                      <option key={`provider:${p.id}`} value={`provider:${p.id}`}>Auto ({p.name})</option>
+                    ));
+                  })()}
                   {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
                 </select>
               )}

@@ -5005,7 +5005,10 @@ COMMAND_HANDLERS["mesh/join-network"] = _handle_mesh_join_network
 
 @route("DELETE", "/mesh/teardown")
 def handle_mesh_teardown(handler, params):
-    project_id = params.get("project_id")
+    from urllib.parse import parse_qs, urlparse
+
+    qs = parse_qs(urlparse(handler.path).query)
+    project_id = params.get("project_id") or (qs.get("project_id", [None])[0])
     if not project_id:
         handler._send_json(400, {"error": "project_id required"})
         return
