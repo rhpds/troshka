@@ -3255,17 +3255,111 @@ def _deploy_multihost(project_id: str, project, db):
         _delete_deploy_progress(project_id)
         return
 
-    # Step 4: Deploy VMs per host (simplified for now - just log)
-    _update_deploy_progress(project_id, "vms", "deploying VMs across hosts")
-    logger.info(
-        "Deploy %s: would deploy VMs across %d hosts (not yet implemented)",
-        project_id[:8],
-        len(host_assignments),
-    )
+    # Step 4: Deploy VMs per host — reuse existing per-VM functions
+    all_vms = _extract_vms(topology)
+    vm_id_set_by_host: dict[str, set[str]] = {}
+    for vm_node_id, hid in (project.host_assignments or {}).items():
+        vm_id_set_by_host.setdefault(hid, set()).add(vm_node_id)
 
-    # TODO: Implement per-host VM deployment
-    # For now, mark as complete
+    for host_id, vm_node_ids in vm_id_set_by_host.items():
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host:
+            continue
+        pool = _get_host_pool(host, db)
+        host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
+        host_label = f"{host.ip_address} ({len(host_vms)} VMs)"
+
+        _update_deploy_progress(project_id, "images", f"caching images on {host_label}")
+        logger.info("Deploy %s: caching images on %s", project_id[:8], host_label)
+        cache_library_images(topology, host, db)
+
+        _update_deploy_progress(
+            project_id, "seeds", f"creating seed ISOs on {host_label}"
+        )
+        logger.info("Deploy %s: creating seeds on %s", project_id[:8], host_label)
+        _create_seed_isos_via_troshkad(host, project_id, topology, pool)
+
+        _update_deploy_progress(project_id, "disks", f"creating disks on {host_label}")
+        logger.info("Deploy %s: creating disks on %s", project_id[:8], host_label)
+        disk_jobs = []
+        for vm in host_vms:
+            vm_disks = _find_vm_disks(vm["node_id"], topology)
+            job_ids = _create_vm_disks_via_troshkad(
+                host, project_id, vm, vm_disks, pool
+            )
+            disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+        for jid in disk_jobs:
+            job = wait_for_job(host, jid, timeout=900)
+            if job.get("status") == "failed":
+                error = job.get("result", {}).get("error", "unknown")
+                project.state = "error"
+                project.deploy_error = f"Disk creation failed on {host_label}: {error}"
+                db.commit()
+                _delete_deploy_progress(project_id)
+                return
+
+        _update_deploy_progress(project_id, "vms", f"defining VMs on {host_label}")
+        logger.info("Deploy %s: defining VMs on %s", project_id[:8], host_label)
+        clock_offset = None
+        if project.clock_target:
+            from app.services.clock_service import compute_clock_offset
+
+            clock_offset = compute_clock_offset(project.clock_target)
+        for vm in host_vms:
+            job_id = _create_vm_via_troshkad(
+                host,
+                project_id,
+                vm,
+                topology,
+                vni_map,
+                pool,
+                clock_offset=clock_offset,
+            )
+            if job_id:
+                job = wait_for_job(host, job_id, timeout=300)
+                if job.get("status") == "failed":
+                    error = job.get("result", {}).get("error", "unknown")
+                    project.state = "error"
+                    project.deploy_error = (
+                        f"VM creation failed on {host_label}: {error}"
+                    )
+                    db.commit()
+                    _delete_deploy_progress(project_id)
+                    return
+                dom_uuid = job.get("result", {}).get("domain_uuid", "")
+                if dom_uuid:
+                    for n in topology.get("nodes", []):
+                        if n["id"] == vm["node_id"]:
+                            n.setdefault("data", {})["domainUuid"] = dom_uuid
+                            break
+
+    project.topology = topology
+    db.commit()
+
+    # Step 5: Start VMs on each host
+    _update_deploy_progress(project_id, "starting", "starting VMs")
+    logger.info(
+        "Deploy %s: starting VMs across %d hosts",
+        project_id[:8],
+        len(vm_id_set_by_host),
+    )
+    for host_id, vm_node_ids in vm_id_set_by_host.items():
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host:
+            continue
+        start_failures = _start_vms_via_troshkad(host, project_id, topology)
+        if start_failures:
+            failed_names = ", ".join(name for name, _ in start_failures)
+            logger.warning(
+                "Deploy %s: some VMs failed to start on %s: %s",
+                project_id[:8],
+                host.ip_address,
+                failed_names,
+            )
+
     project.state = "active"
+    project.deploy_error = None
+    project.deployed_topology = topology
     db.commit()
     _delete_deploy_progress(project_id)
     logger.info("Deploy %s: multi-host deploy complete", project_id[:8])
