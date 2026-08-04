@@ -376,6 +376,19 @@ def _wait_for_shared_cache(db_session, pool_id, item_id, item_type, timeout=600)
 # ── Topology parsing ──
 
 
+def _filter_topology_for_host(topology: dict, vm_node_ids: set[str]) -> dict:
+    """Return a copy of topology with only the specified VM nodes."""
+    filtered_nodes = [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") != "vmNode" or n["id"] in vm_node_ids
+    ]
+    start_order = [
+        e for e in topology.get("startOrder", []) if e.get("vmId") in vm_node_ids
+    ]
+    return {**topology, "nodes": filtered_nodes, "startOrder": start_order}
+
+
 def _extract_vms(topology: dict) -> list[dict]:
     """Extract VM nodes with their properties."""
     vms = []
@@ -3277,7 +3290,8 @@ def _deploy_multihost(project_id: str, project, db):
             project_id, "seeds", f"creating seed ISOs on {host_label}"
         )
         logger.info("Deploy %s: creating seeds on %s", project_id[:8], host_label)
-        _create_seed_isos_via_troshkad(host, project_id, topology, pool)
+        host_topo = _filter_topology_for_host(topology, vm_node_ids)
+        _create_seed_isos_via_troshkad(host, project_id, host_topo, pool)
 
         _update_deploy_progress(project_id, "disks", f"creating disks on {host_label}")
         logger.info("Deploy %s: creating disks on %s", project_id[:8], host_label)
@@ -3347,7 +3361,8 @@ def _deploy_multihost(project_id: str, project, db):
         host = db.query(Host).filter_by(id=host_id).first()
         if not host:
             continue
-        start_failures = _start_vms_via_troshkad(host, project_id, topology)
+        host_topo = _filter_topology_for_host(topology, vm_node_ids)
+        start_failures = _start_vms_via_troshkad(host, project_id, host_topo)
         if start_failures:
             failed_names = ", ".join(name for name, _ in start_failures)
             logger.warning(
