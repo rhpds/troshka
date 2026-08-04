@@ -2519,7 +2519,7 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
         "memory": vm.get("ram_gb", 4) * 1024,
         "firmware": vm.get("firmware", "bios"),
         "machineType": "q35",
-        "smbiosUuid": vm_data.get("domainUuid", ""),
+        "smbiosUuid": vm_data.get("smbiosUuid") or vm_data.get("domainUuid", ""),
         "os": vm.get("os", ""),
         "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
         "recertEnabled": vm_data.get("recertEnabled", False),

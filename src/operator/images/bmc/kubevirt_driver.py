@@ -132,13 +132,14 @@ class KubeVirtDriver:
         )
 
     def set_power_state(self, identity, state):
+        if state == "ForceRestart":
+            self._delete_vmi(identity)
+            self._patch_vm_running(identity, True)
+            return
         running = state in ("On", "ForceOn")
         self._patch_vm_running(identity, running)
         if state in ("ForceOff", "GracefulShutdown"):
             self._delete_vmi(identity)
-        if state == "ForceRestart":
-            self._delete_vmi(identity)
-            self._patch_vm_running(identity, True)
 
     def get_boot_device(self, identity):
         devices = self._get_vm_devices(identity)
@@ -520,51 +521,42 @@ class KubeVirtDriver:
         }
 
     def eject_image(self, identity):
-        """Remove CDROM from VM and delete the DataVolume."""
-        state = self._vmedia_state.pop(identity, None)
-        if not state:
-            return
+        """Remove CDROM from VM, delete DataVolume, and restart VMI if running.
+
+        Checks the VM spec directly instead of relying on in-memory state,
+        so ejecting works even if the BMC pod restarted since InsertMedia.
+        """
+        self._vmedia_state.pop(identity, None)
 
         name = self._kv_name(identity)
-        dv_name = state["dv_name"]
+        dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
+        removed = False
 
         try:
             vm = self._get_vm(identity)
-            volumes = [
-                v
-                for v in vm.get("spec", {})
-                .get("template", {})
-                .get("spec", {})
-                .get("volumes", [])
-                if v.get("name") != _VMEDIA_VOL_NAME
-            ]
-            disks = [
-                d
-                for d in vm.get("spec", {})
-                .get("template", {})
-                .get("spec", {})
-                .get("domain", {})
-                .get("devices", {})
-                .get("disks", [])
-                if d.get("name") != _VMEDIA_VOL_NAME
-            ]
-            self.custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API_GROUP,
-                version=_KUBEVIRT_API_VERSION,
-                namespace=self.namespace,
-                plural=_VM_PLURAL,
-                name=name,
-                body={
-                    "spec": {
-                        "template": {
-                            "spec": {
-                                "volumes": volumes,
-                                "domain": {"devices": {"disks": disks}},
+            volumes = vm.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])  # type: ignore[union-attr]
+            disks = vm.get("spec", {}).get("template", {}).get("spec", {}).get("domain", {}).get("devices", {}).get("disks", [])  # type: ignore[union-attr]
+            new_volumes = [v for v in volumes if v.get("name") != _VMEDIA_VOL_NAME]
+            new_disks = [d for d in disks if d.get("name") != _VMEDIA_VOL_NAME]
+            if len(new_volumes) != len(volumes) or len(new_disks) != len(disks):
+                self.custom_api.patch_namespaced_custom_object(
+                    group=_KUBEVIRT_API_GROUP,
+                    version=_KUBEVIRT_API_VERSION,
+                    namespace=self.namespace,
+                    plural=_VM_PLURAL,
+                    name=name,
+                    body={
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "volumes": new_volumes,
+                                    "domain": {"devices": {"disks": new_disks}},
+                                }
                             }
                         }
-                    }
-                },
-            )
+                    },
+                )
+                removed = True
         except Exception:
             pass
 
@@ -578,3 +570,6 @@ class KubeVirtDriver:
             )
         except Exception:
             pass
+
+        if removed:
+            self._delete_vmi(identity)

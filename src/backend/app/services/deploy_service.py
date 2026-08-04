@@ -411,7 +411,7 @@ def _extract_vms(topology: dict) -> list[dict]:
                 "secure_boot": data.get("secureBoot", False),
                 "video_model": data.get("videoModel", "virtio"),
                 "input_model": data.get("inputModel", "virtio"),
-                "uuid": data.get("uuid"),
+                "uuid": data.get("smbiosUuid") or data.get("uuid"),
                 "recertEnabled": data.get("recertEnabled", False),
                 "ocpMonitor": data.get("ocpMonitor", False),
                 "configureBastionBrowser": data.get("configureBastionBrowser", False),

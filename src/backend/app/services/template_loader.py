@@ -518,7 +518,7 @@ def _generate_topology_from_vms(
                 raise ValueError(
                     f"VM '{vm_name}': invalid uuid '{vm_cfg['uuid']}' — must be UUID format"
                 )
-            vm_data["uuid"] = vm_cfg["uuid"]
+            vm_data["smbiosUuid"] = vm_cfg["uuid"]
         if bmc_ip:
             vm_data["bmcIp"] = bmc_ip
         if vm_cfg.get("pxe_boot_iso_id"):
@@ -884,13 +884,14 @@ def _generate_topology_from_vms(
     # Validate UUID uniqueness
     seen_uuids = {}
     for n in nodes:
-        if n.get("type") == "vmNode" and n.get("data", {}).get("uuid"):
-            u = n["data"]["uuid"]
+        d = n.get("data", {})
+        u = d.get("smbiosUuid") or d.get("uuid")
+        if n.get("type") == "vmNode" and u:
             if u in seen_uuids:
                 raise ValueError(
-                    f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{n['data'].get('name')}'"
+                    f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{d.get('name')}'"
                 )
-            seen_uuids[u] = n["data"].get("name", "")
+            seen_uuids[u] = d.get("name", "")
 
     # Build hiddenNodeIds from template
     hidden_ids = []
@@ -1064,6 +1065,9 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
 
         if d.get("secureBoot"):
             vm_out["secure_boot"] = True
+        smbios_uuid = d.get("smbiosUuid") or d.get("uuid")
+        if smbios_uuid:
+            vm_out["uuid"] = smbios_uuid
         if not d.get("powerOnAtDeploy", True):
             vm_out["power_on"] = False
         if d.get("recertEnabled"):

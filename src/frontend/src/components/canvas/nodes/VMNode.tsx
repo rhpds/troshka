@@ -3,11 +3,10 @@
 import React, { memo, useState, useEffect } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, requestDuplicateVM } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
 
 function VMNodeComponent({ id, data, selected }: NodeProps) {
-  const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const edges = useCanvasStore((s) => s.edges);
   const nodes = useCanvasStore((s) => s.nodes);
   const projectId = useCanvasStore((s) => s.currentProjectId);
@@ -361,7 +360,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             </button>
           </>
         )}
-        <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateNode(id); }}>
+        <button className="vm-node-action duplicate" title="Duplicate" onClick={(e) => { e.stopPropagation(); requestDuplicateVM(id); }}>
           ⧉
         </button>
         {isDeployed && !isNotFound && <button className="vm-node-action console" title="Console" onClick={(e) => { e.stopPropagation(); openConsole(); }}>

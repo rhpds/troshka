@@ -22,7 +22,8 @@ import { ContainerNode } from "./nodes/ContainerNode";
 import CanvasToolbar from "./CanvasToolbar";
 import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
-import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac } from "@/stores/canvasStore";
+import DuplicateVMModal from "./DuplicateVMModal";
+import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -53,6 +54,12 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenuState | null>(null);
   const [selectedNodes, setSelectedNodes] = useState<Node[]>([]);
+  const [duplicateVmId, setDuplicateVmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    onRequestDuplicateVM((id) => setDuplicateVmId(id));
+    return () => onRequestDuplicateVM(null);
+  }, []);
 
   const allNodes = useCanvasStore((s) => s.nodes);
   const allEdges = useCanvasStore((s) => s.edges);
@@ -581,8 +588,24 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
           onSnapshotVM={onSnapshotVM}
+          onDuplicateVM={(id) => setDuplicateVmId(id)}
         />
       )}
+      {duplicateVmId && (() => {
+        const vmNode = allNodes.find((n) => n.id === duplicateVmId);
+        const vmData = (vmNode?.data ?? {}) as Record<string, any>;
+        return (
+          <DuplicateVMModal
+            vmName={vmData.name as string || "VM"}
+            hasUuid={!!(vmData.smbiosUuid || vmData.domainUuid)}
+            onConfirm={(cloneUuid) => {
+              useCanvasStore.getState().duplicateNode(duplicateVmId, { cloneUuid });
+              setDuplicateVmId(null);
+            }}
+            onCancel={() => setDuplicateVmId(null)}
+          />
+        );
+      })()}
       {edgeContextMenu && (
         <EdgeContextMenu
           edgeId={edgeContextMenu.edgeId}

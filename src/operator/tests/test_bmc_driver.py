@@ -91,7 +91,9 @@ class TestSetPowerState:
         drv, mock_api, _ = _make_driver()
         drv.set_power_state("vm-uuid-1", "ForceRestart")
         assert mock_api.delete_namespaced_custom_object.call_count == 1
-        assert mock_api.patch_namespaced_custom_object.call_count == 2
+        assert mock_api.patch_namespaced_custom_object.call_count == 1
+        body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
+        assert body["spec"]["running"] is True
 
     def test_graceful_shutdown(self):
         drv, mock_api, _ = _make_driver()
@@ -357,21 +359,9 @@ class TestGetNics:
 
 
 class TestGetSystems:
-    def test_returns_uuids(self):
+    def test_returns_vm_map_keys_when_mapped(self):
         drv, mock_api, _ = _make_driver()
-        mock_api.list_namespaced_custom_object.return_value = {
-            "items": [
-                {
-                    "metadata": {"name": "kv-vm-1"},
-                    "spec": {
-                        "template": {
-                            "spec": {"domain": {"firmware": {"uuid": "uuid-1234"}}}
-                        }
-                    },
-                }
-            ]
-        }
-        assert drv.get_systems() == ["uuid-1234"]
+        assert drv.get_systems() == ["vm-uuid-1"]
 
 
 class TestGetBiosVersion:
@@ -385,3 +375,83 @@ class TestSetBootMode:
         drv, mock_api, _ = _make_driver()
         drv.set_boot_mode("vm-uuid-1", "UEFI")
         mock_api.patch_namespaced_custom_object.assert_not_called()
+
+
+class TestEjectImage:
+    """eject_image checks VM spec directly — works even after pod restart."""
+
+    def _vm_with_vmedia(self):
+        return {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "volumes": [
+                            {"name": "disk-root", "persistentVolumeClaim": {"claimName": "root"}},
+                            {"name": "vmedia-cd", "dataVolume": {"name": "kv-vm-1-vmedia-cd"}},
+                        ],
+                        "domain": {
+                            "devices": {
+                                "disks": [
+                                    {"name": "disk-root", "disk": {"bus": "virtio"}},
+                                    {"name": "vmedia-cd", "cdrom": {"bus": "sata"}},
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+    def _vm_without_vmedia(self):
+        return {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "volumes": [
+                            {"name": "disk-root", "persistentVolumeClaim": {"claimName": "root"}},
+                        ],
+                        "domain": {
+                            "devices": {
+                                "disks": [
+                                    {"name": "disk-root", "disk": {"bus": "virtio"}},
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+    def test_eject_without_inmemory_state(self):
+        """Eject works even when _vmedia_state is empty (pod restarted)."""
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = self._vm_with_vmedia()
+        drv.eject_image("vm-uuid-1")
+        patch_call = mock_api.patch_namespaced_custom_object.call_args[1]
+        volumes = patch_call["body"]["spec"]["template"]["spec"]["volumes"]
+        disks = patch_call["body"]["spec"]["template"]["spec"]["domain"]["devices"]["disks"]
+        assert all(v["name"] != "vmedia-cd" for v in volumes)
+        assert all(d["name"] != "vmedia-cd" for d in disks)
+        assert mock_api.delete_namespaced_custom_object.call_count >= 1
+
+    def test_eject_deletes_vmi_when_cdrom_removed(self):
+        """After removing CDROM from template, VMI is deleted to force restart."""
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = self._vm_with_vmedia()
+        drv.eject_image("vm-uuid-1")
+        delete_calls = mock_api.delete_namespaced_custom_object.call_args_list
+        vmi_deleted = any(
+            call[1].get("plural") == "virtualmachineinstances"
+            for call in delete_calls
+        )
+        assert vmi_deleted
+
+    def test_eject_noop_when_no_cdrom(self):
+        """No patch or VMI delete when VM has no virtual media attached."""
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = self._vm_without_vmedia()
+        drv.eject_image("vm-uuid-1")
+        patch_calls = [
+            c for c in mock_api.patch_namespaced_custom_object.call_args_list
+        ]
+        assert len(patch_calls) == 0

@@ -173,7 +173,7 @@ interface CanvasState {
   toggleMinimap: () => void;
   getSelectedNode: () => Node | undefined;
   autoLayout: () => Promise<void>;
-  duplicateNode: (nodeId: string) => void;
+  duplicateNode: (nodeId: string, opts?: { cloneUuid?: boolean }) => void;
   deleteEdge: (edgeId: string) => void;
   loadProject: (projectId: string) => void;
   startOrder: StartOrderEntry[];
@@ -193,6 +193,11 @@ interface CanvasState {
   canUndo: boolean;
   canRedo: boolean;
 }
+
+// VM duplicate modal callback — Canvas registers a listener, VMNode/ContextMenu call it
+let _duplicateVmCallback: ((nodeId: string) => void) | null = null;
+export function onRequestDuplicateVM(cb: ((nodeId: string) => void) | null) { _duplicateVmCallback = cb; }
+export function requestDuplicateVM(nodeId: string) { if (_duplicateVmCallback) _duplicateVmCallback(nodeId); }
 
 // Undo/redo history (not persisted)
 interface HistoryEntry { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[] }
@@ -757,7 +762,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     set({ externalIps: ips });
   },
 
-  duplicateNode: (nodeId) => {
+  duplicateNode: (nodeId, opts) => {
     const source = get().nodes.find((n) => n.id === nodeId);
     if (!source) return;
 
@@ -812,6 +817,17 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       if (newData.bmcEnabled && newData.bmcIp) {
         newData.bmcIp = allocateBmcIp();
       }
+      if (opts?.cloneUuid) {
+        // Keep the same smbiosUuid (or copy domainUuid as smbiosUuid)
+        const srcUuid = (source.data as Record<string, any>).smbiosUuid as string
+          || (source.data as Record<string, any>).domainUuid as string || "";
+        if (srcUuid) newData.smbiosUuid = srcUuid;
+      } else {
+        // Generate a new UUID (default)
+        newData.smbiosUuid = crypto.randomUUID();
+      }
+      // Never carry over the deployed domainUuid
+      delete newData.domainUuid;
     }
 
     const newNode: Node = {

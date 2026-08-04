@@ -649,6 +649,51 @@ export default function PropertiesPanel() {
           <div className="props-divider" />
 
           <div className="props-section">
+            <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("identity")}>
+              <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("identity") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
+              Identity
+            </div>
+            {!isCollapsed("identity") && <>
+            <div className="props-field">
+              <label className="props-label">SMBIOS UUID</label>
+              {(() => {
+                const explicit = (data as Record<string, any>).smbiosUuid as string || "";
+                const deployed = (data as Record<string, any>).domainUuid as string || "";
+                const display = explicit || deployed;
+                return (<>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input
+                      className="props-input"
+                      value={display}
+                      onChange={(e) => update("smbiosUuid", e.target.value || undefined)}
+                      placeholder="auto-generated at deploy"
+                      style={{ fontFamily: "monospace", fontSize: 11, flex: 1, ...(!explicit && deployed ? { opacity: 0.6 } : {}) }}
+                    />
+                    {display ? (
+                      <button
+                        style={{ background: "none", border: "1px solid var(--troshka-border)", borderRadius: 4, color: "var(--troshka-text-dim)", cursor: "pointer", padding: "2px 6px", fontSize: 10, flexShrink: 0 }}
+                        onClick={() => update("smbiosUuid", undefined)}
+                        title="Clear UUID (will be auto-generated at deploy)"
+                      >&#x2715;</button>
+                    ) : (
+                      <button
+                        style={{ background: "none", border: "1px solid var(--troshka-border)", borderRadius: 4, color: "var(--troshka-accent)", cursor: "pointer", padding: "2px 6px", fontSize: 10, flexShrink: 0 }}
+                        onClick={() => update("smbiosUuid", crypto.randomUUID())}
+                        title="Generate UUID"
+                      >Gen</button>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 2 }}>
+                    {!explicit && deployed ? "Current UUID from deploy. Edit to override." : "Hardware UUID exposed to the guest OS via SMBIOS. Leave empty for auto-generated."}
+                  </span>
+                </>);
+              })()}
+            </div>
+            </>}
+          </div>
+          <div className="props-divider" />
+
+          <div className="props-section">
             <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("io")}>
               <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("io") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
               I/O
