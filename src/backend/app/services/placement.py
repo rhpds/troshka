@@ -269,7 +269,7 @@ def find_multihost_placement(
         return sum(n.get("data", {}).get("vcpus", 2) for n in nodes)
 
     units = []
-    for ag_name, ag_nodes in affinity_groups.items():
+    for _, ag_nodes in affinity_groups.items():
         units.append(
             {
                 "vm_ids": [n["id"] for n in ag_nodes],

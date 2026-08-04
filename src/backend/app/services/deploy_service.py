@@ -1534,7 +1534,7 @@ def _setup_remote_networks(db, project, host_assignments, vni_map, topology):
 
         params = {
             "project_id": project.id,
-            "wg_local_ip": wg_ip_map.get(host_id, ""),
+            "wg_local_ip": wg_ip_map[host_id],
             "networks": networks,
         }
         try:

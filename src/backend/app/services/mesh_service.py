@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import logging
 import threading
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
@@ -11,8 +10,6 @@ from sqlalchemy.orm import Session
 from app.core.encryption import decrypt, encrypt
 from app.models.mesh_peer import ProjectMeshPeer
 from app.models.project import Project
-
-logger = logging.getLogger(__name__)
 
 _WG_PORT_BASE = 51820
 _WG_PORT_MAX = 51850
