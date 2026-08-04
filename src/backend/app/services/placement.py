@@ -406,7 +406,7 @@ def place_project(
             for hid in host_assignments:
                 h = db.query(Host).filter_by(id=hid).first()
                 if h:
-                    host_ips[hid] = h.ip_address
+                    host_ips[hid] = h.private_ip or h.ip_address
 
             vni_map = allocate_vnis_for_project(db, project.topology)
 
