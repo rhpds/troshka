@@ -1136,6 +1136,13 @@ def deploy_project(
 
     enqueue_job(deploy_project_async, project.id, project_id=project.id)
 
+    if result.get("multi_host"):
+        return {
+            "status": "deploying",
+            "multi_host": True,
+            "host_count": len(result["host_assignments"]),
+            "network_host_id": result["network_host_id"],
+        }
     return {
         "status": "deploying",
         "host_id": result["host_id"],
