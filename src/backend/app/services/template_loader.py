@@ -552,7 +552,7 @@ def _generate_topology_from_vms(
         if vm_cfg.get("affinity_group"):
             vm_data["affinityGroup"] = vm_cfg["affinity_group"]
         if vm_cfg.get("separate_host"):
-            vm_data["separateHost"] = True
+            vm_data["separateHost"] = vm_cfg["separate_host"]
 
         vm_node = {
             "id": _id(),

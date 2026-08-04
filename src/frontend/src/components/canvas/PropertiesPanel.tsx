@@ -403,14 +403,14 @@ export default function PropertiesPanel() {
               />
             </div>
             <div className="props-field">
-              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={(data as Record<string, any>).separateHost as boolean ?? false}
-                  onChange={(e) => update("separateHost", e.target.checked || undefined)}
-                />
-                Separate Host
-              </label>
+              <label className="props-label">Anti-Affinity Group</label>
+              <input
+                className="props-input"
+                type="text"
+                placeholder="none"
+                value={(data as Record<string, any>).separateHost as string || ""}
+                onChange={(e) => update("separateHost", e.target.value || undefined)}
+              />
             </div>
             </>)}
           </div>

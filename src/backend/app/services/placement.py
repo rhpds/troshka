@@ -255,10 +255,12 @@ def find_multihost_placement(
 
     affinity_groups: dict[str, list[dict]] = {}
     ungrouped: list[dict] = []
-    anti_affinity_ids: set[str] = set()
+    # Anti-affinity: map vm_id → group name; VMs in the same group go on different hosts
+    anti_affinity_map: dict[str, str] = {}
     for node in vm_nodes:
-        if node.get("data", {}).get("separateHost"):
-            anti_affinity_ids.add(node["id"])
+        aa = node.get("data", {}).get("separateHost")
+        if aa and isinstance(aa, str):
+            anti_affinity_map[node["id"]] = aa
         ag = node.get("data", {}).get("affinityGroup")
         if ag:
             affinity_groups.setdefault(ag, []).append(node)
@@ -322,15 +324,23 @@ def find_multihost_placement(
             key=lambda hid: host_remaining[hid]["ram_mb"],
             reverse=True,
         )
-        unit_has_anti = bool(anti_affinity_ids & set(unit["vm_ids"]))
+        unit_aa_groups = {
+            anti_affinity_map[vid] for vid in unit["vm_ids"] if vid in anti_affinity_map
+        }
         for hid in sorted_hosts:
             remaining = host_remaining[hid]
             if (
                 remaining["ram_mb"] >= unit["ram_mb"]
                 and remaining["vcpus"] >= unit["vcpus"]
             ):
-                if unit_has_anti and (anti_affinity_ids & set(assignments[hid])):
-                    continue
+                if unit_aa_groups:
+                    host_aa_groups = {
+                        anti_affinity_map[vid]
+                        for vid in assignments[hid]
+                        if vid in anti_affinity_map
+                    }
+                    if unit_aa_groups & host_aa_groups:
+                        continue
                 assignments[hid].extend(unit["vm_ids"])
                 remaining["ram_mb"] -= unit["ram_mb"]
                 remaining["vcpus"] -= unit["vcpus"]
@@ -371,12 +381,14 @@ def place_project(
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
-    # Check for anti-affinity (separateHost) — forces multi-host placement
-    has_anti_affinity = any(
-        n.get("data", {}).get("separateHost")
-        for n in project.topology.get("nodes", [])
-        if n.get("type") in ("vmNode", "containerNode")
-    )
+    # Check for anti-affinity (separateHost group) — forces multi-host placement
+    aa_groups: dict[str, int] = {}
+    for n in project.topology.get("nodes", []):
+        if n.get("type") in ("vmNode", "containerNode"):
+            aa = n.get("data", {}).get("separateHost")
+            if aa and isinstance(aa, str):
+                aa_groups[aa] = aa_groups.get(aa, 0) + 1
+    has_anti_affinity = any(count > 1 for count in aa_groups.values())
 
     # Admin-specified host override
     if host_id:
