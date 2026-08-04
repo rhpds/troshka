@@ -7181,30 +7181,132 @@ def _destroy_cleanup_route_access(host, project_id, session):
         )
 
 
+def _destroy_multihost(session, project):
+    """Destroy a multi-host project: VMs, networks, mesh."""
+    from app.models.host import Host
+
+    project_id = project.id
+    host_assignments = project.host_assignments or {}
+    network_host_id = project.mesh_network_host_id
+    vni_map = project.vni_map or {}
+
+    # Collect unique host IDs
+    unique_host_ids = set(host_assignments.values()) if host_assignments else set()
+    if project.host_id:
+        unique_host_ids.add(project.host_id)
+
+    # 1. Stop VMs on all hosts
+    logger.info("Destroy %s: stopping VMs on all hosts", project_id[:8])
+    for host_id in unique_host_ids:
+        host = session.query(Host).filter_by(id=host_id).first()
+        if not host or host.agent_status != "connected":
+            logger.warning(
+                "Destroy %s: host %s not connected", project_id[:8], host_id[:8]
+            )
+            continue
+        try:
+            job_id = start_job(host, "/vms/stop-all", {"project_id": project_id})
+            wait_for_job(host, job_id, timeout=120)
+        except Exception as e:
+            logger.warning("Failed to stop VMs on host %s: %s", host_id[:8], e)
+
+    # 2. Tear down VXLAN on remote hosts (non-network hosts)
+    logger.info("Destroy %s: tearing down remote networks", project_id[:8])
+    for host_id in unique_host_ids:
+        if host_id == network_host_id:
+            continue
+        host = session.query(Host).filter_by(id=host_id).first()
+        if not host or host.agent_status != "connected":
+            continue
+        vni_list = list(vni_map.values())
+        try:
+            job_id = start_job(
+                host,
+                "/networks/full-teardown",
+                {
+                    "project_id": project_id,
+                    "vni_list": vni_list,
+                },
+            )
+            wait_for_job(host, job_id, timeout=120)
+        except Exception as e:
+            logger.warning(
+                "Failed to tear down remote network on %s: %s", host_id[:8], e
+            )
+
+    # 3. Tear down network host (use existing single-host path)
+    logger.info("Destroy %s: tearing down network host", project_id[:8])
+    if network_host_id:
+        network_host = session.query(Host).filter_by(id=network_host_id).first()
+        if network_host and network_host.agent_status == "connected":
+            with _get_network_lock(network_host.id):
+                _teardown_networks_via_troshkad(network_host, project_id, vni_map)
+
+    # 4. Tear down WireGuard on all hosts
+    logger.info("Destroy %s: tearing down mesh on all hosts", project_id[:8])
+    for host_id in unique_host_ids:
+        host = session.query(Host).filter_by(id=host_id).first()
+        if not host or host.agent_status != "connected":
+            continue
+        try:
+            troshkad_request(host, "DELETE", f"/mesh/teardown?project_id={project_id}")
+        except Exception as e:
+            logger.warning("Failed to teardown mesh on %s: %s", host_id[:8], e)
+
+    # 5. Clean up DB
+    logger.info("Destroy %s: cleaning up mesh DB entries", project_id[:8])
+    delete_mesh_peers(session, project_id)
+
+
 def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
     """Orchestrate project destruction by delegating to focused helper functions."""
     from app.core.database import SessionLocal
     from app.models.host import Host
+    from app.models.project import Project
 
     project_id = ctx["project_id"]
     s = SessionLocal()
     try:
-        host = s.query(Host).filter_by(id=ctx["host_id"]).first()
-        if not host or not host.ip_address:
+        project = s.query(Project).filter_by(id=project_id).first()
+        if not project:
             if delete_record:
                 _delete_project_record(project_id)
             return
 
-        # KubeVirt native: delegate destroy to operator
-        if host.host_type == "kubevirt-cluster":
-            _destroy_kubevirt_native(project_id, host, s, delete_record)
-            return
+        # Multi-host project: delegate to multi-host destroy path
+        if project.mesh_subnet_id:
+            logger.info("Destroy %s: multi-host project detected", project_id[:8])
+            _destroy_multihost(s, project)
+            # Continue with common cleanup (DNS, EIPs, etc.)
+            # Fall through to common cleanup section below
+        else:
+            # Single-host project: existing path
+            host = s.query(Host).filter_by(id=ctx["host_id"]).first()
+            if not host or not host.ip_address:
+                if delete_record:
+                    _delete_project_record(project_id)
+                return
 
+            # KubeVirt native: delegate destroy to operator
+            if host.host_type == "kubevirt-cluster":
+                _destroy_kubevirt_native(project_id, host, s, delete_record)
+                return
+
+            vni_map = ctx.get("vni_map", {})
+            topo = ctx.get("topology", {})
+
+            # Tear down all troshkad-managed resources (containers, VMs, files, BMC, networks)
+            _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
+
+            # Clean up security group rules for this project
+            _destroy_cleanup_sg_rules(host, project_id, s)
+
+            # Clean up Route-based external access (OCP Virt only)
+            _destroy_cleanup_route_access(host, project_id, s)
+
+        # Common cleanup for both single-host and multi-host projects
         vni_map = ctx.get("vni_map", {})
         topo = ctx.get("topology", {})
-
-        # Tear down all troshkad-managed resources (containers, VMs, files, BMC, networks)
-        _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
 
         # Delete DNS records if configured
         if ctx.get("dns_provider_id"):
@@ -7218,12 +7320,6 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
             if dns_provider and dns_records:
                 logger.info("Teardown %s: deleting DNS records", project_id[:8])
                 delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
-
-        # Clean up security group rules for this project
-        _destroy_cleanup_sg_rules(host, project_id, s)
-
-        # Clean up Route-based external access (OCP Virt only)
-        _destroy_cleanup_route_access(host, project_id, s)
 
         # Release all EIPs for this project
         from app.models.elastic_ip import ElasticIp

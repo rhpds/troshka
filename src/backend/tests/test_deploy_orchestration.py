@@ -50,6 +50,7 @@ def _make_project(
     provider_id="prov-1",
     auto_stop_minutes=None,
     auto_stopped=False,
+    mesh_subnet_id=None,
 ):
     p = MagicMock()
     p.id = PROJECT_ID
@@ -71,6 +72,8 @@ def _make_project(
     p.ocp_monitor_started_at = None
     p.mesh_network_host_id = None
     p.host_assignments = None
+    p.mesh_subnet_id = mesh_subnet_id
+    p.deployed_topology = topology or {}
     return p
 
 
@@ -2678,14 +2681,24 @@ class TestDestroyProjectInner:
         self, mock_resources, mock_sg, mock_routes, mock_delete_record
     ):
         """Happy path: troshkad host, resources destroyed, record deleted."""
+        from app.models.host import Host
+        from app.models.project import Project
         from app.services.deploy_service import _destroy_project_inner
 
         host = _make_host()
+        project = _make_project(vni_map={"net1": 100}, topology=_minimal_topology())
+
+        def mock_query(model):
+            mock_q = MagicMock()
+            if model == Project:
+                mock_q.filter_by.return_value.first.return_value = project
+            elif model == Host:
+                mock_q.filter_by.return_value.first.return_value = host
+            mock_q.filter_by.return_value.all.return_value = []  # No EIPs
+            return mock_q
+
         mock_session = MagicMock()
-        mock_session.query.return_value.filter_by.return_value.first.return_value = host
-        mock_session.query.return_value.filter_by.return_value.all.return_value = (
-            []
-        )  # No EIPs
+        mock_session.query.side_effect = mock_query
 
         ctx = {
             "project_id": PROJECT_ID,
@@ -2753,11 +2766,23 @@ class TestDestroyProjectInner:
     @patch(f"{SVC}._destroy_kubevirt_native")
     def test_kubevirt_delegates(self, mock_kv_destroy):
         """kubevirt-cluster host type delegates to _destroy_kubevirt_native."""
+        from app.models.host import Host
+        from app.models.project import Project
         from app.services.deploy_service import _destroy_project_inner
 
         host = _make_host(host_type="kubevirt-cluster")
+        project = _make_project(topology={}, vni_map={})
+
+        def mock_query(model):
+            mock_q = MagicMock()
+            if model == Project:
+                mock_q.filter_by.return_value.first.return_value = project
+            elif model == Host:
+                mock_q.filter_by.return_value.first.return_value = host
+            return mock_q
+
         mock_session = MagicMock()
-        mock_session.query.return_value.filter_by.return_value.first.return_value = host
+        mock_session.query.side_effect = mock_query
 
         ctx = {
             "project_id": PROJECT_ID,
@@ -2775,11 +2800,23 @@ class TestDestroyProjectInner:
     @patch(f"{SVC}._destroy_troshkad_resources", side_effect=RuntimeError("disk busy"))
     def test_exception_sets_destroy_error(self, mock_resources, mock_set_err):
         """Exception during destroy sets error via _set_destroy_error."""
+        from app.models.host import Host
+        from app.models.project import Project
         from app.services.deploy_service import _destroy_project_inner
 
         host = _make_host()
+        project = _make_project(vni_map={}, topology={})
+
+        def mock_query(model):
+            mock_q = MagicMock()
+            if model == Project:
+                mock_q.filter_by.return_value.first.return_value = project
+            elif model == Host:
+                mock_q.filter_by.return_value.first.return_value = host
+            return mock_q
+
         mock_session = MagicMock()
-        mock_session.query.return_value.filter_by.return_value.first.return_value = host
+        mock_session.query.side_effect = mock_query
 
         ctx = {
             "project_id": PROJECT_ID,
