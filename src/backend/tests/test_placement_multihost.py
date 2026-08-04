@@ -36,9 +36,9 @@ def _make_host(db, provider, vcpus=64, ram_mb=256000, **kwargs):
 
 
 def _topology_with_vms(vm_specs):
-    """vm_specs: list of (name, vcpus, ram_mb, affinity_group|None)"""
+    """vm_specs: list of (name, vcpus, ram_gb, affinity_group|None)"""
     nodes = []
-    for name, vcpus, ram_mb, affinity in vm_specs:
+    for name, vcpus, ram_gb, affinity in vm_specs:
         node_id = str(uuid.uuid4())
         nodes.append(
             {
@@ -48,7 +48,7 @@ def _topology_with_vms(vm_specs):
                     "label": name,
                     "name": name,
                     "vcpus": vcpus,
-                    "memoryMb": ram_mb,
+                    "ram": ram_gb,
                     **({"affinityGroup": affinity} if affinity else {}),
                 },
             }
@@ -65,9 +65,9 @@ def test_multihost_placement_basic():
 
         topo = _topology_with_vms(
             [
-                ("vm1", 8, 32000, None),
-                ("vm2", 8, 32000, None),
-                ("vm3", 8, 32000, None),
+                ("vm1", 8, 16, None),
+                ("vm2", 8, 16, None),
+                ("vm3", 8, 16, None),
             ]
         )
 
@@ -95,9 +95,9 @@ def test_multihost_placement_respects_affinity():
 
         topo = _topology_with_vms(
             [
-                ("worker1", 4, 16000, "workers"),
-                ("worker2", 4, 16000, "workers"),
-                ("hub", 8, 48000, "hub"),
+                ("worker1", 4, 16, "workers"),
+                ("worker2", 4, 16, "workers"),
+                ("hub", 8, 48, "hub"),
             ]
         )
 
@@ -128,7 +128,7 @@ def test_multihost_placement_returns_none_when_impossible():
 
         topo = _topology_with_vms(
             [
-                ("huge-vm", 64, 512000, None),
+                ("huge-vm", 64, 512, None),
             ]
         )
 

@@ -263,7 +263,7 @@ def find_multihost_placement(
             ungrouped.append(node)
 
     def _group_ram(nodes):
-        return sum(n.get("data", {}).get("memoryMb", 4096) for n in nodes)
+        return sum(n.get("data", {}).get("ram", 4) * 1024 for n in nodes)
 
     def _group_vcpus(nodes):
         return sum(n.get("data", {}).get("vcpus", 2) for n in nodes)
@@ -281,7 +281,7 @@ def find_multihost_placement(
         units.append(
             {
                 "vm_ids": [node["id"]],
-                "ram_mb": node.get("data", {}).get("memoryMb", 4096),
+                "ram_mb": node.get("data", {}).get("ram", 4) * 1024,
                 "vcpus": node.get("data", {}).get("vcpus", 2),
             }
         )
