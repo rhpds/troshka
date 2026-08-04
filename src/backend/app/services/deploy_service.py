@@ -3324,6 +3324,27 @@ def _deploy_multihost(project_id: str, project, db):
 
         _update_deploy_progress(project_id, "vms", f"defining VMs on {host_label}")
         logger.info("Deploy %s: defining VMs on %s", project_id[:8], host_label)
+        for vm in host_vms:
+            domain_name = _vm_domain_name(project_id, vm["node_id"])
+            try:
+                j = start_job(host, "/vm/info", {"name": domain_name})
+                r = wait_for_job(host, j, timeout=10)
+                if r.get("result", {}).get("state"):
+                    logger.info(
+                        "Deploy %s: stale domain %s on %s, removing",
+                        project_id[:8],
+                        domain_name,
+                        host_label,
+                    )
+                    try:
+                        d = start_job(
+                            host, "/vms/destroy", {"domain_name": domain_name}
+                        )
+                        wait_for_job(host, d, timeout=60)
+                    except TroshkadError:
+                        pass
+            except TroshkadError:
+                pass
         clock_offset = None
         if project.clock_target:
             from app.services.clock_service import compute_clock_offset
