@@ -60,14 +60,10 @@ else
     echo "WARNING: Nested virtualization NOT detected"
 fi
 
-# Ensure prerequisites — skip dnf if already installed
-if ! which virsh &>/dev/null || ! which virt-install &>/dev/null || ! which nc &>/dev/null; then
-    echo "Installing prerequisites..."
-    dnf install -y qemu-kvm libvirt libvirt-client virt-install \
-        python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass wireguard-tools || true
-else
-    echo "Prerequisites already installed, skipping dnf"
-fi
+# Ensure prerequisites
+echo "Installing prerequisites..."
+dnf install -y qemu-kvm libvirt libvirt-client virt-install \
+    python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass wireguard-tools || true
 
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then
