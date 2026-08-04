@@ -1098,7 +1098,12 @@ def deploy_project(
         project.mesh_network_host_id = result["network_host_id"]
         project.host_id = result["network_host_id"]  # backward compat
         project.vni_map = result["vni_map"]
-        project.host_assignments = result["host_assignments"]
+        # Flatten {host_id: [vm_ids]} → {vm_id: host_id}
+        flat = {}
+        for hid, vm_ids in result["host_assignments"].items():
+            for vid in vm_ids:
+                flat[vid] = hid
+        project.host_assignments = flat
         db.commit()
         logger.info(
             "Deploy %s: multi-host placement across %d hosts",
