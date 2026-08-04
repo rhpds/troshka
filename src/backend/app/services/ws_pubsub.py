@@ -438,18 +438,39 @@ def _batch_fetch_vm_states(projects, deploying_host_ids, db):
 
     host_batch_states: dict = {}
     project_batch_states: dict = {}
+
+    # Build set of all hosts to query (handles both single-host and multi-host projects)
+    hosts_to_query = set()
     for project in projects.values():
-        if project.host_id in deploying_host_ids:
-            continue
-        host = db.query(Host).filter_by(id=project.host_id).first()
+        if project.host_assignments:
+            # Multi-host: query all hosts in the assignments
+            hosts_to_query.update(set(project.host_assignments.values()))
+        elif project.host_id:
+            # Single-host: query the project's host
+            hosts_to_query.add(project.host_id)
+
+    # Remove deploying hosts from the query set
+    hosts_to_query -= deploying_host_ids
+
+    # Fetch VM states from each host
+    for host_id in hosts_to_query:
+        host = db.query(Host).filter_by(id=host_id).first()
         if not host or not host.ip_address:
             continue
         if host.host_type == "kubevirt-cluster":
-            kv_states = _fetch_kubevirt_vm_states(project, host, db)
-            if kv_states:
-                project_batch_states[project.id] = kv_states
-            continue
-        _fetch_troshkad_host_states(host, host_batch_states)
+            # KubeVirt: fetch per-project states (for projects on this cluster)
+            for project in projects.values():
+                if project.host_id == host_id or (
+                    project.host_assignments
+                    and host_id in project.host_assignments.values()
+                ):
+                    kv_states = _fetch_kubevirt_vm_states(project, host, db)
+                    if kv_states:
+                        project_batch_states[project.id] = kv_states
+        else:
+            # Troshkad: fetch all VMs on this host (shared across projects)
+            _fetch_troshkad_host_states(host, host_batch_states)
+
     return host_batch_states, project_batch_states
 
 
@@ -460,7 +481,20 @@ def _notify_all_projects(projects, host_batch_states, project_batch_states):
     for project_id, project in projects.items():
         dp = _get_deploy_progress_data(project_id)
         kv_batch = project_batch_states.get(project_id)
-        host_batch = host_batch_states.get(project.host_id) if project.host_id else None
+
+        # Collect host states for this project (handles both single-host and multi-host)
+        if project.host_assignments:
+            # Multi-host: gather states from all hosts
+            host_batch = {}
+            for host_id in set(project.host_assignments.values()):
+                if host_id in host_batch_states:
+                    host_batch.update(host_batch_states[host_id])
+        else:
+            # Single-host: existing behavior
+            host_batch = (
+                host_batch_states.get(project.host_id) if project.host_id else None
+            )
+
         if project.state in ("active", "stopped"):
             vm_states, vm_progress, vm_boot_devs = _map_vm_states_for_project(
                 project, host_batch, kv_batch
@@ -478,6 +512,8 @@ def _notify_all_projects(projects, host_batch_states, project_batch_states):
 
 
 def _poll_active_projects():
+    from sqlalchemy import or_
+
     from app.core.database import SessionLocal
     from app.models.project import Project
     from app.services.deploy_service import _get_deploy_progress_data
@@ -487,7 +523,10 @@ def _poll_active_projects():
         all_projects = (
             db.query(Project)
             .filter(
-                Project.host_id.isnot(None),
+                or_(
+                    Project.host_id.isnot(None),
+                    Project.host_assignments.isnot(None),
+                ),
                 Project.state.in_(("active", "stopped")),
             )
             .all()
@@ -499,8 +538,11 @@ def _poll_active_projects():
 
         deploying_host_ids = set()
         for pid, p in projects.items():
-            if _get_deploy_progress_data(pid) and p.host_id:
-                deploying_host_ids.add(p.host_id)
+            if _get_deploy_progress_data(pid):
+                if p.host_id:
+                    deploying_host_ids.add(p.host_id)
+                if p.host_assignments:
+                    deploying_host_ids.update(set(p.host_assignments.values()))
 
         host_batch_states, project_batch_states = _batch_fetch_vm_states(
             projects, deploying_host_ids, db

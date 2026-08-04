@@ -2537,6 +2537,7 @@ def _ep_project(**overrides):
         topology=None,
         deployed_topology=None,
         host_id=None,
+        host_assignments=None,
         vni_map=None,
         deploy_error=None,
         deploy_started_at=None,

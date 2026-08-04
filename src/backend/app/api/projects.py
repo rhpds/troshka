@@ -1795,7 +1795,17 @@ def get_vm_console(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    project, default_host = _get_project_and_host(project_id, user, db)
+
+    # Determine which host this VM is on
+    if project.host_assignments and vm_id in project.host_assignments:
+        target_host_id = project.host_assignments[vm_id]
+        host = db.query(Host).filter_by(id=target_host_id).first()
+        if not host:
+            raise HTTPException(status_code=404, detail="Host not found for VM")
+    else:
+        # Single-host project: use the host from _get_project_and_host
+        host = default_host
 
     # KubeVirt native: VNC via proxy pod + OCP Route
     if host.host_type == "kubevirt-cluster":

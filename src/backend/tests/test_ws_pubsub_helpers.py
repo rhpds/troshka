@@ -155,6 +155,7 @@ class TestBatchFetchVmStates:
         proj = MagicMock()
         proj.id = "p1"
         proj.host_id = "h1"
+        proj.host_assignments = None
         projects = {"p1": proj}
 
         host = MagicMock()
@@ -175,6 +176,7 @@ class TestBatchFetchVmStates:
         proj = MagicMock()
         proj.id = "p1"
         proj.host_id = "h1"
+        proj.host_assignments = None
         projects = {"p1": proj}
 
         host = MagicMock()
