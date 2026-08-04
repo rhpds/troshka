@@ -14,6 +14,7 @@ import time
 from datetime import UTC, datetime
 
 from app.core.config import config
+from app.models.mesh_peer import ProjectMeshPeer
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,36 @@ def _evaluate_partitions(health):
         elif pct >= _WARNING_PCT:
             warnings.append({"mount": p["mount"], "used_pct": pct, "level": "warning"})
     return warnings if warnings else None
+
+
+def _check_mesh_health(host, db):
+    """Check WireGuard handshake status for any mesh peers on this host."""
+    from app.services.troshkad_client import troshkad_request
+
+    peer_count = db.query(ProjectMeshPeer).filter_by(host_id=host.id).count()
+    if peer_count == 0:
+        return
+
+    try:
+        resp = troshkad_request(host, "GET", "/mesh/status")
+        mesh_warnings = []
+        now = int(time.time())
+        for project_id, info in resp.get("projects", {}).items():
+            if "error" in info:
+                mesh_warnings.append(f"WireGuard {project_id[:8]}: {info['error']}")
+                continue
+            for pubkey, last_handshake in info.get("peers", {}).items():
+                if last_handshake > 0 and (now - last_handshake) > 180:
+                    mesh_warnings.append(
+                        f"WireGuard {project_id[:8]}: peer {pubkey[:8]}… stale ({now - last_handshake}s)"
+                    )
+
+        existing_warnings = host.storage_warnings or []
+        non_mesh = [w for w in existing_warnings if not w.startswith("WireGuard")]
+        host.storage_warnings = non_mesh + mesh_warnings
+        db.commit()
+    except Exception as e:
+        logger.debug("Mesh health check failed for host %s: %s", host.id, e)
 
 
 def _get_initial_ip():
@@ -201,6 +232,9 @@ def _poll_hosts():
                                 host.id[:8],
                                 exc_info=True,
                             )
+
+                    # Check WireGuard mesh health
+                    _check_mesh_health(host, db)
 
                     if (
                         host.storage_pool_id

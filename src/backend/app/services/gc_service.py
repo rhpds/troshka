@@ -302,11 +302,13 @@ def recover_host_services(host_id: str):
 
     from app.core.database import SessionLocal
     from app.models.host import Host
+    from app.models.mesh_peer import ProjectMeshPeer
     from app.models.project import Project
     from app.services.deploy_service import (
         _extract_bmc_config,
         _setup_bmc_via_troshkad,
     )
+    from app.services.mesh_service import get_peer_config_for_host
     from app.services.troshkad_client import get_all_vm_states, start_job, wait_for_job
 
     db = SessionLocal()
@@ -334,6 +336,21 @@ def recover_host_services(host_id: str):
         log.info(
             "Host %s reconnected — recovering %d project(s)", host_id[:8], len(projects)
         )
+
+        # Recover WireGuard mesh interfaces
+        mesh_peers = db.query(ProjectMeshPeer).filter_by(host_id=host_id).all()
+        for peer in mesh_peers:
+            try:
+                config = get_peer_config_for_host(db, peer.project_id, host_id)
+                job_id = start_job(host, "/mesh/setup", config)
+                wait_for_job(host, job_id, timeout=60)
+                log.info(
+                    "Recovered mesh for project %s on host %s",
+                    peer.project_id[:8],
+                    host_id[:8],
+                )
+            except Exception as e:
+                log.warning("Failed to recover mesh for %s: %s", peer.project_id[:8], e)
 
         net_result = repair_networks(db, host)
         log.info("Host %s network repair: %s", host_id[:8], net_result)
