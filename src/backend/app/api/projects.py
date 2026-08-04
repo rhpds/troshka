@@ -1852,7 +1852,10 @@ def get_vm_console(
     from app.services.console_dns import sign_console_jwt
 
     jwt = sign_console_jwt(dom, host.id, host.agent_token)
-    return {"ws_url": f"wss://{host.console_domain}/ws/{jwt}"}
+    return {
+        "ws_url": f"wss://{host.console_domain}/ws/{jwt}",
+        "host_type": host.host_type,
+    }
 
 
 @router.get("/{project_id}/vms/{vm_id}/ready")

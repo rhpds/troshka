@@ -94,14 +94,14 @@ function ConsolePage() {
   }, [projectId, vmId]);
 
   // Fetch console WebSocket URL from API
-  const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<string | null> => {
+  const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<{url: string; hostType: string} | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
       const q = force ? "?force=true" : "";
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
-      if (data.ws_url) return data.ws_url;
+      if (data.ws_url) return { url: data.ws_url, hostType: data.host_type || "" };
     } catch { /* ignore */ }
     return null;
   }, [projectId, vmId, projectDeleted]);
@@ -135,26 +135,31 @@ function ConsolePage() {
   const pollForPort = useCallback(() => {
     if (!mountedRef.current || projectDeleted) return;
     setStatus("Waiting for VM...");
-    fetchConsoleUrl().then((url) => {
+    fetchConsoleUrl().then((result) => {
       if (!mountedRef.current || projectDeleted) return;
-      if (!url) {
+      if (!result) {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      // Pre-flight via /check/ path — vncd validates token but doesn't consume it
-      preflightCheck(url.replace("/ws/", "/check/")).then((result) => {
-        if (!mountedRef.current) return;
-        if (result === "in_use") {
-          setStatus("Console in use by another session");
-          return;
-        }
-        if (result === "ok") {
-          // Same token works — pre-flight didn't consume it
-          setWsUrl(url);
-        } else {
-          reconnectTimer.current = setTimeout(pollForPort, 3000);
-        }
-      });
+      const { url, hostType } = result;
+      if (hostType === "kubevirt-cluster") {
+        // KubeVirt: pre-flight check for session-in-use detection
+        preflightCheck(url.replace("/ws/", "/check/")).then((check) => {
+          if (!mountedRef.current) return;
+          if (check === "in_use") {
+            setStatus("Console in use by another session");
+            return;
+          }
+          if (check === "ok") {
+            setWsUrl(url);
+          } else {
+            reconnectTimer.current = setTimeout(pollForPort, 3000);
+          }
+        });
+      } else {
+        // troshkad: connect directly, no pre-flight
+        setWsUrl(url);
+      }
     });
   }, [fetchConsoleUrl, preflightCheck, projectDeleted]);
 
@@ -682,9 +687,9 @@ function ConsolePage() {
                 <span style={{ fontSize: 13, color: "#fbbf24" }}>Console in use by another session</span>
                 <button
                   onClick={() => {
-                    fetchConsoleUrl().then((url) => {
-                      if (!url) return;
-                      const forceUrl = url.replace(/\/([^/]+)$/, "/force/$1");
+                    fetchConsoleUrl().then((result) => {
+                      if (!result) return;
+                      const forceUrl = result.url.replace(/\/([^/]+)$/, "/force/$1");
                       setWsUrl(forceUrl);
                     });
                   }}
