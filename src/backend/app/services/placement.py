@@ -306,6 +306,9 @@ def find_multihost_placement(
     if not available_hosts:
         return None
 
+    for h in available_hosts:
+        sync_host_capacity(db, h)
+
     overcommit = 2.0
     host_remaining = {
         h.id: {
