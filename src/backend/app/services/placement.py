@@ -238,6 +238,119 @@ def _auto_select_pool(db: Session) -> str | None:
     return best_pool
 
 
+def find_multihost_placement(
+    db: Session,
+    topology: dict,
+    pool_id: str | None,
+    provider_id: str | None,
+) -> dict[str, list[str]] | None:
+    """Bin-pack VMs across multiple hosts. Returns {host_id: [vm_node_ids]} or None."""
+    vm_nodes = [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") in ("vmNode", "containerNode")
+    ]
+    if not vm_nodes:
+        return None
+
+    affinity_groups: dict[str, list[dict]] = {}
+    ungrouped: list[dict] = []
+    for node in vm_nodes:
+        ag = node.get("data", {}).get("affinityGroup")
+        if ag:
+            affinity_groups.setdefault(ag, []).append(node)
+        else:
+            ungrouped.append(node)
+
+    def _group_ram(nodes):
+        return sum(n.get("data", {}).get("memoryMb", 4096) for n in nodes)
+
+    def _group_vcpus(nodes):
+        return sum(n.get("data", {}).get("vcpus", 2) for n in nodes)
+
+    units = []
+    for ag_name, ag_nodes in affinity_groups.items():
+        units.append(
+            {
+                "vm_ids": [n["id"] for n in ag_nodes],
+                "ram_mb": _group_ram(ag_nodes),
+                "vcpus": _group_vcpus(ag_nodes),
+            }
+        )
+    for node in ungrouped:
+        units.append(
+            {
+                "vm_ids": [node["id"]],
+                "ram_mb": node.get("data", {}).get("memoryMb", 4096),
+                "vcpus": node.get("data", {}).get("vcpus", 2),
+            }
+        )
+
+    units.sort(key=lambda u: u["ram_mb"], reverse=True)
+
+    hosts_query = db.query(Host).filter(
+        Host.state == "active",
+        Host.agent_status == "connected",
+    )
+    if pool_id:
+        hosts_query = hosts_query.filter(Host.storage_pool_id == pool_id)
+    if provider_id:
+        hosts_query = hosts_query.filter(Host.provider_id == provider_id)
+
+    available_hosts = hosts_query.all()
+    if not available_hosts:
+        return None
+
+    overcommit = 2.0
+    host_remaining = {
+        h.id: {
+            "ram_mb": (h.total_ram_mb or 0) - (h.used_ram_mb or 0),
+            "vcpus": int((h.total_vcpus or 0) * overcommit) - (h.used_vcpus or 0),
+        }
+        for h in available_hosts
+    }
+
+    assignments: dict[str, list[str]] = {h.id: [] for h in available_hosts}
+
+    for unit in units:
+        placed = False
+        sorted_hosts = sorted(
+            host_remaining.keys(),
+            key=lambda hid: host_remaining[hid]["ram_mb"],
+            reverse=True,
+        )
+        for hid in sorted_hosts:
+            remaining = host_remaining[hid]
+            if (
+                remaining["ram_mb"] >= unit["ram_mb"]
+                and remaining["vcpus"] >= unit["vcpus"]
+            ):
+                assignments[hid].extend(unit["vm_ids"])
+                remaining["ram_mb"] -= unit["ram_mb"]
+                remaining["vcpus"] -= unit["vcpus"]
+                placed = True
+                break
+        if not placed:
+            return None
+
+    return {hid: vms for hid, vms in assignments.items() if vms}
+
+
+def select_network_host(host_assignments: dict[str, list[str]], topology: dict) -> str:
+    """Pick the network host: prefer host with gateway VM, else most VMs."""
+    gateway_vm_ids = set()
+    for node in topology.get("nodes", []):
+        if node.get("type") == "vmNode" and node.get("data", {}).get("isGateway"):
+            gateway_vm_ids.add(node["id"])
+
+    if gateway_vm_ids:
+        for hid, vm_ids in host_assignments.items():
+            if gateway_vm_ids & set(vm_ids):
+                return hid
+
+    return max(host_assignments, key=lambda hid: len(host_assignments[hid]))
+
+
 def place_project(
     db: Session,
     project: Project,
