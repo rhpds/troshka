@@ -385,6 +385,7 @@ def place_project(
             reqs["total_ram_mb"],
             reqs["requested_eips"],
             storage_pool_id=storage_pool_id,
+            provider_id=project.provider_id,
         )
         if not host and storage_pool_id:
             host = find_available_host(
@@ -392,6 +393,7 @@ def place_project(
                 reqs["total_vcpus"],
                 reqs["total_ram_mb"],
                 reqs["requested_eips"],
+                provider_id=project.provider_id,
             )
     if not host:
         # Try multi-host placement before auto-provisioning
