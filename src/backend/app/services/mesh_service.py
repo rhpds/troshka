@@ -60,22 +60,29 @@ def create_mesh_peers(
     network_host_id: str,
     host_ips: dict[str, str],
 ) -> list[ProjectMeshPeer]:
-    subnet_id = allocate_mesh_subnet(db)
-
     project = db.query(Project).filter_by(id=project_id).first()
-    if project:
+    if not project:
+        raise ValueError(f"Project {project_id} not found")
+
+    with _subnet_lock:
+        max_id = db.query(sa_func.max(Project.mesh_subnet_id)).scalar() or 0
+        subnet_id = max_id + 1
         project.mesh_subnet_id = subnet_id
-        project.mesh_network_host_id = network_host_id
-        flat_assignments = {}
-        for hid, vm_ids in host_assignments.items():
-            for vm_id in vm_ids:
-                flat_assignments[vm_id] = hid
-        project.host_assignments = flat_assignments
+        db.flush()
+
+    project.mesh_network_host_id = network_host_id
+    flat_assignments = {}
+    for hid, vm_ids in host_assignments.items():
+        for vm_id in vm_ids:
+            flat_assignments[vm_id] = hid
+    project.host_assignments = flat_assignments
 
     peers = []
     for idx, host_id in enumerate(sorted(host_assignments.keys()), start=1):
         private_key, public_key = generate_wireguard_keypair()
         wg_port = allocate_wg_port(db, host_id)
+        if host_id not in host_ips:
+            raise ValueError(f"Missing host IP for host {host_id}")
         host_ip = host_ips[host_id]
 
         peer = ProjectMeshPeer(
@@ -100,7 +107,9 @@ def create_mesh_peers(
 
 def get_peer_config_for_host(db: Session, project_id: str, host_id: str) -> dict:
     all_peers = db.query(ProjectMeshPeer).filter_by(project_id=project_id).all()
-    this_peer = next(p for p in all_peers if p.host_id == host_id)
+    this_peer = next((p for p in all_peers if p.host_id == host_id), None)
+    if not this_peer:
+        raise ValueError(f"No mesh peer found for project {project_id}, host {host_id}")
     other_peers = [p for p in all_peers if p.host_id != host_id]
 
     return {
