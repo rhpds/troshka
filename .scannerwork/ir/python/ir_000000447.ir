@@ -1,0 +1,50 @@
+
+=4"Return the SSH username for a given provider type."str
+"ec2"str
+"cloud-user"str
+	"gcp"str
+
+"ec2-user"str
+	"ocpvirt"str
+	"troshka"str
+1("Unknown provider type: {provider_type}"str
+
+"azure"str
+
+0intprovider_type (,	tuple"T*
+(
+ ("
+#binop ==#2==:Bbool&"$
+ ( * (2 ("
+ ("V*
+(
+	 (#"
+#binop ==#2==:Bbool&"$
+	 (# * (2 ("
+ ("Ç(
+&
+ (*"#unknown-value#Btuple&
+$
+ (*"
+#is-exact#:Bbool
+
+ (*"
+#assume#:8
+6
+ (*"#set-field# __collection_size:Bint&
+$
+ (*"#array-add-last#:	&
+$
+ (*"#array-add-last#:
+*
+(
+	 (*"
+#binop in#2in:Bbool"
+	 (* * ("
+ ("B.
+,
+
+ (?"
+ValueError*:B
+ValueError2
+ (?*B/Users/prutledg/troshka/src/backend/app/services/agent_deployer.py

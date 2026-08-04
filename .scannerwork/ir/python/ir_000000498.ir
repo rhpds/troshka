@@ -1,0 +1,4 @@
+
+|s"Get current status. Returns dict with instance_id, state,
+        public_ip, private_ip — or None if not found."strself (provider (&instance_id( (3NotImplementedError"2
+ (!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

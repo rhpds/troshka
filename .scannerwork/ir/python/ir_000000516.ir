@@ -1,0 +1,5 @@
+
+ƒz"Get provider-native project status (e.g. TroshkaProject CR status).
+        Returns a dict with phase and progress info."strselfm m(providerm! m()
+project_idm+ m(5NotImplementedError"2
+p p(!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

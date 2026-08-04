@@ -1,0 +1,117 @@
+
+"Route"str
+"name"str
+"annotations"str
+"troshka-role"str
+ 	"route.openshift.io/v1"str
+"apiVersion"str
+
+A0int
+E"ownerReferences"str
+"vnc-proxy"str
+"namespace"str
+.8080int
+-"targetPort"str
+'	"Service"str
+"labels"str
+"app"str
+7
+"Redirect"str
+.%"haproxy.router.openshift.io/timeout"str
+
+"metadata"str
++"port"str
+"3600s"str
+(6"insecureEdgeTerminationPolicy"str
+4"edge"str
+3"termination"str
+1"tls"str
+#"spec"str
+%"to"str
+"kind"str
+#"vnc-proxy-{project_name}"strproject_nameR R( 	namespaceR" R(+
+owner_bodyR- R(<>list"Ü*
+(
+S S(,
+route_name"#id#:Bstr(
+&
+T T(*svc_name"#id#:Bstr+
+)
+U f(route"#new-object#Bdict 
+
+V V(-
+"	#map-set#:	 
+
+W W("	#map-set#:$
+"
+X ](	"#new-object#Bdict 
+
+Y Y("	#map-set#: 
+
+Z Z(""	#map-set#:$
+"
+[ [(W"#new-object#Bdict 
+
+[ [(9"	#map-set#: 
+
+[; [(V"	#map-set#: 
+
+[ [(W"	#map-set#:$
+"
+\ \(K"#new-object#Bdict 
+
+\ \(J "	#map-set#: 
+
+\ \(K!"	#map-set#: 
+
+X ](	""	#map-set#:$
+"
+^ e(	$"#new-object#Bdict$
+"
+_ _(7&"#new-object#Bdict 
+
+_ _($("	#map-set#:&' 
+
+_& _(6)"	#map-set#:& 
+
+_ _(7*"	#map-set#:$%&$
+"
+` `((,"#new-object#Bdict 
+
+` `('/"	#map-set#:,-. 
+
+` `((0"	#map-set#:$+,$
+"
+a d(2"#new-object#Bdict 
+
+b b(%5"	#map-set#:234 
+
+c c(;8"	#map-set#:267 
+
+a d(9"	#map-set#:$12 
+
+^ e(	:"	#map-set#:#$)
+'
+g g(;"
+__bool__*:BboolH"
+g g(; *g g("Ñ+
+)
+h0 h(E<"
+helpers.k8s	owner_ref:'
+%
+h/ h(F="#unknown-value#Blist&
+$
+h/ h(F?"
+#is-exact#:=>Bbool
+
+h/ h(F@"
+#assume#:?8
+6
+h/ h(FB"#set-field# __collection_size:=ABint&
+$
+h/ h(FC"#array-add-last#:=<"
+ 
+h h(D"#array-read#:$
+"
+h h(FF"#array-write#:DE="
+i i(*3/Users/prutledg/troshka/src/operator/helpers/vnc.py

@@ -1,0 +1,62 @@
+
+A8"Build _oc and _approve_csrs closures for bastion exec."strhost
+•& •&(
+project_id
+•&
+ •&(
+bastion_ip
+•& •&( password
+•&" •&(*effective_kc
+•&, •&(8vm_name
+•&: •&(A"Ù#
+!
+
+·& ·&("#unknown-value##
+!
+
+·& ·&("#unknown-value#*
+(
+
+™& £&(%closure"#new-object#(
+&
+
+™& £&(	"#set-field# host:.
+,
+
+™& £&(
+"#set-field# project_id:.
+,
+
+™& £&("#set-field# bastion_ip:,
+*
+
+™& £&("#set-field# password:0
+.
+
+™& £&("#set-field# effective_kc:-
++
+
+™& £&("?python-partial-apply?:*
+(
+
+£& ·&(%closure"#new-object#.
+,
+
+£& ·&("#set-field# project_id:+
+)
+
+£& ·&("#set-field# vm_name:-
++
+
+£& ·&("?python-partial-apply?:*
+(
+
+·& ·&("#unknown-value#Btuple(
+&
+
+·& ·&("#array-add-last#:(
+&
+
+·& ·&("#array-add-last#:
+
+·& ·&(*B/Users/prutledg/troshka/src/backend/app/services/deploy_service.py

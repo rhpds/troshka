@@ -1,0 +1,22 @@
+
+PG"export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig; {cmd}"strcmd
+Ë- Ë-(timeout
+Ë- Ë-(#"ñ#
+!
+
+Í- Í-("#unknown-value##
+!
+
+Î- Î-("#unknown-value##
+!
+
+Ï- Ï-("#unknown-value##
+!
+
+Ð- Ð-("#unknown-value#I
+G
+
+Ì- Ó-(	"/
+app.services.deploy_service_exec_on_bastion:
+
+Ì- Ó-(	*B/Users/prutledg/troshka/src/backend/app/services/deploy_service.py

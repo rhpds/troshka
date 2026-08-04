@@ -1,0 +1,103 @@
+
+ "aws_secret_access_key"str
+"secret_access_key"str
+""bucket"str
+"get_object"str
+"region"str
+!"Bucket"str
+"aws_access_key_id"str
+"s3"str
+H?"Generate a presigned download URL using a specific S3 config."str
+%"Key"str
+"region_name"str
+
+"access_key_id"str
+"endpoint_url"strcfg
+ß& ß(/key
+ß1 ß(9expires
+ß; ß(N"ï.
+,
+
+á á(+kwargs"#new-object#Bdict$
+"
+
+á á(*"#array-read#:"
+ 
+
+á á(*	"	#map-set#:$
+"
+
+â â("#array-read#:
++
+)
+
+â â("
+__bool__*:BboolH "
+
+â â( *
+â â("V$
+"
+
+ã& ã(:"#array-read#:
+&
+$
+
+ã ã(:"#array-write#:"w$
+"
+
+ä ä("#array-read#:+
+)
+
+ä ä("
+__bool__*:BboolH "
+
+ä ä( *
+ä ä("V$
+"
+
+å* å(B"#array-read#:&
+$
+
+å å(B"#array-write#:"w$
+"
+
+æ æ("#array-read#:+
+)
+
+æ æ("
+__bool__*:BboolH "
+
+æ æ( *
+æ æ("V$
+"
+
+ç! ç(4"#array-read#:&
+$
+
+ç ç(4"#array-write#:"ó'
+%
+
+è  è(("#unaryop **#2**:#
+!
+
+è è("#unknown-value#M
+K
+
+è è()client"?python-unknown?:Bbotocore.client.BaseClient&
+$
+
+ë ë(4 "#new-object#Bdict$
+"
+
+ë ë('#"#array-read#:""
+ 
+
+ë ë('$"	#map-set#: !#"
+ 
+
+ë) ë(3&"	#map-set#: %*
+(
+
+é í('"?python-unknown?: 
+
+é í('*>/Users/prutledg/troshka/src/backend/app/services/s3_storage.py

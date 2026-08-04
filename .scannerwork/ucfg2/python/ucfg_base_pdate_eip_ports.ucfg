@@ -1,0 +1,17 @@
+
+;app.services.providers.base.ProviderDriver.update_eip_portsL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyU U("3*-
+3	
+base.py"
+[ [(
+implicit return:
+U U('
+
+provider:
+U) U(-
+host:
+U/ U(<
+allocation_id:
+U> U(C
+portsB.,
+*app.services.providers.base.ProviderDriverH

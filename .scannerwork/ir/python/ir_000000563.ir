@@ -1,0 +1,115 @@
+
+(
+"protocol"str
+"name"str
+"troshka-role"str
+&"targetPort"str
+"apiVersion"str
+"vnc-proxy"str
+"namespace"str
+"v1"str
+@"ownerReferences"str
+"labels"str
+$8080int
+#"port"str
+)"TCP"str
+"app"str
+!"ports"str
+
+"metadata"str
+3
+"selector"str
+"ClusterIP"str
+
+"kind"str
+"type"str
+	"Service"str
+"spec"str
+#"vnc-proxy-{project_name}"str
+
+/0intproject_name= =("	namespace=$ =(-
+owner_body=/ =(>,list"Î(
+&
+> >(*svc_name"#id#:Bstr)
+'
+?
+ L(svc"#new-object#Bdict 
+
+@ @(	"	#map-set#: 
+
+A A("	#map-set#:
+$
+"
+B F(	"#new-object#Bdict 
+
+C C("	#map-set#: 
+
+D D(""	#map-set#:$
+"
+E E(W"#new-object#Bdict 
+
+E E(9"	#map-set#: 
+
+E; E(V"	#map-set#: 
+
+E E(W"	#map-set#: 
+
+B F(	"	#map-set#:$
+"
+G K(	"#new-object#Bdict 
+
+H H( "	#map-set#:$
+"
+I I(K""#new-object#Bdict 
+
+I I(#%"	#map-set#:"#$ 
+
+I% I(7'"	#map-set#:"&$ 
+
+I9 I(J*"	#map-set#:"()'
+%
+I I(L+"#unknown-value#Blist&
+$
+I I(L-"
+#is-exact#:+,Bbool
+
+I I(L."
+#assume#:-8
+6
+I I(L0"#set-field# __collection_size:+/Bint&
+$
+I I(L1"#array-add-last#:+" 
+
+I I(L2"	#map-set#:!+$
+"
+J J(<4"#new-object#Bdict 
+
+J J(;5"	#map-set#:4 
+
+J J(<6"	#map-set#:34 
+
+G K(	7"	#map-set#:)
+'
+M M(8"
+__bool__*:BboolH"
+M M(8 *M M("Ñ+
+)
+N. N(C9"
+helpers.k8s	owner_ref:'
+%
+N- N(D:"#unknown-value#Blist&
+$
+N- N(D;"
+#is-exact#::,Bbool
+
+N- N(D<"
+#assume#:;8
+6
+N- N(D="#set-field# __collection_size::/Bint&
+$
+N- N(D>"#array-add-last#::9"
+ 
+N N(?"#array-read#:$
+"
+N N(DA"#array-write#:?@:"
+O O(*3/Users/prutledg/troshka/src/operator/helpers/vnc.py

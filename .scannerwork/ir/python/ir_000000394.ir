@@ -1,0 +1,35 @@
+
+	"quay_io"str
+"orgs"str
+	"enabled"str
+"url"str
+
+"registry.redhat.io"str
+	"quay.io"str
+truebool
+"registry_redhat_io"strregistry_url
+³ ³(0"–&
+$
+
+´ »("#new-object#Bdict"
+ 
+
+µ µ("	#map-set#:"
+ 
+
+¶ ¶("	#map-set#:&
+$
+
+· º(		"#new-object#Bdict"
+ 
+
+¸ ¸(6"	#map-set#:	
+"
+ 
+
+¹ ¹( "	#map-set#:	"
+ 
+
+· º(	"	#map-set#:	
+
+´ »(*7/Users/prutledg/troshka/src/backend/app/api/projects.py

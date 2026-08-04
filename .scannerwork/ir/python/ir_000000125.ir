@@ -1,0 +1,40 @@
+
+"console_zone_id"str
+"console_base_domain"str
+
+"console_nameservers"str
+""str
+
+0intself
+‡ ‡(provider
+‡ ‡($base_domain
+‡& ‡(1list"Ø&
+$
+
+ˆ Œ(	"#new-object#Bdict"
+ 
+
+‰ ‰(."	#map-set#:"
+ 
+
+Š Š(!	"	#map-set#:)
+'
+
+‹# ‹(%"#unknown-value#Blist(
+&
+
+‹# ‹(%"
+#is-exact#:Bbool
+
+
+‹# ‹(%"
+#assume#::
+8
+
+‹# ‹(%"#set-field# __collection_size:Bint"
+ 
+
+‹ ‹(%"	#map-set#:
+
+
+ˆ Œ(	*F/Users/prutledg/troshka/src/backend/app/services/providers/kubevirt.py

@@ -1,0 +1,43 @@
+
+
+"remove_storage"str
+"status"str
+"domain_name"str
+"Undefine a VM."str
+"/vms/undefine"str
+
+2int
+"completed"str
+30inthost
+Ï Ï(domain_name
+Ï Ï(!remove_storage
+Ï# Ï(6timeout
+Ï8 Ï(B"ì&
+$
+
+Ô Ô(F"#new-object#Bdict"
+ 
+
+Ô	 Ô(#	"	#map-set#:"
+ 
+
+Ô% Ô(E"	#map-set#:
+I
+G
+
+Ñ Õ(job_id")
+app.services.troshkad_client	start_job:I
+G
+
+Ö
+ Ö(Fjob",
+app.services.troshkad_clientwait_for_job:$
+"
+
+× ×("#array-read#:,
+*
+
+× ×('"
+#binop ==#2==:Bbool
+
+× ×('*C/Users/prutledg/troshka/src/backend/app/services/troshkad_client.py

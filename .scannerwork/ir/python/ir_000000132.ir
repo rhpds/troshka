@@ -1,0 +1,162 @@
+
+@"method"str
+H?"No password for SSH exec (key auth not supported on KubeVirt)"str
+
+0int
+
+2int
+#"ssh"str
+$"No running exec pod found"str
+)"{username}@{vm_ip}"str
+4falsebool
+O	F"Execute command via SSH from the exec pod (or dnsmasq pod fallback)."str
+'&"UserKnownHostsFile=/dev/null"str
+>"exit_code"str
+!	"sshpass"str
+""-p"str
+$"-o"str
+,(#"ConnectTimeout={min(timeout, 10)}"str
+'"LogLevel=ERROR"str
+510int
+
+3int
+#%"StrictHostKeyChecking=no"str
+<""str
+3truebool
+
+1int
+ "No VM IP for SSH exec"str
+9"output"str
+;"error"strprovider
+Œ	 Œ	(
+project_id
+Œ	 Œ	(vm_id
+Œ	 Œ	(vm_ip
+Œ	! Œ	(&username
+Œ	( Œ	(0password
+Œ	2 Œ	(:command
+Œ	< Œ	(Ctimeout
+Œ	E Œ	(P+list"ûK
+I
+
+	 	(.
+_"3
+app.services.providers.kubevirt_get_k8s_clients:+
+)
+
+	 	(._"#python-unpack#:
+1
+/
+
+	 	(.core_v1"#python-unpack#:
++
+)
+
+	 	(._"#python-unpack#:
+O
+M
+
+	 	(1	namespace".
+app.services.providers.kubevirt_project_ns:R
+P
+
+’	 ’	(=exec_pod"1
+app.services.providers.kubevirt_find_exec_pod:+
+)
+
+“	 “	("
+__bool__*:BboolH+
+)
+
+“	 “	("#unaryop !#2!:Bbool "
+
+“	 “	( *
+“	 “	("J4
+2
+
+”	 ”	(7"RuntimeError*:BRuntimeError2
+
+”	 ”	(7"~+
+)
+
+–	 –	("
+__bool__*:BboolH+
+)
+
+–	 –	("#unaryop !#2!:Bbool "
+
+–	 –	( *
+–	 –	("J4
+2
+
+—	 —	(3"RuntimeError*:BRuntimeError2
+
+—	 —	(3"~+
+)
+
+˜	 ˜	("
+__bool__*:BboolH+
+)
+
+˜	 ˜	("#unaryop !#2!:Bbool "
+
+˜	 ˜	( *
+˜	 ˜	("J4
+2
+
+™	 ›	(	"RuntimeError*:BRuntimeError2
+
+™	 ›	(	"ä,
+*
+
+	 	(6 stream"?python-unknown?2
+0
+
+Ÿ	 ®	(*ssh_cmd"#unknown-value#Blist(
+&
+
+Ÿ	 ®	(,"
+#is-exact#:*+Bbool
+
+
+Ÿ	 ®	(-"
+#assume#:,:
+8
+
+Ÿ	 ®	(."#set-field# __collection_size:*Bint6
+4
+
+Ÿ	 ®	(/ssh_cmd"?python-unknown?*BlistB
+@
+
+°	 °	(/0"-+#get-field# connect_get_namespaced_pod_exec:+
+)
+
+±	 ±	(1"#get-field# metadata:'
+%
+
+±	 ±	(2"#get-field# name:1$
+"
+
+¹	 ¹	(%6"	#binop +#2+:55
+3
+
+¯	 º	(7resp"#unknown-value#:
+02/334436&
+$
+
+»	 À	(8"#new-object#Bdict"
+ 
+
+¼	 ¼	(:"	#map-set#:897"
+ 
+
+½	 ½	(="	#map-set#:8;<"
+ 
+
+¾	 ¾	(?"	#map-set#:8>"
+ 
+
+¿	 ¿	(A"	#map-set#:8@#
+
+»	 À	(8*F/Users/prutledg/troshka/src/backend/app/services/providers/kubevirt.py

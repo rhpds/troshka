@@ -1,0 +1,15 @@
+
+7app.services.providers.base.ProviderDriver.allocate_eipL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyE E("3*-
+3	
+base.py"
+J J(
+implicit return:
+E E(#
+
+provider:
+E% E()
+host:
+E+ E(1
+eip_idB.,
+*app.services.providers.base.ProviderDriverH

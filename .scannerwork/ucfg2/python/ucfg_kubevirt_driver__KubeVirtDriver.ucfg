@@ -1,0 +1,106 @@
+
+kubevirt_driver.KubeVirtDriverL
+B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.py ("2*ÿ
+2 (&c
+a
+ (&
+%2"'kubernetes.config.load_incluster_config*&
+
+__unknown_file (
+
+
+config^
+\
+ (3
+%3""kubernetes.client.CustomObjectsApi*&
+
+__unknown_file (
+
+
+clienth
+f
+ (30 
+kubevirt_driver.KubeVirtDriver"
+
+custom_api"__id*"
+
+__unknown_file (
+
+%3I
+G
+ (#
+%4"__id*/
+
+__unknown_file (*
+os"	
+environ•
+¢
+ (E
+%5"typing.Mapping.get*"
+
+__unknown_file (
+
+%4*/
+
+__unknown_file (
+SUSHY_NAMESPACE*'
+
+__unknown_file (	
+defaultg
+e
+ (E/ 
+kubevirt_driver.KubeVirtDriver"
+	namespace"__id*"
+
+__unknown_file (
+
+%5I
+G
+! (+
+%6"__id*/
+
+__unknown_file (*
+os"	
+environù
+ö
+! (E
+%7"typing.Mapping.get*"
+
+__unknown_file (
+
+%6*,
+
+__unknown_file (
+SUSHY_VM_MAP*"
+
+__unknown_file (
+{}h
+f
+ (F
+%8"
+json.loads*$
+
+__unknown_file (
+
+json*"
+
+__unknown_file (
+
+%7d
+b
+ (F, 
+kubevirt_driver.KubeVirtDriver"
+vm_map"__id*"
+
+__unknown_file (
+
+%8*
+3*]
+3
+kubevirt_driver.py0.
+ (
+%1"kubevirt_driver.KubeVirtDriver"
+ (
+
+%1B" 
+kubevirt_driver.KubeVirtDriverH

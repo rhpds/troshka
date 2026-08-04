@@ -1,0 +1,24 @@
+
+>app.services.providers.base.ProviderDriver.create_route_accessL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.py[ [("3*-
+3	
+base.py"
+c c(
+implicit return:
+\ \(
+
+provider:
+\ \(
+host:
+\ \((
+
+project_id:
+\* \(1	
+vm_name:
+\3 \(9
+int_ip:
+\; \(?
+port:
+\A \(Q
+target_portB.,
+*app.services.providers.base.ProviderDriverH

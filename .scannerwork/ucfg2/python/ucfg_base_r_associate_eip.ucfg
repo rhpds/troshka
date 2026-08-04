@@ -1,0 +1,15 @@
+
+8app.services.providers.base.ProviderDriver.associate_eipL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyJ J("3*-
+3	
+base.py"
+P P(
+implicit return:
+J J($
+
+provider:
+J& J(*
+host:
+J, J(9
+allocation_idB.,
+*app.services.providers.base.ProviderDriverH

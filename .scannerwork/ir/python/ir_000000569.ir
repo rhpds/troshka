@@ -1,0 +1,15 @@
+
+*!"Return NetworkManagementClient."str
+creds_dictl l(""ž;
+9
+n n(:NetworkManagementClient"?python-unknown?N
+L
+p p(,
+credential"/
+app.services.providers.azure_get_credential:X
+V
+q q(6subscription_id"4
+app.services.providers.azure_get_subscription_id:%
+#
+r r(?"#unknown-value#:
+r r(?*C/Users/prutledg/troshka/src/backend/app/services/providers/azure.py

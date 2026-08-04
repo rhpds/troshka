@@ -1,0 +1,229 @@
+
+"kind"str
+	"troshka-role"str
+O"LISTEN_PORT"str
+:"containerPort"str
+L"value"str
+5"imagePullPolicy"str
+
+1int
+8"ports"str
+/"containers"str
+J"NAMESPACE"str
+=
+"protocol"str
+2"image"str
+
+D0int
+"namespace"str
+_"100m"str
+Z"resources"str
+"labels"str
+i"256Mi"str
+-"troshka-vnc"str
+
+"metadata"str
+~"ownerReferences"str
+"apiVersion"str
+
+"replicas"str
+Q"8080"str
+;8080int
+
+"vnc-proxy"str
+6"Always"str
+,"serviceAccountName"str
+b"64Mi"str
+^"cpu"str
+"name"str
+	"apps/v1"str
+"app"str
+H"env"str
+\
+"requests"str
+#"matchLabels"str
+!
+"selector"str
+&
+"template"str
+a"memory"str
+"spec"str
+g"500m"str
+e"limits"str
+"Deployment"str
+#"vnc-proxy-{project_name}"str
+>"TCP"strproject_name	 	(+	namespace	- 	(6
+owner_body	8 	(GAlist"Ã(
+&
+
+ 
+(*dep_name"#id#:Bstr,
+*
+ (labels"#new-object#Bdict 
+
+ (*"	#map-set#: 
+
+ (#"	#map-set#:	
+)
+'
+
+ 7(dep"#new-object#Bdict 
+
+ ("	#map-set#: 
+
+ ("	#map-set#:$
+"
+ (	"#new-object#Bdict 
+
+ ("	#map-set#: 
+
+ (""	#map-set#: 
+
+ ("	#map-set#: 
+
+ (	"	#map-set#:$
+"
+ 6(	"#new-object#Bdict 
+
+ ( "	#map-set#:$
+"
+ (/""#new-object#Bdict 
+
+ (.$"	#map-set#:"# 
+
+ (/%"	#map-set#:!"$
+"
+ 5('"#new-object#Bdict$
+"
+ (.("#new-object#Bdict 
+
+ (-)"	#map-set#:( 
+
+ (.*"	#map-set#:'($
+"
+ 4(+"#new-object#Bdict 
+
+ (7."	#map-set#:+,-$
+"
+  2(0"#new-object#Bdict 
+
+! !(/1"	#map-set#:0
+!
+
+"% "(43"#unknown-value# 
+
+" "(44"	#map-set#:023 
+
+# #(77"	#map-set#:056$
+"
+%  ((!9"#new-object#Bdict 
+
+&$ &(9<"	#map-set#:9:; 
+
+'$ '(5?"	#map-set#:9=>'
+%
+$% )(@"#unknown-value#Blist&
+$
+$% )(B"
+#is-exact#:@ABbool
+
+$% )(C"
+#assume#:B8
+6
+$% )(E"#set-field# __collection_size:@DBint&
+$
+$% )(F"#array-add-last#:@9 
+
+$ )(G"	#map-set#:08@$
+"
++  +(II"#new-object#Bdict 
+
++! +(4K"	#map-set#:IJ 
+
++6 +(HM"	#map-set#:IL$
+"
+,  ,(HN"#new-object#Bdict 
+
+,! ,(6P"	#map-set#:NO 
+
+,8 ,(GR"	#map-set#:NLQ'
+%
+*# -(S"#unknown-value#Blist&
+$
+*# -(T"
+#is-exact#:SABbool
+
+*# -(U"
+#assume#:T8
+6
+*# -(V"#set-field# __collection_size:SDBint&
+$
+*# -(W"#array-add-last#:SI&
+$
+*# -(X"#array-add-last#:SN 
+
+* -(Y"	#map-set#:0HS$
+"
+.) 1(["#new-object#Bdict$
+"
+/, /(M]"#new-object#Bdict 
+
+/- /(:`"	#map-set#:]^_ 
+
+/< /(Lc"	#map-set#:]ab 
+
+/  /(Md"	#map-set#:[\]$
+"
+0* 0(Lf"#new-object#Bdict 
+
+0+ 0(8h"	#map-set#:f^g 
+
+0: 0(Kj"	#map-set#:fai 
+
+0  0(Lk"	#map-set#:[ef 
+
+. 1(l"	#map-set#:0Z['
+%
+" 3(m"#unknown-value#Blist&
+$
+" 3(n"
+#is-exact#:mABbool
+
+" 3(o"
+#assume#:n8
+6
+" 3(p"#set-field# __collection_size:mDBint&
+$
+" 3(q"#array-add-last#:m0 
+
+ 3(r"	#map-set#:+/m 
+
+ 4(s"	#map-set#:'+ 
+
+ 5(t"	#map-set#:&' 
+
+ 6(	u"	#map-set#:)
+'
+8 8(v"
+__bool__*:BboolH"
+8 8(v *8 8("Ñ+
+)
+9. 9(Cw"
+helpers.k8s	owner_ref:'
+%
+9- 9(Dx"#unknown-value#Blist&
+$
+9- 9(Dy"
+#is-exact#:xABbool
+
+9- 9(Dz"
+#assume#:y8
+6
+9- 9(D{"#set-field# __collection_size:xDBint&
+$
+9- 9(D|"#array-add-last#:xw"
+ 
+9 9(}"#array-read#:$
+"
+9 9(D"#array-write#:}~x"
+: :(*3/Users/prutledg/troshka/src/operator/helpers/vnc.py

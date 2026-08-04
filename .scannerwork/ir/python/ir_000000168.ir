@@ -1,0 +1,94 @@
+
+
+"metadata"str
+"ReadWriteOnce"str
+'"storageClassName"str
+"spec"str
+"name"str
+
+0int
+"accessModes"str
+ 
+"requests"str
+#"{size_gb}Gi"str
+"resources"str
+"	"storage"str
+"apiVersion"str
+"v1"str
+ 	"PersistentVolumeClaim"str
+"kind"str
+"namespace"strname
+ò ò(	namespace
+ò ò(#size_gb
+ò% ò(,list"ç&
+$
+
+ó ÿ("#new-object#Bdict"
+ 
+
+ô ô("	#map-set#:"
+ 
+
+õ õ('
+"	#map-set#:	&
+$
+
+ö ù(	"#new-object#Bdict"
+ 
+
+÷ ÷("	#map-set#:"
+ 
+
+ø ø(""	#map-set#:"
+ 
+
+ö ù(	"	#map-set#:&
+$
+
+ú þ(	"#new-object#Bdict)
+'
+
+û û(,"#unknown-value#Blist(
+&
+
+û û(,"
+#is-exact#:Bbool
+
+
+û û(,"
+#assume#::
+8
+
+û û(,"#set-field# __collection_size:Bint(
+&
+
+û û(,"#array-add-last#:"
+ 
+
+û û(,"	#map-set#:&
+$
+
+ü ü(B"#new-object#Bdict&
+$
+
+ü& ü(A!"#new-object#Bdict"
+ 
+
+ü' ü(@$"	#map-set#:!"#"
+ 
+
+ü ü(A%"	#map-set#: !"
+ 
+
+ü ü(B&"	#map-set#:#
+!
+
+ý  ý(-("#unknown-value#"
+ 
+
+ý ý(-)"	#map-set#:'("
+ 
+
+ú þ(	*"	#map-set#:
+
+ó ÿ(*8/Users/prutledg/troshka/src/operator/helpers/kubevirt.py

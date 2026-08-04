@@ -1,0 +1,77 @@
+
+8app.services.providers.gcp.GCPDriver.get_host_powerstateM
+A/Users/prutledg/troshka/src/backend/app/services/providers/gcp.py¿ ¿("2*Æ
+2
+À À(<è
+å
+
+À À(<
+%1"4app.services.providers.gcp.GCPDriver.get_host_status*D
+
+__unknown_file ((&
+$app.services.providers.gcp.GCPDriver*(
+
+__unknown_file (
+
+
+provider*+
+
+__unknown_file (
+
+instance_idB
+@
+
+À À(<
+status"__id*"
+
+__unknown_file (
+
+%1*
+4
+5*Ð
+4
+Á Á(zx
+
+Á Á(
+%3"__mapGet*&
+
+__unknown_file (
+
+
+status*%
+
+__unknown_file (	
+state2__getitem__>
+<
+
+Á Á(
+%2"__id*"
+
+__unknown_file (
+
+%3*
+6*Y
+5
+Á. Á(7C
+A
+
+Á. Á(7
+%2"__id*'
+
+__unknown_file (	
+unknown*
+6*%
+6
+Á. Á(7"
+
+Á Á(7
+
+%2:
+
+¿" ¿(*
+
+provider:
+
+¿, ¿(7
+instance_idB(&
+$app.services.providers.gcp.GCPDriverH

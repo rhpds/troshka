@@ -1,0 +1,58 @@
+
+"region_name"str
+"region"str
+ "aws_secret_access_key"str
+"secret_access_key"str
+"access_key_id"str
+"aws_access_key_id"str
+"endpoint_url"str
+"s3"str"¡>
+<
+6
+ 6(cfg")
+app.services.s3_storage_get_s3_config,
+*
+7 7(+kwargs"#new-object#Bdict"
+ 
+7 7(*"#array-read#: 
+
+7 7(*"	#map-set#:"
+ 
+8 8("#array-read#:)
+'
+8 8(	"
+__bool__*:BboolH"
+8 8(	 *8 8("R"
+ 
+9& 9(:
+"#array-read#:$
+"
+9 9(:"#array-write#:
+"o"
+ 
+: :("#array-read#:)
+'
+: :("
+__bool__*:BboolH"
+: :( *: :("R"
+ 
+;* ;(B"#array-read#:$
+"
+; ;(B"#array-write#:"o"
+ 
+< <("#array-read#:)
+'
+< <("
+__bool__*:BboolH"
+< <( *< <("R"
+ 
+=! =(4"#array-read#:$
+"
+= =(4"#array-write#:"¡%
+#
+> >(&"#unaryop **#2**:!
+
+> >("#unknown-value#C
+A
+> >('"?python-unknown?:Bbotocore.client.BaseClient
+> >('*>/Users/prutledg/troshka/src/backend/app/services/s3_storage.py

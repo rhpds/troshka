@@ -1,0 +1,26 @@
+
+7."Generate cloud-init meta-data JSON for a VM."str
++""{vm_name}-{uuid.uuid4().hex[:8]}"str
+"local-hostname"str
+"instance-id"strvm_name
+½ ½("mac
+½$ ½(1"Ö&
+$
+
+Â Å(	"#new-object#Bdict"
+ 
+
+Ã Ã(>"	#map-set#:"
+ 
+
+Ä Ä(%	"	#map-set#:#
+!
+
+Á Á(
+"#unknown-value#-
++
+
+Á Æ("?python-unknown?:
+Bstr
+
+Á Æ(*>/Users/prutledg/troshka/src/backend/app/services/cloud_init.py

@@ -1,0 +1,99 @@
+
+falsebool
+"shared-fsx"str
+"shared-azure-files"str
+
+0int
+"shared-netapp"str
+%"pool:{pool.id}"strpool' '(current_used_pct' '(4	tuple"œ%
+#
+( (("#get-field# mode:(
+&
+( ((M"#unknown-value#Btuple&
+$
+( ((M	"
+#is-exact#:Bbool
+
+( ((M
+"
+#assume#:	8
+6
+( ((M"#set-field# __collection_size:Bint&
+$
+( ((M"#array-add-last#:&
+$
+( ((M"#array-add-last#:&
+$
+( ((M"#array-add-last#:2
+0
+( ((M"#binop not in#2not in:Bbool"
+( ((M *( (("
+) )("¬4
+2
+* *(#"!#get-field# auto_extend_enabled:)
+'
+* *(#"
+__bool__*:BboolH)
+'
+* *(#"#unaryop !#2!:Bbool"
+* *(# ** *("
++ +("r/
+-
+- -("#get-field# fsx_storage_gb:)
+'
+- -("
+__bool__*:BboolH"
+- -( "G3
+1
+. .("" #get-field# netapp_capacity_gb:
+- .(""S*)
+'
+- .(""
+__bool__*:BboolH"
+- .(" "L8
+6
+/ /('"%##get-field# azure_files_capacity_gb:
+- /('"S*)
+'
+- /('"
+__bool__*:BboolH"
+- /('
+ 	"	
+- 0(
+"¯
+*	%
+#
+, 1(
+current_gb"#id#:3
+1
+2 2(" #get-field# auto_extend_max_gb:)
+'
+2 2( "
+__bool__*:BboolH"
+2 2(  "s3
+1
+21 2(H!" #get-field# auto_extend_max_gb:*
+(
+2# 2(H""
+#binop >=#2>=:!Bbool
+2 2(H"]*#
+")
+'
+2 2(H$"
+__bool__*:#BboolH"
+2 2(H$ *2 2("
+3 3("‹>
+<
+4 4(&&"+
+app.services.storage_extend_on_cooldown:%)
+'
+4 4(&'"
+__bool__*:&BboolH"
+4 4(&' *4 4("
+5 5("z:
+8
+6 6(=("'%#get-field# auto_extend_threshold_pct:*
+(
+6 6(=)"
+#binop >=#2>=:(Bbool
+6 6(=)*B/Users/prutledg/troshka/src/backend/app/services/storage_extend.py

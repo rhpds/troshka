@@ -69,6 +69,8 @@ def _make_project(
     p.ocp_status_detail = None
     p.ocp_install_elapsed = None
     p.ocp_monitor_started_at = None
+    p.mesh_network_host_id = None
+    p.host_assignments = None
     return p
 
 
@@ -183,6 +185,9 @@ class TestSetupNetworksViaTroshkad:
 
         host = _make_host()
         db = MagicMock()
+        # Mock Project query to return None (no mesh)
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        # Mock Host query for peer IPs
         db.query.return_value.filter.return_value.all.return_value = [host]
 
         with patch(f"{SVC}.build_host_network_config", mock_build):
@@ -213,6 +218,9 @@ class TestSetupNetworksViaTroshkad:
 
         host = _make_host()
         db = MagicMock()
+        # Mock Project query to return None (no mesh)
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        # Mock Host query for peer IPs
         db.query.return_value.filter.return_value.all.return_value = [host]
 
         with patch(f"{SVC}.build_host_network_config", mock_build):
@@ -237,6 +245,9 @@ class TestSetupNetworksViaTroshkad:
 
         host = _make_host()
         db = MagicMock()
+        # Mock Project query to return None (no mesh)
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        # Mock Host query for peer IPs
         db.query.return_value.filter.return_value.all.return_value = [host]
 
         with patch(f"{SVC}.build_host_network_config", mock_build):
@@ -263,6 +274,9 @@ class TestSetupNetworksViaTroshkad:
         host3 = _make_host(ip=None)  # no IP — should be excluded
 
         db = MagicMock()
+        # Mock Project query to return None (no mesh)
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        # Mock Host query for peer IPs
         db.query.return_value.filter.return_value.all.return_value = [
             host1,
             host2,

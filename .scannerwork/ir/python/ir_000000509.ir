@@ -1,0 +1,4 @@
+
+]T"Allocate an external IP.
+        Returns dict with keys: public_ip, allocation_id."strselfE E(providerE E(#hostE% E()eip_idE+ E(1NotImplementedError"2
+H H(!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

@@ -1,0 +1,15 @@
+
+&"Return DnsManagementClient."str
+creds_dictu u("š7
+5
+w w(2DnsManagementClient"?python-unknown?N
+L
+y y(,
+credential"/
+app.services.providers.azure_get_credential:X
+V
+z z(6subscription_id"4
+app.services.providers.azure_get_subscription_id:%
+#
+{ {(;"#unknown-value#:
+{ {(;*C/Users/prutledg/troshka/src/backend/app/services/providers/azure.py

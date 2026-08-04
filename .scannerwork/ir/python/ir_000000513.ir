@@ -1,0 +1,8 @@
+
+È	¾"Create a Route/ingress for external access to a VM port.
+        Returns dict with hostname, route_name, service_name.
+        Only implemented by providers with native ingress (OCP Virt)."strself\ \(provider\ \(host\ \(
+project_id\ \((vm_name\* \(1int_ip\3 \(9port\; \(?target_port\A \(Q
+NotImplementedError"2
+a a(!
+*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

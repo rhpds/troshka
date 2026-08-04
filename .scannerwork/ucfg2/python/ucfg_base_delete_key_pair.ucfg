@@ -1,0 +1,13 @@
+
+:app.services.providers.base.ProviderDriver.delete_key_pairL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyA A("3*-
+3	
+base.py"
+E E(
+implicit return:
+A A(&
+
+provider:
+A( A(5
+key_pair_nameB.,
+*app.services.providers.base.ProviderDriverH

@@ -1,0 +1,17 @@
+
+>app.services.providers.base.ProviderDriver.extend_host_storageL
+B/Users/prutledg/troshka/src/backend/app/services/providers/base.py   ("3*-
+3	
+base.py"
+$ $(
+implicit return:
+ "  (*
+
+provider:
+ ,  (0
+host:
+ 2  (4
+db:
+ 6  (G
+increment_gbB.,
+*app.services.providers.base.ProviderDriverH

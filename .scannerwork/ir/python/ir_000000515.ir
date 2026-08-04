@@ -1,0 +1,5 @@
+
+yp"Deploy a project via provider-native orchestration (e.g. KubeVirt CR).
+        Returns a resource name string."strselfh h(providerh h(%
+project_idh' h(1topologyh3 h(;	s3_configh= h(FkwargshH h(P"dictNotImplementedError"2
+k k(!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

@@ -1,0 +1,287 @@
+
+10int
+"virsh"str
+"screenshot"str
+""/tmp/troshka-screen.ppm"str
+?/6"cat > /tmp/screen.b64 << 'ENDOFB64'\n{b64}\nENDOFB64"str
+!"rm"str
+"base64"str
+"-w0"str
+-""str
+""-f"str
+"-c"str
+15int
+`8W"base64 -d /tmp/screen.b64 | tesseract stdin stdout 2>/dev/null; rm -f /tmp/screen.b64"str
+"qemu:///session"str
+."bash"str
+
+0int	list"ñ*
+(
+
+Æ
+ Æ
+(,img_path"#id#:Bstr#
+!
+
+È
+= È
+(C"#unknown-value#)
+'
+
+È
+ È
+(N"#unknown-value#Blist(
+&
+
+È
+ È
+(N
+"
+#is-exact#:	Bbool
+
+
+È
+ È
+(N"
+#assume#:
+:
+8
+
+È
+ È
+(N"#set-field# __collection_size:Bint(
+&
+
+È
+ È
+(N"#array-add-last#:(
+&
+
+È
+ È
+(N"#array-add-last#:(
+&
+
+È
+ È
+(N"#array-add-last#:(
+&
+
+È
+ È
+(N"#array-add-last#:(
+&
+
+È
+ È
+(N"#array-add-last#:(
+&
+
+È
+ È
+(N"#array-add-last#:Y
+W
+
+Ç
+ É
+(	"C
+1app.services.providers.kubevirt.kubevirt_exec_vnc_launcher_exec:)
+'
+
+Ê
+ Ê
+(8"#unknown-value#Blist(
+&
+
+Ê
+ Ê
+(8"
+#is-exact#:	Bbool
+
+
+Ê
+ Ê
+(8"
+#assume#::
+8
+
+Ê
+ Ê
+(8"#set-field# __collection_size:Bint(
+&
+
+Ê
+ Ê
+(8"#array-add-last#:(
+&
+
+Ê
+ Ê
+(8"#array-add-last#:(
+&
+
+Ê
+ Ê
+(8"#array-add-last#:^
+\
+
+Ê
+ Ê
+(I b64"C
+1app.services.providers.kubevirt.kubevirt_exec_vnc_launcher_exec:)
+'
+
+Ë
+ Ë
+(-#"#unknown-value#Blist(
+&
+
+Ë
+ Ë
+(-$"
+#is-exact#:#	Bbool
+
+
+Ë
+ Ë
+(-%"
+#assume#:$:
+8
+
+Ë
+ Ë
+(-&"#set-field# __collection_size:#Bint(
+&
+
+Ë
+ Ë
+(-'"#array-add-last#:#!(
+&
+
+Ë
+ Ë
+(-("#array-add-last#:#"(
+&
+
+Ë
+ Ë
+(-)"#array-add-last#:#Y
+W
+
+Ë
+ Ë
+(.*"C
+1app.services.providers.kubevirt.kubevirt_exec_vnc_launcher_exec:#+
+)
+
+Ì
+ Ì
+(+"
+__bool__*: BboolH+
+)
+
+Ì
+ Ì
+(,"#unaryop !#2!:+Bbool "
+
+Ì
+ Ì
+(, *
+Ì
+ Ì
+(
+"
+
+Í
+ Í
+(-"¬)
+'
+
+Ñ
+ Ñ
+(S0"#unknown-value#Blist(
+&
+
+Ñ
+ Ñ
+(S1"
+#is-exact#:0	Bbool
+
+
+Ñ
+ Ñ
+(S2"
+#assume#:1:
+8
+
+Ñ
+ Ñ
+(S3"#set-field# __collection_size:0Bint(
+&
+
+Ñ
+ Ñ
+(S4"#array-add-last#:0.(
+&
+
+Ñ
+ Ñ
+(S5"#array-add-last#:0(
+&
+
+Ñ
+ Ñ
+(S6"#array-add-last#:0/V
+T
+
+Ð
+ Ó
+(	7"@
+1app.services.providers.kubevirt.kubevirt_exec_vnc_tools_exec:0)
+'
+
+Õ
+ Ú
+(9"#unknown-value#Blist(
+&
+
+Õ
+ Ú
+(:"
+#is-exact#:9	Bbool
+
+
+Õ
+ Ú
+(;"
+#assume#:::
+8
+
+Õ
+ Ú
+(<"#set-field# __collection_size:9Bint(
+&
+
+Õ
+ Ú
+(="#array-add-last#:9.(
+&
+
+Õ
+ Ú
+(>"#array-add-last#:9(
+&
+
+Õ
+ Ú
+(?"#array-add-last#:98^
+\
+
+Ô
+ Ü
+(	@result"@
+1app.services.providers.kubevirt.kubevirt_exec_vnc_tools_exec:9
+
+Ý
+ Ý
+(@*F/Users/prutledg/troshka/src/backend/app/services/providers/kubevirt.py

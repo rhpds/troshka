@@ -394,6 +394,35 @@ def place_project(
                 reqs["requested_eips"],
             )
     if not host:
+        # Try multi-host placement before auto-provisioning
+        host_assignments = find_multihost_placement(
+            db, project.topology, storage_pool_id, project.provider_id
+        )
+        if host_assignments:
+            network_host_id = select_network_host(host_assignments, project.topology)
+            host_ips = {}
+            for hid in host_assignments:
+                h = db.query(Host).filter_by(id=hid).first()
+                if h:
+                    host_ips[hid] = h.ip_address
+
+            vni_map = allocate_vnis_for_project(db, project.topology)
+
+            logger.info(
+                "Placed project %s across %d hosts (network host: %s)",
+                project.id,
+                len(host_assignments),
+                network_host_id[:8],
+            )
+
+            return {
+                "multi_host": True,
+                "host_assignments": host_assignments,
+                "network_host_id": network_host_id,
+                "host_ips": host_ips,
+                "vni_map": vni_map,
+            }
+
         logger.info("No host with capacity — auto-provisioning a new one")
         try:
             result = provision_host()

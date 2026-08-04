@@ -1,0 +1,106 @@
+
+"{name}-nad"str
+"name"str
+
+"topology"str
+& "NetworkAttachmentDefinition"str
+"layer2"str
+"apiVersion"str
+"ovn-k8s-cni-overlay"str
+2	"troshka"str
+"kind"str
+"spec"str
+	"namespace"str
+"netAttachDefName"str
+1"app"str
+!"{namespace}/{nad_name}"str
+/"labels"str
+"k8s.cni.cncf.io/v1"str
+
+"metadata"str
+"type"str
+%"ownerReferences"str
+"0.3.1"str
+9"config"str
+"cniVersion"str
+
++0int
+4"troshka-network"str
+network_cr" "((list"º
+(
+&
+# #(spec"#array-read#:"
+ 
+$ $(!"#array-read#:(
+&
+$ $()name"#array-read#:"
+ 
+% %(&"#array-read#:-
++
+% %(3
+	namespace"#array-read#:	(
+&
+' '(nad_name"#id#:Bstr,
+*
+( .(config"#new-object#Bdict 
+
+) )("	#map-set#: 
+
+* *("	#map-set#: 
+
++ +(5"	#map-set#: 
+
+, ,(%"	#map-set#: 
+
+- -("	#map-set#:$
+"
+0 :("#new-object#Bdict 
+
+1 1(*"	#map-set#: 
+
+2 2(-!"	#map-set#: $
+"
+3 8(	""#new-object#Bdict 
+
+4 4(#"	#map-set#:" 
+
+5 5("$"	#map-set#:"	
++
+)
+6  6(5&"
+helpers.k8s	owner_ref:'
+%
+6 6(6'"#unknown-value#Blist&
+$
+6 6(6)"
+#is-exact#:'(Bbool
+
+6 6(6*"
+#assume#:)8
+6
+6 6(6,"#set-field# __collection_size:'+Bint&
+$
+6 6(6-"#array-add-last#:'& 
+
+6 6(6."	#map-set#:"%'$
+"
+7 7(A0"#new-object#Bdict 
+
+7 7('3"	#map-set#:012 
+
+7) 7(@5"	#map-set#:04 
+
+7 7(A6"	#map-set#:"/0 
+
+3 8(	7"	#map-set#:"$
+"
+9 9(.8"#new-object#Bdict!
+
+9 9(:"#unknown-value#+
+)
+9 9(-;"?python-unknown?::Bstr 
+
+9 9(-<"	#map-set#:89; 
+
+9 9(.="	#map-set#:8
+0 :(*3/Users/prutledg/troshka/src/operator/helpers/k8s.py

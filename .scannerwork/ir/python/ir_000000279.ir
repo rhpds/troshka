@@ -1,0 +1,78 @@
+
+""str
+ãÅ"    SCRIPTEOF\n    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh\n    chmod 755 /home/cloud-user/install-ocp.sh\n"str
+√π"  - |\n    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n    #!/bin/bash\n    set -e\n    cd /home/cloud-user\n    \n    # Skip if cluster is already installed (pattern deploy)\n    if [ -f /home/cloud-user/ocp-install/auth/kubeconfig ]; then\n      echo 'Cluster already installed, skipping.'\n      exit 0\n    fi\n    \n    # Wait for network\n    echo 'Waiting for network...'\n    for i in $(seq 1 15); do\n      ping -c1 -W2 8.8.8.8 &>/dev/null && break\n      sleep 2\n    done\n    if ! ping -c1 -W2 8.8.8.8 &>/dev/null; then\n      echo 'ERROR: No network connectivity after 30 seconds'\n      exit 1\n    fi\n    echo 'Network OK'\n    \n    OCP_VERSION={ocp_version}\n    \n    # Download openshift-install and oc if not present\n    if [ ! -f openshift-install ]; then\n      echo "Downloading openshift-install $OCP_VERSION..."\n      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz\n      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n      echo "Downloading oc client..."\n      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz\n      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n      sudo mv oc kubectl /usr/bin/\n      echo "Downloaded openshift-install and oc"\n    fi\n    \n    echo ''\n    echo '================================================'\n    echo 'OCP Agent-Based Installer Ready'\n    echo '================================================'\n    echo ''\n    echo 'install-config.yaml:  ~/ocp-install/install-config.yaml'\n    echo 'agent-config.yaml:    ~/ocp-install/agent-config.yaml'\n    echo 'Pull secret:          ~/pull-secret.json'\n    echo 'openshift-install:    ~/openshift-install'\n    echo ''\n    echo 'To create agent ISO and install:'\n    echo '  cd ~/ocp-install'\n    echo '  ~/openshift-install agent create image --dir .'\n    echo '  # Serve ISO and boot nodes via BMC'\n    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'\n    echo ''\n    echo ''\n"str
+Ç=¯<"    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n    \n    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n    # Open firewall for ISO serving (script runs as cloud-user)\n    sudo firewall-cmd --add-port=8080/tcp --permanent 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || true\n    cd /home/cloud-user/ocp-install\n    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &\n    HTTP_PID=$!\n    echo "HTTP server PID: $HTTP_PID"\n    \n    # Boot each CP node via Redfish virtual media\n    BASTION_IP=$(hostname -I | awk '{print $1}')\n    ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"\n    echo "ISO URL: $ISO_URL"\n    \n    for BMC_IP in {bmc_ips_str}; do\n      echo "Mounting ISO on BMC $BMC_IP..."\n      # Get system UUID from sushy\n      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n      echo "  System: $SYS_ID"\n      # Insert virtual media (Systems path, HTTP, with auth)\n      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n        -H 'Content-Type: application/json' \\\n        -d "{\\"Image\\": \\"${ISO_URL}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}" || true\n      # Reboot ‚Äî UEFI boot order is hd,cdrom so empty disk falls through to ISO\n      # After agent writes CoreOS to disk, next reboot boots from disk first\n      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \\\n        -H 'Content-Type: application/json' \\\n        -d \'{"ResetType": "ForceRestart"}\' || true\n      echo "Booted $BMC_IP from ISO"\n    done\n    \n    \n    echo 'Waiting for cluster installation to complete...'\n    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\'\n    OCP_EXIT=${PIPESTATUS[0]}\n    INSTALL_END=$(date +%s)\n    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n    echo ''\n    echo '================================================'\n    if [ $OCP_EXIT -ne 0 ]; then\n    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"\n    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n    echo '================================================'\n    kill $HTTP_PID 2>/dev/null\n    exit 1\n    fi\n    echo "Install completed at $(date)"\n    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n    echo '================================================'\n    # Eject agent ISO via Redfish virtual media\n    echo 'Ejecting agent ISO from nodes...'\n    for BMC_IP in {bmc_ips_str}; do\n      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1\n    done\n    # Write static MOTD with cluster credentials\n    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n    # Trust the OCP CA so Firefox doesn't show cert warnings\n    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n    # Save kubeadmin password into Firefox password manager via NSS\n    # Create Firefox profile if it doesn't exist\n    if ! ls /home/cloud-user/.mozilla/firefox/*.default* >/dev/null 2>&1; then\n      firefox --headless --no-remote >/dev/null 2>&1 &\n      FXPID=$!\n      sleep 3\n      kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true\n    fi\n    cat > /home/cloud-user/ocp-autologin.py << 'PWSAVEEOF'\n    import ctypes, ctypes.util, json, base64, glob, os, sys, time, uuid\n    console_url = sys.argv[1]\n    for pw_path in ['~/ocp-install/auth/kubeadmin-password',\n                    '~cloud-user/ocp-install/auth/kubeadmin-password']:\n        p = os.path.expanduser(pw_path)\n        if os.path.exists(p):\n            pw = open(p).read().strip()\n            break\n    else:\n        print('ERROR: kubeadmin-password not found'); sys.exit(1)\n    parts = console_url.split('apps.', 1)\n    if len(parts) < 2:\n        print('Cannot parse domain from ' + console_url); sys.exit(1)\n    domain = parts[1].rstrip('/')\n    oauth_url = 'https://oauth-openshift.apps.' + domain\n    profiles = sorted(glob.glob('/home/cloud-user/.mozilla/firefox/*.default*/'))\n    if not profiles:\n        print('ERROR: No Firefox profile found'); sys.exit(1)\n    profile = profiles[0].rstrip('/')\n    class SECItem(ctypes.Structure):\n        _fields_ = [('type', ctypes.c_uint), ('data', ctypes.c_void_p), ('len', ctypes.c_uint)]\n    nss = None\n    for lib in ['libnss3.so', ctypes.util.find_library('nss3') or '']:\n        if lib:\n            try:\n                nss = ctypes.CDLL(lib)\n                break\n            except OSError:\n                continue\n    if not nss:\n        print('ERROR: libnss3.so not found'); sys.exit(1)\n    if nss.NSS_Init(('sql:' + profile).encode()) != 0:\n        print('ERROR: NSS_Init failed'); sys.exit(1)\n    def encrypt(text):\n        data = text.encode('utf-8')\n        buf = ctypes.create_string_buffer(data, len(data))\n        inp = SECItem(0, ctypes.cast(buf, ctypes.c_void_p), len(data))\n        out = SECItem(0, None, 0)\n        if nss.PK11SDR_Encrypt(None, ctypes.byref(inp), ctypes.byref(out), None) != 0:\n            return None\n        return base64.b64encode(ctypes.string_at(out.data, out.len)).decode()\n    eu = encrypt('kubeadmin')\n    ep = encrypt(pw)\n    if not eu or not ep:\n        print('ERROR: Encryption failed'); nss.NSS_Shutdown(); sys.exit(1)\n    now_ms = int(time.time() * 1000)\n    logins = {\n        'nextId': 2,\n        'logins': [{\n            'id': 1,\n            'hostname': oauth_url,\n            'httpRealm': None,\n            'formSubmitURL': oauth_url,\n            'usernameField': 'inputUsername',\n            'passwordField': 'inputPassword',\n            'encryptedUsername': eu,\n            'encryptedPassword': ep,\n            'guid': '{' + str(uuid.uuid4()) + '}',\n            'encType': 1,\n            'timeCreated': now_ms,\n            'timeLastUsed': now_ms,\n            'timePasswordChanged': now_ms,\n            'timesUsed': 1\n        }]\n    }\n    with open(os.path.join(profile, 'logins.json'), 'w') as f:\n        json.dump(logins, f)\n    nss.NSS_Shutdown()\n    print('Password saved to Firefox')\n    PWSAVEEOF\n    python3 /home/cloud-user/ocp-autologin.py https://console-openshift-console.apps.{cluster_name}.{base_domain} 2>&1 || true\n    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n    rm -f /home/cloud-user/pull-secret.json\n    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n    dnf clean all 2>/dev/null\n    # Kill the HTTP server used to serve the agent ISO\n    kill $HTTP_PID 2>/dev/null\n"str
+˘
+Ô"    # Auto-run agent-based installer\n    INSTALL_START=$(date +%s)\n    echo "Install started at $(date)"\n    BMC_PASS='{bmc_password}'\n    echo 'Creating agent ISO...'\n    cd /home/cloud-user/ocp-install\n    cp install-config.yaml install-config.yaml.bak\n    cp agent-config.yaml agent-config.yaml.bak\n    [ -d openshift ] && cp -a openshift openshift.bak\n"strocp_version
+∞ ∞(auto_install
+± ±(bmc_password
+≤ ≤(bmc_ips_str
+≥ ≥(cluster_name
+¥ ¥(base_domain
+µ µ(topology
+∂ ∂("[+
+)
+
+ê
+ ê
+(	"
+__bool__*:BboolH,"*
+
+ê
+ ê
+(	 *
+ê
+ ê
+(2
+ë
+ ë
+("E+
+)
+
+˙) ˙(1"
+__bool__*:BboolH"
+
+˙) ˙(1 "
+
+Ò ë
+("M*%
+#
+
+π ï
+(9"	#binop +#2+:
+
+∏ ñ
+("<&
+$
+
+˙5 ˙(7"#new-object#Bdict
+
+˙) ˙(7"´*R
+P
+
+˙ ˙(8"=
+app.services.ocp.agent_template_generate_ocp_mount_script:+
+)
+
+˚& ˚(."
+__bool__*:BboolH"
+
+˚& ˚(. "<&
+$
+
+˚2 ˚(4"#new-object#Bdict
+
+˚& ˚(4"†*P
+N
+
+˚ ˚(B":
+app.services.ocp.agent_template_generate_dns_manifests:&
+$
+
+Ò è
+(."	#binop +#2+:
+
+
+Ò ë
+(*F/Users/prutledg/troshka/src/backend/app/services/ocp/agent_template.py

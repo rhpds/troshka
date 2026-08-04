@@ -1,0 +1,62 @@
+
+<app.services.providers.kubevirt.KubeVirtDriver.get_vm_statesR
+F/Users/prutledg/troshka/src/backend/app/services/providers/kubevirt.py” ”("2*ô
+2
+‘ ‘(>˛
+˚
+
+‘ ‘(>
+%1"Aapp.services.providers.kubevirt.KubeVirtDriver.get_project_status*N
+
+__unknown_file (20
+.app.services.providers.kubevirt.KubeVirtDriver*(
+
+__unknown_file (
+
+
+provider**
+
+__unknown_file (
+
+
+project_idB
+@
+
+‘ ‘(>
+status"__id*"
+
+__unknown_file (
+
+%1
+
+’& ’((
+%2"dictêç
+
+’ ’()
+%3*&
+
+__unknown_file (
+
+
+status*(
+
+__unknown_file (
+
+vmStates*"
+
+__unknown_file (
+
+%22get"
+
+’ ’()
+
+%3:
+
+” ”($
+
+provider:
+
+”& ”(0
+
+project_idB20
+.app.services.providers.kubevirt.KubeVirtDriverH

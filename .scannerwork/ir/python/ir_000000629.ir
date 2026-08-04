@@ -1,0 +1,71 @@
+
+
+0int
+"new_size_gb"str
+truebool
+	
+"qemu-img"str
+"path"str
+"{new_size_gb}G"str
+600int
+	"resized"str
+"status"str
+
+"resize"strjob
+¢ ¢(params
+¢ ¢(#list"Ì$
+"
+
+£ £(("#array-read#:5
+3
+
+£ £()path"
+troshkad_validate_path:$
+"
+
+¤ ¤(+"#array-read#:=
+;
+
+¤ ¤(,new_size_gb"#dependent-value#*:Bint)
+'
+
+¥ ¥(A"#unknown-value#Blist(
+&
+
+¥ ¥(A"
+#is-exact#:Bbool
+
+
+¥ ¥(A"
+#assume#::
+8
+
+¥ ¥(A"#set-field# __collection_size:Bint(
+&
+
+¥ ¥(A"#array-add-last#:	(
+&
+
+¥ ¥(A"#array-add-last#:
+(
+&
+
+¥ ¥(A"#array-add-last#:(
+&
+
+¥ ¥(A"#array-add-last#:,
+*
+
+¥ ¥(B"
+troshkad_run_cmd:&
+$
+
+¦ ¦(."#new-object#Bdict"
+ 
+
+¦ ¦("	#map-set#:"
+ 
+
+¦ ¦(-"	#map-set#:
+
+¦ ¦(.*0/Users/prutledg/troshka/src/troshkad/troshkad.py

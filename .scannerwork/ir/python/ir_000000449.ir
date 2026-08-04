@@ -1,0 +1,49 @@
+
+"gcp"str
+"ec2"str
+"azure"str
+	"ocpvirt"str
+"sdf"str
+
+	0int
+F="Return the data disk device path for a given provider type."str
+1("Unknown provider type: {provider_type}"str
+
+"/dev/sdb"str
+%"/dev/disk/azure/scsi1/lun0"strprovider_type$ $(-	tuple"Ï(
+&
+& &(*"#unknown-value#Btuple&
+$
+& &(*"
+#is-exact#:Bbool
+
+& &(*"
+#assume#:8
+6
+& &(*
+"#set-field# __collection_size:	Bint&
+$
+& &(*"#array-add-last#:&
+$
+& &(*"#array-add-last#:*
+(
+& &(*"
+#binop in#2in:Bbool&"$
+& &(* *& &(2( (("
+' '("V*
+(
+(	 (("
+#binop ==#2==:Bbool&"$
+(	 (( *( ((2* *("
+) )("L*
+(
+*	 *(!"
+#binop ==#2==:Bbool"
+*	 *(! ** *("
++ +(+"B.
+,
+,
+ ,(?"
+ValueError*:B
+ValueError2
+, ,(?*B/Users/prutledg/troshka/src/backend/app/services/agent_deployer.py

@@ -1,0 +1,78 @@
+
++
+"/compose"str
+
+"architecture"str
+"x86_64"str
+"type"str
+
+0int
+"image_requests"str
+	"options"str
+ 
+"packages"str
+#
+"services"str
+"distribution"str
+%	"enabled"str
+-"id"str
+"customizations"str
+"upload_request"str
+*"POST"str
+"image_type"straccess_tokenU U(distributionV V(
+image_typeW W(upload_optionsX X(list"Ö*
+(
+Z j(body"#new-object#Bdict 
+
+[ [($"	#map-set#:$
+"
+] d(	"#new-object#Bdict 
+
+^ ^(("	#map-set#:	
+ 
+
+_ _(("	#map-set#:	$
+"
+`" c("#new-object#Bdict 
+
+a a(&"	#map-set#: 
+
+b b(-"	#map-set#: 
+
+` c("	#map-set#:	'
+%
+\ e(	"#unknown-value#Blist&
+$
+\ e(	"
+#is-exact#:Bbool
+
+\ e(	"
+#assume#:8
+6
+\ e(	"#set-field# __collection_size:Bint&
+$
+\ e(	"#array-add-last#:	 
+
+\ e(	"	#map-set#:$
+"
+f i(	"#new-object#Bdict!
+
+g g(%!"#unknown-value# 
+
+g g(%""	#map-set#: !$
+"
+h h(:$"#new-object#Bdict!
+
+h$ h(9&"#unknown-value# 
+
+h h(9'"	#map-set#:$%& 
+
+h h(:("	#map-set#:#$ 
+
+f i(	)"	#map-set#:N
+L
+k k(?,data"2
+"app.services.image_builder_service_api_request:*+"
+ 
+l l(."#array-read#:,-
+l l(.*I/Users/prutledg/troshka/src/backend/app/services/image_builder_service.py

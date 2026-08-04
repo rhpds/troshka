@@ -1,0 +1,36 @@
+
+
+2int
+
+0int
+
+1int
+KB"Get allocatable vCPUs and RAM for a host with overcommit ratios."strhost@ @("ÈK
+I
+B B(3	cpu_ratio"0
+app.services.placement_get_overcommit_ratios1
+/
+B B(3	cpu_ratio"#python-unpack#:1
+/
+B B(3	ram_ratio"#python-unpack#:(
+&
+C C(P	"#unknown-value#Btuple,
+*
+C C(
+"#get-field# total_vcpus:%
+#
+C C(+"	#binop *#*2*:
+.
+,
+C C(,"#dependent-value#*:Bint&
+$
+C C(P"#array-add-last#:	-
++
+C2 C(C"#get-field# total_ram_mb:%
+#
+C2 C(O"	#binop *#*2*:.
+,
+C. C(P"#dependent-value#*:Bint&
+$
+C C(P"#array-add-last#:	
+C C(P	*=/Users/prutledg/troshka/src/backend/app/services/placement.py

@@ -1,0 +1,15 @@
+
+*!"Return ComputeManagementClient."str
+creds_dictc c(""ž;
+9
+e e(:ComputeManagementClient"?python-unknown?N
+L
+g g(,
+credential"/
+app.services.providers.azure_get_credential:X
+V
+h h(6subscription_id"4
+app.services.providers.azure_get_subscription_id:%
+#
+i i(?"#unknown-value#:
+i i(?*C/Users/prutledg/troshka/src/backend/app/services/providers/azure.py

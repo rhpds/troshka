@@ -1,0 +1,60 @@
+
+	"destroy"str
+"domain"str
+"off"str
+30int
+"virsh"str
+"status"str
+"domain_name"str
+truebool
+
+0intjob
+Æ	 Æ	(params
+Æ	 Æ	($	list"Æ$
+"
+
+Ç	# Ç	(8"#array-read#:>
+<
+
+Ç	 Ç	(9domain"!
+troshkad_validate_domain_name:)
+'
+
+È	 È	(."#unknown-value#Blist(
+&
+
+È	 È	(.
+"
+#is-exact#:	Bbool
+
+
+È	 È	(."
+#assume#:
+:
+8
+
+È	 È	(."#set-field# __collection_size:Bint(
+&
+
+È	 È	(."#array-add-last#:(
+&
+
+È	 È	(."#array-add-last#:(
+&
+
+È	 È	(."#array-add-last#:,
+*
+
+È	 È	(;"
+troshkad_run_cmd:&
+$
+
+É	 É	(."#new-object#Bdict"
+ 
+
+É	 É	("	#map-set#:"
+ 
+
+É	 É	(-"	#map-set#:
+
+É	 É	(.*0/Users/prutledg/troshka/src/troshkad/troshkad.py

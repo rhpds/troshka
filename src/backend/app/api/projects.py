@@ -1087,35 +1087,49 @@ def deploy_project(
 
     from app.services.troshkad_client import check_disk_usage
 
-    host = db.query(Host).filter_by(id=result["host_id"]).first()
-    if host and host.ip_address:
-        try:
-            disk = check_disk_usage(host)
-            if disk:
-                logger.info(
-                    "Deploy %s: disk check — %s%% used, %.1f GB free",
-                    project.id[:8],
-                    disk["used_pct"],
-                    disk["free_bytes"] / (1024**3),
-                )
-                if disk["used_pct"] >= 90:
-                    free_gb = disk["free_bytes"] / (1024**3)
-                    project.state = "draft"
-                    db.commit()
-                    raise HTTPException(
-                        status_code=507,
-                        detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.",
+    # Multi-host deployment
+    if result.get("multi_host"):
+        project.mesh_network_host_id = result["network_host_id"]
+        project.host_id = result["network_host_id"]  # backward compat
+        project.vni_map = result["vni_map"]
+        project.host_assignments = result["host_assignments"]
+        db.commit()
+        logger.info(
+            "Deploy %s: multi-host placement across %d hosts",
+            project.id[:8],
+            len(result["host_assignments"]),
+        )
+    else:
+        # Single-host deployment
+        host = db.query(Host).filter_by(id=result["host_id"]).first()
+        if host and host.ip_address:
+            try:
+                disk = check_disk_usage(host)
+                if disk:
+                    logger.info(
+                        "Deploy %s: disk check — %s%% used, %.1f GB free",
+                        project.id[:8],
+                        disk["used_pct"],
+                        disk["free_bytes"] / (1024**3),
                     )
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(
-                "Deploy %s: disk check failed (non-fatal): %s", project.id[:8], e
-            )
+                    if disk["used_pct"] >= 90:
+                        free_gb = disk["free_bytes"] / (1024**3)
+                        project.state = "draft"
+                        db.commit()
+                        raise HTTPException(
+                            status_code=507,
+                            detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.",
+                        )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.warning(
+                    "Deploy %s: disk check failed (non-fatal): %s", project.id[:8], e
+                )
 
-    # Persist VNI map for stop/start/destroy
-    project.vni_map = result.get("vni_map")
-    db.commit()
+        # Persist VNI map for stop/start/destroy
+        project.vni_map = result.get("vni_map")
+        db.commit()
 
     # Deploy via job queue
     from app.core.redis import enqueue_job

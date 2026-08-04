@@ -1,0 +1,20 @@
+self< <("¢,
+*
+= =("#get-field# credentials:)
+'
+= =("
+__bool__*:BboolH)
+'
+= =("#unaryop !#2!:Bbool"
+= =( *= =(
+"8$
+"
+> >("#new-object#Bdict
+> >("‹,
+*
+? ?(*"#get-field# credentials:!
+
+? ?("#unknown-value#&
+$
+? ?(+"?python-unknown?:
+? ?(+*:/Users/prutledg/troshka/src/backend/app/models/provider.py
