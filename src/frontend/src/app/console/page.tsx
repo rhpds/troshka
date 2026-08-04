@@ -139,18 +139,7 @@ function ConsolePage() {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
-      preflightCheck(url).then((result) => {
-        if (!mountedRef.current) return;
-        if (result === "in_use") {
-          setStatus("Console in use by another session");
-          return;
-        }
-        if (result === "ok") {
-          setWsUrl(url);
-        } else {
-          reconnectTimer.current = setTimeout(pollForPort, 3000);
-        }
-      });
+      setWsUrl(url);
     });
   }, [fetchConsoleUrl, preflightCheck, projectDeleted]);
 
