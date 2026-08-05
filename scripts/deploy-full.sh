@@ -26,8 +26,18 @@ fi
 
 echo ""
 echo "=== Step 2: Wait for CI ==="
-IMAGE_RUN=$(gh run list --limit 1 --json databaseId --jq '.[0].databaseId' -w "Build and Push Container Images")
-echo "  Watching image build (run $IMAGE_RUN)..."
+HEAD_SHA=$(git rev-parse HEAD)
+for _attempt in $(seq 1 20); do
+  IMAGE_RUN=$(gh run list --commit "$HEAD_SHA" --limit 1 --json databaseId --jq '.[0].databaseId' -w "Build and Push Container Images")
+  [ -n "$IMAGE_RUN" ] && break
+  echo "  Waiting for CI run to appear... (${_attempt}/20)"
+  sleep 5
+done
+if [ -z "$IMAGE_RUN" ]; then
+  echo "  ERROR: No CI run found for $HEAD_SHA after 100s"
+  exit 1
+fi
+echo "  Watching image build (run $IMAGE_RUN, sha ${HEAD_SHA:0:10})..."
 gh run watch "$IMAGE_RUN" --exit-status 2>&1 | tail -3
 echo "  CI complete"
 
@@ -122,9 +132,15 @@ if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
       expected="${ROLE_DIGESTS[$idx]}"
       [ -z "$expected" ] && continue
 
+      # Pods use either troshka-role=X or app=troshka-X depending on component
       pod_image=$(oc get pods --all-namespaces -l "troshka-role=$role" \
         -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' \
         --kubeconfig="$kc" 2>/dev/null || echo "")
+      if [ -z "$pod_image" ]; then
+        pod_image=$(oc get pods --all-namespaces -l "app=troshka-$role" \
+          -o jsonpath='{.items[0].status.containerStatuses[0].imageID}' \
+          --kubeconfig="$kc" 2>/dev/null || echo "")
+      fi
 
       if [ -z "$pod_image" ] || echo "$pod_image" | grep -qF "$expected"; then
         continue
@@ -133,6 +149,11 @@ if [ "$SKIP_OPERATORS" = false ] && [ "$SKIP_PROJECT_PODS" = false ]; then
       deploys=$(oc get deploy --all-namespaces -l "troshka-role=$role" \
         -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
         --no-headers --kubeconfig="$kc" 2>/dev/null || echo "")
+      if [ -z "$(echo "$deploys" | tr -d '[:space:]')" ]; then
+        deploys=$(oc get deploy --all-namespaces -l "app=troshka-$role" \
+          -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
+          --no-headers --kubeconfig="$kc" 2>/dev/null || echo "")
+      fi
       while read -r ns name; do
         [ -z "$ns" ] && continue
         oc rollout restart "deploy/$name" -n "$ns" --kubeconfig="$kc" 2>/dev/null || true
