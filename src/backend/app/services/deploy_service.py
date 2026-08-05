@@ -2959,25 +2959,32 @@ def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
         sync_security_group_rules(s, _provider, desired_sg)
 
 
+def _find_gateway_connected_network(topology, gateway_id):
+    """Find the network node connected to a gateway node."""
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    for edge in topology.get("edges", []):
+        if edge.get("source") == gateway_id:
+            target = nodes_by_id.get(edge.get("target", ""))
+            if target and target.get("type") == "networkNode":
+                return target
+    return None
+
+
 def _find_gateway_ip(topology):
     """Find the gateway IP from the topology by locating the gateway node's connected network."""
     import ipaddress
 
-    for node in topology.get("nodes", []):
-        if node.get("type") == "gatewayNode":
-            for edge in topology.get("edges", []):
-                if edge.get("source") == node["id"]:
-                    target_node = next(
-                        (n for n in topology["nodes"] if n["id"] == edge["target"]),
-                        None,
-                    )
-                    if target_node and target_node.get("type") == "networkNode":
-                        net_data = target_node.get("data", {})
-                        cidr = net_data.get("cidr", "192.168.1.0/24")
-                        network = ipaddress.ip_network(cidr, strict=False)
-                        return str(network.network_address + 1)
-            break
-    return None
+    gateway = next(
+        (n for n in topology.get("nodes", []) if n.get("type") == "gatewayNode"), None
+    )
+    if not gateway:
+        return None
+    net_node = _find_gateway_connected_network(topology, gateway["id"])
+    if not net_node:
+        return None
+    cidr = net_node.get("data", {}).get("cidr", "192.168.1.0/24")
+    network = ipaddress.ip_network(cidr, strict=False)
+    return str(network.network_address + 1)
 
 
 def _deploy_inject_gateway_ip(topology, project_id):
@@ -3223,25 +3230,35 @@ def _deploy_create_disks(host, project_id, topology, pool):
     return vms
 
 
+def _detect_recert_from_pattern(s, topology):
+    """Check if the pattern referenced by any storage node has recert enabled."""
+    for node in topology.get("nodes", []):
+        if node.get("type") == "storageNode":
+            pid = node.get("data", {}).get("patternId")
+            if pid:
+                pat = s.query(Pattern).filter_by(id=pid).first()
+                return bool(pat and pat.recert)
+    return None
+
+
+def _detect_common_password(topology):
+    """Find common_password from the first cloud-init VM that has one set."""
+    for n in topology.get("nodes", []):
+        if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+            pw = n.get("data", {}).get("ciCloudUserPassword")
+            if pw:
+                return pw
+    return None
+
+
 def _resolve_recert_settings(s, topology):
     """Resolve deploy_recert and common_password from topology markers or pattern DB."""
     deploy_recert = topology.pop("_deploy_recert", None)
     common_password = topology.pop("_deploy_common_password", None)
     if deploy_recert is None:
-        for node in topology.get("nodes", []):
-            if node.get("type") == "storageNode":
-                pid = node.get("data", {}).get("patternId")
-                if pid:
-                    pat = s.query(Pattern).filter_by(id=pid).first()
-                    if pat and pat.recert:
-                        deploy_recert = True
-                    break
+        deploy_recert = _detect_recert_from_pattern(s, topology)
     if not common_password:
-        for n in topology.get("nodes", []):
-            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
-                common_password = n.get("data", {}).get("ciCloudUserPassword")
-                if common_password:
-                    break
+        common_password = _detect_common_password(topology)
     return deploy_recert, common_password
 
 
@@ -3318,6 +3335,30 @@ def _clean_stale_domain(host, project_id, domain_name):
         pass
 
 
+def _define_single_vm(
+    host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+):
+    """Define a single VM via troshkad and capture its domain UUID."""
+    domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
+    _clean_stale_domain(host, project_id, domain_name)
+    job_id = _create_vm_via_troshkad(
+        host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+    )
+    if not job_id:
+        return
+    job = wait_for_job(host, job_id, timeout=300)
+    if job.get("status") == "failed":
+        raise TroshkadError(
+            f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
+        )
+    dom_uuid = job.get("result", {}).get("domain_uuid", "")
+    if dom_uuid:
+        for n in topology.get("nodes", []):
+            if n["id"] == vm["node_id"]:
+                n.setdefault("data", {})["domainUuid"] = dom_uuid
+                break
+
+
 def _deploy_define_vms(
     host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
 ):
@@ -3326,28 +3367,13 @@ def _deploy_define_vms(
         _update_deploy_progress(
             project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
         )
-        domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
-        _clean_stale_domain(host, project_id, domain_name)
-
-        job_id = _create_vm_via_troshkad(
-            host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
-        )
-        if job_id:
-            try:
-                job = wait_for_job(host, job_id, timeout=300)
-                if job.get("status") == "failed":
-                    raise TroshkadError(
-                        f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
-                    )
-                dom_uuid = job.get("result", {}).get("domain_uuid", "")
-                if dom_uuid:
-                    for n in topology.get("nodes", []):
-                        if n["id"] == vm["node_id"]:
-                            n.setdefault("data", {})["domainUuid"] = dom_uuid
-                            break
-            except TroshkadError as e:
-                logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
-                raise
+        try:
+            _define_single_vm(
+                host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+            )
+        except TroshkadError as e:
+            logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
+            raise
 
 
 def _deploy_setup_bmc(host, project_id, topology):
