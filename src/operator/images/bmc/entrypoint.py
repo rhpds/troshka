@@ -17,10 +17,13 @@ LISTEN_PORT = int(os.environ.get("SUSHY_LISTEN_PORT", "8000"))
 _AUTH_REALM = 'Basic realm="Redfish"'
 _SYSTEMS_PREFIX = "/redfish/v1/Systems/"
 _MANAGERS_PREFIX = "/redfish/v1/Managers/"
-_NOT_FOUND_BODY = {"error": {"code": "Base.1.0.GeneralError", "message": "Not found"}}
+_ERR_GENERAL = "Base.1.0.GeneralError"
+_ODATA_ID = "@odata.id"
+_MEMBERS_COUNT = "Members@odata.count"
+_NOT_FOUND_BODY = {"error": {"code": _ERR_GENERAL, "message": "Not found"}}
 _AUTH_ERROR_BODY = {
     "error": {
-        "code": "Base.1.0.GeneralError",
+        "code": _ERR_GENERAL,
         "message": "Authentication required",
     }
 }
@@ -91,8 +94,8 @@ class RedfishHandler(BaseHTTPRequestHandler):
                     "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
                     "Id": "RootService",
                     "Name": "Troshka Redfish Service",
-                    "Systems": {"@odata.id": "/redfish/v1/Systems"},
-                    "Managers": {"@odata.id": "/redfish/v1/Managers"},
+                    "Systems": {_ODATA_ID: "/redfish/v1/Systems"},
+                    "Managers": {_ODATA_ID: "/redfish/v1/Managers"},
                 },
             )
             return
@@ -100,14 +103,14 @@ class RedfishHandler(BaseHTTPRequestHandler):
         # ── Systems Collection ──
         if path == _SYSTEMS_PREFIX.rstrip("/"):
             systems = driver.get_systems()
-            members = [{"@odata.id": f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
+            members = [{_ODATA_ID: f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
             _send_json(
                 self,
                 {
                     "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
                     "Name": "Computer System Collection",
                     "Members": members,
-                    "Members@odata.count": len(members),
+                    _MEMBERS_COUNT: len(members),
                 },
             )
             return
@@ -140,9 +143,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
                             "BootSourceOverrideMode": boot_mode,
                         },
                         "Links": {
-                            "ManagedBy": [
-                                {"@odata.id": f"{_MANAGERS_PREFIX}{identity}"}
-                            ]
+                            "ManagedBy": [{_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}"}]
                         },
                         "Actions": {
                             "#ComputerSystem.Reset": {
@@ -163,14 +164,14 @@ class RedfishHandler(BaseHTTPRequestHandler):
         # ── Managers Collection ──
         if path == _MANAGERS_PREFIX.rstrip("/"):
             systems = driver.get_systems()
-            members = [{"@odata.id": f"{_MANAGERS_PREFIX}{s}"} for s in systems]
+            members = [{_ODATA_ID: f"{_MANAGERS_PREFIX}{s}"} for s in systems]
             _send_json(
                 self,
                 {
                     "@odata.type": "#ManagerCollection.ManagerCollection",
                     "Name": "Manager Collection",
                     "Members": members,
-                    "Members@odata.count": len(members),
+                    _MEMBERS_COUNT: len(members),
                 },
             )
             return
@@ -190,11 +191,11 @@ class RedfishHandler(BaseHTTPRequestHandler):
                         "Name": f"Manager for {identity}",
                         "ManagerType": "BMC",
                         "VirtualMedia": {
-                            "@odata.id": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia"
+                            _ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia"
                         },
                         "Links": {
                             "ManagerForServers": [
-                                {"@odata.id": f"{_SYSTEMS_PREFIX}{identity}"}
+                                {_ODATA_ID: f"{_SYSTEMS_PREFIX}{identity}"}
                             ]
                         },
                     },
@@ -208,11 +209,9 @@ class RedfishHandler(BaseHTTPRequestHandler):
                         "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
                         "Name": "Virtual Media Collection",
                         "Members": [
-                            {
-                                "@odata.id": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"
-                            }
+                            {_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"}
                         ],
-                        "Members@odata.count": 1,
+                        _MEMBERS_COUNT: 1,
                     },
                 )
                 return
@@ -266,7 +265,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 _send_json(
                     self,
-                    {"error": {"code": "Base.1.0.GeneralError", "message": str(e)}},
+                    {"error": {"code": _ERR_GENERAL, "message": str(e)}},
                     502,
                 )
             return
@@ -325,7 +324,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
                         self,
                         {
                             "error": {
-                                "code": "Base.1.0.GeneralError",
+                                "code": _ERR_GENERAL,
                                 "message": "Image URL is required",
                             }
                         },
@@ -346,7 +345,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
                         self,
                         {
                             "error": {
-                                "code": "Base.1.0.GeneralError",
+                                "code": _ERR_GENERAL,
                                 "message": str(e),
                             }
                         },

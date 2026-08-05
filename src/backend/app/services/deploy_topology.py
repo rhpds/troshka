@@ -252,6 +252,7 @@ def _find_container_networks(
     container_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:
     """Find networks connected to a container via NIC handles."""
+    _ = project_id  # reserved for future use; callers pass it
     results: list[dict] = []
     container_node = next(
         (n for n in topology.get("nodes", []) if n["id"] == container_node_id), None
@@ -533,6 +534,7 @@ def _image_cache_path(item_id: str, fmt: str, pool=None) -> str:
 
 
 def _pattern_cache_path(pattern_id: str, disk_id: str, fmt: str, pool=None) -> str:
+    _ = pool  # reserved for future use; callers pass it
     return f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
 

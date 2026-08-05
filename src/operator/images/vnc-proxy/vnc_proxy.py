@@ -35,6 +35,7 @@ _token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 K8S_TOKEN = open(_token_path).read().strip() if os.path.exists(_token_path) else ""
 
 _active_sessions: dict[str, Any] = {}
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _get_kubevirt_vnc_url(vm_name: str) -> str:
@@ -177,9 +178,7 @@ async def _proxy(ws_client: Any) -> None:
                         f"VNC for {vm_name} not ready (attempt {attempt + 1}), retrying in 3s: {e}"
                     )
                     if not await _client_alive(ws_client):
-                        logger.info(
-                            f"Client disconnected while waiting for {vm_name}"
-                        )
+                        logger.info(f"Client disconnected while waiting for {vm_name}")
                         return
                     await asyncio.sleep(3)
                 else:
@@ -213,26 +212,44 @@ async def _handle_status(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             vm_name = path[8:]
             if vm_name in _active_sessions:
                 body = b'{"in_use":true}'
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + body)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n"
+                    + body
+                )
             else:
                 body = b'{"in_use":false}'
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n" + body)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n"
+                    + body
+                )
         elif path.startswith("/kick/"):
             vm_name = path[6:]
             ws = _active_sessions.pop(vm_name, None)
             if ws:
                 try:
-                    asyncio.ensure_future(ws.close(4010, "Kicked"))
+                    task = asyncio.ensure_future(ws.close(4010, "Kicked"))
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
                 except Exception:
                     pass
                 logger.info(f"Kicked session for {vm_name}")
                 body = b'{"kicked":true}'
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n" + body)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n"
+                    + body
+                )
             else:
                 body = b'{"kicked":false}'
-                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n" + body)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 16\r\n\r\n"
+                    + body
+                )
         else:
-            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"active\":" + str(len(_active_sessions)).encode() + b"}")
+            writer.write(
+                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"active":'
+                + str(len(_active_sessions)).encode()
+                + b"}"
+            )
     except Exception:
         pass
     finally:

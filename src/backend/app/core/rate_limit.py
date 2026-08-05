@@ -114,7 +114,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             try:
                 from app.core.redis import sliding_window_rate
 
-                allowed, count = sliding_window_rate(
+                allowed, _ = sliding_window_rate(
                     f"ratelimit:requests:{user_id}",
                     window=60,
                     limit=MAX_REQUESTS_PER_MINUTE,

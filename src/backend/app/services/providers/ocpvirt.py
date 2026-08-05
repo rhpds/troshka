@@ -1083,7 +1083,7 @@ class OCPVirtDriver(ProviderDriver):
 
     def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         creds = provider.get_credentials()
-        namespace = creds.get("namespace", "troshka")
+        namespace = namespace or creds.get("namespace", "troshka")
         _, core_api = _get_k8s_clients(creds)
 
         svc_ports = [

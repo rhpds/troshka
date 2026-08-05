@@ -1100,6 +1100,9 @@ def _handle_vm_create(job, params):
                 pass
         disk_cache = params.get("disk_cache")
         disk_arg = f"path={path},bus={bus}"
+        rotation_rate = disk.get("rotation_rate")
+        if rotation_rate and bus in ("scsi", "sata", "ide"):
+            disk_arg += f",rotation_rate={int(rotation_rate)}"
         if disk_cache:
             disk_arg += f",cache={disk_cache}"
             if disk_cache == "none":
@@ -1714,7 +1717,11 @@ def _handle_vm_reconfigure(job, params):
             source.set("file", disk_info["path"])
             target = ET.SubElement(disk_elem, "target")
             target.set("dev", target_dev)
-            target.set("bus", disk_info.get("bus", "virtio"))
+            disk_bus = disk_info.get("bus", "virtio")
+            target.set("bus", disk_bus)
+            rr = disk_info.get("rotation_rate")
+            if rr and disk_bus in ("scsi", "sata", "ide"):
+                target.set("rotation_rate", str(int(rr)))
             _job_log(job, f"Added disk {disk_info['path']} as {target_dev} to {domain}")
 
     # ── CDROMs ──
@@ -5015,7 +5022,6 @@ def handle_mesh_teardown(handler, params):
 
     pid = project_id[:8]
     wg_iface = f"wg-{pid}"
-    ns = f"troshka-{pid}"
     conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
 
     subprocess.run(["ip", "link", "del", wg_iface], capture_output=True, check=False)
@@ -5024,6 +5030,9 @@ def handle_mesh_teardown(handler, params):
         os.remove(conf_path)
 
     handler._send_json(200, {"status": "ok"})
+
+
+_CONF_EXT = ".conf"
 
 
 @route("GET", "/mesh/status")
@@ -5035,9 +5044,9 @@ def handle_mesh_status(handler, params):
         return
 
     for fname in os.listdir(mesh_dir):
-        if not fname.endswith(".conf"):
+        if not fname.endswith(_CONF_EXT):
             continue
-        project_id = fname[:-5]
+        project_id = fname[: -len(_CONF_EXT)]
         pid = project_id[:8]
         wg_iface = f"wg-{pid}"
 
@@ -7391,7 +7400,7 @@ def _check_and_restart_dnsmasq():
         conf_name = (
             os.path.basename(pidfile)
             .replace("troshka-dnsmasq-", "troshka-")
-            .replace(".pid", ".conf")
+            .replace(".pid", _CONF_EXT)
         )
         conf_path = f"/etc/dnsmasq.d/{conf_name}"
         if not os.path.exists(conf_path):
@@ -7498,7 +7507,7 @@ def _check_and_restart_dnsmasq():
                 # Read the new PID and set an audit watch on it
                 try:
                     with open(
-                        pidfile.replace(".conf", ".pid").replace(
+                        pidfile.replace(_CONF_EXT, ".pid").replace(
                             "/etc/dnsmasq.d/", "/run/"
                         )
                     ) as pf:
@@ -7666,9 +7675,9 @@ def _restore_bmc_services():
 
         # Restart sushy-emulator processes
         for fname in os.listdir(bmc_dir):
-            if fname.startswith("sushy-") and fname.endswith(".conf"):
+            if fname.startswith("sushy-") and fname.endswith(_CONF_EXT):
                 conf_path = os.path.join(bmc_dir, fname)
-                pid_path = conf_path.replace(".conf", ".pid")
+                pid_path = conf_path.replace(_CONF_EXT, ".pid")
                 # Kill stale process if any
                 if os.path.exists(pid_path):
                     try:

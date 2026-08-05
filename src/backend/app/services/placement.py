@@ -274,7 +274,7 @@ def find_multihost_placement(
         return sum(n.get("data", {}).get("vcpus", 2) for n in nodes)
 
     units = []
-    for _, ag_nodes in affinity_groups.items():
+    for ag_nodes in affinity_groups.values():
         units.append(
             {
                 "vm_ids": [n["id"] for n in ag_nodes],
@@ -469,7 +469,7 @@ def place_project(
                     hosts_in_mesh.append(h)
 
             same_pool = (
-                len(set(h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id))
+                len({h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id})
                 <= 1
             )
             host_ips = {}

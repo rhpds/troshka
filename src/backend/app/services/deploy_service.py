@@ -91,6 +91,7 @@ _MSG_WAITING_API = "waiting for API server"
 _CMD_GET_NODES = "oc get nodes --no-headers 2>/dev/null"
 _MSG_WAITING_CONSOLE = "waiting for OpenShift console"
 _MSG_CA_CERT = "CA cert"
+_VMS_DESTROY_PATH = "/vms/destroy"
 _MSG_BROWSER_CREDS = "browser credentials"
 
 
@@ -2482,7 +2483,7 @@ def _deploy_multihost(project_id: str, project, db):
         if h:
             hosts_in_mesh.append(h)
     same_pool = (
-        len(set(h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id)) <= 1
+        len({h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id}) <= 1
     )
     host_ips = {}
     for h in hosts_in_mesh:
@@ -2614,7 +2615,7 @@ def _deploy_multihost(project_id: str, project, db):
                     )
                     try:
                         d = start_job(
-                            host, "/vms/destroy", {"domain_name": domain_name}
+                            host, _VMS_DESTROY_PATH, {"domain_name": domain_name}
                         )
                         wait_for_job(host, d, timeout=60)
                     except TroshkadError:
@@ -3499,7 +3500,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                     )
                     try:
                         j = start_job(
-                            host, "/vms/destroy", {"domain_name": domain_name}
+                            host, _VMS_DESTROY_PATH, {"domain_name": domain_name}
                         )
                         wait_for_job(host, j, timeout=60)
                     except TroshkadError:
@@ -6530,7 +6531,7 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
     for vm in vms:
         vm_name = _vm_domain_name(project_id, vm["node_id"])
         try:
-            job_id = start_job(host, "/vms/destroy", {"domain_name": vm_name})
+            job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": vm_name})
             wait_for_job(host, job_id, timeout=60)
         except TroshkadError as e:
             logger.warning(
