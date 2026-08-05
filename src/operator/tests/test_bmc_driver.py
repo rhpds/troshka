@@ -200,22 +200,34 @@ class TestAssignBootOrders:
 
 
 class TestSetBootDevice:
-    def test_boot_once_stores_override(self):
-        drv, mock_api, _ = _make_driver()
-        mock_api.get_namespaced_custom_object.return_value = {
+    def _vm_spec(self, disks=None, interfaces=None):
+        return {
             "spec": {
                 "template": {
                     "spec": {
                         "domain": {
                             "devices": {
-                                "disks": [{"name": "root", "disk": {}, "bootOrder": 1}],
-                                "interfaces": [{"name": "nic0", "bootOrder": 2}],
+                                "disks": disks or [],
+                                "interfaces": interfaces or [],
                             }
                         }
                     }
                 }
             }
         }
+
+    def _running_vmi(self):
+        return {"status": {"phase": "Running"}}
+
+    def test_boot_once_stores_override(self):
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.side_effect = [
+            self._vm_spec(
+                disks=[{"name": "root", "disk": {}, "bootOrder": 1}],
+                interfaces=[{"name": "nic0", "bootOrder": 2}],
+            ),
+            self._running_vmi(),
+        ]
         drv.set_boot_device("vm-uuid-1", "Pxe", boot_enabled="Once")
         assert "kv-vm-1" in drv._boot_once_overrides
         drv._boot_once_overrides.clear()
@@ -223,15 +235,37 @@ class TestSetBootDevice:
     def test_continuous_clears_override(self):
         drv, mock_api, _ = _make_driver()
         drv._boot_once_overrides["kv-vm-1"] = {"disks": [], "interfaces": []}
-        mock_api.get_namespaced_custom_object.return_value = {
-            "spec": {
-                "template": {
-                    "spec": {"domain": {"devices": {"disks": [], "interfaces": []}}}
-                }
-            }
-        }
+        mock_api.get_namespaced_custom_object.side_effect = [
+            self._vm_spec(),
+            self._running_vmi(),
+        ]
         drv.set_boot_device("vm-uuid-1", "Hdd", boot_enabled="Continuous")
         assert "kv-vm-1" not in drv._boot_once_overrides
+
+    def test_deletes_vmi_when_running(self):
+        """set_boot_device restarts the VMI so boot order takes effect."""
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.side_effect = [
+            self._vm_spec(disks=[{"name": "root", "disk": {}, "bootOrder": 1}]),
+            self._running_vmi(),
+        ]
+        drv.set_boot_device("vm-uuid-1", "Hdd")
+        vmi_deleted = any(
+            call[1].get("plural") == "virtualmachineinstances"
+            for call in mock_api.delete_namespaced_custom_object.call_args_list
+        )
+        assert vmi_deleted
+
+    def test_skips_vmi_delete_when_not_running(self):
+        """set_boot_device does NOT restart if no VMI exists."""
+        drv, mock_api, mod = _make_driver()
+        from kubernetes import client
+        mock_api.get_namespaced_custom_object.side_effect = [
+            self._vm_spec(disks=[{"name": "root", "disk": {}}]),
+            client.ApiException(status=404),
+        ]
+        drv.set_boot_device("vm-uuid-1", "Hdd")
+        mock_api.delete_namespaced_custom_object.assert_not_called()
 
 
 class TestGetBootOverrideEnabled:

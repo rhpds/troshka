@@ -227,6 +227,12 @@ class KubeVirtDriver:
         self._assign_boot_orders(patch_disks, patch_ifaces, target_type)
         self._patch_vm_devices(identity, patch_disks, patch_ifaces)
 
+        # KubeVirt can't change boot order on a running VMI — delete it so the
+        # controller recreates it from the updated template.
+        vmi = self._get_vmi(identity)
+        if vmi:
+            self._delete_vmi(identity)
+
     def get_boot_override_enabled(self, identity):
         name = self._kv_name(identity)
         return "Once" if name in self._boot_once_overrides else "Continuous"
