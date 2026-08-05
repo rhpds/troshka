@@ -3371,6 +3371,7 @@ def _cache_images_and_metadata(h, p_id, current, vni_map, s):
 
 
 def _create_bmc_bridge_if_needed(h, p_id, current, bmc_config):
+    _ = current
     net_data = bmc_config["bmc_network"]
     cidr = net_data.get("cidr", "192.168.100.0/24")
     try:

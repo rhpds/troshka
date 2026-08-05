@@ -93,6 +93,7 @@ _MSG_WAITING_CONSOLE = "waiting for OpenShift console"
 _MSG_CA_CERT = "CA cert"
 _VMS_DESTROY_PATH = "/vms/destroy"
 _MSG_BROWSER_CREDS = "browser credentials"
+_LOG_DEPLOY = "Deploy %s: %s"
 
 
 def _set_deploy_progress(project_id: str, data: dict):
@@ -888,6 +889,52 @@ def _setup_mesh(db, project, host_assignments, host_ips):
     return True
 
 
+def _setup_remote_host_network(
+    host_id,
+    network_host_id,
+    network_nodes,
+    vni_map,
+    all_wg_ips,
+    wg_ip_map,
+    project_id,
+    db,
+):
+    """Set up VXLAN + bridge on a single remote (non-network) host. Returns error string or None."""
+    if host_id == network_host_id:
+        return None
+
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        return f"Host {host_id[:8]} not found"
+
+    networks = []
+    for node in network_nodes:
+        vni = vni_map.get(node["id"])
+        if vni:
+            networks.append(
+                {
+                    "vni": vni,
+                    "bridge_name": f"br-{vni}",
+                    "wg_peer_ips": all_wg_ips,
+                }
+            )
+
+    params = {
+        "project_id": project_id,
+        "wg_local_ip": wg_ip_map[host_id],
+        "networks": networks,
+    }
+    try:
+        job_id = start_job(host, "/mesh/join-network", params)
+        job = wait_for_job(host, job_id, timeout=120)
+        if job["status"] == "failed":
+            error_msg = job.get("result", {}).get("error", "unknown")
+            return f"Host {host_id[:8]}: {error_msg}"
+    except Exception as e:
+        return f"Host {host_id[:8]}: {e}"
+    return None
+
+
 def _setup_remote_networks(db, project, host_assignments, vni_map, topology):
     """Set up VXLAN + bridge on remote (non-network) hosts."""
     from app.models.mesh_peer import ProjectMeshPeer
@@ -906,39 +953,18 @@ def _setup_remote_networks(db, project, host_assignments, vni_map, topology):
 
     errors = []
     for host_id, vm_ids in host_assignments.items():
-        if host_id == network_host_id:
-            continue
-
-        host = db.query(Host).filter_by(id=host_id).first()
-        if not host:
-            errors.append(f"Host {host_id[:8]} not found")
-            continue
-
-        networks = []
-        for node in network_nodes:
-            vni = vni_map.get(node["id"])
-            if vni:
-                networks.append(
-                    {
-                        "vni": vni,
-                        "bridge_name": f"br-{vni}",
-                        "wg_peer_ips": all_wg_ips,
-                    }
-                )
-
-        params = {
-            "project_id": project.id,
-            "wg_local_ip": wg_ip_map[host_id],
-            "networks": networks,
-        }
-        try:
-            job_id = start_job(host, "/mesh/join-network", params)
-            job = wait_for_job(host, job_id, timeout=120)
-            if job["status"] == "failed":
-                error_msg = job.get("result", {}).get("error", "unknown")
-                errors.append(f"Host {host_id[:8]}: {error_msg}")
-        except Exception as e:
-            errors.append(f"Host {host_id[:8]}: {e}")
+        err = _setup_remote_host_network(
+            host_id,
+            network_host_id,
+            network_nodes,
+            vni_map,
+            all_wg_ips,
+            wg_ip_map,
+            project.id,
+            db,
+        )
+        if err:
+            errors.append(err)
 
     if errors:
         logger.error("Remote network setup failed: %s", errors)
@@ -2878,6 +2904,25 @@ def _deploy_setup_lb(host, project_id, topology, vni_map):
     return lb_config
 
 
+def _collect_gateway_sg_rules(gateway_node, project_id):
+    """Collect security group rules from gateway port forwards."""
+    rules = []
+    if (
+        gateway_node
+        and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward"
+    ):
+        for pf in gateway_node.get("data", {}).get("portForwards", []):
+            if pf.get("extPort"):
+                rules.append(
+                    {
+                        "project_id": project_id,
+                        "ext_port": int(pf["extPort"]),
+                        "protocol": "tcp",
+                    }
+                )
+    return rules
+
+
 def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
     from app.models.provider import Provider as _Prov
     from app.services.eip_service import sync_security_group_rules
@@ -2891,7 +2936,6 @@ def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
         _provider = s.query(_Prov).filter_by(id=host.provider_id).first()
     if not _provider:
         return
-    desired_sg = []
     gateway_node = next(
         (
             n
@@ -2901,19 +2945,7 @@ def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
         ),
         None,
     )
-    if (
-        gateway_node
-        and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward"
-    ):
-        for pf in gateway_node.get("data", {}).get("portForwards", []):
-            if pf.get("extPort"):
-                desired_sg.append(
-                    {
-                        "project_id": project_id,
-                        "ext_port": int(pf["extPort"]),
-                        "protocol": "tcp",
-                    }
-                )
+    desired_sg = _collect_gateway_sg_rules(gateway_node, project_id)
     if lb_config and lb_config.get("frontends") and lb_config.get("external", True):
         for fe in lb_config["frontends"]:
             desired_sg.append(
@@ -2927,8 +2959,10 @@ def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
         sync_security_group_rules(s, _provider, desired_sg)
 
 
-def _deploy_inject_gateway_ip(topology, project_id):
-    gateway_ip = None
+def _find_gateway_ip(topology):
+    """Find the gateway IP from the topology by locating the gateway node's connected network."""
+    import ipaddress
+
     for node in topology.get("nodes", []):
         if node.get("type") == "gatewayNode":
             for edge in topology.get("edges", []):
@@ -2940,12 +2974,14 @@ def _deploy_inject_gateway_ip(topology, project_id):
                     if target_node and target_node.get("type") == "networkNode":
                         net_data = target_node.get("data", {})
                         cidr = net_data.get("cidr", "192.168.1.0/24")
-                        import ipaddress
-
                         network = ipaddress.ip_network(cidr, strict=False)
-                        gateway_ip = str(network.network_address + 1)
-                        break
+                        return str(network.network_address + 1)
             break
+    return None
+
+
+def _deploy_inject_gateway_ip(topology, project_id):
+    gateway_ip = _find_gateway_ip(topology)
     if gateway_ip:
         for node in topology.get("nodes", []):
             if node.get("type") == "vmNode" and node.get("data", {}).get("cloudInit"):
@@ -2955,6 +2991,53 @@ def _deploy_inject_gateway_ip(topology, project_id):
             project_id[:8],
             gateway_ip,
         )
+
+
+def _create_routes_for_gateway(driver, provider, host, project_id, node_data, topology):
+    """Create OCP Routes for routable port forwards and return endpoint list."""
+    external_endpoints = []
+    for pf in node_data.get("portForwards", []):
+        ext_port = int(pf.get("extPort", 0))
+        if ext_port not in (80, 443, 6443):
+            continue
+        int_ip = pf.get("intIp", "")
+        int_port = int(pf.get("intPort", ext_port))
+        vm_name = _find_vm_name_by_ip(topology, int_ip)
+        try:
+            result = driver.create_route_access(
+                provider,
+                host,
+                project_id,
+                vm_name,
+                int_ip,
+                ext_port,
+                int_port,
+            )
+            external_endpoints.append(
+                {
+                    "vmName": vm_name,
+                    "vmIp": int_ip,
+                    "port": ext_port,
+                    "type": "route",
+                    "hostname": result["hostname"],
+                }
+            )
+            logger.info(
+                "Deploy %s: created Route for %s:%d → %s",
+                project_id[:8],
+                vm_name,
+                ext_port,
+                result["hostname"],
+            )
+        except Exception:
+            logger.warning(
+                "Deploy %s: Route creation failed for %s:%d, continuing",
+                project_id[:8],
+                vm_name,
+                ext_port,
+                exc_info=True,
+            )
+    return external_endpoints
 
 
 def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
@@ -2967,56 +3050,27 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
     if not provider or provider.type != "ocpvirt":
         return
     driver = get_provider_driver(provider)
-    external_endpoints = []
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
         if node_data.get("subtype") != "gateway":
             continue
-        for pf in node_data.get("portForwards", []):
-            ext_port = int(pf.get("extPort", 0))
-            if ext_port not in (80, 443, 6443):
-                continue
-            int_ip = pf.get("intIp", "")
-            int_port = int(pf.get("intPort", ext_port))
-            vm_name = _find_vm_name_by_ip(topology, int_ip)
-            try:
-                result = driver.create_route_access(
-                    provider,
-                    host,
-                    project_id,
-                    vm_name,
-                    int_ip,
-                    ext_port,
-                    int_port,
-                )
-                external_endpoints.append(
-                    {
-                        "vmName": vm_name,
-                        "vmIp": int_ip,
-                        "port": ext_port,
-                        "type": "route",
-                        "hostname": result["hostname"],
-                    }
-                )
-                logger.info(
-                    "Deploy %s: created Route for %s:%d → %s",
-                    project_id[:8],
-                    vm_name,
-                    ext_port,
-                    result["hostname"],
-                )
-            except Exception:
-                logger.warning(
-                    "Deploy %s: Route creation failed for %s:%d, continuing",
-                    project_id[:8],
-                    vm_name,
-                    ext_port,
-                    exc_info=True,
-                )
+        external_endpoints = _create_routes_for_gateway(
+            driver, provider, host, project_id, node_data, topology
+        )
         if external_endpoints:
             node_data["externalEndpoints"] = external_endpoints
         break
     s.commit()
+
+
+def _detect_pattern_id(topology):
+    """Return the pattern ID from the first storage node, or None."""
+    for node in topology.get("nodes", []):
+        if node.get("type") == "storageNode":
+            pattern_id = node.get("data", {}).get("patternId")
+            if pattern_id:
+                return pattern_id
+    return None
 
 
 def _deploy_pull_container_images(host, project_id, topology, s):
@@ -3027,13 +3081,7 @@ def _deploy_pull_container_images(host, project_id, topology, s):
     if not containers:
         return
     is_pattern_deploy = _is_pattern_deploy(topology)
-    pattern_id = None
-    if is_pattern_deploy:
-        for node in topology.get("nodes", []):
-            if node.get("type") == "storageNode":
-                pattern_id = node.get("data", {}).get("patternId")
-                if pattern_id:
-                    break
+    pattern_id = _detect_pattern_id(topology) if is_pattern_deploy else None
 
     _update_deploy_progress(
         project_id, step="container_pull", detail="Pulling container images..."
@@ -3122,6 +3170,7 @@ def _load_container_from_pattern(host, project_id, ctr, pattern_id):
 
 
 def _deploy_validate_bmc(project_id, topology):
+    _ = project_id
     bmc_network_exists = any(
         n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
         for n in topology.get("nodes", [])
@@ -3174,10 +3223,8 @@ def _deploy_create_disks(host, project_id, topology, pool):
     return vms
 
 
-def _deploy_handle_recert(s, host, project_id, topology, pool):
-    if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
-        return
-    _update_deploy_progress(project_id, "certs", "regenerating certificates")
+def _resolve_recert_settings(s, topology):
+    """Resolve deploy_recert and common_password from topology markers or pattern DB."""
     deploy_recert = topology.pop("_deploy_recert", None)
     common_password = topology.pop("_deploy_common_password", None)
     if deploy_recert is None:
@@ -3195,19 +3242,33 @@ def _deploy_handle_recert(s, host, project_id, topology, pool):
                 common_password = n.get("data", {}).get("ciCloudUserPassword")
                 if common_password:
                     break
-    if deploy_recert and deploy_recert is not False:
-        has_recert_vm = any(
-            n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
-            for n in topology.get("nodes", [])
+    return deploy_recert, common_password
+
+
+def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
+    """Auto-enable recert on RHCOS VMs when pattern has recert enabled."""
+    if not deploy_recert or deploy_recert is False:
+        return
+    has_recert_vm = any(
+        n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
+        for n in topology.get("nodes", [])
+    )
+    if not has_recert_vm:
+        for n in topology.get("nodes", []):
+            if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos":
+                n.setdefault("data", {})["recertEnabled"] = True
+        logger.info(
+            "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
+            project_id[:8],
         )
-        if not has_recert_vm:
-            for n in topology.get("nodes", []):
-                if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos":
-                    n.setdefault("data", {})["recertEnabled"] = True
-            logger.info(
-                "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
-                project_id[:8],
-            )
+
+
+def _deploy_handle_recert(s, host, project_id, topology, pool):
+    if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
+        return
+    _update_deploy_progress(project_id, "certs", "regenerating certificates")
+    deploy_recert, common_password = _resolve_recert_settings(s, topology)
+    _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id)
     if deploy_recert is False:
         logger.info(
             "Deploy %s: recert disabled by user, using guestfish",
@@ -3223,39 +3284,50 @@ def _deploy_handle_recert(s, host, project_id, topology, pool):
     )
 
 
+def _build_vm_progress_items(vms, current_index):
+    """Build progress item list showing defined/defining/pending status for each VM."""
+    items = []
+    for vj, v in enumerate(vms):
+        n = v.get("name", v["node_id"][:8])
+        if vj < current_index:
+            items.append(f"{n}: defined")
+        elif vj == current_index:
+            items.append(f"{n}: defining...")
+        else:
+            items.append(f"{n}: pending")
+    return items
+
+
+def _clean_stale_domain(host, project_id, domain_name):
+    """Check for and remove a stale libvirt domain before re-creating it."""
+    try:
+        dom_check = start_job(host, "/vm/info", {"name": domain_name})
+        dom_result = wait_for_job(host, dom_check, timeout=10)
+        if dom_result.get("result", {}).get("state"):
+            logger.info(
+                "Deploy %s: stale domain %s exists, undefining before re-create",
+                project_id[:8],
+                domain_name,
+            )
+            try:
+                j = start_job(host, _VMS_DESTROY_PATH, {"domain_name": domain_name})
+                wait_for_job(host, j, timeout=60)
+            except TroshkadError:
+                pass
+    except TroshkadError:
+        pass
+
+
 def _deploy_define_vms(
     host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
 ):
     for vi, vm in enumerate(vms):
-        items = []
-        for vj, v in enumerate(vms):
-            n = v.get("name", v["node_id"][:8])
-            if vj < vi:
-                items.append(f"{n}: defined")
-            elif vj == vi:
-                items.append(f"{n}: defining...")
-            else:
-                items.append(f"{n}: pending")
+        items = _build_vm_progress_items(vms, vi)
         _update_deploy_progress(
             project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
         )
         domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
-        try:
-            dom_check = start_job(host, "/vm/info", {"name": domain_name})
-            dom_result = wait_for_job(host, dom_check, timeout=10)
-            if dom_result.get("result", {}).get("state"):
-                logger.info(
-                    "Deploy %s: stale domain %s exists, undefining before re-create",
-                    project_id[:8],
-                    domain_name,
-                )
-                try:
-                    j = start_job(host, _VMS_DESTROY_PATH, {"domain_name": domain_name})
-                    wait_for_job(host, j, timeout=60)
-                except TroshkadError:
-                    pass
-        except TroshkadError:
-            pass
+        _clean_stale_domain(host, project_id, domain_name)
 
         job_id = _create_vm_via_troshkad(
             host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
@@ -3308,18 +3380,10 @@ def _deploy_setup_bmc(host, project_id, topology):
     return None, bmc_config
 
 
-def _deploy_create_containers(host, project_id, topology, vni_map, pool):
-    containers = _extract_containers(topology)
-    logger.info(
-        "Deploy %s: found %d containers to create", project_id[:8], len(containers)
-    )
-    if not containers:
-        return
-    _update_deploy_progress(
-        project_id, step="containers", detail="Creating containers..."
-    )
-    logger.info("Deploy %s: creating containers", project_id[:8])
-    start_order = topology.get("startOrder", [])
+def _create_ordered_containers(
+    host, project_id, containers, start_order, topology, vni_map, pool
+):
+    """Create containers that appear in start_order, respecting delays. Returns set of ordered IDs."""
     ordered_ids = set()
     for entry in start_order:
         if entry.get("entryType") == "container":
@@ -3338,6 +3402,24 @@ def _deploy_create_containers(host, project_id, topology, vni_map, pool):
                     _create_and_start_container(
                         host, project_id, ctr, topology, vni_map, pool
                     )
+    return ordered_ids
+
+
+def _deploy_create_containers(host, project_id, topology, vni_map, pool):
+    containers = _extract_containers(topology)
+    logger.info(
+        "Deploy %s: found %d containers to create", project_id[:8], len(containers)
+    )
+    if not containers:
+        return
+    _update_deploy_progress(
+        project_id, step="containers", detail="Creating containers..."
+    )
+    logger.info("Deploy %s: creating containers", project_id[:8])
+    start_order = topology.get("startOrder", [])
+    ordered_ids = _create_ordered_containers(
+        host, project_id, containers, start_order, topology, vni_map, pool
+    )
     for ctr in containers:
         if ctr["node_id"] not in ordered_ids:
             if ctr.get("is_pod"):
@@ -3364,7 +3446,7 @@ def _deploy_start_vms(s, host, project_id, project, topology, auto_start):
     if start_failures:
         failed_names = ", ".join(name for name, _ in start_failures)
         error_msg = f"Failed to start VMs: {failed_names}"
-        logger.error("Deploy %s: %s", project_id[:8], error_msg)
+        logger.error(_LOG_DEPLOY, project_id[:8], error_msg)
         project.state = "error"
         project.deploy_error = error_msg
         from app.services.placement import sync_host_capacity
@@ -3385,6 +3467,7 @@ def _deploy_start_vms(s, host, project_id, project, topology, auto_start):
 
 
 def _deploy_finalize_timers(project, auto_start):
+    _ = auto_start
     if project.state == "active" and project.auto_stop_minutes:
         now = datetime.datetime.now(datetime.UTC)
         project.auto_stop_started_at = now
@@ -3404,6 +3487,7 @@ def _deploy_finalize_timers(project, auto_start):
 def _deploy_create_dns_records(
     s, project_id, project, topology, lb_config, external_ips
 ):
+    _ = topology
     if not (project.dns_provider_id and project.guid and project.domain):
         return
     from app.models.dns_provider import DnsProvider
@@ -3652,7 +3736,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 host, topology, vni_map, s, project_id
             )
         if net_result is not True:
-            logger.error("Deploy %s: %s", project_id[:8], net_result)
+            logger.error(_LOG_DEPLOY, project_id[:8], net_result)
             project.state = "error"
             project.deploy_error = net_result
             s.commit()
@@ -3715,7 +3799,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         bmc_err = _deploy_validate_bmc(project_id, topology)
         if bmc_err:
-            logger.error("Deploy %s: %s", project_id[:8], bmc_err)
+            logger.error(_LOG_DEPLOY, project_id[:8], bmc_err)
             project.state = "error"
             project.deploy_error = bmc_err
             s.commit()
@@ -6772,6 +6856,34 @@ def _destroy_multihost(session, project):
     delete_mesh_peers(session, project_id)
 
 
+def _destroy_cleanup_dns(s, ctx, project_id):
+    """Delete DNS records if the project has a DNS provider configured."""
+    if not ctx.get("dns_provider_id"):
+        return
+    from app.models.dns_provider import DnsProvider
+    from app.services.dns_service import delete_dns_records
+
+    topo = ctx.get("topology", {})
+    dns_provider = s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
+    dns_records = topo.get("_dns_records", [])
+    if dns_provider and dns_records:
+        logger.info("Teardown %s: deleting DNS records", project_id[:8])
+        delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
+
+
+def _destroy_cleanup_eips(s, project_id):
+    """Release all EIPs for this project."""
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import release_eip
+
+    project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
+    for eip in project_eips:
+        try:
+            release_eip(s, eip)
+        except Exception:
+            logger.warning("Failed to release EIP %s on destroy", eip.public_ip)
+
+
 def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
     """Orchestrate project destruction by delegating to focused helper functions."""
     from app.core.database import SessionLocal
@@ -6819,32 +6931,8 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
             _destroy_cleanup_route_access(host, project_id, s)
 
         # Common cleanup for both single-host and multi-host projects
-        vni_map = ctx.get("vni_map", {})
-        topo = ctx.get("topology", {})
-
-        # Delete DNS records if configured
-        if ctx.get("dns_provider_id"):
-            from app.models.dns_provider import DnsProvider
-            from app.services.dns_service import delete_dns_records
-
-            dns_provider = (
-                s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
-            )
-            dns_records = topo.get("_dns_records", [])
-            if dns_provider and dns_records:
-                logger.info("Teardown %s: deleting DNS records", project_id[:8])
-                delete_dns_records(dns_provider.type, dns_provider.config, dns_records)
-
-        # Release all EIPs for this project
-        from app.models.elastic_ip import ElasticIp
-        from app.services.eip_service import release_eip
-
-        project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
-        for eip in project_eips:
-            try:
-                release_eip(s, eip)
-            except Exception:
-                logger.warning("Failed to release EIP %s on destroy", eip.public_ip)
+        _destroy_cleanup_dns(s, ctx, project_id)
+        _destroy_cleanup_eips(s, project_id)
 
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
         s.close()

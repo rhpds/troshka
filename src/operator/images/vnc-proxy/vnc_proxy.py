@@ -56,9 +56,9 @@ def _read_token() -> str:
 def _make_ssl_context() -> ssl.SSLContext:
     ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
     if os.path.exists(ca_path):
-        ctx = ssl.SSLContext(
+        ctx = ssl.SSLContext(  # NOSONAR — in-cluster CA may not match hostname
             ssl.PROTOCOL_TLS_CLIENT
-        )  # NOSONAR — in-cluster CA may not match hostname
+        )
         ctx.load_verify_locations(ca_path)
     else:
         ctx = ssl.create_default_context()  # NOSONAR — dev/test fallback
@@ -162,6 +162,45 @@ async def _handle_connect_error(
     return True
 
 
+async def _connect_and_relay(
+    ws_client: Any,
+    vm_name: str,
+    vnc_url: str,
+    ssl_ctx: ssl.SSLContext,
+    headers: dict[str, str],
+    attempt: int,
+) -> bool:
+    """Connect to KubeVirt VNC, relay traffic, and handle post-relay state.
+
+    Returns True if the caller should continue retrying, False to stop.
+    """
+    async with websockets.connect(
+        vnc_url,
+        additional_headers=headers,
+        ssl=ssl_ctx,
+        subprotocols=[websockets.Subprotocol("binary")],
+        max_size=None,
+        compression=None,
+    ) as ws_kubevirt:
+        if attempt:
+            logger.info(
+                f"Reconnected to KubeVirt VNC for {vm_name} (attempt {attempt + 1})"
+            )
+        else:
+            logger.info(f"Connected to KubeVirt VNC for {vm_name}")
+
+        await _relay_bidirectional(ws_client, ws_kubevirt)
+
+    if _active_sessions.get(vm_name) is not ws_client:
+        return False
+    if not await _client_alive(ws_client):
+        logger.info(f"Client disconnected for {vm_name}")
+        return False
+    logger.info(f"KubeVirt VNC dropped for {vm_name}, reconnecting...")
+    await asyncio.sleep(2)
+    return True
+
+
 async def _vnc_connection_loop(
     ws_client: Any, vm_name: str, vnc_url: str, ssl_ctx: ssl.SSLContext
 ) -> None:
@@ -174,31 +213,10 @@ async def _vnc_connection_loop(
 
         headers = {"Authorization": f"Bearer {_read_token()}"}
         try:
-            async with websockets.connect(
-                vnc_url,
-                additional_headers=headers,
-                ssl=ssl_ctx,
-                subprotocols=[websockets.Subprotocol("binary")],
-                max_size=None,
-                compression=None,
-            ) as ws_kubevirt:
-                if attempt:
-                    logger.info(
-                        f"Reconnected to KubeVirt VNC for {vm_name} (attempt {attempt + 1})"
-                    )
-                else:
-                    logger.info(f"Connected to KubeVirt VNC for {vm_name}")
-
-                await _relay_bidirectional(ws_client, ws_kubevirt)
-
-            if _active_sessions.get(vm_name) is not ws_client:
+            if not await _connect_and_relay(
+                ws_client, vm_name, vnc_url, ssl_ctx, headers, attempt
+            ):
                 return
-            if not await _client_alive(ws_client):
-                logger.info(f"Client disconnected for {vm_name}")
-                return
-            logger.info(f"KubeVirt VNC dropped for {vm_name}, reconnecting...")
-            await asyncio.sleep(2)
-
         except websockets.exceptions.ConnectionClosed:
             logger.info(f"Client disconnected for {vm_name}")
             return
