@@ -146,10 +146,10 @@ class TestImportTemplate:
             "app.services.template_loader.generate_topology_from_template",
             return_value=mock_topo,
         ) as mock_gen, patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=[],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -804,10 +804,10 @@ class TestCreateFromTemplate:
             "app.services.template_loader.generate_topology_from_template",
             return_value=mock_topo,
         ), patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=[],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -858,10 +858,10 @@ class TestCreateFromTemplate:
             "app.services.template_loader.generate_topology_from_template",
             return_value={"nodes": [], "edges": []},
         ), patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=[],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -889,10 +889,10 @@ class TestCreateFromTemplate:
             "app.services.template_loader.generate_topology_from_template",
             return_value={"nodes": [], "edges": []},
         ), patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=["Duplicate VM name: vm1"],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -938,10 +938,10 @@ class TestImportTemplateAdditional:
             "app.services.template_loader.generate_topology_from_template",
             return_value=mock_topo,
         ), patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=[],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -964,10 +964,10 @@ class TestImportTemplateAdditional:
             "app.services.template_loader.generate_topology_from_template",
             return_value={"nodes": [], "edges": []},
         ), patch(
-            "app.services.deploy_service.validate_topology_names",
+            "app.services.deploy_topology.validate_topology_names",
             return_value=["Duplicate VM: vm1"],
         ), patch(
-            "app.services.deploy_service.validate_topology_ips",
+            "app.services.deploy_topology.validate_topology_ips",
             return_value=[],
         ):
             resp = client.post(
@@ -1484,7 +1484,7 @@ class TestBuildKubevirtVmSpec:
             "edges": [],
         }
         vm = {"name": "test-vm", "vcpus": 4, "ram_gb": 8, "firmware": "uefi"}
-        with patch("app.services.deploy_service._find_vm_disks", return_value=[]):
+        with patch("app.services.deploy_topology._find_vm_disks", return_value=[]):
             spec = _build_kubevirt_vm_spec("vm-1", vm, topo)
 
         assert spec["cpus"] == 4
@@ -1511,7 +1511,7 @@ class TestBuildKubevirtVmSpec:
         vm = {"name": "vm", "vcpus": 2, "ram_gb": 4}
         mock_disk = [{"node_id": "d1", "size": 50, "format": "qcow2"}]
         with patch(
-            "app.services.deploy_service._find_vm_disks", return_value=mock_disk
+            "app.services.deploy_topology._find_vm_disks", return_value=mock_disk
         ):
             spec = _build_kubevirt_vm_spec("vm-1", vm, topo)
 

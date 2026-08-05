@@ -213,7 +213,7 @@ def generate_seed_iso_script(project_id: str, topology: dict) -> str:
 
         node_id = node["id"]
         vm_label = data.get("name", "vm")
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         vm_name = _vm_domain_name(project_id, node_id)
         userdata = generate_userdata(data)

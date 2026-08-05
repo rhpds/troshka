@@ -700,7 +700,7 @@ def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool):
     disks_params, and disk_metadata.
     """
     from app.services import s3_storage
-    from app.services.deploy_service import _disk_path
+    from app.services.deploy_topology import _disk_path
 
     vm_tasks = []
     for vm_id, vm_disk_nodes in vm_to_disks.items():
@@ -1012,7 +1012,7 @@ def _capture_direct(
     import time as _time
 
     from app.services import s3_storage
-    from app.services.deploy_service import _disk_path
+    from app.services.deploy_topology import _disk_path
     from app.services.troshkad_client import TroshkadError, poll_job, start_job
     from app.services.ws_pubsub import notify_pattern
 
@@ -1143,7 +1143,7 @@ def _capture_container_images(host, topology, pattern_id, creds, pattern, db):
     Returns True on success, False on error (pattern.state set to 'error').
     """
     from app.services import s3_storage
-    from app.services.deploy_service import _extract_containers
+    from app.services.deploy_topology import _extract_containers
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
     containers = _extract_containers(topology)

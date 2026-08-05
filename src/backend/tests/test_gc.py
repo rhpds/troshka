@@ -131,7 +131,7 @@ def test_sync_capacity_zero_when_no_projects():
 @patch("app.services.troshkad_client.start_job")
 @patch("app.services.troshkad_client.wait_for_job")
 @patch("app.services.deploy_service._setup_bmc_via_troshkad")
-@patch("app.services.deploy_service._extract_bmc_config")
+@patch("app.services.deploy_topology._extract_bmc_config")
 def test_recover_host_services_restores_networks_and_bmc(
     mock_bmc_config,
     mock_bmc_setup,
@@ -186,7 +186,7 @@ def test_recover_dedup_prevents_concurrent(mock_repair, mock_session_cls):
 @patch("app.services.troshkad_client.start_job")
 @patch("app.services.troshkad_client.wait_for_job")
 @patch("app.services.deploy_service._setup_bmc_via_troshkad")
-@patch("app.services.deploy_service._extract_bmc_config")
+@patch("app.services.deploy_topology._extract_bmc_config")
 def test_recover_bmc_failure_does_not_block_others(
     mock_bmc_config,
     mock_bmc_setup,

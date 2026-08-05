@@ -101,12 +101,12 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
 
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     from app.services.deploy_service import (
-        _extract_bmc_config,
         _setup_bmc_via_troshkad,
         _setup_networks_via_troshkad,
         _teardown_bmc_via_troshkad,
         _teardown_networks_via_troshkad,
     )
+    from app.services.deploy_topology import _extract_bmc_config
     from app.services.troshkad_client import start_job, wait_for_job
 
     db = SessionLocal()

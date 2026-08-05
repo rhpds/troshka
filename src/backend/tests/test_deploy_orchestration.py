@@ -3340,7 +3340,7 @@ class TestCollectUsedIps:
 
     def test_collects_vm_ips(self):
         """Collects IPs from VM NICs."""
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         vm = _vm_node(nics=[{"id": "n1", "mac": "aa:bb", "ip": "10.0.0.5"}])
         topo = _minimal_topology(vm_nodes=[vm])
@@ -3349,7 +3349,7 @@ class TestCollectUsedIps:
 
     def test_collects_gateway_ips(self):
         """Collects gateway IPs (.1 of each network CIDR)."""
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         net = _network_node(cidr="192.168.1.0/24")
         topo = _minimal_topology(network_nodes=[net])
@@ -3358,7 +3358,7 @@ class TestCollectUsedIps:
 
     def test_collects_container_ips(self):
         """Collects IPs from container NICs."""
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         ctr = _container_node(nics=[{"id": "cn1", "ip": "192.168.1.50"}])
         topo = _minimal_topology()
@@ -3368,7 +3368,7 @@ class TestCollectUsedIps:
 
     def test_empty_topology(self):
         """Empty topology returns empty set."""
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         result = _collect_used_ips({"nodes": [], "edges": []})
         assert result == set()
@@ -3381,7 +3381,7 @@ class TestGetDhcpRange:
         """Returns explicit DHCP range when provided."""
         import ipaddress
 
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         net_data = {
             "cidr": "192.168.1.0/24",
@@ -3398,7 +3398,7 @@ class TestGetDhcpRange:
         """Auto-generates range from CIDR: hosts[9] to hosts[-1]."""
         import ipaddress
 
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         net_data = {"cidr": "192.168.1.0/24"}
         result = _get_dhcp_range(net_data)
@@ -3411,14 +3411,14 @@ class TestGetDhcpRange:
 
     def test_no_cidr_returns_none(self):
         """No CIDR and no explicit range returns None."""
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         result = _get_dhcp_range({})
         assert result is None
 
     def test_small_subnet_returns_none(self):
         """Very small subnet (<=10 hosts) without explicit range returns None."""
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         net_data = {"cidr": "10.0.0.0/29"}  # 6 usable hosts
         result = _get_dhcp_range(net_data)
@@ -3430,7 +3430,7 @@ class TestAutoAssignContainerIps:
 
     def test_assigns_ip_from_dhcp_range(self):
         """Container NIC without IP gets one from the connected network's DHCP range."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         nic = {"id": "cnic-1", "name": "eth0"}
         ctr = _container_node(nics=[nic])
@@ -3455,7 +3455,7 @@ class TestAutoAssignContainerIps:
 
     def test_skips_nics_with_existing_ip(self):
         """Container NIC with an existing IP is left unchanged."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         nic = {"id": "cnic-1", "name": "eth0", "ip": "10.0.0.99"}
         ctr = _container_node(nics=[nic])
@@ -3478,7 +3478,7 @@ class TestAutoAssignContainerIps:
 
     def test_avoids_used_ips(self):
         """Assigned IP avoids IPs already used by VMs."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         # VM occupies 10.0.0.10
         vm_nic = {"id": "vn1", "mac": "aa:bb", "ip": "10.0.0.10"}

@@ -276,7 +276,7 @@ def test_generate_seed_iso_script_non_vm_nodes():
     assert "genisoimage" not in result
 
 
-@patch("app.services.deploy_service._vm_domain_name", return_value="troshka-proj-vm1")
+@patch("app.services.deploy_topology._vm_domain_name", return_value="troshka-proj-vm1")
 def test_generate_seed_iso_script_with_cloud_init(mock_domain):
     """VM with cloudInit produces seed ISO script."""
     topo = {
@@ -296,7 +296,7 @@ def test_generate_seed_iso_script_with_cloud_init(mock_domain):
     assert "vm-1234-" in result  # Short ID in seed dir
 
 
-@patch("app.services.deploy_service._vm_domain_name", return_value="troshka-proj-vm1")
+@patch("app.services.deploy_topology._vm_domain_name", return_value="troshka-proj-vm1")
 def test_generate_seed_iso_script_multiple_vms(mock_domain):
     """Multiple cloud-init VMs each get a seed section."""
     topo = {

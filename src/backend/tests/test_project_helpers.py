@@ -380,7 +380,7 @@ class TestBuildKubevirtVmSpec:
             nodes.extend(storage_nodes)
         return {"nodes": nodes, "edges": edges or []}
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_basic_vm_spec(self, mock_find_disks):
         mock_find_disks.return_value = []
         vm_id = "vm-001"
@@ -422,7 +422,7 @@ class TestBuildKubevirtVmSpec:
         assert spec["bootOrder"] == ["disk-1"]
         assert spec["cloudInit"] == {"userData": "", "networkConfig": ""}
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_disk_from_pattern(self, mock_find_disks):
         mock_find_disks.return_value = [
             {
@@ -453,7 +453,7 @@ class TestBuildKubevirtVmSpec:
         assert "blank" not in disk
         assert "libraryImage" not in disk
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_disk_from_library(self, mock_find_disks):
         mock_find_disks.return_value = [
             {
@@ -480,7 +480,7 @@ class TestBuildKubevirtVmSpec:
         assert "patternImage" not in disk
         assert "blank" not in disk
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_blank_disk(self, mock_find_disks):
         mock_find_disks.return_value = [
             {
@@ -502,7 +502,7 @@ class TestBuildKubevirtVmSpec:
         assert "patternImage" not in disk
         assert "libraryImage" not in disk
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_defaults_for_missing_vm_fields(self, mock_find_disks):
         mock_find_disks.return_value = []
         vm_id = "vm-005"
@@ -525,7 +525,7 @@ class TestBuildKubevirtVmSpec:
         assert spec["bootOrder"] == []
         assert spec["nics"] == []
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_cloud_init_user_data(self, mock_find_disks):
         mock_find_disks.return_value = []
         vm_id = "vm-006"
@@ -543,7 +543,7 @@ class TestBuildKubevirtVmSpec:
         assert spec["cloudInit"]["userData"] == "#cloud-config\nusers: ..."
         assert spec["cloudInit"]["networkConfig"] == "network:\n  version: 2"
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_cloud_init_falls_back_to_ci_user_data(self, mock_find_disks):
         mock_find_disks.return_value = []
         vm_id = "vm-007"
@@ -559,7 +559,7 @@ class TestBuildKubevirtVmSpec:
 
         assert spec["cloudInit"]["userData"] == "#cloud-config\nfallback: true"
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_vm_id_not_in_topology_uses_vm_id_param(self, mock_find_disks):
         """When the vm_id is not found in topology nodes, spec falls back."""
         mock_find_disks.return_value = []
@@ -573,7 +573,7 @@ class TestBuildKubevirtVmSpec:
         assert spec["vmId"] == "vm-missing"
         assert spec["name"] == "ghost"
 
-    @patch("app.services.deploy_service._find_vm_disks")
+    @patch("app.services.deploy_topology._find_vm_disks")
     def test_multiple_disks(self, mock_find_disks):
         mock_find_disks.return_value = [
             {"node_id": "d1", "size": 20, "format": "qcow2", "source": "blank"},
@@ -1126,7 +1126,7 @@ class TestAccumulateDiskInfo:
 class TestBroadcastVmStates:
     @patch("app.api.projects.notify_project")
     @patch("app.services.troshkad_client.get_all_vm_states")
-    @patch("app.services.deploy_service._vm_domain_name")
+    @patch("app.services.deploy_topology._vm_domain_name")
     def test_maps_running_and_shut_off(self, mock_dom, mock_states, mock_notify):
         mock_dom.side_effect = lambda pid, nid: f"troshka-{nid}"
         mock_states.return_value = {
@@ -1149,7 +1149,7 @@ class TestBroadcastVmStates:
 
     @patch("app.api.projects.notify_project")
     @patch("app.services.troshkad_client.get_all_vm_states")
-    @patch("app.services.deploy_service._vm_domain_name")
+    @patch("app.services.deploy_topology._vm_domain_name")
     def test_unknown_passes_through(self, mock_dom, mock_states, mock_notify):
         mock_dom.return_value = "troshka-vm1"
         mock_states.return_value = {"troshka-vm1": "paused"}
@@ -1610,19 +1610,19 @@ class TestDomainName:
 
         return _domain_name(project_id, vm_id)
 
-    @patch("app.services.deploy_service._vm_domain_name")
+    @patch("app.services.deploy_topology._vm_domain_name")
     def test_delegates_to_deploy_service(self, mock_dom):
         mock_dom.return_value = "troshka-abcdef01-12345678"
         result = self._call("proj-abcdef01", "vm-12345678")
         assert result == "troshka-abcdef01-12345678"
         mock_dom.assert_called_once_with("proj-abcdef01", "vm-12345678")
 
-    @patch("app.services.deploy_service._vm_domain_name")
+    @patch("app.services.deploy_topology._vm_domain_name")
     def test_passes_through_return_value(self, mock_dom):
         mock_dom.return_value = "troshka-aaa-bbb"
         assert self._call("aaa", "bbb") == "troshka-aaa-bbb"
 
-    @patch("app.services.deploy_service._vm_domain_name")
+    @patch("app.services.deploy_topology._vm_domain_name")
     def test_empty_ids(self, mock_dom):
         mock_dom.return_value = "troshka--"
         result = self._call("", "")
@@ -2011,7 +2011,7 @@ class TestResolveDiskBacking:
 
         return _resolve_disk_backing(d, pool)
 
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_library_source(self, mock_cache_path):
         mock_cache_path.return_value = "/var/lib/troshka/images/lib-1.qcow2"
         d = {"source": "library", "library_item_id": "lib-1", "format": "qcow2"}
@@ -2467,7 +2467,7 @@ class TestDetectDiskChanges:
 
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._find_vm_disks", return_value=[])
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_iso_disk_adds_to_cdrom(
         self, mock_cache, mock_find_deployed, mock_classify
     ):
@@ -2740,8 +2740,8 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 0}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
-    @patch("app.services.deploy_service.validate_topology_names", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_names", return_value=[])
     def test_deploy_no_vms(self, mock_vn, mock_vi, mock_reqs, mock_lib):
         topo = {"nodes": [], "edges": []}
         project = _ep_project(state="draft", topology=topo)
@@ -2756,9 +2756,10 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 1}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
     @patch(
-        "app.services.deploy_service.validate_topology_names", return_value=["dup name"]
+        "app.services.deploy_topology.validate_topology_names",
+        return_value=["dup name"],
     )
     def test_deploy_topology_errors(self, mock_vn, mock_vi, mock_reqs, mock_lib):
         topo = {"nodes": [{"type": "vmNode", "data": {}}], "edges": []}
@@ -2774,8 +2775,8 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 1}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
-    @patch("app.services.deploy_service.validate_topology_names", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_names", return_value=[])
     def test_deploy_non_admin_cannot_select_pool(
         self, mock_vn, mock_vi, mock_reqs, mock_lib
     ):
@@ -2794,8 +2795,8 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 1}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
-    @patch("app.services.deploy_service.validate_topology_names", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_names", return_value=[])
     def test_deploy_success(
         self, mock_vn, mock_vi, mock_reqs, mock_lib, mock_place, mock_disk, mock_enqueue
     ):
@@ -2822,8 +2823,8 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 1}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
-    @patch("app.services.deploy_service.validate_topology_names", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_names", return_value=[])
     def test_deploy_placement_error(
         self, mock_vn, mock_vi, mock_reqs, mock_lib, mock_place
     ):
@@ -2839,8 +2840,8 @@ class TestDeployProjectEndpoint:
     @patch(
         "app.api.projects.calculate_project_requirements", return_value={"vm_count": 1}
     )
-    @patch("app.services.deploy_service.validate_topology_ips", return_value=[])
-    @patch("app.services.deploy_service.validate_topology_names", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_ips", return_value=[])
+    @patch("app.services.deploy_topology.validate_topology_names", return_value=[])
     def test_deploy_bmc_no_connected_vms(self, mock_vn, mock_vi, mock_reqs, mock_lib):
         bmc_net = {
             "id": "bmc-net",
@@ -3055,7 +3056,7 @@ class TestForceStopProjectEndpoint:
     @patch("app.api.projects.wait_for_job")
     @patch("app.api.projects.start_job", return_value="job-1")
     @patch(
-        "app.services.deploy_service._vm_domain_name", return_value="troshka-abc-def"
+        "app.services.deploy_topology._vm_domain_name", return_value="troshka-abc-def"
     )
     def test_force_stop_troshkad_host(
         self, mock_dom, mock_start, mock_wait, mock_notify

@@ -1008,7 +1008,7 @@ class TestDeployHelpers:
 
     def test_extract_vms_from_real_topology(self):
         """_extract_vms should find all VM nodes in a topology."""
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = _base_topology(vm_count=3)
         vms = _extract_vms(topo)
@@ -1021,7 +1021,7 @@ class TestDeployHelpers:
 
     def test_extract_containers_empty(self):
         """_extract_containers returns empty for VM-only topology."""
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = _base_topology(vm_count=2)
         containers = _extract_containers(topo)
@@ -1029,7 +1029,7 @@ class TestDeployHelpers:
 
     def test_vm_domain_name_format(self):
         """_vm_domain_name should produce correct format."""
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         pid = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
         nid = "vm-12345678-abcd"
@@ -1038,7 +1038,7 @@ class TestDeployHelpers:
 
     def test_find_vm_disks_with_storage(self):
         """_find_vm_disks should find storage nodes connected to a VM."""
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = _base_topology(vm_count=1, with_storage=True)
         vm_node = next(n for n in topo["nodes"] if n.get("type") == "vmNode")
@@ -1070,7 +1070,7 @@ class TestDeployHelpers:
 
     def test_auto_assign_container_ips_no_containers(self):
         """_auto_assign_container_ips should be a no-op for VM-only topology."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topo = _base_topology(vm_count=1)
         original = copy.deepcopy(topo)

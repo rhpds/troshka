@@ -1,6 +1,6 @@
 """Tests for BMC configuration extraction from topology."""
 
-from app.services.deploy_service import _extract_bmc_config
+from app.services.deploy_topology import _extract_bmc_config
 
 
 def _make_topology(vms_with_bmc=None, include_bmc_network=True):

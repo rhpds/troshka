@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from app.services.deploy_service import _find_vm_name_by_ip
+from app.services.deploy_topology import _find_vm_name_by_ip
 
 
 def _make_topology_with_port_forwards(port_forwards, vms=None):

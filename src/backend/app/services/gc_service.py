@@ -304,10 +304,8 @@ def recover_host_services(host_id: str):
     from app.models.host import Host
     from app.models.mesh_peer import ProjectMeshPeer
     from app.models.project import Project
-    from app.services.deploy_service import (
-        _extract_bmc_config,
-        _setup_bmc_via_troshkad,
-    )
+    from app.services.deploy_service import _setup_bmc_via_troshkad
+    from app.services.deploy_topology import _extract_bmc_config
     from app.services.mesh_service import get_peer_config_for_host
     from app.services.troshkad_client import get_all_vm_states, start_job, wait_for_job
 

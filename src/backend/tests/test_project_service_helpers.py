@@ -305,7 +305,7 @@ class TestDetectDiskChanges(unittest.TestCase):
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._get_deployed_disk_info", return_value=({}, {}))
     @patch(
-        "app.services.deploy_service._image_cache_path",
+        "app.services.deploy_topology._image_cache_path",
         return_value="/cache/iso1.iso",
     )
     def test_iso_goes_to_cdrom_list(self, _mock_cache, _mock_dep, _mock_classify):
@@ -318,7 +318,7 @@ class TestDetectDiskChanges(unittest.TestCase):
 
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._get_deployed_disk_info", return_value=({}, {}))
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_iso_without_library_item_skipped(
         self, _mock_cache, _mock_dep, _mock_classify
     ):
@@ -330,7 +330,7 @@ class TestDetectDiskChanges(unittest.TestCase):
 
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._get_deployed_disk_info", return_value=({}, {}))
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_new_disk_flagged(self, _mock_cache, _mock_dep, mock_classify):
         mock_classify.return_value = {
             "path": "/path/d1.qcow2",
@@ -352,7 +352,7 @@ class TestDetectDiskChanges(unittest.TestCase):
 
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._get_deployed_disk_info", return_value=({}, {}))
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_image_change_adds_to_remove_list(
         self, _mock_cache, _mock_dep, mock_classify
     ):
@@ -376,7 +376,7 @@ class TestDetectDiskChanges(unittest.TestCase):
 
     @patch("app.api.projects._classify_single_disk")
     @patch("app.api.projects._get_deployed_disk_info", return_value=({}, {}))
-    @patch("app.services.deploy_service._image_cache_path")
+    @patch("app.services.deploy_topology._image_cache_path")
     def test_size_grew_without_image_change_adds_resize(
         self, _mock_cache, _mock_dep, mock_classify
     ):
@@ -675,10 +675,10 @@ class TestReconfigureExistingVm(unittest.TestCase):
 
     @patch("app.services.deploy_service._set_deploy_progress")
     @patch(
-        "app.services.deploy_service._vm_domain_name",
+        "app.services.deploy_topology._vm_domain_name",
         return_value="troshka-p1-vm1",
     )
-    @patch("app.services.deploy_service._resolve_boot_devs", return_value=["hd"])
+    @patch("app.services.deploy_topology._resolve_boot_devs", return_value=["hd"])
     @patch("app.api.projects._apply_disk_changes")
     @patch("app.api.projects.troshkad_reconfigure_vm")
     @patch("app.api.projects.troshkad_get_vm_config")
@@ -734,10 +734,10 @@ class TestReconfigureExistingVm(unittest.TestCase):
 
     @patch("app.services.deploy_service._set_deploy_progress")
     @patch(
-        "app.services.deploy_service._vm_domain_name",
+        "app.services.deploy_topology._vm_domain_name",
         return_value="troshka-p1-vm1",
     )
-    @patch("app.services.deploy_service._resolve_boot_devs", return_value=["hd"])
+    @patch("app.services.deploy_topology._resolve_boot_devs", return_value=["hd"])
     @patch("app.api.projects._apply_disk_changes")
     @patch("app.api.projects.troshkad_reconfigure_vm")
     @patch("app.api.projects.troshkad_get_vm_config")
@@ -792,10 +792,10 @@ class TestReconfigureExistingVm(unittest.TestCase):
 
     @patch("app.services.deploy_service._set_deploy_progress")
     @patch(
-        "app.services.deploy_service._vm_domain_name",
+        "app.services.deploy_topology._vm_domain_name",
         return_value="troshka-p1-vm1",
     )
-    @patch("app.services.deploy_service._resolve_boot_devs", return_value=["hd"])
+    @patch("app.services.deploy_topology._resolve_boot_devs", return_value=["hd"])
     @patch("app.api.projects._apply_disk_changes")
     @patch("app.api.projects.troshkad_reconfigure_vm")
     @patch("app.api.projects.troshkad_get_vm_config")
@@ -877,7 +877,7 @@ class TestFinalizeReconfigure(unittest.TestCase):
     @patch("app.api.projects._reconfigure_bmc")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._delete_deploy_progress")
-    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    @patch("app.services.deploy_topology._extract_bmc_config", return_value=None)
     @patch("app.services.placement.sync_host_capacity")
     def test_no_errors_sets_active_and_copies_topology(
         self, _mock_sync, _mock_bmc, _mock_del, mock_notify, _mock_rbmc, _mock_bcast
@@ -901,7 +901,7 @@ class TestFinalizeReconfigure(unittest.TestCase):
     @patch("app.api.projects._reconfigure_bmc")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._delete_deploy_progress")
-    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    @patch("app.services.deploy_topology._extract_bmc_config", return_value=None)
     @patch("app.services.placement.sync_host_capacity")
     def test_errors_joined_into_deploy_error(
         self, _mock_sync, _mock_bmc, _mock_del, _mock_notify, _mock_rbmc, _mock_bcast
@@ -923,7 +923,7 @@ class TestFinalizeReconfigure(unittest.TestCase):
     @patch("app.api.projects._reconfigure_bmc")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._delete_deploy_progress")
-    @patch("app.services.deploy_service._extract_bmc_config")
+    @patch("app.services.deploy_topology._extract_bmc_config")
     @patch("app.services.placement.sync_host_capacity")
     def test_bmc_config_added_to_deployed_topology(
         self,

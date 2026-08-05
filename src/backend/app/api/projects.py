@@ -20,21 +20,23 @@ from app.services.deploy_service import (  # noqa: F401
     _create_seed_isos_via_troshkad,
     _create_vm_disks_via_troshkad,
     _create_vm_via_troshkad,
+    _setup_networks_via_troshkad,
+    _setup_pxe_via_troshkad,
+    _teardown_networks_via_troshkad,
+    cache_library_images,
+    deploy_project_async,
+    destroy_project_sync,
+    start_project_async,
+    stop_project_async,
+)
+from app.services.deploy_topology import (  # noqa: F401
     _disk_path,
     _extract_vms,
     _find_vm_disks,
     _find_vm_networks,
     _seed_path,
-    _setup_networks_via_troshkad,
-    _setup_pxe_via_troshkad,
-    _teardown_networks_via_troshkad,
     _vm_dir,
-    cache_library_images,
-    deploy_project_async,
-    destroy_project_sync,
     diff_topologies,
-    start_project_async,
-    stop_project_async,
 )
 from app.services.placement import calculate_project_requirements, place_project
 from app.services.troshkad_client import (
@@ -500,7 +502,7 @@ def create_project_from_template(
         desc_parts.append(f"OCP {ocp_version}")
     desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
 
-    from app.services.deploy_service import (
+    from app.services.deploy_topology import (
         validate_topology_ips,
         validate_topology_names,
     )
@@ -644,7 +646,7 @@ def import_template(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
 
-    from app.services.deploy_service import (
+    from app.services.deploy_topology import (
         validate_topology_ips,
         validate_topology_names,
     )
@@ -1010,7 +1012,7 @@ def deploy_project(
     if not project.topology:
         raise HTTPException(status_code=400, detail="Project has no topology")
 
-    from app.services.deploy_service import (
+    from app.services.deploy_topology import (
         validate_topology_ips,
         validate_topology_names,
     )
@@ -1375,7 +1377,7 @@ def _check_library_items_ready(topology: dict, db: Session):
 
 
 def _domain_name(project_id: str, vm_id: str) -> str:
-    from app.services.deploy_service import _vm_domain_name
+    from app.services.deploy_topology import _vm_domain_name
 
     return _vm_domain_name(project_id, vm_id)
 
@@ -2481,7 +2483,7 @@ def reconfigure_project(
 
 def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     """Build a TroshkaVM CR spec dict from topology data."""
-    from app.services.deploy_service import _find_vm_disks
+    from app.services.deploy_topology import _find_vm_disks
 
     vm_disks = _find_vm_disks(vm_id, current)
     disk_specs = []
@@ -2658,8 +2660,8 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
     from app.services.deploy_service import (
         _delete_deploy_progress,
         _set_deploy_progress,
-        diff_topologies,
     )
+    from app.services.deploy_topology import diff_topologies
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
     from app.services.ws_pubsub import notify_project
 
@@ -2698,7 +2700,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             p_id, {"step": "reconfigure", "detail": "applying changes"}
         )
 
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
         changed_vm_ids = _find_changed_kubevirt_vms(current, deployed)
@@ -2938,10 +2940,8 @@ def _reconfigure_bmc(h, p_id, deployed, bmc_config, errors):
 
 def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
     """Create and start newly added VMs during reconfigure."""
-    from app.services.deploy_service import (
-        _set_deploy_progress,
-        _vm_domain_name,
-    )
+    from app.services.deploy_service import _set_deploy_progress
+    from app.services.deploy_topology import _vm_domain_name
 
     _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
@@ -2984,7 +2984,7 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
 
 def _broadcast_vm_states(h, p_id, current):
     """Query host for all VM states and broadcast via WebSocket."""
-    from app.services.deploy_service import _vm_domain_name
+    from app.services.deploy_topology import _vm_domain_name
 
     try:
         from app.services.troshkad_client import get_all_vm_states
@@ -3025,7 +3025,7 @@ def _get_deployed_disk_info(vm_node_id, deployed):
 
 def _resolve_disk_backing(d, pool):
     """Resolve the backing file path for a disk entry."""
-    from app.services.deploy_service import _image_cache_path
+    from app.services.deploy_topology import _image_cache_path
 
     if d.get("source") == "library" and d.get("library_item_id"):
         return _image_cache_path(d["library_item_id"], d["format"], pool=pool), True
@@ -3049,7 +3049,7 @@ def _classify_single_disk(d, p_id, vm_node_id, dep_disk_libs, dep_disk_sizes, po
     )
 
     backing, is_library = _resolve_disk_backing(d, pool)
-    return {
+    info = {
         "path": path,
         "format": d["format"],
         "bus": d["bus"],
@@ -3060,13 +3060,17 @@ def _classify_single_disk(d, p_id, vm_node_id, dep_disk_libs, dep_disk_sizes, po
         "is_new": is_new_disk,
         "is_library": is_library,
     }
+    if d.get("rotation_rate") is not None:
+        info["rotation_rate"] = d["rotation_rate"]
+    return info
 
 
 def _accumulate_disk_info(info, result):
     """Accumulate a single classified disk into the result dict."""
-    result["disk_list"].append(
-        {"path": info["path"], "format": info["format"], "bus": info["bus"]}
-    )
+    disk_entry = {"path": info["path"], "format": info["format"], "bus": info["bus"]}
+    if info.get("rotation_rate") is not None:
+        disk_entry["rotation_rate"] = info["rotation_rate"]
+    result["disk_list"].append(disk_entry)
     if info["image_changed"] or info["size_grew"] or info["is_new"]:
         result["any_disk_changed"] = True
     if info["image_changed"]:
@@ -3101,7 +3105,7 @@ def _detect_disk_changes(p_id, vm_node_id, vm_disks, deployed, pool):
     if not vm_disks:
         return result
 
-    from app.services.deploy_service import _image_cache_path
+    from app.services.deploy_topology import _image_cache_path
 
     dep_disk_libs, dep_disk_sizes = _get_deployed_disk_info(vm_node_id, deployed)
 
@@ -3164,11 +3168,8 @@ def _reconfigure_existing_vm(
     h, p_id, s, current, deployed, vm, vni_map, restart_vm_ids, pool, diff, errors
 ):
     """Handle reconfiguration of a single existing VM."""
-    from app.services.deploy_service import (
-        _resolve_boot_devs,
-        _set_deploy_progress,
-        _vm_domain_name,
-    )
+    from app.services.deploy_service import _set_deploy_progress
+    from app.services.deploy_topology import _resolve_boot_devs, _vm_domain_name
 
     dom = _vm_domain_name(p_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], current)
@@ -3268,10 +3269,8 @@ def _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors):
     """Commit final reconfigure state: BMC, topology, notifications."""
     import copy
 
-    from app.services.deploy_service import (
-        _delete_deploy_progress,
-        _extract_bmc_config,
-    )
+    from app.services.deploy_service import _delete_deploy_progress
+    from app.services.deploy_topology import _extract_bmc_config
     from app.services.placement import sync_host_capacity
     from app.services.ws_pubsub import notify_project
 
@@ -3326,8 +3325,8 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.services.deploy_service import (
         _delete_deploy_progress,
         _set_deploy_progress,
-        _vm_domain_name,
     )
+    from app.services.deploy_topology import _vm_domain_name
 
     s = SessionLocal()
     try:
@@ -3413,7 +3412,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             _setup_pxe_via_troshkad(h, current, vni_map, p_id)
 
         # Create BMC bridge if needed (must exist before VM restart)
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         bmc_config = _extract_bmc_config(current, p_id)
         if bmc_config and has_vm_changes:
@@ -3541,7 +3540,7 @@ def _cleanup_old_vm_files(h, p_id, target_vm_id, topology):
         job_id = start_job(h, _FILES_REMOVE_PATH, {"paths": paths_to_remove})
         wait_for_job(h, job_id, timeout=15)
     except TroshkadError as e:
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         logger.warning(
             "Redeploy %s: failed to remove old files: %s",
@@ -3567,10 +3566,8 @@ def _build_redeploy_vm_data(vm_node):
 
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     from app.core.database import SessionLocal
-    from app.services.deploy_service import (
-        _get_host_pool,
-        _vm_domain_name,
-    )
+    from app.services.deploy_service import _get_host_pool
+    from app.services.deploy_topology import _vm_domain_name
 
     s = SessionLocal()
     try:

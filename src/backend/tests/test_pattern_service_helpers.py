@@ -367,7 +367,7 @@ class TestMarkCaptureError:
 # _capture_container_images
 # ---------------------------------------------------------------------------
 class TestCaptureContainerImages:
-    @patch("app.services.deploy_service._extract_containers", return_value=[])
+    @patch("app.services.deploy_topology._extract_containers", return_value=[])
     def test_no_containers_returns_true(self, mock_extract):
         from app.services.pattern_service import _capture_container_images
 
@@ -379,7 +379,7 @@ class TestCaptureContainerImages:
     @patch("app.services.troshkad_client.wait_for_job")
     @patch("app.services.troshkad_client.start_job", return_value="job-1")
     @patch(
-        "app.services.deploy_service._extract_containers",
+        "app.services.deploy_topology._extract_containers",
         return_value=[{"node_id": "c1", "image": ""}],
     )
     def test_skips_containers_without_image(self, mock_extract, mock_start, mock_wait):
@@ -395,7 +395,7 @@ class TestCaptureContainerImages:
     @patch("app.services.troshkad_client.wait_for_job")
     @patch("app.services.troshkad_client.start_job", return_value="job-1")
     @patch(
-        "app.services.deploy_service._extract_containers",
+        "app.services.deploy_topology._extract_containers",
         return_value=[{"node_id": "c1abcdef", "image": "quay.io/test:latest"}],
     )
     def test_captures_container_with_image(
@@ -413,7 +413,7 @@ class TestCaptureContainerImages:
     @patch("app.services.s3_storage._bucket", return_value="b")
     @patch("app.services.troshkad_client.start_job")
     @patch(
-        "app.services.deploy_service._extract_containers",
+        "app.services.deploy_topology._extract_containers",
         return_value=[{"node_id": "c1abcdef", "image": "quay.io/fail:v1"}],
     )
     def test_returns_false_on_troshkad_error(
@@ -648,7 +648,7 @@ class TestBuildDiskToVmMap:
 class TestBuildNbdVmTasks:
     @patch("app.services.s3_storage._bucket", return_value="my-bucket")
     @patch(
-        "app.services.deploy_service._disk_path",
+        "app.services.deploy_topology._disk_path",
         return_value="/var/lib/troshka/vms/proj/vm-disk.qcow2",
     )
     def test_single_vm_single_disk(self, mock_disk_path, mock_bucket):
@@ -678,7 +678,7 @@ class TestBuildNbdVmTasks:
         assert task["disk_metadata"][0]["format"] == "qcow2"
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
-    @patch("app.services.deploy_service._disk_path", return_value="/path/disk")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")
     def test_skips_iso_disks(self, mock_dp, mock_bucket):
         from app.services.pattern_service import _build_nbd_vm_tasks
 
@@ -692,7 +692,7 @@ class TestBuildNbdVmTasks:
         assert tasks == []
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
-    @patch("app.services.deploy_service._disk_path", return_value="/path/disk")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")
     def test_mixed_iso_and_qcow2(self, mock_dp, mock_bucket):
         from app.services.pattern_service import _build_nbd_vm_tasks
 
@@ -709,7 +709,7 @@ class TestBuildNbdVmTasks:
         assert tasks[0]["disk_metadata"][0]["disk_id"] == "d-qcow"
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
-    @patch("app.services.deploy_service._disk_path", return_value="/path/disk")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")
     def test_uses_label_fallback_to_truncated_id(self, mock_dp, mock_bucket):
         from app.services.pattern_service import _build_nbd_vm_tasks
 
@@ -724,7 +724,7 @@ class TestBuildNbdVmTasks:
         assert tasks[0]["vm_name"] == "vm-longi"  # id[:8]
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
-    @patch("app.services.deploy_service._disk_path", return_value="/path/disk")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")
     def test_default_format_is_qcow2(self, mock_dp, mock_bucket):
         from app.services.pattern_service import _build_nbd_vm_tasks
 

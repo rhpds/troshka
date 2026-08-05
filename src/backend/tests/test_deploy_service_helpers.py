@@ -1763,7 +1763,7 @@ class TestFillMissingDiskLabels:
 
 class TestCollectUsedIps:
     def test_collects_vm_ips(self):
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         topology = {
             "nodes": [
@@ -1780,7 +1780,7 @@ class TestCollectUsedIps:
         assert "10.0.0.7" in result
 
     def test_reserves_gateway_ips(self):
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         topology = {
             "nodes": [
@@ -1791,7 +1791,7 @@ class TestCollectUsedIps:
         assert "10.0.0.1" in result
 
     def test_skips_empty_ips(self):
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         topology = {
             "nodes": [
@@ -1802,7 +1802,7 @@ class TestCollectUsedIps:
         assert "" not in result
 
     def test_empty_topology(self):
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         assert _collect_used_ips({"nodes": []}) == set()
 
@@ -1814,7 +1814,7 @@ class TestCollectUsedIps:
 
 class TestGetDhcpRange:
     def test_explicit_range(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         result = _get_dhcp_range(
             {"dhcpRangeStart": "10.0.0.100", "dhcpRangeEnd": "10.0.0.200"}
@@ -1826,7 +1826,7 @@ class TestGetDhcpRange:
         assert result[1] == int(ipaddress.ip_address("10.0.0.200"))
 
     def test_auto_from_cidr(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         result = _get_dhcp_range({"cidr": "10.0.0.0/24"})
         assert result is not None
@@ -1836,7 +1836,7 @@ class TestGetDhcpRange:
         assert result[1] == int(ipaddress.ip_address("10.0.0.254"))
 
     def test_small_subnet_returns_none(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         # /28 has 14 hosts; len(hosts) > 10 is True (14 > 10), so it works
         # /29 has 6 hosts; len(hosts) > 10 is False, so returns None
@@ -1844,12 +1844,12 @@ class TestGetDhcpRange:
         assert result is None
 
     def test_no_cidr_no_range(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         assert _get_dhcp_range({}) is None
 
     def test_invalid_cidr(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         assert _get_dhcp_range({"cidr": "not-a-cidr"}) is None
 
@@ -2287,31 +2287,31 @@ class TestFinalizeKubevirtDeploy:
 
 class TestVmDir:
     def test_local_no_pool(self):
-        from app.services.deploy_service import _vm_dir
+        from app.services.deploy_topology import _vm_dir
 
         assert _vm_dir("proj-123") == "/var/lib/troshka/vms/proj-123"
 
     def test_local_with_none_pool(self):
-        from app.services.deploy_service import _vm_dir
+        from app.services.deploy_topology import _vm_dir
 
         assert _vm_dir("proj-123", None) == "/var/lib/troshka/vms/proj-123"
 
     def test_shared_pool(self):
-        from app.services.deploy_service import _vm_dir
+        from app.services.deploy_topology import _vm_dir
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
         assert _vm_dir("proj-123", pool) == "/var/lib/troshka/shared/vms/proj-123"
 
     def test_shared_byo_pool(self):
-        from app.services.deploy_service import _vm_dir
+        from app.services.deploy_topology import _vm_dir
 
         pool = MagicMock()
         pool.mode = "shared-byo"
         assert _vm_dir("proj-123", pool) == "/var/lib/troshka/shared/vms/proj-123"
 
     def test_local_pool(self):
-        from app.services.deploy_service import _vm_dir
+        from app.services.deploy_topology import _vm_dir
 
         pool = MagicMock()
         pool.mode = "local"
@@ -2325,19 +2325,19 @@ class TestVmDir:
 
 class TestDiskPath:
     def test_basic(self):
-        from app.services.deploy_service import _disk_path
+        from app.services.deploy_topology import _disk_path
 
         result = _disk_path("proj-1234", "vm-node-id", "disk-node-id", "qcow2")
         assert result == "/var/lib/troshka/vms/proj-1234/vm-node--disk-nod.qcow2"
 
     def test_iso_format(self):
-        from app.services.deploy_service import _disk_path
+        from app.services.deploy_topology import _disk_path
 
         result = _disk_path("proj-1234", "vm-abcdef", "disk-xyz", "iso")
         assert result.endswith(".iso")
 
     def test_shared_pool(self):
-        from app.services.deploy_service import _disk_path
+        from app.services.deploy_topology import _disk_path
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
@@ -2345,7 +2345,7 @@ class TestDiskPath:
         assert "/shared/vms/" in result
 
     def test_truncation(self):
-        from app.services.deploy_service import _disk_path
+        from app.services.deploy_topology import _disk_path
 
         result = _disk_path("p" * 36, "v" * 36, "d" * 36, "qcow2")
         parts = result.split("/")[-1]
@@ -2360,13 +2360,13 @@ class TestDiskPath:
 
 class TestSeedPath:
     def test_basic(self):
-        from app.services.deploy_service import _seed_path
+        from app.services.deploy_topology import _seed_path
 
         result = _seed_path("proj-1234", "vm-node-id")
         assert result == "/var/lib/troshka/vms/proj-1234/vm-node--seed.iso"
 
     def test_shared_pool(self):
-        from app.services.deploy_service import _seed_path
+        from app.services.deploy_topology import _seed_path
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
@@ -2382,13 +2382,13 @@ class TestSeedPath:
 
 class TestImageCachePath:
     def test_local(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         result = _image_cache_path("item-123", "qcow2")
         assert result == "/var/lib/troshka/images/item-123.qcow2"
 
     def test_shared(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
@@ -2396,7 +2396,7 @@ class TestImageCachePath:
         assert result == "/var/lib/troshka/shared/images/item-123.qcow2"
 
     def test_iso(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         result = _image_cache_path("item-123", "iso")
         assert result == "/var/lib/troshka/images/item-123.iso"
@@ -2409,13 +2409,13 @@ class TestImageCachePath:
 
 class TestPatternCachePath:
     def test_basic(self):
-        from app.services.deploy_service import _pattern_cache_path
+        from app.services.deploy_topology import _pattern_cache_path
 
         result = _pattern_cache_path("pat-123", "disk-456", "qcow2")
         assert result == "/var/lib/troshka/local/cache/patterns/pat-123/disk-456.qcow2"
 
     def test_always_local(self):
-        from app.services.deploy_service import _pattern_cache_path
+        from app.services.deploy_topology import _pattern_cache_path
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
@@ -2431,7 +2431,7 @@ class TestPatternCachePath:
 
 class TestSnapshotCachePath:
     def test_basic(self):
-        from app.services.deploy_service import _snapshot_cache_path
+        from app.services.deploy_topology import _snapshot_cache_path
 
         result = _snapshot_cache_path("snap-123", "disk-456", "qcow2")
         assert result == "/var/lib/troshka/cache/snapshots/snap-123/disk-456.qcow2"
@@ -2444,7 +2444,7 @@ class TestSnapshotCachePath:
 
 class TestValidateTopologyNames:
     def test_no_duplicates(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2455,7 +2455,7 @@ class TestValidateTopologyNames:
         assert validate_topology_names(topo) == []
 
     def test_duplicate_vm_names(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2468,7 +2468,7 @@ class TestValidateTopologyNames:
         assert "Duplicate VM name" in errors[0]
 
     def test_duplicate_network_names(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2481,7 +2481,7 @@ class TestValidateTopologyNames:
         assert "Network" in errors[0]
 
     def test_duplicate_storage_names(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2494,7 +2494,7 @@ class TestValidateTopologyNames:
         assert "Disk" in errors[0]
 
     def test_same_name_different_types_ok(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2505,7 +2505,7 @@ class TestValidateTopologyNames:
         assert validate_topology_names(topo) == []
 
     def test_empty_names_skipped(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2516,7 +2516,7 @@ class TestValidateTopologyNames:
         assert validate_topology_names(topo) == []
 
     def test_label_fallback(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2528,7 +2528,7 @@ class TestValidateTopologyNames:
         assert len(errors) == 1
 
     def test_unknown_types_ignored(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -2546,7 +2546,7 @@ class TestValidateTopologyNames:
 
 class TestValidateTopologyIps:
     def test_no_duplicates(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -2576,7 +2576,7 @@ class TestValidateTopologyIps:
         assert validate_topology_ips(topo) == []
 
     def test_duplicate_ips_on_same_network(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -2609,7 +2609,7 @@ class TestValidateTopologyIps:
         assert "10.0.0.5" in errors[0]
 
     def test_empty_ips_skipped(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -2624,7 +2624,7 @@ class TestValidateTopologyIps:
         assert validate_topology_ips(topo) == []
 
     def test_empty_topology(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         assert validate_topology_ips({"nodes": [], "edges": []}) == []
 
@@ -2636,13 +2636,13 @@ class TestValidateTopologyIps:
 
 class TestValidateTopologyPasswords:
     def test_no_bmc_network(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {"nodes": [{"type": "networkNode", "data": {"networkType": "vxlan"}}]}
         assert validate_topology_passwords(topo) == []
 
     def test_bmc_with_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {
             "nodes": [
@@ -2659,7 +2659,7 @@ class TestValidateTopologyPasswords:
         assert validate_topology_passwords(topo) == []
 
     def test_bmc_without_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {
             "nodes": [
@@ -2678,7 +2678,7 @@ class TestValidateTopologyPasswords:
         assert "no password" in errors[0].lower()
 
     def test_empty_topology(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         assert validate_topology_passwords({"nodes": []}) == []
 
@@ -2690,7 +2690,7 @@ class TestValidateTopologyPasswords:
 
 class TestDiffTopologies:
     def test_no_changes(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         topo = {
             "nodes": [
@@ -2704,7 +2704,7 @@ class TestDiffTopologies:
         assert result["removed_vms"] == []
 
     def test_added_vm(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {
             "nodes": [
@@ -2719,7 +2719,7 @@ class TestDiffTopologies:
         assert result["added_vms"][0]["id"] == "vm2"
 
     def test_removed_vm(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {"name": "a"}}]}
         deployed = {
@@ -2733,7 +2733,7 @@ class TestDiffTopologies:
         assert result["removed_vms"][0]["id"] == "vm2"
 
     def test_changed_vm(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {
             "nodes": [
@@ -2750,7 +2750,7 @@ class TestDiffTopologies:
         assert result["has_changes"] is True
 
     def test_skip_keys_not_counted(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {
             "nodes": [
@@ -2775,7 +2775,7 @@ class TestDiffTopologies:
         assert result["has_changes"] is False
 
     def test_added_network(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {
             "nodes": [
@@ -2790,7 +2790,7 @@ class TestDiffTopologies:
         assert len(result["added_networks"]) == 1
 
     def test_removed_network(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         current = {"nodes": []}
         deployed = {
@@ -2800,7 +2800,7 @@ class TestDiffTopologies:
         assert len(result["removed_networks"]) == 1
 
     def test_empty_topologies(self):
-        from app.services.deploy_service import diff_topologies
+        from app.services.deploy_topology import diff_topologies
 
         result = diff_topologies({"nodes": []}, {"nodes": []})
         assert result["has_changes"] is False
@@ -2813,7 +2813,7 @@ class TestDiffTopologies:
 
 class TestExtractVms:
     def test_extracts_basic_vm(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {
             "nodes": [
@@ -2837,7 +2837,7 @@ class TestExtractVms:
         assert vms[0]["node_id"] == "vm-1"
 
     def test_defaults(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}]}
         vms = _extract_vms(topo)
@@ -2848,7 +2848,7 @@ class TestExtractVms:
         assert vms[0]["cloud_init"] is False
 
     def test_skips_non_vm_nodes(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {
             "nodes": [
@@ -2859,7 +2859,7 @@ class TestExtractVms:
         assert _extract_vms(topo) == []
 
     def test_multiple_vms(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {
             "nodes": [
@@ -2878,7 +2878,7 @@ class TestExtractVms:
 
 class TestExtractContainers:
     def test_extracts_basic_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {
             "nodes": [
@@ -2902,7 +2902,7 @@ class TestExtractContainers:
         assert ctrs[0]["memory_mb"] == 1024
 
     def test_defaults(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {"nodes": [{"id": "ctr-1", "type": "containerNode", "data": {}}]}
         ctrs = _extract_containers(topo)
@@ -2912,7 +2912,7 @@ class TestExtractContainers:
         assert ctrs[0]["is_pod"] is False
 
     def test_pod_flag(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {
             "nodes": [
@@ -2927,7 +2927,7 @@ class TestExtractContainers:
         assert ctrs[0]["is_pod"] is True
 
     def test_skips_non_container_nodes(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}]}
         assert _extract_containers(topo) == []
@@ -2974,18 +2974,18 @@ class TestShouldSkip:
 
 class TestVmDomainName:
     def test_basic(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         assert _vm_domain_name("proj-1234", "node-5678") == "troshka-proj-123-node-567"
 
     def test_truncation(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("a" * 36, "b" * 36)
         assert result == f"troshka-{'a' * 8}-{'b' * 8}"
 
     def test_short_ids(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         assert _vm_domain_name("abc", "xyz") == "troshka-abc-xyz"
 
@@ -2997,7 +2997,7 @@ class TestVmDomainName:
 
 class TestFindVmNameByIp:
     def test_found(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -3011,7 +3011,7 @@ class TestFindVmNameByIp:
         assert _find_vm_name_by_ip(topo, "10.0.0.5") == "bastion"
 
     def test_not_found(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -3025,12 +3025,12 @@ class TestFindVmNameByIp:
         assert _find_vm_name_by_ip(topo, "10.0.0.99") == "10-0-0-99"
 
     def test_empty_topology(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         assert _find_vm_name_by_ip({"nodes": []}, "10.0.0.1") == "10-0-0-1"
 
     def test_multiple_nics(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -3054,7 +3054,7 @@ class TestFindVmNameByIp:
 
 class TestFindVmDisks:
     def test_finds_disk_via_dp_handle(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -3092,7 +3092,7 @@ class TestFindVmDisks:
         assert disks[0]["library_item_id"] == "lib-123"
 
     def test_no_disks(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [{"id": "vm1", "type": "vmNode", "data": {}}],
@@ -3101,7 +3101,7 @@ class TestFindVmDisks:
         assert _find_vm_disks("vm1", topo) == []
 
     def test_ignores_nic_handles(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -3122,7 +3122,7 @@ class TestFindVmDisks:
 
 class TestFindVmNetworks:
     def test_finds_network_via_nic_handle(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {
             "nodes": [
@@ -3154,7 +3154,7 @@ class TestFindVmNetworks:
         assert nets[0]["model"] == "e1000"
 
     def test_bmc_network(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {
             "nodes": [
@@ -3182,7 +3182,7 @@ class TestFindVmNetworks:
         assert nets[0]["bridge"] == "br-bmc-proj-123"
 
     def test_no_networks(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {}}], "edges": []}
         assert _find_vm_networks("vm1", topo, {}) == []
@@ -3195,13 +3195,13 @@ class TestFindVmNetworks:
 
 class TestExtractBmcConfig:
     def test_no_bmc_network(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {"nodes": [{"type": "networkNode", "data": {"networkType": "vxlan"}}]}
         assert _extract_bmc_config(topo, "proj-123") is None
 
     def test_bmc_network_no_vms(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -3213,7 +3213,7 @@ class TestExtractBmcConfig:
         assert _extract_bmc_config(topo, "proj-123") is None
 
     def test_bmc_with_vms(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -3241,7 +3241,7 @@ class TestExtractBmcConfig:
         assert config["vms"][0]["domain_name"] == "troshka-proj-123-vm1"
 
     def test_bmc_with_dhcp_hosts(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -3288,7 +3288,7 @@ class TestExtractBmcConfig:
 
 class TestResolveBootDevs:
     def test_defaults_hd_only(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
         disks = [{"format": "qcow2"}]
@@ -3296,7 +3296,7 @@ class TestResolveBootDevs:
         assert _resolve_boot_devs(vm, disks, topo) == ["hd"]
 
     def test_defaults_iso_only(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
         disks = [{"format": "iso"}]
@@ -3304,7 +3304,7 @@ class TestResolveBootDevs:
         assert _resolve_boot_devs(vm, disks, topo) == ["cdrom"]
 
     def test_defaults_iso_and_disk(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
         disks = [{"format": "iso"}, {"format": "qcow2"}]
@@ -3313,7 +3313,7 @@ class TestResolveBootDevs:
         assert result == ["cdrom", "hd"]
 
     def test_defaults_no_disks(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
         disks = []
@@ -3321,7 +3321,7 @@ class TestResolveBootDevs:
         assert _resolve_boot_devs(vm, disks, topo) == ["network"]
 
     def test_explicit_network(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["network"], "disk_controllers": []}
         disks = []
@@ -3329,7 +3329,7 @@ class TestResolveBootDevs:
         assert _resolve_boot_devs(vm, disks, topo) == ["network"]
 
     def test_explicit_hd_with_iso_overrides(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["hd"], "disk_controllers": []}
         disks = [{"format": "iso"}, {"format": "qcow2"}]
@@ -3339,7 +3339,7 @@ class TestResolveBootDevs:
         assert "cdrom" in result
 
     def test_storage_node_id_as_boot_dev(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["disk-iso-1", "disk-hd-1"], "disk_controllers": []}
         disks = [{"format": "qcow2"}]
@@ -3361,7 +3361,7 @@ class TestResolveBootDevs:
         assert result == ["cdrom", "hd"]
 
     def test_deduplicates(self):
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["hd", "hd", "network"], "disk_controllers": []}
         disks = [{"format": "qcow2"}]
@@ -3377,7 +3377,7 @@ class TestResolveBootDevs:
 
 class TestAutoAssignContainerIps:
     def test_assigns_ip_from_dhcp_range(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topo = {
             "nodes": [
@@ -3407,7 +3407,7 @@ class TestAutoAssignContainerIps:
         assert nic["ip"].startswith("10.0.0.")
 
     def test_skips_static_ips(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topo = {
             "nodes": [
@@ -3431,7 +3431,7 @@ class TestAutoAssignContainerIps:
         assert topo["nodes"][1]["data"]["nics"][0]["ip"] == "10.0.0.50"
 
     def test_avoids_used_ips(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topo = {
             "nodes": [
@@ -3855,7 +3855,7 @@ class TestControlPlaneDetail:
 
 class TestFindContainerNetworks:
     def test_finds_network(self):
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topo = {
             "nodes": [
@@ -3891,13 +3891,13 @@ class TestFindContainerNetworks:
         assert nets[0]["cidr"] == "10.0.0.0/24"
 
     def test_no_matching_node(self):
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topo = {"nodes": [], "edges": []}
         assert _find_container_networks("ctr1", topo, {}) == []
 
     def test_no_vni_mapping(self):
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topo = {
             "nodes": [
@@ -4012,7 +4012,7 @@ class TestDestroyCleanupRouteAccess:
 
 class TestValidateTopologyPasswordsV2:
     def test_no_bmc_networks(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topology = {
             "nodes": [
@@ -4026,7 +4026,7 @@ class TestValidateTopologyPasswordsV2:
         assert validate_topology_passwords(topology) == []
 
     def test_bmc_with_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topology = {
             "nodes": [
@@ -4043,7 +4043,7 @@ class TestValidateTopologyPasswordsV2:
         assert validate_topology_passwords(topology) == []
 
     def test_bmc_without_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topology = {
             "nodes": [
@@ -4059,7 +4059,7 @@ class TestValidateTopologyPasswordsV2:
         assert "no password" in errors[0]
 
     def test_multiple_bmc_networks_mixed(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topology = {
             "nodes": [
@@ -4092,7 +4092,7 @@ class TestValidateTopologyPasswordsV2:
         assert any("bmc-also-bad" in e for e in names)
 
     def test_empty_topology(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         assert validate_topology_passwords({}) == []
         assert validate_topology_passwords({"nodes": []}) == []
@@ -4266,7 +4266,7 @@ class TestAutoAssignContainerIpsV2:
         return {"nodes": nodes, "edges": edges}
 
     def test_assigns_ip_from_dhcp_range(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = self._make_topology()
         _auto_assign_container_ips(topology)
@@ -4278,7 +4278,7 @@ class TestAutoAssignContainerIpsV2:
         assert octet >= 10  # DHCP range starts at hosts[9] = .10
 
     def test_skips_nic_with_existing_ip(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = self._make_topology(
             container_nics=[{"id": "nic-a", "name": "eth0", "ip": "192.168.1.50"}]
@@ -4288,7 +4288,7 @@ class TestAutoAssignContainerIpsV2:
         assert nic["ip"] == "192.168.1.50"  # Unchanged
 
     def test_avoids_ips_used_by_vms(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         # VM uses .10 (first DHCP address), so container should get .11
         topology = self._make_topology(
@@ -4300,7 +4300,7 @@ class TestAutoAssignContainerIpsV2:
         assert nic["ip"] == "192.168.1.11"
 
     def test_no_connected_network(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = {
             "nodes": [
@@ -4317,7 +4317,7 @@ class TestAutoAssignContainerIpsV2:
         assert not nic.get("ip")
 
     def test_network_without_cidr(self):
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = self._make_topology(cidr="")
         _auto_assign_container_ips(topology)
@@ -4733,7 +4733,7 @@ class TestSetupKubevirtS3Clients:
 
 class TestValidateTopologyNamesV2:
     def test_no_duplicates(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4744,7 +4744,7 @@ class TestValidateTopologyNamesV2:
         assert validate_topology_names(topo) == []
 
     def test_duplicate_vm_names(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4757,7 +4757,7 @@ class TestValidateTopologyNamesV2:
         assert "Duplicate VM" in errors[0]
 
     def test_same_name_different_types_ok(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4768,7 +4768,7 @@ class TestValidateTopologyNamesV2:
         assert validate_topology_names(topo) == []
 
     def test_empty_name_skipped(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4779,7 +4779,7 @@ class TestValidateTopologyNamesV2:
         assert validate_topology_names(topo) == []
 
     def test_uses_label_if_no_name(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4792,7 +4792,7 @@ class TestValidateTopologyNamesV2:
         assert "Duplicate Disk" in errors[0]
 
     def test_unknown_node_types_ignored(self):
-        from app.services.deploy_service import validate_topology_names
+        from app.services.deploy_topology import validate_topology_names
 
         topo = {
             "nodes": [
@@ -4810,7 +4810,7 @@ class TestValidateTopologyNamesV2:
 
 class TestValidateTopologyIpsV2:
     def test_no_duplicates(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -4848,7 +4848,7 @@ class TestValidateTopologyIpsV2:
         assert validate_topology_ips(topo) == []
 
     def test_duplicate_ips_same_network(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -4888,7 +4888,7 @@ class TestValidateTopologyIpsV2:
         assert "Duplicate IP 10.0.0.5" in errors[0]
 
     def test_empty_ip_skipped(self):
-        from app.services.deploy_service import validate_topology_ips
+        from app.services.deploy_topology import validate_topology_ips
 
         topo = {
             "nodes": [
@@ -4910,7 +4910,7 @@ class TestValidateTopologyIpsV2:
 
 class TestValidateTopologyPasswordsV2Extra:
     def test_bmc_with_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {
             "nodes": [
@@ -4927,7 +4927,7 @@ class TestValidateTopologyPasswordsV2Extra:
         assert validate_topology_passwords(topo) == []
 
     def test_bmc_without_password(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {
             "nodes": [
@@ -4942,7 +4942,7 @@ class TestValidateTopologyPasswordsV2Extra:
         assert "BMC network" in errors[0]
 
     def test_non_bmc_network_no_check(self):
-        from app.services.deploy_service import validate_topology_passwords
+        from app.services.deploy_topology import validate_topology_passwords
 
         topo = {
             "nodes": [
@@ -5040,7 +5040,7 @@ class TestCheckpointV2:
 
 class TestExtractVmsV2:
     def test_extracts_basic_vm(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {
             "nodes": [
@@ -5064,7 +5064,7 @@ class TestExtractVmsV2:
         assert vms[0]["os"] == "rhcos"
 
     def test_skips_non_vm_nodes(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {
             "nodes": [
@@ -5075,7 +5075,7 @@ class TestExtractVmsV2:
         assert _extract_vms(topo) == []
 
     def test_defaults_for_missing_fields(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         topo = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {}}]}
         vms = _extract_vms(topo)
@@ -5085,7 +5085,7 @@ class TestExtractVmsV2:
         assert vms[0]["firmware"] == "bios"
 
     def test_empty_topology(self):
-        from app.services.deploy_service import _extract_vms
+        from app.services.deploy_topology import _extract_vms
 
         assert _extract_vms({"nodes": []}) == []
         assert _extract_vms({}) == []
@@ -5098,7 +5098,7 @@ class TestExtractVmsV2:
 
 class TestExtractContainersV2:
     def test_extracts_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {
             "nodes": [
@@ -5121,7 +5121,7 @@ class TestExtractContainersV2:
         assert ctrs[0]["is_pod"] is False
 
     def test_pod_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topo = {
             "nodes": [
@@ -5143,7 +5143,7 @@ class TestExtractContainersV2:
 
 class TestFindVmNameByIpV2:
     def test_finds_vm_by_ip(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -5160,13 +5160,13 @@ class TestFindVmNameByIpV2:
         assert _find_vm_name_by_ip(topo, "10.0.0.5") == "bastion"
 
     def test_fallback_to_ip_dash_format(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {"nodes": []}
         assert _find_vm_name_by_ip(topo, "10.0.0.5") == "10-0-0-5"
 
     def test_no_matching_ip(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -5187,13 +5187,13 @@ class TestFindVmNameByIpV2:
 
 class TestVmDomainNameV2:
     def test_basic(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("proj-12345678-abcd", "node-abcdef12-9999")
         assert result == "troshka-proj-123-node-abc"
 
     def test_short_ids(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("abc", "xyz")
         assert result == "troshka-abc-xyz"
@@ -5206,7 +5206,7 @@ class TestVmDomainNameV2:
 
 class TestFindVmDisksV2:
     def test_finds_connected_disk(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -5244,7 +5244,7 @@ class TestFindVmDisksV2:
         assert disks[0]["bus"] == "sata"
 
     def test_skips_non_disk_handles(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -5256,7 +5256,7 @@ class TestFindVmDisksV2:
         assert _find_vm_disks("vm1", topo) == []
 
     def test_no_matching_storage_node(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [{"id": "vm1", "type": "vmNode", "data": {}}],
@@ -5267,7 +5267,7 @@ class TestFindVmDisksV2:
         assert _find_vm_disks("vm1", topo) == []
 
     def test_reverse_edge_direction(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -5297,7 +5297,7 @@ class TestFindVmDisksV2:
 
 class TestFindVmNetworksV2:
     def test_finds_connected_network(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {
             "nodes": [
@@ -5325,7 +5325,7 @@ class TestFindVmNetworksV2:
         assert networks[0]["mac"] == "52:54:00:aa:bb:cc"
 
     def test_bmc_network_uses_bmc_bridge(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {
             "nodes": [
@@ -5353,7 +5353,7 @@ class TestFindVmNetworksV2:
         assert networks[0]["bridge"] == "br-bmc-proj-123"
 
     def test_skips_non_nic_handles(self):
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topo = {
             "nodes": [
@@ -5372,7 +5372,7 @@ class TestFindVmNetworksV2:
 
 class TestFindContainerNetworksV2:
     def test_finds_container_network(self):
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topo = {
             "nodes": [
@@ -5406,7 +5406,7 @@ class TestFindContainerNetworksV2:
         assert nets[0]["ip"] == "10.0.0.5"
 
     def test_no_container_node(self):
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topo = {"nodes": [], "edges": []}
         assert _find_container_networks("missing", topo, {}) == []
@@ -5419,7 +5419,7 @@ class TestFindContainerNetworksV2:
 
 class TestExtractBmcConfigV2:
     def test_extracts_bmc_config(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -5447,7 +5447,7 @@ class TestExtractBmcConfigV2:
         assert result["vms"][0]["bmc_ip"] == "192.168.100.10"
 
     def test_no_bmc_network(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -5457,7 +5457,7 @@ class TestExtractBmcConfigV2:
         assert _extract_bmc_config(topo, "proj-1") is None
 
     def test_bmc_network_but_no_bmc_vms(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [
@@ -6105,7 +6105,7 @@ class TestWaitForSharedCache:
 
 class TestFindContainerVolumes:
     def test_finds_volumes_via_mnt_handles(self):
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -6140,14 +6140,14 @@ class TestFindContainerVolumes:
         assert result[0]["node_id"] == "disk-1"
 
     def test_no_container_found(self):
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {"nodes": [], "edges": []}
         result = _find_container_volumes("nonexistent", topology, "proj-1")
         assert result == []
 
     def test_no_matching_edges(self):
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -6163,7 +6163,7 @@ class TestFindContainerVolumes:
         assert result == []
 
     def test_skips_non_storage_node(self):
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -6187,7 +6187,7 @@ class TestFindContainerVolumes:
         assert result == []
 
     def test_reverse_edge_direction(self):
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -6221,7 +6221,7 @@ class TestFindContainerVolumes:
 
 class TestExtractBmcConfigDhcpHosts:
     def test_collects_dhcp_hosts_from_bmc_nics(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -6264,7 +6264,7 @@ class TestExtractBmcConfigDhcpHosts:
         assert result["dhcp_hosts"][0]["name"] == "master-0"
 
     def test_no_bmc_network(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -6275,7 +6275,7 @@ class TestExtractBmcConfigDhcpHosts:
         assert _extract_bmc_config(topology, "proj-1") is None
 
     def test_no_bmc_enabled_vms(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -6296,7 +6296,7 @@ class TestExtractBmcConfigDhcpHosts:
 
     def test_edge_target_is_vm(self):
         """Test when VM is the target of the edge (reverse direction)."""
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -6343,13 +6343,13 @@ class TestExtractBmcConfigDhcpHosts:
 
 class TestVmDomainNameV2Extra:
     def test_basic(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("proj-1234-5678-abcd", "vm-aaaa-bbbb-cccc")
         assert result == "troshka-proj-123-vm-aaaa-"
 
     def test_short_ids(self):
-        from app.services.deploy_service import _vm_domain_name
+        from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("abcd", "efgh")
         assert result == "troshka-abcd-efgh"
@@ -6736,7 +6736,7 @@ class TestPollKubevirtDeploy:
 
 class TestExtractContainersV2Extra:
     def test_extracts_single_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -6761,7 +6761,7 @@ class TestExtractContainersV2Extra:
         assert result[0]["is_pod"] is False
 
     def test_extracts_pod(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -6785,7 +6785,7 @@ class TestExtractContainersV2Extra:
         assert len(result[0]["pod_containers"]) == 1
 
     def test_skips_non_container_nodes(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -6796,7 +6796,7 @@ class TestExtractContainersV2Extra:
         assert _extract_containers(topology) == []
 
     def test_empty_topology(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         assert _extract_containers({"nodes": []}) == []
 
@@ -6867,7 +6867,7 @@ class TestGetHostPoolV2:
 
 class TestFindVmNameByIpV2Extra:
     def test_finds_by_ip(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topology = {
             "nodes": [
@@ -6881,7 +6881,7 @@ class TestFindVmNameByIpV2Extra:
         assert _find_vm_name_by_ip(topology, "10.0.0.5") == "bastion"
 
     def test_not_found_returns_ip_dashes(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topology = {"nodes": []}
         result = _find_vm_name_by_ip(topology, "192.168.1.10")
@@ -6895,7 +6895,7 @@ class TestFindVmNameByIpV2Extra:
 
 class TestFindVmDisksV2Extra:
     def test_finds_disk_via_dp_handle(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -6934,7 +6934,7 @@ class TestFindVmDisksV2Extra:
         assert result[0]["library_item_id"] == "lib-1"
 
     def test_no_disks(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}],
@@ -6943,7 +6943,7 @@ class TestFindVmDisksV2Extra:
         assert _find_vm_disks("vm-1", topology) == []
 
     def test_skips_non_dp_handles(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -6972,7 +6972,7 @@ class TestFindVmNetworksUncovered:
 
     def test_edge_where_vm_is_target(self):
         """Line 450-452: edge.target == vm_node_id branch."""
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topology = {
             "nodes": [
@@ -7005,7 +7005,7 @@ class TestFindVmNetworksUncovered:
 
     def test_edge_neither_source_nor_target(self):
         """Line 454: edge doesn't involve the VM at all -> continue."""
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topology = {
             "nodes": [
@@ -7027,7 +7027,7 @@ class TestFindVmNetworksUncovered:
 
     def test_bmc_network_no_mac_generates_random(self):
         """Lines 477, 479: BMC network with empty MAC -> random MAC generation."""
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topology = {
             "nodes": [
@@ -7061,7 +7061,7 @@ class TestFindVmNetworksUncovered:
 
     def test_network_not_in_vni_map_skips(self):
         """Line 495: network_node_id not in vni_map -> skip."""
-        from app.services.deploy_service import _find_vm_networks
+        from app.services.deploy_topology import _find_vm_networks
 
         topology = {
             "nodes": [
@@ -7096,7 +7096,7 @@ class TestFindContainerNetworksUncovered:
 
     def test_edge_where_container_is_target(self):
         """Lines 534-536: container is edge target, not source."""
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topology = {
             "nodes": [
@@ -7134,7 +7134,7 @@ class TestFindContainerNetworksUncovered:
 
     def test_edge_with_no_nic_handle_skips(self):
         """Line 539: edge matched but no nic_id/net_node_id -> continue."""
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topology = {
             "nodes": [
@@ -7159,7 +7159,7 @@ class TestFindContainerNetworksUncovered:
 
     def test_network_not_in_vni_map_skips(self):
         """Line 544: vni is None -> continue."""
-        from app.services.deploy_service import _find_container_networks
+        from app.services.deploy_topology import _find_container_networks
 
         topology = {
             "nodes": [
@@ -7193,7 +7193,7 @@ class TestExtractBmcConfigDhcpHostsV2:
     """Cover lines 738-763 (DHCP hosts collection loop)."""
 
     def test_collects_dhcp_hosts_from_bmc_nics(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -7267,7 +7267,7 @@ class TestExtractBmcConfigDhcpHostsV2:
 
     def test_edge_where_vm_is_target_in_bmc(self):
         """Lines 748-750: edge.target == vm_id in DHCP host loop."""
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -7312,7 +7312,7 @@ class TestExtractBmcConfigDhcpHostsV2:
 
     def test_edge_not_matching_vm_continues(self):
         """Line 752: edge doesn't involve the current VM -> continue."""
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topology = {
             "nodes": [
@@ -7823,7 +7823,7 @@ class TestReportPreInstallStatusV2Extra:
 
     def test_reverse_edge_direction(self):
         """Edge where storage is source and VM is target (reverse direction)."""
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -7863,7 +7863,7 @@ class TestReportPreInstallStatusV2Extra:
 
     def test_pattern_disk_fields(self):
         """Disk connected to VM with pattern fields."""
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -7903,7 +7903,7 @@ class TestReportPreInstallStatusV2Extra:
 
     def test_multiple_disks(self):
         """VM with multiple disks."""
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -7951,7 +7951,7 @@ class TestReportPreInstallStatusV2Extra:
 
     def test_edge_to_non_storage_node(self):
         """dp- handle pointing to a non-storageNode -> skipped."""
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topology = {
             "nodes": [
@@ -8039,13 +8039,13 @@ class TestOcpUpdateStatusAdditional:
 
 class TestImageCachePathV2:
     def test_local_no_pool(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         result = _image_cache_path("item-abc", "qcow2")
         assert result == "/var/lib/troshka/images/item-abc.qcow2"
 
     def test_local_pool_local_mode(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         pool = MagicMock()
         pool.mode = "local"
@@ -8053,7 +8053,7 @@ class TestImageCachePathV2:
         assert result == "/var/lib/troshka/images/item-def.iso"
 
     def test_shared_pool(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         pool = MagicMock()
         pool.mode = "shared-fsx"
@@ -8061,7 +8061,7 @@ class TestImageCachePathV2:
         assert result == "/var/lib/troshka/shared/images/item-ghi.qcow2"
 
     def test_shared_byo_pool(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         pool = MagicMock()
         pool.mode = "shared-byo"
@@ -8069,7 +8069,7 @@ class TestImageCachePathV2:
         assert result == "/var/lib/troshka/shared/images/item-jkl.raw"
 
     def test_shared_ceph_nfs_pool(self):
-        from app.services.deploy_service import _image_cache_path
+        from app.services.deploy_topology import _image_cache_path
 
         pool = MagicMock()
         pool.mode = "shared-ceph-nfs"
@@ -8084,19 +8084,19 @@ class TestImageCachePathV2:
 
 class TestExtractContainersAdditional:
     def test_empty_topology(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         assert _extract_containers({}) == []
         assert _extract_containers({"nodes": []}) == []
 
     def test_no_container_nodes(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}]}
         assert _extract_containers(topology) == []
 
     def test_single_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -8131,7 +8131,7 @@ class TestExtractContainersAdditional:
         assert c["privileged"] is True
 
     def test_pod_container(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -8154,7 +8154,7 @@ class TestExtractContainersAdditional:
         assert result[0]["pod_containers"] == [{"name": "app", "image": "myapp:v1"}]
 
     def test_defaults_for_missing_fields(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {"nodes": [{"id": "c2", "type": "containerNode", "data": {}}]}
         result = _extract_containers(topology)
@@ -8169,7 +8169,7 @@ class TestExtractContainersAdditional:
         assert c["is_pod"] is False
 
     def test_mixed_node_types(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -8185,7 +8185,7 @@ class TestExtractContainersAdditional:
         assert result[1]["name"] == "app2"
 
     def test_registry_credential_fields(self):
-        from app.services.deploy_service import _extract_containers
+        from app.services.deploy_topology import _extract_containers
 
         topology = {
             "nodes": [
@@ -8721,7 +8721,7 @@ class TestFindVmNameByIpNonVmNodes:
     """Cover _find_vm_name_by_ip line 569 — the `continue` for non-vmNode."""
 
     def test_skips_non_vm_nodes(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -8741,7 +8741,7 @@ class TestFindVmNameByIpNonVmNodes:
         assert _find_vm_name_by_ip(topo, "10.0.0.5") == "bastion"
 
     def test_only_non_vm_nodes_falls_back(self):
-        from app.services.deploy_service import _find_vm_name_by_ip
+        from app.services.deploy_topology import _find_vm_name_by_ip
 
         topo = {
             "nodes": [
@@ -8760,7 +8760,7 @@ class TestFindVmDisksUnrelatedEdge:
     """Cover _find_vm_disks line 594 — edge not connected to the target VM."""
 
     def test_skips_unrelated_edges(self):
-        from app.services.deploy_service import _find_vm_disks
+        from app.services.deploy_topology import _find_vm_disks
 
         topo = {
             "nodes": [
@@ -8791,7 +8791,7 @@ class TestFindContainerVolumesAltHandles:
 
     def test_tgt_is_container_with_tgt_handle_mnt(self):
         """Line 662-663: tgt == container_node_id and tgt_h.startswith('mnt-')."""
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -8819,7 +8819,7 @@ class TestFindContainerVolumesAltHandles:
 
     def test_src_is_container_with_src_handle_mnt(self):
         """Line 664-665: src == container_node_id and src_h.startswith('mnt-')."""
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -8848,7 +8848,7 @@ class TestFindContainerVolumesAltHandles:
 
     def test_edge_not_connected_to_container(self):
         """Line 668: disk_node_id is None because edge connects other nodes."""
-        from app.services.deploy_service import _find_container_volumes
+        from app.services.deploy_topology import _find_container_volumes
 
         topology = {
             "nodes": [
@@ -8878,7 +8878,7 @@ class TestResolveBootDevsUnknownId:
 
     def test_unknown_boot_dev_id_skipped(self):
         """Line 878: boot_devices entry not in boot_type_map or storage_nodes — skip."""
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["bogus-id-999", "hd"], "disk_controllers": []}
         disks = [{"format": "qcow2"}]
@@ -8888,7 +8888,7 @@ class TestResolveBootDevsUnknownId:
 
     def test_cdrom_controller_fallback(self):
         """Line 884: VM has a cdrom controller but no cdrom in explicit boot order."""
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {
             "boot_devices": ["hd"],
@@ -8902,7 +8902,7 @@ class TestResolveBootDevsUnknownId:
 
     def test_all_unknown_boot_devs_fallback_to_hd(self):
         """Line 885: boot_devs ends up empty, returns ['hd'] fallback."""
-        from app.services.deploy_service import _resolve_boot_devs
+        from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["zzz-123", "yyy-456"], "disk_controllers": []}
         disks = [{"format": "qcow2"}]
@@ -8916,7 +8916,7 @@ class TestAutoAssignContainerIpsTargetEdge:
 
     def test_assigns_ip_via_target_edge(self):
         """Lines 1792-1793: tgt == node['id'] and th matches the NIC handle."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = {
             "nodes": [
@@ -8953,7 +8953,7 @@ class TestAutoAssignContainerIpsTargetEdge:
 
     def test_no_dhcp_range_skips(self):
         """Line 1807: _get_dhcp_range returns None — container NIC left without IP."""
-        from app.services.deploy_service import _auto_assign_container_ips
+        from app.services.deploy_topology import _auto_assign_container_ips
 
         topology = {
             "nodes": [
@@ -8990,7 +8990,7 @@ class TestCollectUsedIpsInvalidCidr:
     """Cover _collect_used_ips lines 1838-1839 — ValueError on invalid CIDR."""
 
     def test_invalid_cidr_ignored(self):
-        from app.services.deploy_service import _collect_used_ips
+        from app.services.deploy_topology import _collect_used_ips
 
         topology = {
             "nodes": [
@@ -9016,7 +9016,7 @@ class TestGetDhcpRangeInvalidIp:
     """Cover _get_dhcp_range lines 1869-1870 — ValueError on invalid IP address."""
 
     def test_invalid_range_addresses_returns_none(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         net_data = {
             "dhcpRangeStart": "not-an-ip",
@@ -9025,7 +9025,7 @@ class TestGetDhcpRangeInvalidIp:
         assert _get_dhcp_range(net_data) is None
 
     def test_invalid_start_only(self):
-        from app.services.deploy_service import _get_dhcp_range
+        from app.services.deploy_topology import _get_dhcp_range
 
         net_data = {
             "dhcpRangeStart": "invalid",
@@ -9038,7 +9038,7 @@ class TestExtractBmcConfigEdgeSrcHandle:
     """Cover _extract_bmc_config line 754 — edge where handle doesn't start with 'nic-'."""
 
     def test_non_nic_handle_skipped(self):
-        from app.services.deploy_service import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config
 
         topo = {
             "nodes": [

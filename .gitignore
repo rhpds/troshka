@@ -29,8 +29,13 @@ Thumbs.db
 
 # Testing
 .coverage
+coverage.xml
+*-coverage.xml
 htmlcov/
 .pytest_cache/
+
+# SonarQube
+.scannerwork/
 
 # Node
 node_modules/
