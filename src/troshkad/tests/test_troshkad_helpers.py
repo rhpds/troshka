@@ -57,6 +57,8 @@ class TestConstants(unittest.TestCase):
             "vm/ssh-exec",
             "vm/guest-exec",
             "containers/states",
+            "mesh/setup",
+            "mesh/join-network",
         }
         assert troshkad._SKIP_DRAIN == expected
 

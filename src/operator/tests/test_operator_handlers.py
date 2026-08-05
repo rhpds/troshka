@@ -4153,8 +4153,8 @@ class TestKubeVirtDriverSetPowerState:
         driver.set_power_state("vm1", "ForceRestart")
 
         patch_calls = driver.custom_api.patch_namespaced_custom_object.call_args_list
-        assert len(patch_calls) == 2
-        assert patch_calls[1][1]["body"] == {"spec": {"running": True}}
+        assert len(patch_calls) == 1
+        assert patch_calls[0][1]["body"] == {"spec": {"running": True}}
         driver.custom_api.delete_namespaced_custom_object.assert_called_once()
 
 

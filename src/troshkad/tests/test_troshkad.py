@@ -230,18 +230,21 @@ class TestTroshkadServer(unittest.TestCase):
             troshkad._draining = False
 
     def test_disk_usage_returns_stats(self):
-        """Test that /host/disk-usage returns disk statistics."""
+        """Test that /host/disk-usage returns partition list."""
         status, body = _make_request("/host/disk-usage")
         self.assertEqual(status, 200)
-        self.assertIn("free_bytes", body)
-        self.assertIn("total_bytes", body)
-        self.assertIn("used_pct", body)
-        # On macOS dev machine, /var/lib/troshka won't exist so it should return used_pct=100
-        self.assertIsInstance(body["free_bytes"], (int, float))
-        self.assertIsInstance(body["total_bytes"], (int, float))
-        self.assertIsInstance(body["used_pct"], (int, float))
-        self.assertGreaterEqual(body["used_pct"], 0)
-        self.assertLessEqual(body["used_pct"], 100)
+        self.assertIn("partitions", body)
+        self.assertIsInstance(body["partitions"], list)
+        # On macOS dev machine, /proc/mounts doesn't exist so partitions may be empty
+        for p in body["partitions"]:
+            self.assertIn("free_bytes", p)
+            self.assertIn("total_bytes", p)
+            self.assertIn("used_pct", p)
+            self.assertIsInstance(p["free_bytes"], (int, float))
+            self.assertIsInstance(p["total_bytes"], (int, float))
+            self.assertIsInstance(p["used_pct"], (int, float))
+            self.assertGreaterEqual(p["used_pct"], 0)
+            self.assertLessEqual(p["used_pct"], 100)
 
 
 from unittest.mock import patch, MagicMock
@@ -271,7 +274,7 @@ class TestVmHandlers(unittest.TestCase):
         })
         result = troshkad._handle_vm_create(job, job["params"])
         self.assertTrue(mock_popen.called)
-        cmd = mock_popen.call_args[0][0]
+        cmd = mock_popen.call_args_list[0][0][0]
         self.assertEqual(cmd[0], "virt-install")
         self.assertIn("--name", cmd)
         self.assertIn("troshka-aabbccdd-11223344", cmd)
@@ -285,17 +288,21 @@ class TestVmHandlers(unittest.TestCase):
         self.assertTrue(any("destroy" in c for c in calls))
         self.assertTrue(any("undefine" in c for c in calls))
 
+    @patch("troshkad.subprocess.run")
     @patch("troshkad.subprocess.Popen")
-    def test_vm_start(self, mock_popen):
+    def test_vm_start(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen(stdout="Domain started")
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         job = troshkad._create_job("vms/start", {"domain_name": "troshka-aabb1122-11223344"})
         troshkad._handle_vm_start(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["virsh", "start"])
 
+    @patch("troshkad.subprocess.run")
     @patch("troshkad.subprocess.Popen")
-    def test_vm_stop(self, mock_popen):
+    def test_vm_stop(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen(stdout="Domain stopped")
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         job = troshkad._create_job("vms/stop", {"domain_name": "troshka-aabb1122-11223344"})
         troshkad._handle_vm_stop(job, job["params"])
         cmd = mock_popen.call_args[0][0]
@@ -439,8 +446,19 @@ class TestHostEndpoints(unittest.TestCase):
     def test_resize_storage(self, mock_popen):
         """Test that resize-storage runs xfs_growfs."""
         mock_popen.return_value = _mock_popen(stdout="Done")
+        proc_mounts_content = "/dev/nvme1n1p1 /var/lib/troshka xfs rw 0 0\n"
+        import io
+        real_open = open
+        def mock_open(path, *args, **kwargs):
+            if path == "/proc/mounts":
+                return io.StringIO(proc_mounts_content)
+            return real_open(path, *args, **kwargs)
         job = troshkad._create_job("host/resize-storage", {})
-        result = troshkad._handle_resize_storage(job, job["params"])
+        with patch("builtins.open", side_effect=mock_open):
+            with patch("troshkad.os.statvfs") as mock_statvfs, \
+                 patch("troshkad.os.path.exists", return_value=False):
+                mock_statvfs.return_value = MagicMock(f_blocks=1000, f_frsize=4096)
+                result = troshkad._handle_resize_storage(job, job["params"])
         self.assertTrue(mock_popen.called)
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd, ["xfs_growfs", "/var/lib/troshka"])
@@ -576,7 +594,8 @@ class TestLibraryImportEndpoint(unittest.TestCase):
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         self.assertTrue(any(c[0] == "qemu-img" for c in cmds if c))
 
-    def test_import_rejects_bad_url(self):
+    @patch("troshkad.os.makedirs")
+    def test_import_rejects_bad_url(self, mock_makedirs):
         """Test that import rejects non-http(s) URLs."""
         job = troshkad._create_job("library/import", {
             "download_url": "file:///etc/passwd",
@@ -621,30 +640,30 @@ class TestCaptureEndpoints(unittest.TestCase):
     @patch("troshkad.shutil.copy")
     @patch("troshkad.os.path.getsize")
     @patch("troshkad.os.makedirs")
-    @patch("troshkad.subprocess.run")
+    @patch("troshkad.os.path.exists")
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
+    @patch("troshkad.subprocess.check_output")
     @patch("troshkad.subprocess.Popen")
-    def test_pattern_capture(self, mock_popen, mock_run, mock_makedirs, mock_getsize, mock_copy):
-        """Test pattern capture: capture multiple disks."""
+    def test_pattern_capture(self, mock_popen, mock_check_output, mock_realpath,
+                             mock_exists, mock_makedirs, mock_getsize, mock_copy):
+        """Test pattern capture-direct: capture multiple disks."""
         mock_popen.return_value = _mock_popen()
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Type  Device  Target  Source\nfile  disk    vda     /var/lib/troshka/vms/proj/disk.qcow2\n",
-            stderr="",
-        )
+        mock_check_output.return_value = b'{"virtual-size": 107374182400}'
+        mock_exists.return_value = True
         mock_getsize.return_value = 54321
 
         with patch("tempfile.TemporaryDirectory") as mock_tempdir:
             mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
-
-            job = troshkad._create_job("patterns/capture", {
-                "domain_name": "troshka-aabbccdd-11223344",
-                "disks": [{
-                    "disk_index": 0,
-                    "presigned_url": "https://s3.example.com/upload",
-                    "cache_path": "/var/lib/troshka/cache/patterns/pat/disk.qcow2",
-                }],
-            })
-            result = troshkad._handle_pattern_capture(job, job["params"])
+            with patch.object(troshkad, "_s3_upload_with_cache"):
+                job = troshkad._create_job("patterns/capture-direct", {
+                    "domain_name": "troshka-aabbccdd-11223344",
+                    "disks": [{
+                        "disk_path": "/var/lib/troshka/vms/proj/disk.qcow2",
+                        "s3_url": "https://s3.example.com/upload",
+                        "cache_path": "/var/lib/troshka/cache/patterns/pat/disk.qcow2",
+                    }],
+                })
+                result = troshkad._handle_pattern_capture_direct(job, job["params"])
 
         self.assertEqual(result["status"], "uploaded")
         self.assertEqual(len(result["disks"]), 1)
@@ -905,20 +924,22 @@ class TestVmReconfigureHandler(unittest.TestCase):
 class TestVmUndefineHandler(unittest.TestCase):
     """Tests for vms/undefine handler."""
 
+    @patch("troshkad.subprocess.run")
     @patch("troshkad.subprocess.Popen")
-    def test_undefine_with_storage(self, mock_popen):
+    def test_undefine_with_storage(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen()
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         job = troshkad._create_job("vms/undefine", {
             "domain_name": "troshka-aabbccdd-11223344",
             "remove_storage": True,
         })
         result = troshkad._handle_vm_undefine(job, job["params"])
         self.assertEqual(result["status"], "undefined")
-        # Check that --remove-all-storage was in the undefine command
+        # Disks are deleted manually via _delete_vm_disks, then undefine with --nvram
         calls = [c[0][0] for c in mock_popen.call_args_list]
         undefine_calls = [c for c in calls if "undefine" in c]
         self.assertTrue(len(undefine_calls) > 0)
-        self.assertIn("--remove-all-storage", undefine_calls[0])
+        self.assertIn("--nvram", undefine_calls[0])
 
     @patch("troshkad.subprocess.Popen")
     def test_undefine_without_storage(self, mock_popen):
@@ -931,6 +952,7 @@ class TestVmUndefineHandler(unittest.TestCase):
         self.assertEqual(result["status"], "undefined")
         calls = [c[0][0] for c in mock_popen.call_args_list]
         undefine_calls = [c for c in calls if "undefine" in c]
+        self.assertIn("--nvram", undefine_calls[0])
         self.assertNotIn("--remove-all-storage", undefine_calls[0])
 
     def test_undefine_rejects_invalid_domain(self):
