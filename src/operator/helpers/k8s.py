@@ -269,6 +269,34 @@ def build_exec_deployment(
     return deployment
 
 
+def _build_gateway_addrs(all_network_nads, gateway_ips):
+    """Build list of gateway address strings (IP/prefix) for each NAD."""
+    if not gateway_ips:
+        return []
+    addrs = []
+    for nad in all_network_nads:
+        gw = gateway_ips.get(nad)
+        if gw:
+            prefix = gw["cidr"].split("/")[1] if "/" in gw["cidr"] else "24"
+            addrs.append(f"{gw['ip']}/{prefix}")
+    return addrs
+
+
+def _build_port_forwards_str(port_forwards):
+    """Build comma-separated port forward string from port forward list."""
+    if not port_forwards:
+        return ""
+    parts = []
+    for pf in port_forwards:
+        ep = pf.get("extPort", "")
+        iip = pf.get("intIp", "")
+        ip = pf.get("intPort", "")
+        if ep and iip and ip:
+            proto = pf.get("proto", "tcp")
+            parts.append(f"{ep}:{iip}:{ip}:{proto}")
+    return ",".join(parts)
+
+
 def build_gateway_deployment(
     project_cr, all_network_nads, gateway_ips=None, port_forwards=None
 ):
@@ -282,26 +310,8 @@ def build_gateway_deployment(
 
     dep_name = f"gateway-{namespace}"
     net_annotation = ",".join(all_network_nads)
-
-    gw_addrs = []
-    if gateway_ips:
-        for nad in all_network_nads:
-            gw = gateway_ips.get(nad)
-            if gw:
-                prefix = gw["cidr"].split("/")[1] if "/" in gw["cidr"] else "24"
-                gw_addrs.append(f"{gw['ip']}/{prefix}")
-
-    forwards_str = ""
-    if port_forwards:
-        parts = []
-        for pf in port_forwards:
-            ep = pf.get("extPort", "")
-            iip = pf.get("intIp", "")
-            ip = pf.get("intPort", "")
-            if ep and iip and ip:
-                proto = pf.get("proto", "tcp")
-                parts.append(f"{ep}:{iip}:{ip}:{proto}")
-        forwards_str = ",".join(parts)
+    gw_addrs = _build_gateway_addrs(all_network_nads, gateway_ips)
+    forwards_str = _build_port_forwards_str(port_forwards)
 
     labels = {
         "app": f"troshka-gateway-{project_id}",

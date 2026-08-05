@@ -79,6 +79,261 @@ def _get_pod_ip():
 _POD_IP = _get_pod_ip()
 
 
+def _get_service_root(handler):
+    """Handle GET /redfish/v1."""
+    _send_json(
+        handler,
+        {
+            "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
+            "Id": "RootService",
+            "Name": "Troshka Redfish Service",
+            "Systems": {_ODATA_ID: "/redfish/v1/Systems"},
+            "Managers": {_ODATA_ID: "/redfish/v1/Managers"},
+        },
+    )
+
+
+def _get_systems_collection(handler):
+    """Handle GET /redfish/v1/Systems."""
+    systems = driver.get_systems()
+    members = [{_ODATA_ID: f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
+    _send_json(
+        handler,
+        {
+            "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
+            "Name": "Computer System Collection",
+            "Members": members,
+            _MEMBERS_COUNT: len(members),
+        },
+    )
+
+
+def _get_system_detail(handler, identity):
+    """Handle GET /redfish/v1/Systems/{identity}."""
+    power = driver.get_power_state(identity)
+    boot_dev = driver.get_boot_device(identity)
+    boot_mode = driver.get_boot_mode(identity)
+    mem = driver.get_total_memory(identity)
+    cpus = driver.get_total_cpus(identity)
+    boot_enabled = driver.get_boot_override_enabled(identity)
+    smbios_uuid = driver.get_uuid(identity)
+    _send_json(
+        handler,
+        {
+            "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
+            "Id": identity,
+            "Name": identity,
+            "UUID": smbios_uuid,
+            "PowerState": power,
+            "MemorySummary": {"TotalSystemMemoryGiB": mem / 1024},
+            "ProcessorSummary": {"Count": cpus},
+            "Boot": {
+                "BootSourceOverrideEnabled": boot_enabled,
+                "BootSourceOverrideTarget": boot_dev,
+                "BootSourceOverrideMode": boot_mode,
+            },
+            "Links": {"ManagedBy": [{_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}"}]},
+            "Actions": {
+                "#ComputerSystem.Reset": {
+                    "target": f"{_SYSTEMS_PREFIX}{identity}/Actions/ComputerSystem.Reset",
+                    "ResetType@Redfish.AllowableValues": [
+                        "On",
+                        "ForceOff",
+                        "GracefulShutdown",
+                        "ForceRestart",
+                        "ForceOn",
+                    ],
+                }
+            },
+        },
+    )
+
+
+def _get_managers_collection(handler):
+    """Handle GET /redfish/v1/Managers."""
+    systems = driver.get_systems()
+    members = [{_ODATA_ID: f"{_MANAGERS_PREFIX}{s}"} for s in systems]
+    _send_json(
+        handler,
+        {
+            "@odata.type": "#ManagerCollection.ManagerCollection",
+            "Name": "Manager Collection",
+            "Members": members,
+            _MEMBERS_COUNT: len(members),
+        },
+    )
+
+
+def _get_manager_or_vmedia(handler, path):
+    """Handle GET /redfish/v1/Managers/{identity}[/VirtualMedia[/Cd]]."""
+    parts = path[len(_MANAGERS_PREFIX) :].split("/")
+    identity = parts[0]
+    sub = "/".join(parts[1:]) if len(parts) > 1 else ""
+
+    if not sub:
+        _send_json(
+            handler,
+            {
+                "@odata.type": "#Manager.v1_0_0.Manager",
+                "Id": identity,
+                "Name": f"Manager for {identity}",
+                "ManagerType": "BMC",
+                "VirtualMedia": {
+                    _ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia"
+                },
+                "Links": {
+                    "ManagerForServers": [{_ODATA_ID: f"{_SYSTEMS_PREFIX}{identity}"}]
+                },
+            },
+        )
+        return True
+
+    if sub == "VirtualMedia":
+        _send_json(
+            handler,
+            {
+                "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
+                "Name": "Virtual Media Collection",
+                "Members": [
+                    {_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"}
+                ],
+                _MEMBERS_COUNT: 1,
+            },
+        )
+        return True
+
+    if sub == "VirtualMedia/Cd":
+        state = driver.get_vmedia_state(identity)
+        _send_json(
+            handler,
+            {
+                "@odata.type": "#VirtualMedia.v1_0_0.VirtualMedia",
+                "Id": "Cd",
+                "Name": "Virtual CD",
+                "MediaTypes": ["CD", "DVD"],
+                "Image": state.get("url", ""),
+                "Inserted": state.get("inserted", False),
+                "WriteProtected": True,
+                "Actions": {
+                    "#VirtualMedia.InsertMedia": {
+                        "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia"
+                    },
+                    "#VirtualMedia.EjectMedia": {
+                        "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia"
+                    },
+                },
+            },
+        )
+        return True
+
+    return False
+
+
+def _get_vmedia_download(handler, path):
+    """Handle GET /vmedia/download/{identity} — stream ISO from source URL."""
+    identity = path.split("/vmedia/download/")[1]
+    state = driver.get_vmedia_state(identity)
+    url = state.get("url", "") if state else ""
+    if not url:
+        _send_json(handler, _NOT_FOUND_BODY, 404)
+        return
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/octet-stream")
+            length = resp.headers.get("Content-Length")
+            if length:
+                handler.send_header("Content-Length", length)
+            handler.end_headers()
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                handler.wfile.write(chunk)
+    except Exception as e:
+        _send_json(
+            handler,
+            {"error": {"code": _ERR_GENERAL, "message": str(e)}},
+            502,
+        )
+
+
+def _post_system_reset(handler, path):
+    """Handle POST /redfish/v1/Systems/{id}/Actions/ComputerSystem.Reset."""
+    identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
+    length = int(handler.headers.get("Content-Length", 0))
+    body = json.loads(handler.rfile.read(length)) if length else {}
+    reset_type = body.get("ResetType", "On")
+    driver.set_power_state(identity, reset_type)
+    driver.revert_boot_once(identity)
+    handler.send_response(204)
+    handler.end_headers()
+
+
+def _post_vmedia_action(handler, path):
+    """Handle POST for VirtualMedia Insert/Eject. Returns True if handled."""
+    parts = path[len(_MANAGERS_PREFIX) :].split("/")
+    identity = parts[0]
+    length = int(handler.headers.get("Content-Length", 0))
+    body = json.loads(handler.rfile.read(length)) if length else {}
+
+    if path.endswith("VirtualMedia.InsertMedia"):
+        _post_vmedia_insert(handler, identity, body)
+        return True
+
+    if path.endswith("VirtualMedia.EjectMedia"):
+        try:
+            driver.eject_image(identity)
+        except Exception:
+            pass
+        handler.send_response(204)
+        handler.end_headers()
+        return True
+
+    return False
+
+
+def _post_vmedia_insert(handler, identity, body):
+    """Handle VirtualMedia.InsertMedia action."""
+    image_url = body.get("Image", "")
+    if not image_url:
+        _send_json(
+            handler,
+            {
+                "error": {
+                    "code": _ERR_GENERAL,
+                    "message": "Image URL is required",
+                }
+            },
+            400,
+        )
+        return
+    proxy_base = f"http://{_POD_IP}:{LISTEN_PORT}"
+    driver._vmedia_state[identity] = {
+        "url": image_url,
+        "inserted": False,
+        "dv_name": "",
+    }
+    try:
+        driver.insert_image(identity, image_url, proxy_base)
+    except Exception as e:
+        driver._vmedia_state.pop(identity, None)
+        _send_json(
+            handler,
+            {
+                "error": {
+                    "code": _ERR_GENERAL,
+                    "message": str(e),
+                }
+            },
+            500,
+        )
+        return
+    handler.send_response(204)
+    handler.end_headers()
+
+
 class RedfishHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not _require_auth(self):
@@ -86,188 +341,25 @@ class RedfishHandler(BaseHTTPRequestHandler):
 
         path = self.path.rstrip("/")
 
-        # ── Service Root ──
         if path == "/redfish/v1":
-            _send_json(
-                self,
-                {
-                    "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
-                    "Id": "RootService",
-                    "Name": "Troshka Redfish Service",
-                    "Systems": {_ODATA_ID: "/redfish/v1/Systems"},
-                    "Managers": {_ODATA_ID: "/redfish/v1/Managers"},
-                },
-            )
+            _get_service_root(self)
             return
-
-        # ── Systems Collection ──
         if path == _SYSTEMS_PREFIX.rstrip("/"):
-            systems = driver.get_systems()
-            members = [{_ODATA_ID: f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
-            _send_json(
-                self,
-                {
-                    "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
-                    "Name": "Computer System Collection",
-                    "Members": members,
-                    _MEMBERS_COUNT: len(members),
-                },
-            )
+            _get_systems_collection(self)
             return
-
-        # ── System Detail ──
         if path.startswith(_SYSTEMS_PREFIX):
             identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
-
             if path.endswith(identity):
-                power = driver.get_power_state(identity)
-                boot_dev = driver.get_boot_device(identity)
-                boot_mode = driver.get_boot_mode(identity)
-                mem = driver.get_total_memory(identity)
-                cpus = driver.get_total_cpus(identity)
-                boot_enabled = driver.get_boot_override_enabled(identity)
-                smbios_uuid = driver.get_uuid(identity)
-                _send_json(
-                    self,
-                    {
-                        "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
-                        "Id": identity,
-                        "Name": identity,
-                        "UUID": smbios_uuid,
-                        "PowerState": power,
-                        "MemorySummary": {"TotalSystemMemoryGiB": mem / 1024},
-                        "ProcessorSummary": {"Count": cpus},
-                        "Boot": {
-                            "BootSourceOverrideEnabled": boot_enabled,
-                            "BootSourceOverrideTarget": boot_dev,
-                            "BootSourceOverrideMode": boot_mode,
-                        },
-                        "Links": {
-                            "ManagedBy": [{_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}"}]
-                        },
-                        "Actions": {
-                            "#ComputerSystem.Reset": {
-                                "target": f"{_SYSTEMS_PREFIX}{identity}/Actions/ComputerSystem.Reset",
-                                "ResetType@Redfish.AllowableValues": [
-                                    "On",
-                                    "ForceOff",
-                                    "GracefulShutdown",
-                                    "ForceRestart",
-                                    "ForceOn",
-                                ],
-                            }
-                        },
-                    },
-                )
+                _get_system_detail(self, identity)
                 return
-
-        # ── Managers Collection ──
         if path == _MANAGERS_PREFIX.rstrip("/"):
-            systems = driver.get_systems()
-            members = [{_ODATA_ID: f"{_MANAGERS_PREFIX}{s}"} for s in systems]
-            _send_json(
-                self,
-                {
-                    "@odata.type": "#ManagerCollection.ManagerCollection",
-                    "Name": "Manager Collection",
-                    "Members": members,
-                    _MEMBERS_COUNT: len(members),
-                },
-            )
+            _get_managers_collection(self)
             return
-
-        # ── Manager Detail / VirtualMedia ──
         if path.startswith(_MANAGERS_PREFIX):
-            parts = path[len(_MANAGERS_PREFIX) :].split("/")
-            identity = parts[0]
-            sub = "/".join(parts[1:]) if len(parts) > 1 else ""
-
-            if not sub:
-                _send_json(
-                    self,
-                    {
-                        "@odata.type": "#Manager.v1_0_0.Manager",
-                        "Id": identity,
-                        "Name": f"Manager for {identity}",
-                        "ManagerType": "BMC",
-                        "VirtualMedia": {
-                            _ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia"
-                        },
-                        "Links": {
-                            "ManagerForServers": [
-                                {_ODATA_ID: f"{_SYSTEMS_PREFIX}{identity}"}
-                            ]
-                        },
-                    },
-                )
+            if _get_manager_or_vmedia(self, path):
                 return
-
-            if sub == "VirtualMedia":
-                _send_json(
-                    self,
-                    {
-                        "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
-                        "Name": "Virtual Media Collection",
-                        "Members": [
-                            {_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"}
-                        ],
-                        _MEMBERS_COUNT: 1,
-                    },
-                )
-                return
-
-            if sub == "VirtualMedia/Cd":
-                state = driver.get_vmedia_state(identity)
-                _send_json(
-                    self,
-                    {
-                        "@odata.type": "#VirtualMedia.v1_0_0.VirtualMedia",
-                        "Id": "Cd",
-                        "Name": "Virtual CD",
-                        "MediaTypes": ["CD", "DVD"],
-                        "Image": state.get("url", ""),
-                        "Inserted": state.get("inserted", False),
-                        "WriteProtected": True,
-                        "Actions": {
-                            "#VirtualMedia.InsertMedia": {
-                                "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia"
-                            },
-                            "#VirtualMedia.EjectMedia": {
-                                "target": f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia"
-                            },
-                        },
-                    },
-                )
-                return
-
-        # ── Virtual Media Download Proxy ──
         if path.startswith("/vmedia/download/"):
-            identity = path.split("/vmedia/download/")[1]
-            state = driver.get_vmedia_state(identity)
-            url = state.get("url", "") if state else ""
-            if not url:
-                _send_json(self, _NOT_FOUND_BODY, 404)
-                return
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=300) as resp:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    length = resp.headers.get("Content-Length")
-                    if length:
-                        self.send_header("Content-Length", length)
-                    self.end_headers()
-                    while True:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-            except Exception as e:
-                _send_json(
-                    self,
-                    {"error": {"code": _ERR_GENERAL, "message": str(e)}},
-                    502,
-                )
+            _get_vmedia_download(self, path)
             return
 
         _send_json(self, _NOT_FOUND_BODY, 404)
@@ -300,69 +392,11 @@ class RedfishHandler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
 
         if "/Actions/ComputerSystem.Reset" in path:
-            identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length)) if length else {}
-            reset_type = body.get("ResetType", "On")
-            driver.set_power_state(identity, reset_type)
-            driver.revert_boot_once(identity)
-            self.send_response(204)
-            self.end_headers()
+            _post_system_reset(self, path)
             return
 
-        # ── VirtualMedia Actions ──
         if path.startswith(_MANAGERS_PREFIX) and "VirtualMedia/Cd/Actions/" in path:
-            parts = path[len(_MANAGERS_PREFIX) :].split("/")
-            identity = parts[0]
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length)) if length else {}
-
-            if path.endswith("VirtualMedia.InsertMedia"):
-                image_url = body.get("Image", "")
-                if not image_url:
-                    _send_json(
-                        self,
-                        {
-                            "error": {
-                                "code": _ERR_GENERAL,
-                                "message": "Image URL is required",
-                            }
-                        },
-                        400,
-                    )
-                    return
-                proxy_base = f"http://{_POD_IP}:{LISTEN_PORT}"
-                driver._vmedia_state[identity] = {
-                    "url": image_url,
-                    "inserted": False,
-                    "dv_name": "",
-                }
-                try:
-                    driver.insert_image(identity, image_url, proxy_base)
-                except Exception as e:
-                    driver._vmedia_state.pop(identity, None)
-                    _send_json(
-                        self,
-                        {
-                            "error": {
-                                "code": _ERR_GENERAL,
-                                "message": str(e),
-                            }
-                        },
-                        500,
-                    )
-                    return
-                self.send_response(204)
-                self.end_headers()
-                return
-
-            if path.endswith("VirtualMedia.EjectMedia"):
-                try:
-                    driver.eject_image(identity)
-                except Exception:
-                    pass
-                self.send_response(204)
-                self.end_headers()
+            if _post_vmedia_action(self, path):
                 return
 
         _send_json(self, _NOT_FOUND_BODY, 404)

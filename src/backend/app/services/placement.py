@@ -238,25 +238,14 @@ def _auto_select_pool(db: Session) -> str | None:
     return best_pool
 
 
-def find_multihost_placement(
-    db: Session,
-    topology: dict,
-    pool_id: str | None,
-    provider_id: str | None,
-) -> dict[str, list[str]] | None:
-    """Bin-pack VMs across multiple hosts. Returns {host_id: [vm_node_ids]} or None."""
-    vm_nodes = [
-        n
-        for n in topology.get("nodes", [])
-        if n.get("type") in ("vmNode", "containerNode")
-    ]
-    if not vm_nodes:
-        return None
-
+def _parse_affinity_groups(
+    vm_nodes: list[dict],
+) -> tuple[dict[str, list[dict]], list[dict], dict[str, str]]:
+    """Parse VM nodes into affinity groups, ungrouped nodes, and anti-affinity map."""
     affinity_groups: dict[str, list[dict]] = {}
     ungrouped: list[dict] = []
-    # Anti-affinity: map vm_id → group name; VMs in the same group go on different hosts
     anti_affinity_map: dict[str, str] = {}
+
     for node in vm_nodes:
         aa = node.get("data", {}).get("separateHost")
         if aa and isinstance(aa, str):
@@ -266,6 +255,14 @@ def find_multihost_placement(
             affinity_groups.setdefault(ag, []).append(node)
         else:
             ungrouped.append(node)
+
+    return affinity_groups, ungrouped, anti_affinity_map
+
+
+def _build_placement_units(
+    affinity_groups: dict[str, list[dict]], ungrouped: list[dict]
+) -> list[dict]:
+    """Build placement units from affinity groups and ungrouped VMs."""
 
     def _group_ram(nodes):
         return sum(n.get("data", {}).get("ram", 4) * 1024 for n in nodes)
@@ -292,7 +289,13 @@ def find_multihost_placement(
         )
 
     units.sort(key=lambda u: u["ram_mb"], reverse=True)
+    return units
 
+
+def _prepare_hosts(
+    db: Session, pool_id: str | None, provider_id: str | None
+) -> tuple[list[Host], dict[str, dict]] | tuple[None, None]:
+    """Query and prepare available hosts with capacity tracking."""
     hosts_query = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
@@ -304,7 +307,7 @@ def find_multihost_placement(
 
     available_hosts = hosts_query.all()
     if not available_hosts:
-        return None
+        return None, None
 
     for h in available_hosts:
         sync_host_capacity(db, h)
@@ -318,41 +321,90 @@ def find_multihost_placement(
         for h in available_hosts
     }
 
+    return available_hosts, host_remaining
+
+
+def _can_place_on_host(
+    unit: dict,
+    hid: str,
+    remaining: dict,
+    assignments: dict[str, list[str]],
+    anti_affinity_map: dict[str, str],
+) -> bool:
+    """Check if a unit can be placed on a host considering capacity and anti-affinity."""
+    if remaining["ram_mb"] < unit["ram_mb"] or remaining["vcpus"] < unit["vcpus"]:
+        return False
+
+    unit_aa_groups = {
+        anti_affinity_map[vid] for vid in unit["vm_ids"] if vid in anti_affinity_map
+    }
+    if unit_aa_groups:
+        host_aa_groups = {
+            anti_affinity_map[vid]
+            for vid in assignments[hid]
+            if vid in anti_affinity_map
+        }
+        if unit_aa_groups & host_aa_groups:
+            return False
+
+    return True
+
+
+def _bin_pack_units(
+    units: list[dict],
+    available_hosts: list[Host],
+    host_remaining: dict[str, dict],
+    anti_affinity_map: dict[str, str],
+) -> dict[str, list[str]] | None:
+    """Bin-pack placement units across hosts respecting anti-affinity."""
     assignments: dict[str, list[str]] = {h.id: [] for h in available_hosts}
 
     for unit in units:
-        placed = False
         sorted_hosts = sorted(
             host_remaining.keys(),
             key=lambda hid: host_remaining[hid]["ram_mb"],
             reverse=True,
         )
-        unit_aa_groups = {
-            anti_affinity_map[vid] for vid in unit["vm_ids"] if vid in anti_affinity_map
-        }
+
+        placed = False
         for hid in sorted_hosts:
             remaining = host_remaining[hid]
-            if (
-                remaining["ram_mb"] >= unit["ram_mb"]
-                and remaining["vcpus"] >= unit["vcpus"]
-            ):
-                if unit_aa_groups:
-                    host_aa_groups = {
-                        anti_affinity_map[vid]
-                        for vid in assignments[hid]
-                        if vid in anti_affinity_map
-                    }
-                    if unit_aa_groups & host_aa_groups:
-                        continue
+            if _can_place_on_host(unit, hid, remaining, assignments, anti_affinity_map):
                 assignments[hid].extend(unit["vm_ids"])
                 remaining["ram_mb"] -= unit["ram_mb"]
                 remaining["vcpus"] -= unit["vcpus"]
                 placed = True
                 break
+
         if not placed:
             return None
 
     return {hid: vms for hid, vms in assignments.items() if vms}
+
+
+def find_multihost_placement(
+    db: Session,
+    topology: dict,
+    pool_id: str | None,
+    provider_id: str | None,
+) -> dict[str, list[str]] | None:
+    """Bin-pack VMs across multiple hosts. Returns {host_id: [vm_node_ids]} or None."""
+    vm_nodes = [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") in ("vmNode", "containerNode")
+    ]
+    if not vm_nodes:
+        return None
+
+    affinity_groups, ungrouped, anti_affinity_map = _parse_affinity_groups(vm_nodes)
+    units = _build_placement_units(affinity_groups, ungrouped)
+    available_hosts, host_remaining = _prepare_hosts(db, pool_id, provider_id)
+
+    if not available_hosts or host_remaining is None:
+        return None
+
+    return _bin_pack_units(units, available_hosts, host_remaining, anti_affinity_map)
 
 
 def select_network_host(host_assignments: dict[str, list[str]], topology: dict) -> str:

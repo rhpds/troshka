@@ -981,6 +981,71 @@ def _collect_recert_configs(vms, vm_disks_map, bastion_boot_pvc):
     return recert_configs
 
 
+def _collect_all_disks(vms, vm_disks_map, vm_cdroms_map):
+    """Collect all disk specs from VMs and CDROMs for golden PVC pre-creation."""
+    all_disks = []
+    for vm in vms:
+        all_disks.extend(vm_disks_map.get(vm["id"], []))
+    for cdrom in vm_cdroms_map.values():
+        if cdrom and cdrom.get("s3Path"):
+            all_disks.append({"libraryImage": cdrom})
+    return all_disks
+
+
+def _find_bastion_boot_pvc(vms, vm_disks_map):
+    """Find bastion boot disk PVC name for recert kubeconfig injection."""
+    for vm in vms:
+        if vm.get("name") == "bastion" and vm.get("os") != "rhcos":
+            bastion_disks = vm_disks_map.get(vm["id"], [])
+            if bastion_disks:
+                return f"vm-{vm['id'][:8]}-disk-{bastion_disks[0].get('id', '')[:8]}"
+    return None
+
+
+def _create_vm_crs(
+    custom_api,
+    vms,
+    vm_disks_map,
+    vm_cdroms_map,
+    nic_network_map,
+    bastion_boot_pvc,
+    namespace,
+    name,
+    body,
+    patch,
+):
+    """Create TroshkaVM CRs for each VM in the topology."""
+    for i, vm in enumerate(vms):
+        vm_cr = _build_vm_cr(
+            vm,
+            vm_disks_map,
+            vm_cdroms_map,
+            nic_network_map,
+            bastion_boot_pvc,
+            namespace,
+            name,
+            body,
+        )
+        try:
+            custom_api.create_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural="troshkavms",
+                body=vm_cr,
+            )
+            logger.info(f"Created TroshkaVM {vm_cr['metadata']['name']}")
+        except ApiException as e:
+            if e.status != 409:
+                raise
+
+        patch.status["deployProgress"] = {
+            "percent": 30 + int(60 * (i + 1) / max(len(vms), 1)),
+            "stage": "Creating VMs",
+            "detail": f"{i + 1}/{len(vms)} VMs",
+        }
+
+
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_create(spec, meta, namespace, name, body, patch, **_):
     action = spec.get("action", "deploy")
@@ -1036,13 +1101,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     vm_disks_map, vm_cdroms_map = resolve_vm_disks(topology)
     nic_network_map = resolve_nic_networks(topology)
 
-    all_disks = []
-    for vm in vms:
-        all_disks.extend(vm_disks_map.get(vm["id"], []))
-    for cdrom in vm_cdroms_map.values():
-        if cdrom and cdrom.get("s3Path"):
-            all_disks.append({"libraryImage": cdrom})
-
+    all_disks = _collect_all_disks(vms, vm_disks_map, vm_cdroms_map)
     if all_disks:
         _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch)
 
@@ -1052,45 +1111,20 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         "detail": f"cloning {len(vms)} VMs",
     }
 
-    # Find bastion boot disk PVC name for recert kubeconfig injection
-    bastion_boot_pvc = None
-    for vm in vms:
-        if vm.get("name") == "bastion" and vm.get("os") != "rhcos":
-            bastion_disks = vm_disks_map.get(vm["id"], [])
-            if bastion_disks:
-                bastion_boot_pvc = (
-                    f"vm-{vm['id'][:8]}-disk-{bastion_disks[0].get('id', '')[:8]}"
-                )
+    bastion_boot_pvc = _find_bastion_boot_pvc(vms, vm_disks_map)
 
-    for i, vm in enumerate(vms):
-        vm_cr = _build_vm_cr(
-            vm,
-            vm_disks_map,
-            vm_cdroms_map,
-            nic_network_map,
-            bastion_boot_pvc,
-            namespace,
-            name,
-            body,
-        )
-        try:
-            custom_api.create_namespaced_custom_object(
-                group=CRD_GROUP,
-                version=CRD_VERSION,
-                namespace=namespace,
-                plural="troshkavms",
-                body=vm_cr,
-            )
-            logger.info(f"Created TroshkaVM {vm_cr['metadata']['name']}")
-        except ApiException as e:
-            if e.status != 409:
-                raise
-
-        patch.status["deployProgress"] = {
-            "percent": 30 + int(60 * (i + 1) / max(len(vms), 1)),
-            "stage": "Creating VMs",
-            "detail": f"{i + 1}/{len(vms)} VMs",
-        }
+    _create_vm_crs(
+        custom_api,
+        vms,
+        vm_disks_map,
+        vm_cdroms_map,
+        nic_network_map,
+        bastion_boot_pvc,
+        namespace,
+        name,
+        body,
+        patch,
+    )
 
     _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch)
 
@@ -1366,6 +1400,151 @@ def _start_kubevirt_vms(custom_api, vm_items, namespace):
     return started
 
 
+def _fetch_vmi_states(custom_api, namespace):
+    """Fetch live KubeVirt VMI states. Returns dict of {name: phase}."""
+    try:
+        vmis = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachineinstances",
+            ),
+        )
+        states = {}
+        for vmi in vmis.get("items", []):
+            states[vmi["metadata"]["name"]] = vmi.get("status", {}).get("phase", "")
+        return states
+    except Exception:
+        return {}
+
+
+def _patch_vm_states(status, patch, vm_states, scheduling_errors):
+    """Update patch with VM state and scheduling error diffs."""
+    old_states = status.get("vmStates", {})
+    if vm_states != old_states:
+        patch.status["vmStates"] = vm_states
+    if scheduling_errors:
+        old_errors = status.get("schedulingErrors", {})
+        if scheduling_errors != old_errors:
+            patch.status["schedulingErrors"] = scheduling_errors
+            for vm_id, msg in scheduling_errors.items():
+                logger.warning(f"VM {vm_id} scheduling error: {msg}")
+
+
+def _handle_recert(status, namespace, name, patch):
+    """Handle recert phase during deploy. Returns True if caller should return."""
+    recert_cfgs = status.get("recertConfig")
+    if not isinstance(recert_cfgs, list) or status.get("recertDone"):
+        return False
+
+    core_api = client.CoreV1Api()
+    batch_api = client.BatchV1Api()
+
+    if not _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
+        patch.status["deployProgress"] = {
+            "percent": 60,
+            "stage": "Preparing disks",
+            "detail": "waiting for disk clones",
+        }
+        return True
+
+    err = _create_recert_jobs(batch_api, recert_cfgs, namespace)
+    if err:
+        patch.status["phase"] = "Error"
+        patch.status["error"] = err
+        return True
+
+    all_done, should_return = _poll_recert_jobs(
+        batch_api, recert_cfgs, namespace, status, patch
+    )
+    if should_return:
+        return True
+
+    if all_done:
+        _finalize_recert(core_api, batch_api, recert_cfgs, namespace, name)
+        patch.status["recertDone"] = True
+    return False
+
+
+def _cleanup_stale_volumes(namespace, name, patch):
+    """Clean up stale VolumeAttachments. Returns True if caller should return."""
+    storage_api = client.StorageV1Api()
+    core_api_pvc = client.CoreV1Api()
+    try:
+        stale = _find_stale_volume_attachments(storage_api, core_api_pvc, namespace)
+        for va_name in stale:
+            try:
+                storage_api.delete_volume_attachment(name=va_name)
+                logger.info(f"Deleted stale VolumeAttachment {va_name}")
+            except Exception:
+                pass
+        if stale:
+            patch.status["deployProgress"] = {
+                "percent": 79,
+                "stage": "Releasing disks",
+                "detail": f"detached {len(stale)} stale volume(s)",
+            }
+            return True
+    except Exception as e:
+        logger.warning(f"PVC release check failed for {name}: {e}")
+    return False
+
+
+def _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
+    """Handle VM start phase during deploy. Returns True if caller should return."""
+    if status.get("recertConfig") and not status.get("recertCleaned"):
+        return True
+    if status.get("vmsStarted"):
+        return False
+
+    if _cleanup_stale_volumes(namespace, name, patch):
+        return True
+
+    started = _start_kubevirt_vms(custom_api, vm_items, namespace)
+    if started == len(vm_items):
+        patch.status["vmsStarted"] = True
+        logger.info(f"TroshkaProject {name}: started {started} VMs")
+        return False
+
+    patch.status["deployProgress"] = {
+        "percent": 80,
+        "stage": "Starting VMs",
+        "detail": f"{started}/{len(vm_items)} started",
+    }
+    return True
+
+
+def _handle_deploying_phase(
+    status, namespace, name, patch, custom_api, vm_items, ready_count
+):
+    """Handle all sub-phases of the Deploying state."""
+    if _handle_recert(status, namespace, name, patch):
+        return
+
+    if status.get("recertDone") and not status.get("recertCleaned"):
+        patch.status["recertCleaned"] = True
+
+    if _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
+        return
+
+    patch.status["deployProgress"] = {
+        "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
+        "stage": "Waiting for VMs",
+        "detail": f"{ready_count}/{len(vm_items)} VMs ready",
+    }
+
+    if ready_count == len(vm_items):
+        patch.status["phase"] = "Running"
+        patch.status["deployProgress"] = {
+            "percent": 100,
+            "stage": "Done",
+            "detail": "",
+        }
+        logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
+
+
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
 async def project_status_check(status, namespace, name, patch, **_):
     phase = status.get("phase", "")
@@ -1374,7 +1553,6 @@ async def project_status_check(status, namespace, name, patch, **_):
 
     custom_api = client.CustomObjectsApi()
 
-    # Get TroshkaVM CRs for VM ID mapping
     vms = cast(
         dict[str, Any],
         custom_api.list_namespaced_custom_object(
@@ -1388,136 +1566,26 @@ async def project_status_check(status, namespace, name, patch, **_):
     if not vm_items:
         return
 
-    # Get actual KubeVirt VMI states (live truth)
-    try:
-        vmis = cast(
-            dict[str, Any],
-            custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-            ),
-        )
-        vmi_states = {}
-        for vmi in vmis.get("items", []):
-            vmi_name = vmi["metadata"]["name"]
-            vmi_phase = vmi.get("status", {}).get("phase", "")
-            vmi_states[vmi_name] = vmi_phase
-    except Exception:
-        vmi_states = {}
+    vmi_states = _fetch_vmi_states(custom_api, namespace)
 
     core_api_ev = client.CoreV1Api()
     vm_states, ready_count, scheduling_errors = _collect_vm_states(
         vm_items, vmi_states, core_api_ev, namespace
     )
 
-    old_states = status.get("vmStates", {})
-    if vm_states != old_states:
-        patch.status["vmStates"] = vm_states
-    if scheduling_errors:
-        old_errors = status.get("schedulingErrors", {})
-        if scheduling_errors != old_errors:
-            patch.status["schedulingErrors"] = scheduling_errors
-            for vm_id, msg in scheduling_errors.items():
-                logger.warning(f"VM {vm_id} scheduling error: {msg}")
+    _patch_vm_states(status, patch, vm_states, scheduling_errors)
 
     if phase == "Running":
         _ensure_bmc_deployment(vm_items, namespace)
 
     if phase == "Deploying":
-        # Phase 1: Recert (if needed) — all Jobs run in parallel
-        recert_cfgs = status.get("recertConfig")
-        if isinstance(recert_cfgs, list) and not status.get("recertDone"):
-            core_api = client.CoreV1Api()
-            batch_api = client.BatchV1Api()
-
-            if not _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
-                patch.status["deployProgress"] = {
-                    "percent": 60,
-                    "stage": "Preparing disks",
-                    "detail": "waiting for disk clones",
-                }
-                return
-
-            err = _create_recert_jobs(batch_api, recert_cfgs, namespace)
-            if err:
-                patch.status["phase"] = "Error"
-                patch.status["error"] = err
-                return
-
-            all_done, should_return = _poll_recert_jobs(
-                batch_api, recert_cfgs, namespace, status, patch
-            )
-            if should_return:
-                return
-
-            if all_done:
-                _finalize_recert(core_api, batch_api, recert_cfgs, namespace, name)
-                patch.status["recertDone"] = True
-
-        # Phase 1.5: Wait for final recert cleanup (legacy compat)
-        if status.get("recertDone") and not status.get("recertCleaned"):
-            patch.status["recertCleaned"] = True
-
-        # Phase 2: Start VMs — patch running=true on all KubeVirt VMs
-        if status.get("recertConfig") and not status.get("recertCleaned"):
-            return
-        if not status.get("vmsStarted"):
-            # Clean up stale VolumeAttachments left by CDI clones before starting
-            storage_api = client.StorageV1Api()
-            core_api_pvc = client.CoreV1Api()
-            try:
-                stale = _find_stale_volume_attachments(
-                    storage_api, core_api_pvc, namespace
-                )
-                for va_name in stale:
-                    try:
-                        storage_api.delete_volume_attachment(name=va_name)
-                        logger.info(f"Deleted stale VolumeAttachment {va_name}")
-                    except Exception:
-                        pass
-                if stale:
-                    patch.status["deployProgress"] = {
-                        "percent": 79,
-                        "stage": "Releasing disks",
-                        "detail": f"detached {len(stale)} stale volume(s)",
-                    }
-                    return
-            except Exception as e:
-                logger.warning(f"PVC release check failed for {name}: {e}")
-
-            started = _start_kubevirt_vms(custom_api, vm_items, namespace)
-            if started == len(vm_items):
-                patch.status["vmsStarted"] = True
-                logger.info(f"TroshkaProject {name}: started {started} VMs")
-            else:
-                patch.status["deployProgress"] = {
-                    "percent": 80,
-                    "stage": "Starting VMs",
-                    "detail": f"{started}/{len(vm_items)} started",
-                }
-                return
-
-        # Phase 3: Wait for all VMs to be running
-        patch.status["deployProgress"] = {
-            "percent": 90 + int(10 * ready_count / max(len(vm_items), 1)),
-            "stage": "Waiting for VMs",
-            "detail": f"{ready_count}/{len(vm_items)} VMs ready",
-        }
-
-        if ready_count == len(vm_items):
-            patch.status["phase"] = "Running"
-            patch.status["deployProgress"] = {
-                "percent": 100,
-                "stage": "Done",
-                "detail": "",
-            }
-            logger.info(f"TroshkaProject {name} all VMs ready — phase: Running")
+        _handle_deploying_phase(
+            status, namespace, name, patch, custom_api, vm_items, ready_count
+        )
 
 
-def _ensure_bmc_deployment(vm_items, namespace):
-    """Verify BMC deployment exists if any VM has bmcEnabled. Recreate if missing."""
+def _collect_bmc_vms(vm_items):
+    """Collect BMC-enabled VM specs from TroshkaVM items."""
     bmc_vms = []
     for vm in vm_items:
         spec = vm.get("spec", {})
@@ -1530,6 +1598,22 @@ def _ensure_bmc_deployment(vm_items, namespace):
                     "domainUuid": vm.get("status", {}).get("domainUuid", ""),
                 }
             )
+    return bmc_vms
+
+
+def _enrich_bmc_ips(bmc_vms, custom_api, namespace):
+    """Fill in missing bmcIp values from the TroshkaProject CR topology."""
+    if not any(not v["bmcIp"] for v in bmc_vms):
+        return
+    topo_ips = _get_bmc_ips_from_topology(custom_api, namespace)
+    for v in bmc_vms:
+        if not v["bmcIp"] and v["vmId"] in topo_ips:
+            v["bmcIp"] = topo_ips[v["vmId"]]
+
+
+def _ensure_bmc_deployment(vm_items, namespace):
+    """Verify BMC deployment exists if any VM has bmcEnabled. Recreate if missing."""
+    bmc_vms = _collect_bmc_vms(vm_items)
     if not bmc_vms:
         return
 
@@ -1549,13 +1633,7 @@ def _ensure_bmc_deployment(vm_items, namespace):
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
-    # Enrich bmcIp from topology when VM CRs have empty values
-    if any(not v["bmcIp"] for v in bmc_vms):
-        topo_ips = _get_bmc_ips_from_topology(custom_api, namespace)
-        for v in bmc_vms:
-            if not v["bmcIp"] and v["vmId"] in topo_ips:
-                v["bmcIp"] = topo_ips[v["vmId"]]
-
+    _enrich_bmc_ips(bmc_vms, custom_api, namespace)
     _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
 
     bmc_nad = _find_bmc_nad(namespace, custom_api)
@@ -1755,9 +1833,7 @@ async def project_delete(namespace, name, **_):
         "troshka-network",
         ("troshka-network-pods", "troshka-gateway"),
     )
-    _remove_sa_from_sccs(
-        custom_api, namespace, "troshka-bmc", ("troshka-gateway",)
-    )
+    _remove_sa_from_sccs(custom_api, namespace, "troshka-bmc", ("troshka-gateway",))
     _remove_sa_from_sccs(
         custom_api, namespace, "troshka-recert", ("troshka-privileged-jobs",)
     )

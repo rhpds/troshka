@@ -38,9 +38,14 @@ def validate_topology_names(topology: dict) -> list[str]:
 
 def validate_topology_ips(topology: dict) -> list[str]:
     """Check for duplicate IP addresses on the same network. Returns list of errors."""
-    errors = []
     nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
+    nic_to_network = _build_nic_to_network_map(topology, nodes_by_id)
+    return _check_duplicate_ips(topology, nodes_by_id, nic_to_network)
 
+
+def _build_nic_to_network_map(
+    topology: dict, nodes_by_id: dict[str, dict]
+) -> dict[str, str]:
     nic_to_network: dict[str, str] = {}
     for edge in topology.get("edges", []):
         src = edge.get("source", "")
@@ -50,17 +55,30 @@ def validate_topology_ips(topology: dict) -> list[str]:
             ("sourceHandle", tgt, src),
         ]:
             handle = edge.get(handle_key, "")
-            if (
-                nodes_by_id.get(net_id, {}).get("type") == "networkNode"
-                and nodes_by_id.get(vm_id, {}).get("type")
-                in ("vmNode", "containerNode")
-                and "nic-" in handle
-            ):
-                raw = handle.replace("-top", "").replace("-bottom", "")
-                if raw.startswith("nic-"):
-                    nic_id = raw[4:]  # strip handle "nic-" wrapper
-                    nic_to_network[nic_id] = net_id
+            if not _is_nic_edge(nodes_by_id, net_id, vm_id, handle):
+                continue
+            raw = handle.replace("-top", "").replace("-bottom", "")
+            if raw.startswith("nic-"):
+                nic_to_network[raw[4:]] = net_id
+    return nic_to_network
 
+
+def _is_nic_edge(
+    nodes_by_id: dict[str, dict], net_id: str, vm_id: str, handle: str
+) -> bool:
+    return (
+        nodes_by_id.get(net_id, {}).get("type") == "networkNode"
+        and nodes_by_id.get(vm_id, {}).get("type") in ("vmNode", "containerNode")
+        and "nic-" in handle
+    )
+
+
+def _check_duplicate_ips(
+    topology: dict,
+    nodes_by_id: dict[str, dict],
+    nic_to_network: dict[str, str],
+) -> list[str]:
+    errors = []
     per_network: dict[str, dict[str, str]] = {}
     for node in topology.get("nodes", []):
         if node.get("type") not in ("vmNode", "containerNode"):
@@ -184,68 +202,80 @@ def _find_vm_networks(
     networks = []
 
     for edge in edges:
-        handle = None
-        network_node_id = None
-
-        if edge.get("source") == vm_node_id:
-            handle = edge.get("sourceHandle", "")
-            network_node_id = edge.get("target")
-        elif edge.get("target") == vm_node_id:
-            handle = edge.get("targetHandle", "")
-            network_node_id = edge.get("source")
-        else:
-            continue
-
-        if not handle or not handle.startswith("nic-"):
-            continue
-
-        # Find the NIC data to get MAC address and model
-        # Handle format: "nic-{nicId}-top" or "nic-{nicId}-bottom"
-        vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
-        mac = ""
-        model = "virtio"
-        if vm_node:
-            for nic in vm_node.get("data", {}).get("nics", []):
-                if nic["id"] in handle:
-                    mac = nic.get("mac", "")
-                    model = nic.get("model", "virtio")
-                    break
-
-        # BMC networks use a dedicated bridge (no VNI)
-        net_node = next((n for n in nodes if n["id"] == network_node_id), None)
-        if net_node and net_node.get("data", {}).get("networkType") == "bmc":
-            # Use the NIC's MAC from the edge handle, otherwise generate one
-            bmc_mac = mac  # mac was already resolved from the handle above
-            if not bmc_mac:
-                bmc_mac = "52:54:01:%02x:%02x:%02x" % (
-                    random.randint(0, 255),
-                    random.randint(0, 255),
-                    random.randint(0, 255),
-                )
-            networks.append(
-                {
-                    "bridge": f"br-bmc-{project_id[:8]}",
-                    "mac": bmc_mac,
-                    "nic_id": handle,
-                    "model": model,
-                }
-            )
-            continue
-
-        if network_node_id not in vni_map:
-            continue
-
-        vni = vni_map[network_node_id]
-        networks.append(
-            {
-                "bridge": f"br-{vni}",
-                "mac": mac,
-                "nic_id": handle,
-                "model": model,
-            }
-        )
+        entry = _resolve_vm_network_entry(edge, vm_node_id, nodes, vni_map, project_id)
+        if entry is not None:
+            networks.append(entry)
 
     return networks
+
+
+def _resolve_vm_network_entry(
+    edge: dict,
+    vm_node_id: str,
+    nodes: list[dict],
+    vni_map: dict,
+    project_id: str,
+) -> dict | None:
+    handle, network_node_id = _extract_nic_edge(edge, vm_node_id)
+    if not handle:
+        return None
+
+    mac, model = _resolve_nic_mac_model(vm_node_id, handle, nodes)
+
+    net_node = next((n for n in nodes if n["id"] == network_node_id), None)
+    if net_node and net_node.get("data", {}).get("networkType") == "bmc":
+        return _build_bmc_network_entry(mac, model, handle, project_id)
+
+    if network_node_id not in vni_map:
+        return None
+
+    vni = vni_map[network_node_id]
+    return {"bridge": f"br-{vni}", "mac": mac, "nic_id": handle, "model": model}
+
+
+def _extract_nic_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:
+    if edge.get("source") == vm_node_id:
+        handle = edge.get("sourceHandle", "")
+        network_node_id = edge.get("target")
+    elif edge.get("target") == vm_node_id:
+        handle = edge.get("targetHandle", "")
+        network_node_id = edge.get("source")
+    else:
+        return None, None
+
+    if not handle or not handle.startswith("nic-"):
+        return None, None
+    return handle, network_node_id
+
+
+def _resolve_nic_mac_model(
+    vm_node_id: str, handle: str, nodes: list[dict]
+) -> tuple[str, str]:
+    vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
+    if not vm_node:
+        return "", "virtio"
+    for nic in vm_node.get("data", {}).get("nics", []):
+        if nic["id"] in handle:
+            return nic.get("mac", ""), nic.get("model", "virtio")
+    return "", "virtio"
+
+
+def _build_bmc_network_entry(
+    mac: str, model: str, handle: str, project_id: str
+) -> dict:
+    bmc_mac = mac
+    if not bmc_mac:
+        bmc_mac = "52:54:01:%02x:%02x:%02x" % (
+            random.randint(0, 255),
+            random.randint(0, 255),
+            random.randint(0, 255),
+        )
+    return {
+        "bridge": f"br-bmc-{project_id[:8]}",
+        "mac": bmc_mac,
+        "nic_id": handle,
+        "model": model,
+    }
 
 
 def _find_container_networks(
@@ -323,19 +353,8 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     disks = []
 
     for edge in edges:
-        handle = None
-        storage_node_id = None
-
-        if edge.get("source") == vm_node_id:
-            handle = edge.get("sourceHandle", "")
-            storage_node_id = edge.get("target")
-        elif edge.get("target") == vm_node_id:
-            handle = edge.get("targetHandle", "")
-            storage_node_id = edge.get("source")
-        else:
-            continue
-
-        if not handle or not handle.startswith("dp-"):
+        handle, storage_node_id = _extract_disk_edge(edge, vm_node_id)
+        if not handle:
             continue
 
         storage_node = next(
@@ -350,17 +369,7 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
             continue
 
         sdata = storage_node.get("data", {})
-
-        # Find bus type and rotation_rate from the disk controller
-        vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
-        bus = "virtio"
-        rotation_rate = None
-        if vm_node:
-            for dc in vm_node.get("data", {}).get("diskControllers", []):
-                if dc["id"] == handle:
-                    bus = dc.get("bus", "virtio")
-                    rotation_rate = dc.get("rotationRate")
-                    break
+        bus, rotation_rate = _resolve_disk_bus(vm_node_id, handle, nodes)
 
         disk_entry = {
             "node_id": storage_node_id,
@@ -381,6 +390,33 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     return disks
 
 
+def _extract_disk_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:
+    if edge.get("source") == vm_node_id:
+        handle = edge.get("sourceHandle", "")
+        storage_node_id = edge.get("target")
+    elif edge.get("target") == vm_node_id:
+        handle = edge.get("targetHandle", "")
+        storage_node_id = edge.get("source")
+    else:
+        return None, None
+
+    if not handle or not handle.startswith("dp-"):
+        return None, None
+    return handle, storage_node_id
+
+
+def _resolve_disk_bus(
+    vm_node_id: str, handle: str, nodes: list[dict]
+) -> tuple[str, int | None]:
+    vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
+    if not vm_node:
+        return "virtio", None
+    for dc in vm_node.get("data", {}).get("diskControllers", []):
+        if dc["id"] == handle:
+            return dc.get("bus", "virtio"), dc.get("rotationRate")
+    return "virtio", None
+
+
 def _find_container_volumes(
     container_node_id: str, topology: dict, project_id: str, pool=None
 ) -> list[dict]:
@@ -393,29 +429,18 @@ def _find_container_volumes(
 
     mounts = container_node.get("data", {}).get("mounts", [])
     mounts_by_disk = {m["diskNodeId"]: m for m in mounts}
+    nodes = topology.get("nodes", [])
 
     results = []
     for edge in topology.get("edges", []):
-        src, tgt = edge.get("source"), edge.get("target")
-        src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
-
-        disk_node_id = None
-        if src == container_node_id and (tgt_h or "").startswith("mnt-"):
-            disk_node_id = tgt
-        elif tgt == container_node_id and (src_h or "").startswith("mnt-"):
-            disk_node_id = src
-        elif tgt == container_node_id and (tgt_h or "").startswith("mnt-"):
-            disk_node_id = src
-        elif src == container_node_id and (src_h or "").startswith("mnt-"):
-            disk_node_id = tgt
-
+        disk_node_id = _resolve_mount_edge(edge, container_node_id)
         if not disk_node_id:
             continue
 
         disk_node = next(
             (
                 n
-                for n in topology.get("nodes", [])
+                for n in nodes
                 if n["id"] == disk_node_id and n.get("type") == "storageNode"
             ),
             None,
@@ -440,75 +465,103 @@ def _find_container_volumes(
     return results
 
 
+def _resolve_mount_edge(edge: dict, container_node_id: str) -> str | None:
+    src, tgt = edge.get("source"), edge.get("target")
+    src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+
+    if src == container_node_id and (tgt_h or "").startswith("mnt-"):
+        return tgt
+    if tgt == container_node_id and (src_h or "").startswith("mnt-"):
+        return src
+    if tgt == container_node_id and (tgt_h or "").startswith("mnt-"):
+        return src
+    if src == container_node_id and (src_h or "").startswith("mnt-"):
+        return tgt
+    return None
+
+
 def _vm_domain_name(project_id: str, node_id: str) -> str:
     return f"troshka-{project_id[:8]}-{node_id[:8]}"
 
 
 def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:
     """Extract BMC configuration from topology if any VMs have BMC enabled."""
-    bmc_network = None
-    for node in topology.get("nodes", []):
-        if (
-            node.get("type") == "networkNode"
-            and node.get("data", {}).get("networkType") == "bmc"
-        ):
-            bmc_network = node
-            break
-
+    bmc_network = _find_bmc_network(topology)
     if not bmc_network:
         return None
 
-    bmc_vms = []
-    for node in topology.get("nodes", []):
-        if node.get("type") == "vmNode" and node.get("data", {}).get("bmcEnabled"):
-            bmc_ip = node["data"].get("bmcIp", "")
-            if bmc_ip:
-                bmc_vms.append(
-                    {
-                        "node_id": node["id"],
-                        "domain_name": _vm_domain_name(project_id, node["id"]),
-                        "bmc_ip": bmc_ip,
-                    }
-                )
-
+    bmc_vms = _find_bmc_vms(topology, project_id)
     if not bmc_vms:
         return None
 
-    # Collect DHCP hosts — VMs with a static IP on their BMC NIC
-    dhcp_hosts = []
-    bmc_net_id = bmc_network["id"]
-    edges = topology.get("edges", [])
-    nodes = topology.get("nodes", [])
-    for node in nodes:
-        if node.get("type") != "vmNode":
-            continue
-        for edge in edges:
-            vm_id = node["id"]
-            if edge.get("source") == vm_id:
-                handle = edge.get("sourceHandle", "")
-                net_id = edge.get("target")
-            elif edge.get("target") == vm_id:
-                handle = edge.get("targetHandle", "")
-                net_id = edge.get("source")
-            else:
-                continue
-            if net_id != bmc_net_id or not handle.startswith("nic-"):
-                continue
-            for nic in node.get("data", {}).get("nics", []):
-                if nic["id"] in handle and nic.get("ip") and nic.get("mac"):
-                    dhcp_hosts.append(
-                        {
-                            "mac": nic["mac"],
-                            "ip": nic["ip"],
-                            "name": node["data"].get("name", ""),
-                        }
-                    )
+    dhcp_hosts = _collect_bmc_dhcp_hosts(topology, bmc_network["id"])
 
     return {
         "bmc_network": bmc_network["data"],
         "vms": bmc_vms,
         "dhcp_hosts": dhcp_hosts,
     }
+
+
+def _find_bmc_network(topology: dict) -> dict | None:
+    for node in topology.get("nodes", []):
+        if (
+            node.get("type") == "networkNode"
+            and node.get("data", {}).get("networkType") == "bmc"
+        ):
+            return node
+    return None
+
+
+def _find_bmc_vms(topology: dict, project_id: str) -> list[dict]:
+    bmc_vms = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        if not node.get("data", {}).get("bmcEnabled"):
+            continue
+        bmc_ip = node["data"].get("bmcIp", "")
+        if bmc_ip:
+            bmc_vms.append(
+                {
+                    "node_id": node["id"],
+                    "domain_name": _vm_domain_name(project_id, node["id"]),
+                    "bmc_ip": bmc_ip,
+                }
+            )
+    return bmc_vms
+
+
+def _collect_bmc_dhcp_hosts(topology: dict, bmc_net_id: str) -> list[dict]:
+    dhcp_hosts = []
+    edges = topology.get("edges", [])
+    nodes = topology.get("nodes", [])
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        dhcp_hosts.extend(_collect_vm_bmc_dhcp_entries(node, edges, bmc_net_id))
+    return dhcp_hosts
+
+
+def _collect_vm_bmc_dhcp_entries(
+    node: dict, edges: list[dict], bmc_net_id: str
+) -> list[dict]:
+    entries = []
+    vm_id = node["id"]
+    for edge in edges:
+        handle, net_id = _extract_nic_edge(edge, vm_id)
+        if not handle or net_id != bmc_net_id:
+            continue
+        for nic in node.get("data", {}).get("nics", []):
+            if nic["id"] in handle and nic.get("ip") and nic.get("mac"):
+                entries.append(
+                    {
+                        "mac": nic["mac"],
+                        "ip": nic["ip"],
+                        "name": node["data"].get("name", ""),
+                    }
+                )
+    return entries
 
 
 def _vm_dir(project_id: str, pool=None) -> str:
@@ -543,7 +596,6 @@ def _snapshot_cache_path(item_id: str, disk_id: str, fmt: str) -> str:
 
 
 def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[str]:
-    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
     all_nodes = topology.get("nodes", [])
     storage_nodes = {n["id"]: n for n in all_nodes if n.get("type") == "storageNode"}
 
@@ -554,17 +606,31 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
         dc.get("bus") == "sata" and "cdrom" in dc.get("name", "")
         for dc in vm.get("disk_controllers", [])
     )
+
     if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
-        if has_iso and has_disk:
-            return ["cdrom", "hd"]
-        elif has_iso:
-            return ["cdrom"]
-        elif has_disk:
-            return ["hd"]
-        else:
-            return ["network"]
+        return _auto_detect_boot_devs(has_iso, has_disk)
+
+    return _map_boot_dev_entries(raw_boot_devs, storage_nodes, has_cdrom_controller)
+
+
+def _auto_detect_boot_devs(has_iso: bool, has_disk: bool) -> list[str]:
+    if has_iso and has_disk:
+        return ["cdrom", "hd"]
+    if has_iso:
+        return ["cdrom"]
+    if has_disk:
+        return ["hd"]
+    return ["network"]
+
+
+def _map_boot_dev_entries(
+    raw_boot_devs: list[str],
+    storage_nodes: dict[str, dict],
+    has_cdrom_controller: bool,
+) -> list[str]:
+    boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
     boot_devs = []
-    seen = set()
+    seen: set[str] = set()
     for d in raw_boot_devs:
         if d in boot_type_map:
             dev = boot_type_map[d]
@@ -579,7 +645,6 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
         if dev not in seen:
             boot_devs.append(dev)
             seen.add(dev)
-    # Add cdrom fallback if VM has a cdrom controller but no cdrom in boot order
     if has_cdrom_controller and "cdrom" not in seen:
         boot_devs.append("cdrom")
     return boot_devs or ["hd"]
@@ -590,39 +655,9 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
     cur_nodes = {n["id"]: n for n in current.get("nodes", [])}
     dep_nodes = {n["id"]: n for n in deployed.get("nodes", [])}
 
-    added_vms = []
-    removed_vms = []
-    changed_vms = []
-    added_networks = []
-    removed_networks = []
-
-    for nid, node in cur_nodes.items():
-        if nid not in dep_nodes:
-            if node.get("type") == "vmNode":
-                added_vms.append(node)
-            elif node.get("type") == "networkNode":
-                added_networks.append(node)
-
-    for nid, node in dep_nodes.items():
-        if nid not in cur_nodes:
-            if node.get("type") == "vmNode":
-                removed_vms.append(node)
-            elif node.get("type") == "networkNode":
-                removed_networks.append(node)
-
-    skip_keys = {"status", "redeployStep", "redeployDetail", "liveBootDevs"}
-    for nid, node in cur_nodes.items():
-        if nid in dep_nodes and node.get("type") == "vmNode":
-            cur_data = {
-                k: v for k, v in node.get("data", {}).items() if k not in skip_keys
-            }
-            dep_data = {
-                k: v
-                for k, v in dep_nodes[nid].get("data", {}).items()
-                if k not in skip_keys
-            }
-            if cur_data != dep_data:
-                changed_vms.append(node)
+    added_vms, added_networks = _categorize_new_nodes(cur_nodes, dep_nodes)
+    removed_vms, removed_networks = _categorize_new_nodes(dep_nodes, cur_nodes)
+    changed_vms = _find_changed_vms(cur_nodes, dep_nodes)
 
     return {
         "added_vms": added_vms,
@@ -640,6 +675,41 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
     }
 
 
+def _categorize_new_nodes(
+    source: dict[str, dict], reference: dict[str, dict]
+) -> tuple[list[dict], list[dict]]:
+    vms = []
+    networks = []
+    for nid, node in source.items():
+        if nid in reference:
+            continue
+        ntype = node.get("type")
+        if ntype == "vmNode":
+            vms.append(node)
+        elif ntype == "networkNode":
+            networks.append(node)
+    return vms, networks
+
+
+def _find_changed_vms(
+    cur_nodes: dict[str, dict], dep_nodes: dict[str, dict]
+) -> list[dict]:
+    skip_keys = {"status", "redeployStep", "redeployDetail", "liveBootDevs"}
+    changed = []
+    for nid, node in cur_nodes.items():
+        if nid not in dep_nodes or node.get("type") != "vmNode":
+            continue
+        cur_data = {k: v for k, v in node.get("data", {}).items() if k not in skip_keys}
+        dep_data = {
+            k: v
+            for k, v in dep_nodes[nid].get("data", {}).items()
+            if k not in skip_keys
+        }
+        if cur_data != dep_data:
+            changed.append(node)
+    return changed
+
+
 def _auto_assign_container_ips(topology: dict) -> None:
     """Assign IPs to container NICs that don't have static IPs.
 
@@ -649,8 +719,6 @@ def _auto_assign_container_ips(topology: dict) -> None:
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
     used_ips = _collect_used_ips(topology)
-
-    # Also reserve .1 (gateway) and DHCP range for each network
     net_nodes = {n["id"]: n for n in nodes if n.get("type") == "networkNode"}
 
     for node in nodes:
@@ -660,45 +728,68 @@ def _auto_assign_container_ips(topology: dict) -> None:
         for nic in data.get("nics", []):
             if nic.get("ip"):
                 continue
+            _assign_container_nic_ip(node, nic, edges, net_nodes, used_ips, data)
 
-            # Find connected network via edges
-            nic_handle_top = f"nic-{nic['id']}-top"
-            nic_handle_bottom = f"nic-{nic['id']}-bottom"
-            net_node = None
-            for edge in edges:
-                src, tgt = edge.get("source"), edge.get("target")
-                sh, th = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
-                if src == node["id"] and sh in (nic_handle_top, nic_handle_bottom):
-                    net_node = net_nodes.get(tgt)
-                elif tgt == node["id"] and th in (nic_handle_top, nic_handle_bottom):
-                    net_node = net_nodes.get(src)
-                if net_node:
-                    break
 
-            if not net_node:
-                continue
+def _assign_container_nic_ip(
+    node: dict,
+    nic: dict,
+    edges: list[dict],
+    net_nodes: dict[str, dict],
+    used_ips: set[str],
+    data: dict,
+) -> None:
+    net_node = _find_container_network(node["id"], nic, edges, net_nodes)
+    if not net_node:
+        return
 
-            cidr = net_node.get("data", {}).get("cidr", "")
-            if not cidr:
-                continue
+    cidr = net_node.get("data", {}).get("cidr", "")
+    if not cidr:
+        return
 
-            net_data = net_node.get("data", {})
-            dhcp_range = _get_dhcp_range(net_data)
-            if not dhcp_range:
-                continue
-            start_int, end_int = dhcp_range
-            for addr_int in range(start_int, end_int + 1):
-                candidate_str = str(ipaddress.ip_address(addr_int))
-                if candidate_str not in used_ips:
-                    nic["ip"] = candidate_str
-                    used_ips.add(candidate_str)
-                    logger.info(
-                        "Auto-assigned %s to container %s NIC %s (from DHCP range)",
-                        candidate_str,
-                        data.get("name"),
-                        nic.get("name"),
-                    )
-                    break
+    net_data = net_node.get("data", {})
+    dhcp_range = _get_dhcp_range(net_data)
+    if not dhcp_range:
+        return
+
+    candidate = _pick_available_ip(dhcp_range, used_ips)
+    if candidate:
+        nic["ip"] = candidate
+        used_ips.add(candidate)
+        logger.info(
+            "Auto-assigned %s to container %s NIC %s (from DHCP range)",
+            candidate,
+            data.get("name"),
+            nic.get("name"),
+        )
+
+
+def _find_container_network(
+    node_id: str, nic: dict, edges: list[dict], net_nodes: dict[str, dict]
+) -> dict | None:
+    nic_handle_top = f"nic-{nic['id']}-top"
+    nic_handle_bottom = f"nic-{nic['id']}-bottom"
+    for edge in edges:
+        src, tgt = edge.get("source", ""), edge.get("target", "")
+        sh, th = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+        if src == node_id and sh in (nic_handle_top, nic_handle_bottom):
+            net_node = net_nodes.get(tgt)
+            if net_node:
+                return net_node
+        elif tgt == node_id and th in (nic_handle_top, nic_handle_bottom):
+            net_node = net_nodes.get(src)
+            if net_node:
+                return net_node
+    return None
+
+
+def _pick_available_ip(dhcp_range: tuple[int, int], used_ips: set[str]) -> str | None:
+    start_int, end_int = dhcp_range
+    for addr_int in range(start_int, end_int + 1):
+        candidate = str(ipaddress.ip_address(addr_int))
+        if candidate not in used_ips:
+            return candidate
+    return None
 
 
 def _collect_used_ips(topology: dict) -> set[str]:
@@ -729,18 +820,9 @@ def _get_dhcp_range(net_data: dict) -> tuple[int, int] | None:
     range_start = net_data.get("dhcpRangeStart", "")
     range_end = net_data.get("dhcpRangeEnd", "")
     if not range_start or not range_end:
-        cidr = net_data.get("cidr", "")
-        if cidr:
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-                hosts = list(net.hosts())
-                if len(hosts) > 10:
-                    if not range_start:
-                        range_start = str(hosts[min(9, len(hosts) - 2)])
-                    if not range_end:
-                        range_end = str(hosts[-1])
-            except ValueError:
-                pass
+        range_start, range_end = _compute_dhcp_bounds(
+            net_data.get("cidr", ""), range_start, range_end
+        )
     if range_start and range_end:
         try:
             return (
@@ -750,3 +832,21 @@ def _get_dhcp_range(net_data: dict) -> tuple[int, int] | None:
         except ValueError:
             pass
     return None
+
+
+def _compute_dhcp_bounds(
+    cidr: str, range_start: str, range_end: str
+) -> tuple[str, str]:
+    if not cidr:
+        return range_start, range_end
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        hosts = list(net.hosts())
+        if len(hosts) > 10:
+            if not range_start:
+                range_start = str(hosts[min(9, len(hosts) - 2)])
+            if not range_end:
+                range_end = str(hosts[-1])
+    except ValueError:
+        pass
+    return range_start, range_end

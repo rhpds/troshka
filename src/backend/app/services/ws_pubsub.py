@@ -429,6 +429,28 @@ def _fetch_troshkad_host_states(host, host_batch_states):
         pass
 
 
+def _collect_hosts_to_query(projects):
+    """Build set of all hosts to query from project assignments."""
+    hosts_to_query = set()
+    for project in projects.values():
+        if project.host_assignments:
+            hosts_to_query.update(set(project.host_assignments.values()))
+        elif project.host_id:
+            hosts_to_query.add(project.host_id)
+    return hosts_to_query
+
+
+def _fetch_kubevirt_states_for_host(host_id, projects, host, db, project_batch_states):
+    """Fetch KubeVirt VM states for all projects on this cluster."""
+    for project in projects.values():
+        if project.host_id == host_id or (
+            project.host_assignments and host_id in project.host_assignments.values()
+        ):
+            kv_states = _fetch_kubevirt_vm_states(project, host, db)
+            if kv_states:
+                project_batch_states[project.id] = kv_states
+
+
 def _batch_fetch_vm_states(projects, deploying_host_ids, db):
     """Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt).
 
@@ -439,39 +461,46 @@ def _batch_fetch_vm_states(projects, deploying_host_ids, db):
     host_batch_states: dict = {}
     project_batch_states: dict = {}
 
-    # Build set of all hosts to query (handles both single-host and multi-host projects)
-    hosts_to_query = set()
-    for project in projects.values():
-        if project.host_assignments:
-            # Multi-host: query all hosts in the assignments
-            hosts_to_query.update(set(project.host_assignments.values()))
-        elif project.host_id:
-            # Single-host: query the project's host
-            hosts_to_query.add(project.host_id)
-
-    # Remove deploying hosts from the query set
+    hosts_to_query = _collect_hosts_to_query(projects)
     hosts_to_query -= deploying_host_ids
 
-    # Fetch VM states from each host
     for host_id in hosts_to_query:
         host = db.query(Host).filter_by(id=host_id).first()
         if not host or not host.ip_address:
             continue
         if host.host_type == "kubevirt-cluster":
-            # KubeVirt: fetch per-project states (for projects on this cluster)
-            for project in projects.values():
-                if project.host_id == host_id or (
-                    project.host_assignments
-                    and host_id in project.host_assignments.values()
-                ):
-                    kv_states = _fetch_kubevirt_vm_states(project, host, db)
-                    if kv_states:
-                        project_batch_states[project.id] = kv_states
+            _fetch_kubevirt_states_for_host(
+                host_id, projects, host, db, project_batch_states
+            )
         else:
-            # Troshkad: fetch all VMs on this host (shared across projects)
             _fetch_troshkad_host_states(host, host_batch_states)
 
     return host_batch_states, project_batch_states
+
+
+def _collect_host_batch_for_project(project, host_batch_states):
+    """Collect host states for this project (single-host or multi-host)."""
+    if project.host_assignments:
+        host_batch = {}
+        for host_id in set(project.host_assignments.values()):
+            if host_id in host_batch_states:
+                host_batch.update(host_batch_states[host_id])
+        return host_batch
+    return host_batch_states.get(project.host_id) if project.host_id else None
+
+
+def _get_vm_states_for_project(project, host_batch, kv_batch):
+    """Get VM states, progress, and boot devices for a project."""
+    if project.state in ("active", "stopped"):
+        return _map_vm_states_for_project(project, host_batch, kv_batch)
+    return {}, {}, {}
+
+
+def _evict_stale_cache_entries(projects):
+    """Evict cache entries for projects no longer active/stopped."""
+    stale = [k for k in _last_states if k not in projects]
+    for k in stale:
+        del _last_states[k]
 
 
 def _notify_all_projects(projects, host_batch_states, project_batch_states):
@@ -481,34 +510,15 @@ def _notify_all_projects(projects, host_batch_states, project_batch_states):
     for project_id, project in projects.items():
         dp = _get_deploy_progress_data(project_id)
         kv_batch = project_batch_states.get(project_id)
-
-        # Collect host states for this project (handles both single-host and multi-host)
-        if project.host_assignments:
-            # Multi-host: gather states from all hosts
-            host_batch = {}
-            for host_id in set(project.host_assignments.values()):
-                if host_id in host_batch_states:
-                    host_batch.update(host_batch_states[host_id])
-        else:
-            # Single-host: existing behavior
-            host_batch = (
-                host_batch_states.get(project.host_id) if project.host_id else None
-            )
-
-        if project.state in ("active", "stopped"):
-            vm_states, vm_progress, vm_boot_devs = _map_vm_states_for_project(
-                project, host_batch, kv_batch
-            )
-        else:
-            vm_states, vm_progress, vm_boot_devs = {}, {}, {}
+        host_batch = _collect_host_batch_for_project(project, host_batch_states)
+        vm_states, vm_progress, vm_boot_devs = _get_vm_states_for_project(
+            project, host_batch, kv_batch
+        )
         _check_and_notify_project_changes(
             project_id, project, dp, vm_states, vm_progress, vm_boot_devs
         )
 
-    # Evict stale cache entries for projects no longer active/stopped
-    stale = [k for k in _last_states if k not in projects]
-    for k in stale:
-        del _last_states[k]
+    _evict_stale_cache_entries(projects)
 
 
 def _poll_active_projects():

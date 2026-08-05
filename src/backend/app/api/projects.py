@@ -1808,7 +1808,9 @@ def restart_vm(
         return {"action": "restart", "success": False}
 
 
-@router.get("/{project_id}/vms/{vm_id}/console")
+@router.get(
+    "/{project_id}/vms/{vm_id}/console", responses={404: {"description": "Not found"}}
+)
 def get_vm_console(
     project_id: str,
     vm_id: str,
@@ -3320,13 +3322,110 @@ def _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors):
     )
 
 
+def _setup_reconfigure_networking(h, p_id, current, vni_map, s, proj):
+    from app.services.deploy_service import (
+        _delete_deploy_progress,
+        _get_network_lock,
+        _set_deploy_progress,
+    )
+
+    _set_deploy_progress(p_id, {"step": "networking", "detail": "configuring"})
+    with _get_network_lock(h.id):
+        net_result = _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
+    if net_result is not True:
+        proj.state = "error"
+        proj.deploy_error = f"Network setup failed: {net_result}"
+        s.commit()
+        _delete_deploy_progress(p_id)
+        return False
+    return True
+
+
+def _cache_images_and_metadata(h, p_id, current, vni_map, s):
+    from app.services.deploy_service import (
+        _set_deploy_progress,
+        _setup_metadata_via_troshkad,
+    )
+
+    _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
+
+    def _reconfig_dl_progress(downloaded, total):
+        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+
+    cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
+
+    _set_deploy_progress(
+        p_id,
+        {"step": "cloud-init", "detail": "deploying metadata service"},
+    )
+    try:
+        _setup_metadata_via_troshkad(h, p_id, current, vni_map)
+        logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
+    except Exception:
+        logger.exception(
+            "Reconfigure %s: metadata service deployment failed (non-fatal)",
+            p_id[:8],
+        )
+    _setup_pxe_via_troshkad(h, current, vni_map, p_id)
+
+
+def _create_bmc_bridge_if_needed(h, p_id, current, bmc_config):
+    net_data = bmc_config["bmc_network"]
+    cidr = net_data.get("cidr", "192.168.100.0/24")
+    try:
+        bj = start_job(
+            h,
+            "/bmc/create-bridge",
+            {
+                "project_id": p_id,
+                "bmc_cidr": cidr,
+                "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+                "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+            },
+        )
+        wait_for_job(h, bj, timeout=30)
+    except TroshkadError:
+        logger.warning(
+            "Reconfigure %s: BMC bridge creation failed (non-fatal)", p_id[:8]
+        )
+
+
+def _remove_vms_from_reconfigure(h, p_id, diff, vm_dir_path):
+    from app.services.deploy_topology import _vm_domain_name
+
+    for node in diff["removed_vms"]:
+        dom = _vm_domain_name(p_id, node["id"])
+        troshkad_undefine_vm(h, dom)
+        try:
+            job_id = start_job(
+                h,
+                _FILES_REMOVE_PATH,
+                {
+                    "paths": [
+                        f"{vm_dir_path}/{node['id'][:8]}-{suffix}" for suffix in ["*"]
+                    ]
+                },
+            )
+            wait_for_job(h, job_id, timeout=15)
+        except TroshkadError:
+            pass
+
+
+def _get_storage_pool_for_host(h, s):
+    if h.storage_pool_id:
+        from app.models.storage_pool import StoragePool
+
+        return s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+    return None
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
         _delete_deploy_progress,
-        _set_deploy_progress,
     )
-    from app.services.deploy_topology import _vm_domain_name
+    from app.services.deploy_topology import _extract_bmc_config
 
     s = SessionLocal()
     try:
@@ -3358,112 +3457,26 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         )
 
         errors = []
-
-        # Sync EIPs before networking so DNAT rules have private IPs
         _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors)
 
-        _set_deploy_progress(p_id, {"step": "networking", "detail": "configuring"})
-
-        from app.services.deploy_service import _get_network_lock
-
-        with _get_network_lock(h.id):
-            net_result = _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
-        if net_result is not True:
-            proj.state = "error"
-            proj.deploy_error = f"Network setup failed: {net_result}"
-            s.commit()
-            _delete_deploy_progress(p_id)
+        if not _setup_reconfigure_networking(h, p_id, current, vni_map, s, proj):
             return
 
-        # Only cache images and deploy metadata when VMs changed
         has_vm_changes = (
             diff.get("added_vms") or diff.get("removed_vms") or diff.get("changed_vms")
         )
 
         if has_vm_changes:
-            _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
-
-            def _reconfig_dl_progress(downloaded, total):
-                pct = (
-                    f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-                )
-                _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
-
-            cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
-        if has_vm_changes:
-            _set_deploy_progress(
-                p_id,
-                {
-                    "step": "cloud-init",
-                    "detail": "deploying metadata service",
-                },
-            )
-            from app.services.deploy_service import _setup_metadata_via_troshkad
-
-            try:
-                _setup_metadata_via_troshkad(h, p_id, current, vni_map)
-                logger.info("Reconfigure %s: metadata service deployed", p_id[:8])
-            except Exception:
-                logger.exception(
-                    "Reconfigure %s: metadata service deployment failed (non-fatal)",
-                    p_id[:8],
-                )
-
-            _setup_pxe_via_troshkad(h, current, vni_map, p_id)
-
-        # Create BMC bridge if needed (must exist before VM restart)
-        from app.services.deploy_topology import _extract_bmc_config
+            _cache_images_and_metadata(h, p_id, current, vni_map, s)
 
         bmc_config = _extract_bmc_config(current, p_id)
         if bmc_config and has_vm_changes:
-            net_data = bmc_config["bmc_network"]
-            cidr = net_data.get("cidr", "192.168.100.0/24")
-            try:
-                bj = start_job(
-                    h,
-                    "/bmc/create-bridge",
-                    {
-                        "project_id": p_id,
-                        "bmc_cidr": cidr,
-                        "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
-                        "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
-                    },
-                )
-                wait_for_job(h, bj, timeout=30)
-            except TroshkadError:
-                logger.warning(
-                    "Reconfigure %s: BMC bridge creation failed (non-fatal)",
-                    p_id[:8],
-                )
+            _create_bmc_bridge_if_needed(h, p_id, current, bmc_config)
 
-        # Get storage pool for correct disk paths
-        _pool = None
-        if h.storage_pool_id:
-            from app.models.storage_pool import StoragePool
-
-            _pool = s.query(StoragePool).filter_by(id=h.storage_pool_id).first()
+        _pool = _get_storage_pool_for_host(h, s)
         vm_dir_path = _vm_dir(p_id, pool=_pool)
 
-        for node in diff["removed_vms"]:
-            dom = _vm_domain_name(p_id, node["id"])
-            troshkad_undefine_vm(h, dom)
-            # Remove disk files via troshkad
-            try:
-                job_id = start_job(
-                    h,
-                    _FILES_REMOVE_PATH,
-                    {
-                        "paths": [
-                            f"{vm_dir_path}/{node['id'][:8]}-{suffix}"
-                            for suffix in ["*"]
-                        ]
-                    },
-                )
-                wait_for_job(h, job_id, timeout=15)
-            except TroshkadError:
-                # Try glob pattern as individual files — files/remove doesn't support globs
-                # Just remove the whole prefix pattern by removing known extensions
-                pass
+        _remove_vms_from_reconfigure(h, p_id, diff, vm_dir_path)
 
         vms = _extract_vms(current)
         added_ids = {n["id"] for n in diff["added_vms"]}
@@ -3564,6 +3577,67 @@ def _build_redeploy_vm_data(vm_node):
     }
 
 
+def _find_vm_node_in_topology(topology, target_vm_id):
+    return next(
+        (
+            n
+            for n in (topology or {}).get("nodes", [])
+            if n["id"] == target_vm_id and n.get("type") == "vmNode"
+        ),
+        None,
+    )
+
+
+def _build_connected_topology(topology, target_vm_id):
+    edges = (topology or {}).get("edges", [])
+    vm_connected_ids = set()
+    for edge in edges:
+        src, tgt = edge.get("source"), edge.get("target")
+        if src == target_vm_id:
+            vm_connected_ids.add(tgt)
+        elif tgt == target_vm_id:
+            vm_connected_ids.add(src)
+    return {
+        "nodes": [
+            n for n in (topology or {}).get("nodes", []) if n["id"] in vm_connected_ids
+        ]
+    }
+
+
+def _cache_redeploy_images(h, s, vm_topo, dom):
+    _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
+
+    def _progress(downloaded, total):
+        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
+        _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
+
+    cache_library_images(vm_topo, h, s, progress_callback=_progress)
+
+
+def _create_redeploy_vm(h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom):
+    vm_only_topo = {"nodes": [vm_node], "edges": []}
+    _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
+    _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
+
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    vm_data = _build_redeploy_vm_data(vm_node)
+    disk_cache = "none" if pool and pool.mode.startswith("shared") else None
+    vm_disks = _find_vm_disks(target_vm_id, topology or {})
+    _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
+    _create_vm_via_troshkad(h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache)
+
+
+def _start_vm_if_needed(h, dom, was_running, vm_node):
+    vdata = vm_node.get("data", {})
+    should_start = was_running or vdata.get("powerOnAtDeploy", True)
+    if should_start:
+        try:
+            job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
+            wait_for_job(h, job_id, timeout=60)
+        except TroshkadError as e:
+            logger.warning("Failed to start VM %s after redeploy: %s", dom, e)
+
+
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     from app.core.database import SessionLocal
     from app.services.deploy_service import _get_host_pool
@@ -3587,70 +3661,21 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
         _cleanup_old_vm_files(h, p_id, target_vm_id, topology)
 
-        vm_node = next(
-            (
-                n
-                for n in (topology or {}).get("nodes", [])
-                if n["id"] == target_vm_id and n.get("type") == "vmNode"
-            ),
-            None,
-        )
+        vm_node = _find_vm_node_in_topology(topology, target_vm_id)
         if not vm_node:
             logger.warning("Redeploy %s: node not found in topology", target_vm_id[:8])
             _redeploy_progress.pop(dom, None)
             return
 
-        edges = (topology or {}).get("edges", [])
-        vm_connected_ids = set()
-        for edge in edges:
-            src, tgt = edge.get("source"), edge.get("target")
-            if src == target_vm_id:
-                vm_connected_ids.add(tgt)
-            elif tgt == target_vm_id:
-                vm_connected_ids.add(src)
-        vm_topo = {
-            "nodes": [
-                n
-                for n in (topology or {}).get("nodes", [])
-                if n["id"] in vm_connected_ids
-            ]
-        }
-
-        _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
-
-        def _progress(downloaded, total):
-            pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-            _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
-
-        cache_library_images(vm_topo, h, s, progress_callback=_progress)
-
+        vm_topo = _build_connected_topology(topology, target_vm_id)
+        _cache_redeploy_images(h, s, vm_topo, dom)
         _setup_pxe_via_troshkad(h, topology, vni_map, p_id)
 
         pool = _get_host_pool(h, s)
-        _redeploy_progress[dom] = {
-            "step": "creating",
-            "detail": "cloud-init seed ISO",
-        }
-        vm_only_topo = {"nodes": [vm_node], "edges": []}
-        _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
-
-        _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
-        vm_data = _build_redeploy_vm_data(vm_node)
-        disk_cache = "none" if pool and pool.mode.startswith("shared") else None
-        vm_disks = _find_vm_disks(target_vm_id, topology or {})
-        _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
-        _create_vm_via_troshkad(
-            h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache
+        _create_redeploy_vm(
+            h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom
         )
-
-        vdata = vm_node.get("data", {})
-        should_start = was_running or vdata.get("powerOnAtDeploy", True)
-        if should_start:
-            try:
-                job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
-                wait_for_job(h, job_id, timeout=60)
-            except TroshkadError as e:
-                logger.warning("Failed to start VM %s after redeploy: %s", dom, e)
+        _start_vm_if_needed(h, dom, was_running, vm_node)
 
         _redeploy_progress[dom] = {"step": "starting", "detail": ""}
         proj.deployed_topology = topology

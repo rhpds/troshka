@@ -57,6 +57,54 @@ def _get_central_s3_config_from_project(namespace):
     return {}
 
 
+def _check_owner_exists(custom_api, owner_name, owner_namespace):
+    """Check if the owner TroshkaVM CR still exists. Returns False if deleted."""
+    try:
+        custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=owner_namespace,
+            plural="troshkavms",
+            name=owner_name,
+        )
+        return True
+    except client.ApiException as e:
+        if e.status == 404:
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _check_datavolume_status(custom_api, name, namespace):
+    """Check DataVolume phase. Returns 'ready', 'failed', 'deleted', or 'pending'."""
+    try:
+        dv = custom_api.get_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            name=name,
+        )
+        phase = dv.get("status", {}).get("phase", "")
+        if phase == "Succeeded":
+            return "ready"
+        if phase in ("Failed", "Error"):
+            logger.error(
+                f"DataVolume {name} failed: "
+                f"{dv.get('status', {}).get('conditions', [])}"
+            )
+            return "failed"
+        return "pending"
+    except client.ApiException as e:
+        if e.status == 404:
+            logger.warning(f"DataVolume {name} not found, may have been deleted")
+            return "deleted"
+        return "pending"
+    except Exception:
+        return "pending"
+
+
 async def _wait_for_datavolume(
     custom_api, name, namespace, *, owner_name=None, owner_namespace=None
 ):
@@ -64,48 +112,17 @@ async def _wait_for_datavolume(
         async with asyncio.timeout(3600):
             while True:
                 if owner_name and owner_namespace:
-                    try:
-                        custom_api.get_namespaced_custom_object(
-                            group=CRD_GROUP,
-                            version=CRD_VERSION,
-                            namespace=owner_namespace,
-                            plural="troshkavms",
-                            name=owner_name,
-                        )
-                    except client.ApiException as e:
-                        if e.status == 404:
-                            logger.warning(
-                                f"Owner TroshkaVM {owner_name} deleted, "
-                                f"aborting wait for {name}"
-                            )
-                            return False
-                    except Exception:
-                        pass
-                try:
-                    dv = custom_api.get_namespaced_custom_object(
-                        group="cdi.kubevirt.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="datavolumes",
-                        name=name,
-                    )
-                    phase = dv.get("status", {}).get("phase", "")
-                    if phase == "Succeeded":
-                        return True
-                    if phase in ("Failed", "Error"):
-                        logger.error(
-                            f"DataVolume {name} failed: "
-                            f"{dv.get('status', {}).get('conditions', [])}"
-                        )
-                        return False
-                except client.ApiException as e:
-                    if e.status == 404:
+                    if not _check_owner_exists(custom_api, owner_name, owner_namespace):
                         logger.warning(
-                            f"DataVolume {name} not found, may have been deleted"
+                            f"Owner TroshkaVM {owner_name} deleted, "
+                            f"aborting wait for {name}"
                         )
                         return False
-                except Exception:
-                    pass
+                status = _check_datavolume_status(custom_api, name, namespace)
+                if status == "ready":
+                    return True
+                if status in ("failed", "deleted"):
+                    return False
                 await asyncio.sleep(5)
     except TimeoutError:
         logger.warning(f"DataVolume {name} timed out after 3600s")

@@ -733,83 +733,86 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 # ── Async orchestrators ──
 
 
-def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id):
-    """Set up full VXLAN mesh networking via troshkad.
-
-    Builds the network config and sends it to the networks/full-setup endpoint.
-    Returns True on success, error string on failure.
-    """
+def _resolve_network_host_ip(host, db_session, project_id):
     from app.models.mesh_peer import ProjectMeshPeer
     from app.models.project import Project
-    from app.services.vxlan import build_host_network_config
 
     project = db_session.query(Project).filter_by(id=project_id).first()
-
-    # Use WireGuard tunnel IPs when project has a mesh, otherwise use host IPs
     if project and project.mesh_subnet_id:
         mesh_peers = (
             db_session.query(ProjectMeshPeer).filter_by(project_id=project_id).all()
         )
         peer_ips = [p.wg_address.split("/")[0] for p in mesh_peers]
-        # Use this host's WireGuard IP in network config
         this_peer = next((p for p in mesh_peers if p.host_id == host.id), None)
         host_ip = this_peer.wg_address.split("/")[0] if this_peer else host.ip_address
     else:
         all_hosts = db_session.query(Host).filter(Host.state == "active").all()
         peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
         host_ip = host.ip_address
+    return host_ip, peer_ips
 
-    network_config = build_host_network_config(topology, vni_map, peer_ips)
 
-    # If LB is present and external, add its frontend ports as port forwards to gateway
+def _inject_lb_port_forwards(network_config, topology, vni_map):
     lb = network_config.get("loadbalancer")
-    if lb and lb.get("frontends") and lb.get("external", True):
+    if not lb or not lb.get("frontends") or not lb.get("external", True):
+        return
+    gw = network_config.get("gateway")
+    if not gw:
+        first_vni = next(iter(vni_map.values()), None)
+        if first_vni:
+            from app.services.vxlan import _transit_subnet
+
+            transit = _transit_subnet(first_vni)
+            network_config["gateway"] = {
+                "name": "lb-gateway",
+                "mode": "nat-portforward",
+                "outbound_policy": "allow-all",
+                "outbound_ports": "",
+                "port_forwards": [],
+                "eip_private_ips": [],
+                "transit_ns_ip": transit["ns_ip"],
+            }
         gw = network_config.get("gateway")
-        if not gw:
-            # Create minimal gateway config for LB port forwarding
-            first_vni = next(iter(vni_map.values()), None)
-            if first_vni:
-                from app.services.vxlan import _transit_subnet
+    if not gw:
+        return
+    if gw.get("mode") not in ("nat", "nat-portforward"):
+        gw["mode"] = "nat-portforward"
+    pf_list = gw.get("port_forwards", [])
+    lb_eip_priv = _find_lb_eip_private_ip(lb, gw, topology)
+    for fe in lb["frontends"]:
+        pf_list.append(
+            {
+                "extPort": fe["bindPort"],
+                "intIp": gw.get("transit_ns_ip", ""),
+                "intPort": fe["bindPort"],
+                "_private_ip": lb_eip_priv,
+            }
+        )
+    gw["port_forwards"] = pf_list
 
-                transit = _transit_subnet(first_vni)
-                network_config["gateway"] = {
-                    "name": "lb-gateway",
-                    "mode": "nat-portforward",
-                    "outbound_policy": "allow-all",
-                    "outbound_ports": "",
-                    "port_forwards": [],
-                    "eip_private_ips": [],
-                    "transit_ns_ip": transit["ns_ip"],
-                }
-            gw = network_config.get("gateway")
-        if gw:
-            if gw.get("mode") not in ("nat", "nat-portforward"):
-                gw["mode"] = "nat-portforward"
-            pf_list = gw.get("port_forwards", [])
-            # Find the EIP private IP for the LB's extIpId
-            lb_eip_priv = ""
-            lb_ext_ip_id = lb.get("ext_ip_id", "")
-            if lb_ext_ip_id:
-                ext_ips = topology.get("externalIps", [])
-                for eip in ext_ips:
-                    if eip.get("id") == lb_ext_ip_id and eip.get("_private_ip"):
-                        lb_eip_priv = eip["_private_ip"]
-                        break
-            if not lb_eip_priv:
-                eip_priv_ips = gw.get("eip_private_ips", [])
-                lb_eip_priv = eip_priv_ips[0] if eip_priv_ips else ""
-            for fe in lb["frontends"]:
-                pf_list.append(
-                    {
-                        "extPort": fe["bindPort"],
-                        "intIp": gw.get("transit_ns_ip", ""),
-                        "intPort": fe["bindPort"],
-                        "_private_ip": lb_eip_priv,
-                    }
-                )
-            gw["port_forwards"] = pf_list
 
-    # Build params for troshkad
+def _find_lb_eip_private_ip(lb, gw, topology):
+    lb_ext_ip_id = lb.get("ext_ip_id", "")
+    if lb_ext_ip_id:
+        for eip in topology.get("externalIps", []):
+            if eip.get("id") == lb_ext_ip_id and eip.get("_private_ip"):
+                return eip["_private_ip"]
+    eip_priv_ips = gw.get("eip_private_ips", [])
+    return eip_priv_ips[0] if eip_priv_ips else ""
+
+
+def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id):
+    """Set up full VXLAN mesh networking via troshkad.
+
+    Builds the network config and sends it to the networks/full-setup endpoint.
+    Returns True on success, error string on failure.
+    """
+    from app.services.vxlan import build_host_network_config
+
+    host_ip, peer_ips = _resolve_network_host_ip(host, db_session, project_id)
+    network_config = build_host_network_config(topology, vni_map, peer_ips)
+    _inject_lb_port_forwards(network_config, topology, vni_map)
+
     params = {
         "project_id": project_id,
         "host_ip": host_ip,
@@ -829,6 +832,38 @@ def _setup_networks_via_troshkad(host, topology, vni_map, db_session, project_id
         return f"Network setup failed: {e}"
 
 
+def _push_mesh_config_to_peer(db, project_id, peer):
+    if not peer.host_id:
+        return "Peer has no host_id"
+    peer_host_id: str = peer.host_id
+    host = db.query(Host).filter_by(id=peer_host_id).first()
+    if not host:
+        return f"Host {peer_host_id[:8]} not found"
+    config = get_peer_config_for_host(db, project_id, peer_host_id)
+    try:
+        job_id = start_job(host, "/mesh/setup", config)
+        job = wait_for_job(host, job_id, timeout=60)
+        if job["status"] == "failed":
+            error_msg = job.get("result", {}).get("error", "unknown")
+            return f"Host {host.id[:8]}: {error_msg}"
+    except Exception as e:
+        return f"Host {host.id[:8]}: {e}"
+    return None
+
+
+def _rollback_mesh(db, project_id, peers):
+    for peer in peers:
+        host = db.query(Host).filter_by(id=peer.host_id).first()
+        if host:
+            try:
+                troshkad_request(
+                    host, "DELETE", f"/mesh/teardown?project_id={project_id}"
+                )
+            except Exception:
+                pass
+    delete_mesh_peers(db, project_id)
+
+
 def _setup_mesh(db, project, host_assignments, host_ips):
     """Push WireGuard configs to all hosts. Returns True on success."""
 
@@ -842,40 +877,13 @@ def _setup_mesh(db, project, host_assignments, host_ips):
 
     errors = []
     for peer in peers:
-        if not peer.host_id:
-            errors.append("Peer has no host_id")
-            continue
-
-        # Type narrowing: peer.host_id is str at this point
-        peer_host_id: str = peer.host_id
-
-        host = db.query(Host).filter_by(id=peer_host_id).first()
-        if not host:
-            errors.append(f"Host {peer_host_id[:8]} not found")
-            continue
-        config = get_peer_config_for_host(db, project.id, peer_host_id)
-        try:
-            job_id = start_job(host, "/mesh/setup", config)
-            job = wait_for_job(host, job_id, timeout=60)
-            if job["status"] == "failed":
-                error_msg = job.get("result", {}).get("error", "unknown")
-                errors.append(f"Host {host.id[:8]}: {error_msg}")
-        except Exception as e:
-            errors.append(f"Host {host.id[:8]}: {e}")
+        err = _push_mesh_config_to_peer(db, project.id, peer)
+        if err:
+            errors.append(err)
 
     if errors:
         logger.error("Mesh setup failed: %s", errors)
-        # Clean up on failure
-        for peer in peers:
-            host = db.query(Host).filter_by(id=peer.host_id).first()
-            if host:
-                try:
-                    troshkad_request(
-                        host, "DELETE", f"/mesh/teardown?project_id={project.id}"
-                    )
-                except Exception:
-                    pass
-        delete_mesh_peers(db, project.id)
+        _rollback_mesh(db, project.id, peers)
         return False
     return True
 
@@ -1900,16 +1908,21 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
     logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
 
 
-def _allocate_kubevirt_eips(project_id, project, topology, db):
-    """Allocate MetalLB EIPs for a kubevirt native project after operator deploy."""
-    external_ips = topology.get("externalIps", [])
-    if not external_ips:
-        return
+def _find_gateway_port_forwards(topology, canvas_id):
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") == "gateway":
+            return [
+                pf
+                for pf in node_data.get("portForwards", [])
+                if pf.get("extIpId") == canvas_id
+            ]
+    return []
 
-    from app.models.elastic_ip import ElasticIp
+
+def _resolve_eip_provider(project_id, project, db):
     from app.models.host import Host
     from app.models.provider import Provider
-    from app.services.eip_service import allocate_eip, associate_eip
     from app.services.providers import get_provider_driver
 
     provider = (
@@ -1924,76 +1937,89 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
     )
     if not host and not provider:
         logger.warning("Deploy %s: no provider/host for EIP allocation", project_id[:8])
-        return
+        return None, None, None
     if not provider and host:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
         logger.warning("Deploy %s: no provider for EIP allocation", project_id[:8])
+        return None, None, None
+    driver = get_provider_driver(provider)
+    return provider, host, driver
+
+
+def _allocate_single_kubevirt_eip(
+    project_id, ext_ip, provider, host, driver, topology, db
+):
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import allocate_eip, associate_eip
+
+    canvas_id = ext_ip.get("id", "")
+    existing = (
+        db.query(ElasticIp)
+        .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+        .first()
+    )
+    eip = (
+        existing
+        if existing
+        else allocate_eip(db, provider, project_id, canvas_id, host)
+    )
+    if eip.state != "associated":
+        associate_eip(db, eip, host)
+    ext_ip["ip"] = eip.public_ip
+
+    pf_for_eip = _find_gateway_port_forwards(topology, canvas_id)
+    if pf_for_eip:
+        from app.services.providers.kubevirt import _project_ns
+
+        ns = _project_ns(provider, project_id)
+        driver.update_eip_ports(
+            provider,
+            host,
+            eip.allocation_id,
+            [
+                {
+                    "port": int(pf.get("extPort", 443)),
+                    "target_port": int(pf.get("extPort", 443)),
+                    "name": f"pf-{i}",
+                    "protocol": pf.get("proto", "tcp").upper(),
+                }
+                for i, pf in enumerate(pf_for_eip)
+            ],
+            namespace=ns,
+        )
+    logger.info(
+        "Deploy %s: EIP %s allocated (%s)",
+        project_id[:8],
+        canvas_id[:8],
+        eip.public_ip,
+    )
+
+
+def _allocate_kubevirt_eips(project_id, project, topology, db):
+    """Allocate MetalLB EIPs for a kubevirt native project after operator deploy."""
+    external_ips = topology.get("externalIps", [])
+    if not external_ips:
         return
 
-    driver = get_provider_driver(provider)
+    provider, host, driver = _resolve_eip_provider(project_id, project, db)
+    if not provider:
+        return
+
     logger.info(
         "Deploy %s: allocating %d MetalLB EIPs", project_id[:8], len(external_ips)
     )
 
     for ext_ip in external_ips:
-        canvas_id = ext_ip.get("id", "")
         try:
-            existing = (
-                db.query(ElasticIp)
-                .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
-                .first()
-            )
-            if existing:
-                eip = existing
-            else:
-                eip = allocate_eip(db, provider, project_id, canvas_id, host)
-
-            if eip.state != "associated":
-                associate_eip(db, eip, host)
-
-            ext_ip["ip"] = eip.public_ip
-
-            pf_for_eip = []
-            for node in topology.get("nodes", []):
-                node_data = node.get("data", {})
-                if node_data.get("subtype") == "gateway":
-                    pf_for_eip = [
-                        pf
-                        for pf in node_data.get("portForwards", [])
-                        if pf.get("extIpId") == canvas_id
-                    ]
-                    break
-            if pf_for_eip:
-                from app.services.providers.kubevirt import _project_ns
-
-                ns = _project_ns(provider, project_id)
-                driver.update_eip_ports(
-                    provider,
-                    host,
-                    eip.allocation_id,
-                    [
-                        {
-                            "port": int(pf.get("extPort", 443)),
-                            "target_port": int(pf.get("extPort", 443)),
-                            "name": f"pf-{i}",
-                            "protocol": pf.get("proto", "tcp").upper(),
-                        }
-                        for i, pf in enumerate(pf_for_eip)
-                    ],
-                    namespace=ns,
-                )
-            logger.info(
-                "Deploy %s: EIP %s allocated (%s)",
-                project_id[:8],
-                canvas_id[:8],
-                eip.public_ip,
+            _allocate_single_kubevirt_eip(
+                project_id, ext_ip, provider, host, driver, topology, db
             )
         except Exception:
             logger.exception(
                 "Deploy %s: EIP allocation failed for %s (non-fatal)",
                 project_id[:8],
-                canvas_id[:8],
+                ext_ip.get("id", "")[:8],
             )
 
     _patch_kubevirt_gateway_forwards(provider, project_id, topology)
@@ -2200,6 +2226,148 @@ def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
     )
 
 
+def _generate_exec_ssh_keypair(project_id):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    logger.info("Deploy %s: generating exec SSH key pair", project_id[:8])
+    exec_key = Ed25519PrivateKey.generate()
+    exec_privkey_pem = exec_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    ).decode()
+    exec_pubkey = (
+        exec_key.public_key()
+        .public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        )
+        .decode()
+        + " troshka-exec"
+    )
+    return exec_privkey_pem, exec_pubkey
+
+
+def _regenerate_kubevirt_cloud_init(topology, project, exec_pubkey):
+    from app.services.cloud_init import generate_userdata
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        if not data.get("cloudInit"):
+            continue
+        if not project.guest_exec_enabled:
+            data["guestExecEnabled"] = False
+        ssh_keys = [k for k in data.get("ciSshKeys", []) if "troshka-exec" not in k]
+        ssh_keys.append(exec_pubkey)
+        data["ciSshKeys"] = ssh_keys
+        data["ciGeneratedUserData"] = generate_userdata(data)
+
+
+def _wait_for_namespace_termination(provider, project_id):
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    _, _kc_core, _ = _get_k8s_clients(provider)
+    _kc_ns = _project_ns(provider, project_id)
+    for _ns_wait in range(60):
+        try:
+            ns_obj = _kc_core.read_namespace(name=_kc_ns)
+            if ns_obj.status.phase == "Terminating":  # type: ignore[union-attr]
+                if _ns_wait == 0:
+                    logger.info(
+                        "Deploy %s: waiting for namespace to finish terminating",
+                        project_id[:8],
+                    )
+                _time.sleep(3)
+                continue
+            break
+        except Exception:
+            break
+
+
+def _replace_stale_kubevirt_cr(provider, project_id):
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    try:
+        custom_api, _, _ = _get_k8s_clients(provider)
+        ns = _project_ns(provider, project_id)
+        custom_api.delete_namespaced_custom_object(
+            group="troshka.redhat.com",
+            version="v1alpha1",
+            namespace=ns,
+            plural="troshkaprojects",
+            name=f"project-{project_id[:8]}",
+        )
+    except Exception:
+        pass
+
+    _ca, _cv1, _ac = _get_k8s_clients(provider)
+    _ns = _project_ns(provider, project_id)
+    cr_name = f"project-{project_id[:8]}"
+
+    try:
+        from kubernetes import client as _klient
+
+        _batch = _klient.BatchV1Api(_ac)
+        for job in _batch.list_namespaced_job(_ns).items:  # type: ignore[union-attr]
+            try:
+                _batch.delete_namespaced_job(
+                    name=job.metadata.name,
+                    namespace=_ns,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    _wait_for_old_kubevirt_resources(_ca, _cv1, _ns, cr_name, project_id)
+
+
+def _wait_for_old_kubevirt_resources(_ca, _cv1, _ns, cr_name, project_id):
+    for attempt in range(45):
+        try:
+            cr_gone = True
+            try:
+                _ca.get_namespaced_custom_object(
+                    group="troshka.redhat.com",
+                    version="v1alpha1",
+                    namespace=_ns,
+                    plural="troshkaprojects",
+                    name=cr_name,
+                )
+                cr_gone = False
+            except Exception:
+                pass
+
+            _vmis = _ca.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=_ns,
+                plural="virtualmachineinstances",
+            )
+            _pods = _cv1.list_namespaced_pod(
+                _ns, label_selector="kubevirt.io=virt-launcher"
+            )
+            if cr_gone and not _vmis.get("items", []) and not _pods.items:  # type: ignore[union-attr]
+                logger.info(
+                    "Deploy %s: old resources cleaned up after %ds",
+                    project_id[:8],
+                    attempt * 2,
+                )
+                break
+        except Exception:
+            break
+        _time.sleep(2)
+    else:
+        logger.warning(
+            "Deploy %s: old resources still present after 90s, proceeding",
+            project_id[:8],
+        )
+
+
 def _deploy_kubevirt_native(project_id, project, host, topology, db):
     """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
     from app.models.provider import Provider
@@ -2237,42 +2405,8 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         central_op,
     )
 
-    # Generate per-deploy SSH key pair for exec pod → VM access
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    logger.info("Deploy %s: generating exec SSH key pair", project_id[:8])
-    exec_key = Ed25519PrivateKey.generate()
-    exec_privkey_pem = exec_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.OpenSSH,
-        serialization.NoEncryption(),
-    ).decode()
-    exec_pubkey = (
-        exec_key.public_key()
-        .public_bytes(
-            serialization.Encoding.OpenSSH,
-            serialization.PublicFormat.OpenSSH,
-        )
-        .decode()
-        + " troshka-exec"
-    )
-
-    # Regenerate cloud-init userdata so deploy-time settings (guest-exec, etc.) take effect
-    from app.services.cloud_init import generate_userdata
-
-    for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        data = node.get("data", {})
-        if not data.get("cloudInit"):
-            continue
-        if not project.guest_exec_enabled:
-            data["guestExecEnabled"] = False
-        ssh_keys = [k for k in data.get("ciSshKeys", []) if "troshka-exec" not in k]
-        ssh_keys.append(exec_pubkey)
-        data["ciSshKeys"] = ssh_keys
-        data["ciGeneratedUserData"] = generate_userdata(data)
+    exec_privkey_pem, exec_pubkey = _generate_exec_ssh_keypair(project_id)
+    _regenerate_kubevirt_cloud_init(topology, project, exec_pubkey)
 
     _update_deploy_progress(project_id, "networks", "creating operator resources")
     notify_project(
@@ -2284,25 +2418,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         },
     )
 
-    # Wait for namespace to finish terminating (race with destroy)
-    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-    _kc_api, _kc_core, _ = _get_k8s_clients(provider)
-    _kc_ns = _project_ns(provider, project_id)
-    for _ns_wait in range(60):
-        try:
-            ns_obj = _kc_core.read_namespace(name=_kc_ns)
-            if ns_obj.status.phase == "Terminating":  # type: ignore[union-attr]
-                if _ns_wait == 0:
-                    logger.info(
-                        "Deploy %s: waiting for namespace to finish terminating",
-                        project_id[:8],
-                    )
-                _time.sleep(3)
-                continue
-            break
-        except Exception:
-            break
+    _wait_for_namespace_termination(provider, project_id)
 
     existing_cr = None
     cr_name = f"project-{project_id[:8]}"
@@ -2313,7 +2429,6 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
 
     _resume_poll = False
     if existing_cr and existing_cr.get("phase") == "Deploying":
-        cr_name = f"project-{project_id[:8]}"
         _resume_poll = True
         logger.info("Deploy %s: CR already deploying, resuming poll", project_id[:8])
     elif existing_cr and existing_cr.get("phase"):
@@ -2321,90 +2436,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             "Deploy %s: replacing stale CR with fresh presigned URLs",
             project_id[:8],
         )
-        try:
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-            custom_api, _, _ = _get_k8s_clients(provider)
-            ns = _project_ns(provider, project_id)
-            custom_api.delete_namespaced_custom_object(
-                group="troshka.redhat.com",
-                version="v1alpha1",
-                namespace=ns,
-                plural="troshkaprojects",
-                name=f"project-{project_id[:8]}",
-            )
-        except Exception:
-            pass
-
-        # Wait for old CR and resources to be fully gone before creating new CR
-        from app.services.providers.kubevirt import (
-            _get_k8s_clients as _kc,
-        )
-        from app.services.providers.kubevirt import (
-            _project_ns as _pns,
-        )
-
-        _ca, _cv1, _ac = _kc(provider)
-        _ns = _pns(provider, project_id)
-        cr_name = f"project-{project_id[:8]}"
-
-        # Delete any stale Jobs
-        try:
-            from kubernetes import client as _klient
-
-            _batch = _klient.BatchV1Api(_ac)
-            for job in _batch.list_namespaced_job(_ns).items:  # type: ignore[union-attr]
-                try:
-                    _batch.delete_namespaced_job(
-                        name=job.metadata.name,
-                        namespace=_ns,
-                        propagation_policy="Background",
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # Wait for CR + VMIs + pods to be fully gone
-        for attempt in range(45):
-            try:
-                cr_gone = True
-                try:
-                    _ca.get_namespaced_custom_object(
-                        group="troshka.redhat.com",
-                        version="v1alpha1",
-                        namespace=_ns,
-                        plural="troshkaprojects",
-                        name=cr_name,
-                    )
-                    cr_gone = False
-                except Exception:
-                    pass
-
-                _vmis = _ca.list_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=_ns,
-                    plural="virtualmachineinstances",
-                )
-                _pods = _cv1.list_namespaced_pod(
-                    _ns, label_selector="kubevirt.io=virt-launcher"
-                )
-                if cr_gone and not _vmis.get("items", []) and not _pods.items:  # type: ignore[union-attr]
-                    logger.info(
-                        "Deploy %s: old resources cleaned up after %ds",
-                        project_id[:8],
-                        attempt * 2,
-                    )
-                    break
-            except Exception:
-                break
-            _time.sleep(2)
-        else:
-            logger.warning(
-                "Deploy %s: old resources still present after 90s, proceeding",
-                project_id[:8],
-            )
+        _replace_stale_kubevirt_cr(provider, project_id)
 
     if not _resume_poll:
         logger.info(
@@ -2453,30 +2485,17 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db)
 
 
-def _deploy_multihost(project_id: str, project, db):
-    """Multi-host deploy orchestration: mesh → networks → VMs per host."""
-    logger.info("Deploy %s: starting multi-host orchestration", project_id[:8])
-
-    # Fetch host assignments from project JSONB ({vm_id: host_id}) and
-    # rebuild to {host_id: [vm_ids]} for deploy orchestration
+def _build_multihost_assignments(project):
     raw_assignments = project.host_assignments or {}
     if not raw_assignments:
-        logger.error("Deploy %s: no host assignments found", project_id[:8])
-        project.state = "error"
-        project.deploy_error = "No host assignments found for multi-host deploy"
-        db.commit()
-        return
+        return None
     host_assignments: dict[str, list[str]] = {}
     for vm_id, hid in raw_assignments.items():
         host_assignments.setdefault(hid, []).append(vm_id)
-    if not host_assignments:
-        logger.error("Deploy %s: no host assignments found", project_id[:8])
-        project.state = "error"
-        project.deploy_error = "No host assignments found for multi-host deploy"
-        db.commit()
-        return
+    return host_assignments or None
 
-    # Get host IPs — prefer private_ip when hosts share a storage pool
+
+def _resolve_multihost_ips(host_assignments, db):
     hosts_in_mesh = []
     for hid in host_assignments:
         h = db.query(Host).filter_by(id=hid).first()
@@ -2491,174 +2510,111 @@ def _deploy_multihost(project_id: str, project, db):
             host_ips[h.id] = h.private_ip
         else:
             host_ips[h.id] = h.ip_address
+    return host_ips
 
-    topology = project.topology or {}
-    vni_map = project.vni_map or {}
 
-    # Step 1: Set up WireGuard mesh
-    _update_deploy_progress(project_id, "mesh", "setting up WireGuard mesh")
-    logger.info(
-        "Deploy %s: setting up mesh across %d hosts",
-        project_id[:8],
-        len(host_assignments),
+def _deploy_vms_on_host(host, project_id, project, host_vms, topology, vni_map, db):
+    pool = _get_host_pool(host, db)
+    host_label = f"{host.ip_address} ({len(host_vms)} VMs)"
+    vm_node_ids = {vm["node_id"] for vm in host_vms}
+
+    _update_deploy_progress(project_id, "images", f"caching images on {host_label}")
+    logger.info("Deploy %s: caching images on %s", project_id[:8], host_label)
+    cache_library_images(topology, host, db)
+
+    _update_deploy_progress(project_id, "seeds", f"creating seed ISOs on {host_label}")
+    logger.info("Deploy %s: creating seeds on %s", project_id[:8], host_label)
+    host_topo = _filter_topology_for_host(topology, vm_node_ids)
+    _create_seed_isos_via_troshkad(host, project_id, host_topo, pool)
+
+    err = _create_multihost_disks(
+        host, project_id, host_vms, topology, pool, host_label
     )
-    if not _setup_mesh(db, project, host_assignments, host_ips):
-        project.state = "error"
-        project.deploy_error = "Mesh setup failed"
-        db.commit()
-        _delete_deploy_progress(project_id)
-        return
+    if err:
+        return err
 
-    # Step 2: Set up networks on network host
-    network_host_id = project.mesh_network_host_id
-    network_host = db.query(Host).filter_by(id=network_host_id).first()
-    if not network_host:
-        logger.error(
-            "Deploy %s: network host %s not found", project_id[:8], network_host_id[:8]
+    _clean_stale_domains(host, project_id, host_vms, host_label)
+
+    clock_offset = None
+    if project.clock_target:
+        from app.services.clock_service import compute_clock_offset
+
+        clock_offset = compute_clock_offset(project.clock_target)
+
+    return _define_multihost_vms(
+        host, project_id, host_vms, topology, vni_map, pool, clock_offset, host_label
+    )
+
+
+def _create_multihost_disks(host, project_id, host_vms, topology, pool, host_label):
+    _update_deploy_progress(project_id, "disks", f"creating disks on {host_label}")
+    logger.info("Deploy %s: creating disks on %s", project_id[:8], host_label)
+    disk_jobs = []
+    for vm in host_vms:
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+        disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+    for jid in disk_jobs:
+        job = wait_for_job(host, jid, timeout=900)
+        if job.get("status") == "failed":
+            error = job.get("result", {}).get("error", "unknown")
+            return f"Disk creation failed on {host_label}: {error}"
+    return None
+
+
+def _clean_stale_domains(host, project_id, host_vms, host_label):
+    _update_deploy_progress(project_id, "vms", f"defining VMs on {host_label}")
+    logger.info("Deploy %s: defining VMs on %s", project_id[:8], host_label)
+    for vm in host_vms:
+        domain_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            j = start_job(host, "/vm/info", {"name": domain_name})
+            r = wait_for_job(host, j, timeout=10)
+            if r.get("result", {}).get("state"):
+                logger.info(
+                    "Deploy %s: stale domain %s on %s, removing",
+                    project_id[:8],
+                    domain_name,
+                    host_label,
+                )
+                try:
+                    d = start_job(host, _VMS_DESTROY_PATH, {"domain_name": domain_name})
+                    wait_for_job(host, d, timeout=60)
+                except TroshkadError:
+                    pass
+        except TroshkadError:
+            pass
+
+
+def _define_multihost_vms(
+    host, project_id, host_vms, topology, vni_map, pool, clock_offset, host_label
+):
+    for vm in host_vms:
+        job_id = _create_vm_via_troshkad(
+            host,
+            project_id,
+            vm,
+            topology,
+            vni_map,
+            pool,
+            clock_offset=clock_offset,
         )
-        project.state = "error"
-        project.deploy_error = "Network host not found"
-        db.commit()
-        _delete_deploy_progress(project_id)
-        return
-
-    _update_deploy_progress(
-        project_id, "networks", "setting up networks on network host"
-    )
-    logger.info(
-        "Deploy %s: setting up networks on network host %s",
-        project_id[:8],
-        network_host_id[:8],
-    )
-
-    with _get_network_lock(network_host.id):
-        net_result = _setup_networks_via_troshkad(
-            network_host, topology, vni_map, db, project_id
-        )
-    if net_result is not True:
-        logger.error("Deploy %s: network setup failed: %s", project_id[:8], net_result)
-        project.state = "error"
-        project.deploy_error = f"Network setup failed: {net_result}"
-        db.commit()
-        _delete_deploy_progress(project_id)
-        return
-
-    # Step 3: Set up VXLAN on remote hosts
-    _update_deploy_progress(
-        project_id, "remote-networks", "setting up VXLAN on remote hosts"
-    )
-    logger.info("Deploy %s: setting up VXLAN on remote hosts", project_id[:8])
-    if not _setup_remote_networks(db, project, host_assignments, vni_map, topology):
-        project.state = "error"
-        project.deploy_error = "Remote network setup failed"
-        db.commit()
-        _delete_deploy_progress(project_id)
-        return
-
-    # Step 4: Deploy VMs per host — reuse existing per-VM functions
-    all_vms = _extract_vms(topology)
-    vm_id_set_by_host: dict[str, set[str]] = {}
-    for vm_node_id, hid in (project.host_assignments or {}).items():
-        vm_id_set_by_host.setdefault(hid, set()).add(vm_node_id)
-
-    for host_id, vm_node_ids in vm_id_set_by_host.items():
-        host = db.query(Host).filter_by(id=host_id).first()
-        if not host:
+        if not job_id:
             continue
-        pool = _get_host_pool(host, db)
-        host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
-        host_label = f"{host.ip_address} ({len(host_vms)} VMs)"
+        job = wait_for_job(host, job_id, timeout=300)
+        if job.get("status") == "failed":
+            error = job.get("result", {}).get("error", "unknown")
+            return f"VM creation failed on {host_label}: {error}"
+        dom_uuid = job.get("result", {}).get("domain_uuid", "")
+        if dom_uuid:
+            for n in topology.get("nodes", []):
+                if n["id"] == vm["node_id"]:
+                    n.setdefault("data", {})["domainUuid"] = dom_uuid
+                    break
+    return None
 
-        _update_deploy_progress(project_id, "images", f"caching images on {host_label}")
-        logger.info("Deploy %s: caching images on %s", project_id[:8], host_label)
-        cache_library_images(topology, host, db)
 
-        _update_deploy_progress(
-            project_id, "seeds", f"creating seed ISOs on {host_label}"
-        )
-        logger.info("Deploy %s: creating seeds on %s", project_id[:8], host_label)
-        host_topo = _filter_topology_for_host(topology, vm_node_ids)
-        _create_seed_isos_via_troshkad(host, project_id, host_topo, pool)
-
-        _update_deploy_progress(project_id, "disks", f"creating disks on {host_label}")
-        logger.info("Deploy %s: creating disks on %s", project_id[:8], host_label)
-        disk_jobs = []
-        for vm in host_vms:
-            vm_disks = _find_vm_disks(vm["node_id"], topology)
-            job_ids = _create_vm_disks_via_troshkad(
-                host, project_id, vm, vm_disks, pool
-            )
-            disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
-        for jid in disk_jobs:
-            job = wait_for_job(host, jid, timeout=900)
-            if job.get("status") == "failed":
-                error = job.get("result", {}).get("error", "unknown")
-                project.state = "error"
-                project.deploy_error = f"Disk creation failed on {host_label}: {error}"
-                db.commit()
-                _delete_deploy_progress(project_id)
-                return
-
-        _update_deploy_progress(project_id, "vms", f"defining VMs on {host_label}")
-        logger.info("Deploy %s: defining VMs on %s", project_id[:8], host_label)
-        for vm in host_vms:
-            domain_name = _vm_domain_name(project_id, vm["node_id"])
-            try:
-                j = start_job(host, "/vm/info", {"name": domain_name})
-                r = wait_for_job(host, j, timeout=10)
-                if r.get("result", {}).get("state"):
-                    logger.info(
-                        "Deploy %s: stale domain %s on %s, removing",
-                        project_id[:8],
-                        domain_name,
-                        host_label,
-                    )
-                    try:
-                        d = start_job(
-                            host, _VMS_DESTROY_PATH, {"domain_name": domain_name}
-                        )
-                        wait_for_job(host, d, timeout=60)
-                    except TroshkadError:
-                        pass
-            except TroshkadError:
-                pass
-        clock_offset = None
-        if project.clock_target:
-            from app.services.clock_service import compute_clock_offset
-
-            clock_offset = compute_clock_offset(project.clock_target)
-        for vm in host_vms:
-            job_id = _create_vm_via_troshkad(
-                host,
-                project_id,
-                vm,
-                topology,
-                vni_map,
-                pool,
-                clock_offset=clock_offset,
-            )
-            if job_id:
-                job = wait_for_job(host, job_id, timeout=300)
-                if job.get("status") == "failed":
-                    error = job.get("result", {}).get("error", "unknown")
-                    project.state = "error"
-                    project.deploy_error = (
-                        f"VM creation failed on {host_label}: {error}"
-                    )
-                    db.commit()
-                    _delete_deploy_progress(project_id)
-                    return
-                dom_uuid = job.get("result", {}).get("domain_uuid", "")
-                if dom_uuid:
-                    for n in topology.get("nodes", []):
-                        if n["id"] == vm["node_id"]:
-                            n.setdefault("data", {})["domainUuid"] = dom_uuid
-                            break
-
-    project.topology = topology
-    db.commit()
-
-    # Step 5: Start VMs on each host
+def _start_multihost_vms(project_id, vm_id_set_by_host, topology, db):
     _update_deploy_progress(project_id, "starting", "starting VMs")
     logger.info(
         "Deploy %s: starting VMs across %d hosts",
@@ -2680,6 +2636,104 @@ def _deploy_multihost(project_id: str, project, db):
                 failed_names,
             )
 
+
+def _deploy_multihost(project_id: str, project, db):
+    """Multi-host deploy orchestration: mesh → networks → VMs per host."""
+    logger.info("Deploy %s: starting multi-host orchestration", project_id[:8])
+
+    host_assignments = _build_multihost_assignments(project)
+    if not host_assignments:
+        logger.error("Deploy %s: no host assignments found", project_id[:8])
+        project.state = "error"
+        project.deploy_error = "No host assignments found for multi-host deploy"
+        db.commit()
+        return
+
+    host_ips = _resolve_multihost_ips(host_assignments, db)
+    topology = project.topology or {}
+    vni_map = project.vni_map or {}
+
+    _update_deploy_progress(project_id, "mesh", "setting up WireGuard mesh")
+    logger.info(
+        "Deploy %s: setting up mesh across %d hosts",
+        project_id[:8],
+        len(host_assignments),
+    )
+    if not _setup_mesh(db, project, host_assignments, host_ips):
+        project.state = "error"
+        project.deploy_error = "Mesh setup failed"
+        db.commit()
+        _delete_deploy_progress(project_id)
+        return
+
+    network_host_id = project.mesh_network_host_id
+    network_host = db.query(Host).filter_by(id=network_host_id).first()
+    if not network_host:
+        logger.error(
+            "Deploy %s: network host %s not found", project_id[:8], network_host_id[:8]
+        )
+        project.state = "error"
+        project.deploy_error = "Network host not found"
+        db.commit()
+        _delete_deploy_progress(project_id)
+        return
+
+    _update_deploy_progress(
+        project_id, "networks", "setting up networks on network host"
+    )
+    logger.info(
+        "Deploy %s: setting up networks on network host %s",
+        project_id[:8],
+        network_host_id[:8],
+    )
+    with _get_network_lock(network_host.id):
+        net_result = _setup_networks_via_troshkad(
+            network_host, topology, vni_map, db, project_id
+        )
+    if net_result is not True:
+        logger.error("Deploy %s: network setup failed: %s", project_id[:8], net_result)
+        project.state = "error"
+        project.deploy_error = f"Network setup failed: {net_result}"
+        db.commit()
+        _delete_deploy_progress(project_id)
+        return
+
+    _update_deploy_progress(
+        project_id, "remote-networks", "setting up VXLAN on remote hosts"
+    )
+    logger.info("Deploy %s: setting up VXLAN on remote hosts", project_id[:8])
+    if not _setup_remote_networks(db, project, host_assignments, vni_map, topology):
+        project.state = "error"
+        project.deploy_error = "Remote network setup failed"
+        db.commit()
+        _delete_deploy_progress(project_id)
+        return
+
+    all_vms = _extract_vms(topology)
+    vm_id_set_by_host: dict[str, set[str]] = {}
+    for vm_node_id, hid in (project.host_assignments or {}).items():
+        vm_id_set_by_host.setdefault(hid, set()).add(vm_node_id)
+
+    for host_id, vm_node_ids in vm_id_set_by_host.items():
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host:
+            continue
+        host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
+        err = _deploy_vms_on_host(
+            host, project_id, project, host_vms, topology, vni_map, db
+        )
+        if err:
+            project.state = "error"
+            project.deploy_error = err
+            db.commit()
+            _delete_deploy_progress(project_id)
+            return
+
+    project.topology = topology
+    db.commit()
+
+    _start_multihost_vms(project_id, vm_id_set_by_host, topology, db)
+
     project.state = "active"
     project.deploy_error = None
     project.deployed_topology = topology
@@ -2687,6 +2741,755 @@ def _deploy_multihost(project_id: str, project, db):
     _delete_deploy_progress(project_id)
     logger.info("Deploy %s: multi-host deploy complete", project_id[:8])
     notify_project(project_id, {"type": "project-state", "state": "active"})
+
+
+def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
+    if provider.type != "ocpvirt":
+        return False
+    pf_ports = set()
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") == "gateway":
+            for pf in node_data.get("portForwards", []):
+                if pf.get("extIpId") == canvas_id:
+                    pf_ports.add(int(pf.get("extPort", 0)))
+            break
+    if pf_ports and pf_ports.issubset({80, 443}):
+        logger.info(
+            "Deploy %s: skipping EIP for %s — all ports (%s) handled by Routes",
+            project_id[:8],
+            canvas_id[:8],
+            pf_ports,
+        )
+        return True
+    return False
+
+
+def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import (
+        allocate_eip,
+        allocate_transit_ports,
+        associate_eip,
+    )
+    from app.services.providers import get_provider_driver
+
+    canvas_id = ext_ip.get("id", "")
+    existing = (
+        s.query(ElasticIp)
+        .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+        .first()
+    )
+    eip = (
+        existing if existing else allocate_eip(s, provider, project_id, canvas_id, host)
+    )
+    if eip.state != "associated":
+        associate_eip(s, eip, host)
+    ext_ip["ip"] = eip.public_ip
+    ext_ip["_private_ip"] = eip.private_ip
+
+    if provider.type != "ec2" and not eip.port_map:
+        pf_for_eip = _find_gateway_port_forwards(topology, canvas_id)
+        if pf_for_eip:
+            port_map = allocate_transit_ports(s, eip, host, pf_for_eip)
+            driver = get_provider_driver(provider)
+            driver.update_eip_ports(
+                provider,
+                host,
+                eip.allocation_id,
+                [
+                    {
+                        "port": int(ep),
+                        "targetPort": tp,
+                        "name": f"pf-{i}",
+                    }
+                    for i, (ep, tp) in enumerate(port_map.items())
+                ],
+            )
+    if eip.port_map:
+        ext_ip["_transit_port_map"] = eip.port_map
+
+
+def _deploy_allocate_eips(s, project_id, project, host, topology, external_ips):
+    _checkpoint(s, project_id, "eips")
+    _update_deploy_progress(project_id, "eips", "allocating elastic IPs")
+    logger.info("Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips))
+
+    from app.models.provider import Provider
+
+    provider = (
+        s.query(Provider).filter_by(id=project.provider_id).first()
+        if project.provider_id
+        else None
+    )
+    if not provider and host.provider_id:
+        provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return "No provider configured for EIP allocation"
+
+    for ext_ip in external_ips:
+        canvas_id = ext_ip.get("id", "")
+        if _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
+            ext_ip["_skip"] = True
+            continue
+        _allocate_single_eip(s, provider, project_id, host, ext_ip, topology)
+
+    for ext_ip in external_ips:
+        ext_ip.pop("_skip", None)
+    project.topology = topology
+    s.commit()
+    return None
+
+
+def _deploy_setup_lb(host, project_id, topology, vni_map):
+    from app.services.vxlan import build_host_network_config as _build_net_config
+
+    _net_config = _build_net_config(topology, vni_map, [])
+    lb_config = _net_config.get("loadbalancer")
+    if not lb_config or not lb_config.get("frontends"):
+        return lb_config
+    _update_deploy_progress(project_id, "load balancer", "starting HAProxy")
+    logger.info("Deploy %s: setting up load balancer", project_id[:8])
+    ns = f"troshka-{project_id[:8]}"
+    lb_ip = lb_config.get("lb_ip", "")
+    if not lb_ip:
+        net_list = _net_config.get("networks", [])
+        if net_list:
+            import ipaddress as _ipa
+
+            first_cidr = net_list[0].get("dhcp_config", {}).get("gateway", "")
+            if first_cidr:
+                try:
+                    lb_ip = str(_ipa.IPv4Address(first_cidr) + 1)
+                except (ValueError, _ipa.AddressValueError):
+                    pass
+    lb_params = {
+        "ns": ns,
+        "project_id": project_id,
+        "frontends": lb_config["frontends"],
+        "backends": lb_config["backends"],
+        "lb_ip": lb_ip,
+    }
+    try:
+        lb_job = start_job(host, "/lb/setup", lb_params)
+        wait_for_job(host, lb_job, timeout=30)
+    except TroshkadError as e:
+        logger.warning("Deploy %s: LB setup failed: %s", project_id[:8], e)
+    return lb_config
+
+
+def _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config):
+    from app.models.provider import Provider as _Prov
+    from app.services.eip_service import sync_security_group_rules
+
+    _provider = (
+        s.query(_Prov).filter_by(id=project.provider_id).first()
+        if project.provider_id
+        else None
+    )
+    if not _provider and host.provider_id:
+        _provider = s.query(_Prov).filter_by(id=host.provider_id).first()
+    if not _provider:
+        return
+    desired_sg = []
+    gateway_node = next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+        ),
+        None,
+    )
+    if (
+        gateway_node
+        and gateway_node.get("data", {}).get("gatewayMode") == "nat-portforward"
+    ):
+        for pf in gateway_node.get("data", {}).get("portForwards", []):
+            if pf.get("extPort"):
+                desired_sg.append(
+                    {
+                        "project_id": project_id,
+                        "ext_port": int(pf["extPort"]),
+                        "protocol": "tcp",
+                    }
+                )
+    if lb_config and lb_config.get("frontends") and lb_config.get("external", True):
+        for fe in lb_config["frontends"]:
+            desired_sg.append(
+                {
+                    "project_id": project_id,
+                    "ext_port": int(fe["bindPort"]),
+                    "protocol": "tcp",
+                }
+            )
+    if desired_sg:
+        sync_security_group_rules(s, _provider, desired_sg)
+
+
+def _deploy_inject_gateway_ip(topology, project_id):
+    gateway_ip = None
+    for node in topology.get("nodes", []):
+        if node.get("type") == "gatewayNode":
+            for edge in topology.get("edges", []):
+                if edge.get("source") == node["id"]:
+                    target_node = next(
+                        (n for n in topology["nodes"] if n["id"] == edge["target"]),
+                        None,
+                    )
+                    if target_node and target_node.get("type") == "networkNode":
+                        net_data = target_node.get("data", {})
+                        cidr = net_data.get("cidr", "192.168.1.0/24")
+                        import ipaddress
+
+                        network = ipaddress.ip_network(cidr, strict=False)
+                        gateway_ip = str(network.network_address + 1)
+                        break
+            break
+    if gateway_ip:
+        for node in topology.get("nodes", []):
+            if node.get("type") == "vmNode" and node.get("data", {}).get("cloudInit"):
+                node["data"]["gateway_ip"] = gateway_ip
+        logger.info(
+            "Deploy %s: injected gateway_ip %s into VM cloud-init data",
+            project_id[:8],
+            gateway_ip,
+        )
+
+
+def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
+    if not host or not host.provider_id:
+        return
+    from app.models.provider import Provider
+    from app.services.providers import get_provider_driver
+
+    provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider or provider.type != "ocpvirt":
+        return
+    driver = get_provider_driver(provider)
+    external_endpoints = []
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") != "gateway":
+            continue
+        for pf in node_data.get("portForwards", []):
+            ext_port = int(pf.get("extPort", 0))
+            if ext_port not in (80, 443, 6443):
+                continue
+            int_ip = pf.get("intIp", "")
+            int_port = int(pf.get("intPort", ext_port))
+            vm_name = _find_vm_name_by_ip(topology, int_ip)
+            try:
+                result = driver.create_route_access(
+                    provider,
+                    host,
+                    project_id,
+                    vm_name,
+                    int_ip,
+                    ext_port,
+                    int_port,
+                )
+                external_endpoints.append(
+                    {
+                        "vmName": vm_name,
+                        "vmIp": int_ip,
+                        "port": ext_port,
+                        "type": "route",
+                        "hostname": result["hostname"],
+                    }
+                )
+                logger.info(
+                    "Deploy %s: created Route for %s:%d → %s",
+                    project_id[:8],
+                    vm_name,
+                    ext_port,
+                    result["hostname"],
+                )
+            except Exception:
+                logger.warning(
+                    "Deploy %s: Route creation failed for %s:%d, continuing",
+                    project_id[:8],
+                    vm_name,
+                    ext_port,
+                    exc_info=True,
+                )
+        if external_endpoints:
+            node_data["externalEndpoints"] = external_endpoints
+        break
+    s.commit()
+
+
+def _deploy_pull_container_images(host, project_id, topology, s):
+    containers = _extract_containers(topology)
+    logger.info(
+        "Deploy %s: found %d containers to pull", project_id[:8], len(containers)
+    )
+    if not containers:
+        return
+    is_pattern_deploy = _is_pattern_deploy(topology)
+    pattern_id = None
+    if is_pattern_deploy:
+        for node in topology.get("nodes", []):
+            if node.get("type") == "storageNode":
+                pattern_id = node.get("data", {}).get("patternId")
+                if pattern_id:
+                    break
+
+    _update_deploy_progress(
+        project_id, step="container_pull", detail="Pulling container images..."
+    )
+    logger.info("Deploy %s: pulling container images", project_id[:8])
+    for ctr in containers:
+        if ctr.get("is_pod"):
+            _pull_pod_images(host, ctr, s)
+            continue
+        if not ctr["image"]:
+            continue
+        if is_pattern_deploy and pattern_id:
+            _load_container_from_pattern(host, project_id, ctr, pattern_id)
+        else:
+            _pull_single_container_image(host, ctr, s)
+
+
+def _pull_pod_images(host, ctr, s):
+    all_images = set()
+    for ic in ctr.get("init_containers", []):
+        if ic.get("image"):
+            all_images.add(ic["image"])
+    for pc in ctr.get("pod_containers", []):
+        if pc.get("image"):
+            all_images.add(pc["image"])
+    for img in all_images:
+        pull_params = {"image": img}
+        _add_registry_creds(pull_params, ctr, s)
+        job_id = start_job(host, "/containers/pull", pull_params)
+        wait_for_job(host, job_id, timeout=600)
+
+
+def _pull_single_container_image(host, ctr, s):
+    pull_params = {"image": ctr["image"]}
+    _add_registry_creds(pull_params, ctr, s)
+    job_id = start_job(host, "/containers/pull", pull_params)
+    wait_for_job(host, job_id, timeout=600)
+
+
+def _add_registry_creds(pull_params, ctr, s):
+    cred_id = ctr.get("registry_credential_id")
+    if not cred_id:
+        return
+    from app.core.encryption import decrypt
+    from app.models.registry_credential import RegistryCredential
+
+    cred = s.query(RegistryCredential).filter_by(id=cred_id).first()
+    if cred:
+        pull_params["registry"] = cred.registry_url
+        pull_params["username"] = cred.username
+        pull_params["password"] = decrypt(cred.password)
+
+
+def _load_container_from_pattern(host, project_id, ctr, pattern_id):
+    from app.services.s3_storage import _bucket, _get_s3_config
+
+    tar_filename = f"container-{ctr['node_id'][:8]}-image.tar.gz"
+    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{tar_filename}"
+    s3_key = f"patterns/{pattern_id}/{tar_filename}"
+    creds = _get_s3_config()
+    logger.info(
+        "Deploy %s: downloading container image %s from pattern cache",
+        project_id[:8],
+        ctr["image"],
+    )
+    job_id = start_job(
+        host,
+        "/images/cache",
+        {
+            "url": f"s3://{_bucket()}/{s3_key}",
+            "cache_path": cache_path,
+            "aws_access_key_id": creds.get("access_key_id", ""),
+            "aws_secret_access_key": creds.get("secret_access_key", ""),
+            "aws_region": creds.get("region", "us-east-1"),
+            "aws_endpoint_url": creds.get("endpoint_url", ""),
+        },
+    )
+    wait_for_job(host, job_id, timeout=600)
+    logger.info(
+        "Deploy %s: loading container image %s from cache",
+        project_id[:8],
+        ctr["image"],
+    )
+    job_id = start_job(host, "/containers/load-image", {"input_path": cache_path})
+    wait_for_job(host, job_id, timeout=300)
+
+
+def _deploy_validate_bmc(project_id, topology):
+    bmc_network_exists = any(
+        n.get("type") == "networkNode" and n.get("data", {}).get("networkType") == "bmc"
+        for n in topology.get("nodes", [])
+    )
+    if not bmc_network_exists:
+        return None
+    missing_bmc_ips = [
+        n["data"].get("name", n["id"][:8])
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("bmcEnabled")
+        and not n.get("data", {}).get("bmcIp")
+    ]
+    if missing_bmc_ips:
+        return f"BMC-enabled VMs missing BMC IP: {', '.join(missing_bmc_ips)}"
+    return None
+
+
+def _deploy_create_disks(host, project_id, topology, pool):
+    _update_deploy_progress(project_id, "creating disks", "preparing VM disks")
+    vms = _extract_vms(topology)
+    disk_jobs = []
+    for vm in vms:
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+        disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+    containers = _extract_containers(topology)
+    for ctr in containers:
+        ctr_vols = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
+        for vol in ctr_vols:
+            jid = start_job(
+                host,
+                "/disks/create",
+                {"path": vol["disk_path"], "size_gb": vol["size_gb"], "format": "raw"},
+            )
+            disk_jobs.append(jid)
+    for di, jid in enumerate(disk_jobs):
+        try:
+            _update_deploy_progress(
+                project_id, "creating disks", f"{di}/{len(disk_jobs)}"
+            )
+            job = wait_for_job(host, jid, timeout=900)
+            if job.get("status") == "failed":
+                raise TroshkadError(
+                    f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}"
+                )
+        except TroshkadError as e:
+            logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
+            raise
+    return vms
+
+
+def _deploy_handle_recert(s, host, project_id, topology, pool):
+    if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
+        return
+    _update_deploy_progress(project_id, "certs", "regenerating certificates")
+    deploy_recert = topology.pop("_deploy_recert", None)
+    common_password = topology.pop("_deploy_common_password", None)
+    if deploy_recert is None:
+        for node in topology.get("nodes", []):
+            if node.get("type") == "storageNode":
+                pid = node.get("data", {}).get("patternId")
+                if pid:
+                    pat = s.query(Pattern).filter_by(id=pid).first()
+                    if pat and pat.recert:
+                        deploy_recert = True
+                    break
+    if not common_password:
+        for n in topology.get("nodes", []):
+            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+                common_password = n.get("data", {}).get("ciCloudUserPassword")
+                if common_password:
+                    break
+    if deploy_recert and deploy_recert is not False:
+        has_recert_vm = any(
+            n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
+            for n in topology.get("nodes", [])
+        )
+        if not has_recert_vm:
+            for n in topology.get("nodes", []):
+                if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos":
+                    n.setdefault("data", {})["recertEnabled"] = True
+            logger.info(
+                "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
+                project_id[:8],
+            )
+    if deploy_recert is False:
+        logger.info(
+            "Deploy %s: recert disabled by user, using guestfish",
+            project_id[:8],
+        )
+    _clean_kubelet_certs(
+        host,
+        project_id,
+        topology,
+        pool,
+        pattern_recert=bool(deploy_recert),
+        common_password=common_password,
+    )
+
+
+def _deploy_define_vms(
+    host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+):
+    for vi, vm in enumerate(vms):
+        items = []
+        for vj, v in enumerate(vms):
+            n = v.get("name", v["node_id"][:8])
+            if vj < vi:
+                items.append(f"{n}: defined")
+            elif vj == vi:
+                items.append(f"{n}: defining...")
+            else:
+                items.append(f"{n}: pending")
+        _update_deploy_progress(
+            project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
+        )
+        domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
+        try:
+            dom_check = start_job(host, "/vm/info", {"name": domain_name})
+            dom_result = wait_for_job(host, dom_check, timeout=10)
+            if dom_result.get("result", {}).get("state"):
+                logger.info(
+                    "Deploy %s: stale domain %s exists, undefining before re-create",
+                    project_id[:8],
+                    domain_name,
+                )
+                try:
+                    j = start_job(host, _VMS_DESTROY_PATH, {"domain_name": domain_name})
+                    wait_for_job(host, j, timeout=60)
+                except TroshkadError:
+                    pass
+        except TroshkadError:
+            pass
+
+        job_id = _create_vm_via_troshkad(
+            host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+        )
+        if job_id:
+            try:
+                job = wait_for_job(host, job_id, timeout=300)
+                if job.get("status") == "failed":
+                    raise TroshkadError(
+                        f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
+                    )
+                dom_uuid = job.get("result", {}).get("domain_uuid", "")
+                if dom_uuid:
+                    for n in topology.get("nodes", []):
+                        if n["id"] == vm["node_id"]:
+                            n.setdefault("data", {})["domainUuid"] = dom_uuid
+                            break
+            except TroshkadError as e:
+                logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
+                raise
+
+
+def _deploy_setup_bmc(host, project_id, topology):
+    has_bmc_vms = any(
+        n.get("type") == "vmNode" and n.get("data", {}).get("bmcEnabled")
+        for n in topology.get("nodes", [])
+    )
+    bmc_config = _extract_bmc_config(topology, project_id)
+    if has_bmc_vms and not bmc_config:
+        return "VMs have BMC enabled but no BMC network (type: bmc) is defined", None
+    if not bmc_config:
+        return None, None
+    _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
+    notify_project(
+        project_id,
+        {
+            "type": "deploy-progress",
+            "progress": _get_deploy_progress_data(project_id) or {},
+        },
+    )
+    logger.info(
+        "Deploy %s: starting BMC endpoints for %d VMs",
+        project_id[:8],
+        len(bmc_config["vms"]),
+    )
+    bmc_result = _setup_bmc_via_troshkad(host, project_id, bmc_config)
+    if bmc_result is not True:
+        logger.error("Deploy %s: BMC setup failed: %s", project_id[:8], bmc_result)
+        return f"BMC setup failed: {bmc_result}", None
+    return None, bmc_config
+
+
+def _deploy_create_containers(host, project_id, topology, vni_map, pool):
+    containers = _extract_containers(topology)
+    logger.info(
+        "Deploy %s: found %d containers to create", project_id[:8], len(containers)
+    )
+    if not containers:
+        return
+    _update_deploy_progress(
+        project_id, step="containers", detail="Creating containers..."
+    )
+    logger.info("Deploy %s: creating containers", project_id[:8])
+    start_order = topology.get("startOrder", [])
+    ordered_ids = set()
+    for entry in start_order:
+        if entry.get("entryType") == "container":
+            ctr_id = entry.get("containerId", entry.get("vmId", ""))
+            ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
+            if ctr:
+                ordered_ids.add(ctr_id)
+                delay = entry.get("delaySeconds", 0)
+                if delay > 0:
+                    _time.sleep(delay)
+                if ctr.get("is_pod"):
+                    _create_and_start_pod(
+                        host, project_id, ctr, topology, vni_map, pool
+                    )
+                else:
+                    _create_and_start_container(
+                        host, project_id, ctr, topology, vni_map, pool
+                    )
+    for ctr in containers:
+        if ctr["node_id"] not in ordered_ids:
+            if ctr.get("is_pod"):
+                _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool)
+            else:
+                _create_and_start_container(
+                    host, project_id, ctr, topology, vni_map, pool
+                )
+
+
+def _deploy_start_vms(s, host, project_id, project, topology, auto_start):
+    if not auto_start:
+        return True
+    _update_deploy_progress(project_id, "starting", "VMs")
+    notify_project(
+        project_id,
+        {
+            "type": "deploy-progress",
+            "progress": _get_deploy_progress_data(project_id) or {},
+        },
+    )
+    logger.info("Deploy %s: starting VMs", project_id[:8])
+    start_failures = _start_vms_via_troshkad(host, project_id, topology)
+    if start_failures:
+        failed_names = ", ".join(name for name, _ in start_failures)
+        error_msg = f"Failed to start VMs: {failed_names}"
+        logger.error("Deploy %s: %s", project_id[:8], error_msg)
+        project.state = "error"
+        project.deploy_error = error_msg
+        from app.services.placement import sync_host_capacity
+
+        sync_host_capacity(s, host)
+        s.commit()
+        notify_project(
+            project_id,
+            {
+                "type": "project-state",
+                "state": "error",
+                "deploy_error": error_msg,
+            },
+        )
+        _delete_deploy_progress(project_id)
+        return False
+    return True
+
+
+def _deploy_finalize_timers(project, auto_start):
+    if project.state == "active" and project.auto_stop_minutes:
+        now = datetime.datetime.now(datetime.UTC)
+        project.auto_stop_started_at = now
+        project.auto_stop_expires_at = now + datetime.timedelta(
+            minutes=project.auto_stop_minutes
+        )
+        project.auto_stop_warned = False
+    if project.auto_delete_minutes and not project.auto_delete_started_at:
+        now = datetime.datetime.now(datetime.UTC)
+        project.auto_delete_started_at = now
+        project.lifetime_expires_at = now + datetime.timedelta(
+            minutes=project.auto_delete_minutes
+        )
+        project.auto_delete_warned = False
+
+
+def _deploy_create_dns_records(
+    s, project_id, project, topology, lb_config, external_ips
+):
+    if not (project.dns_provider_id and project.guid and project.domain):
+        return
+    from app.models.dns_provider import DnsProvider
+    from app.services.dns_service import create_dns_records, resolve_dns_records
+
+    dns_provider = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+    if not dns_provider or not lb_config:
+        return
+    _update_deploy_progress(
+        project_id,
+        "dns",
+        f"creating records for {project.guid}.{project.domain}",
+    )
+    eip_address = None
+    for ext_ip in external_ips:
+        pub = ext_ip.get("ip") or ext_ip.get("_public_ip")
+        if pub:
+            eip_address = pub
+            break
+    dns_templates = lb_config.get("dns_records", [])
+    if not dns_templates:
+        return
+    records = resolve_dns_records(
+        dns_templates,
+        guid=project.guid,
+        domain=project.domain,
+        eip=eip_address,
+    )
+    errors = create_dns_records(
+        dns_provider.type,
+        dns_provider.config,
+        records,
+        ttl=lb_config.get("dns_ttl", 30),
+    )
+    deployed_topo = project.deployed_topology or {}
+    deployed_topo["_dns_records"] = [r for r in records if r.get("value")]
+    project.deployed_topology = deployed_topo
+    if errors:
+        logger.warning(
+            "Deploy %s: DNS record creation had errors: %s",
+            project_id[:8],
+            errors,
+        )
+
+
+def _deploy_store_bmc_topology(project, topology, bmc_config):
+    if not bmc_config:
+        return
+    node_map = {n["id"]: n for n in topology.get("nodes", [])}
+    deployed_topo = project.deployed_topology or {}
+    deployed_topo["bmc"] = {
+        "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+        "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+        "vms": {
+            vm["node_id"]: {
+                "ip": vm["bmc_ip"],
+                "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
+                "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
+                "ipmi_address": f"{vm['bmc_ip']}:623",
+            }
+            for vm in bmc_config["vms"]
+        },
+    }
+    project.deployed_topology = deployed_topo
+
+
+def _cleanup_stale_shared_cache(s, project):
+    if not project.host_id:
+        return
+    h = s.query(Host).filter_by(id=project.host_id).first()
+    if not h:
+        return
+    pool = _get_host_pool(h, s)
+    if not pool or not pool.mode.startswith("shared"):
+        return
+    from app.models.storage_pool import SharedCacheEntry
+
+    for entry in (
+        s.query(SharedCacheEntry)
+        .filter(
+            SharedCacheEntry.storage_pool_id == pool.id,
+            SharedCacheEntry.status == "downloading",
+        )
+        .all()
+    ):
+        s.delete(entry)
 
 
 def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
@@ -2824,122 +3627,20 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
 
-        # Step 0: Allocate and associate EIPs (before networking so DNAT rules have private IPs)
         external_ips = topology.get("externalIps", [])
         if external_ips and not _should_skip(resume_from, "eips"):
-            _checkpoint(s, project_id, "eips")
-            _update_deploy_progress(project_id, "eips", "allocating elastic IPs")
-            logger.info(
-                "Deploy %s: allocating %d EIPs", project_id[:8], len(external_ips)
+            err = _deploy_allocate_eips(
+                s, project_id, project, host, topology, external_ips
             )
-            from app.models.elastic_ip import ElasticIp
-            from app.models.provider import Provider
-            from app.services.eip_service import (
-                allocate_eip,
-                allocate_transit_ports,
-                associate_eip,
-                sync_security_group_rules,
-            )
-            from app.services.providers import get_provider_driver
-
-            provider = (
-                s.query(Provider).filter_by(id=project.provider_id).first()
-                if project.provider_id
-                else None
-            )
-            if not provider and host.provider_id:
-                provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if not provider:
+            if err:
                 project.state = "error"
-                project.deploy_error = "No provider configured for EIP allocation"
+                project.deploy_error = err
                 s.commit()
                 _delete_deploy_progress(project_id)
                 return
 
-            for ext_ip in external_ips:
-                canvas_id = ext_ip.get("id", "")
-
-                # OCP Virt: skip EIP allocation when all port forwards are
-                # routable via OCP Routes (443/80) — Routes replace EIPs
-                if provider.type == "ocpvirt":
-                    pf_ports = set()
-                    for node in topology.get("nodes", []):
-                        node_data = node.get("data", {})
-                        if node_data.get("subtype") == "gateway":
-                            for pf in node_data.get("portForwards", []):
-                                if pf.get("extIpId") == canvas_id:
-                                    pf_ports.add(int(pf.get("extPort", 0)))
-                            break
-                    if pf_ports and pf_ports.issubset({80, 443}):
-                        logger.info(
-                            "Deploy %s: skipping EIP for %s — all ports (%s) handled by Routes",
-                            project_id[:8],
-                            canvas_id[:8],
-                            pf_ports,
-                        )
-                        ext_ip["_skip"] = True
-                        continue
-
-                existing = (
-                    s.query(ElasticIp)
-                    .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
-                    .first()
-                )
-                if existing:
-                    eip = existing
-                else:
-                    eip = allocate_eip(s, provider, project_id, canvas_id, host)
-
-                if eip.state != "associated":
-                    associate_eip(s, eip, host)
-
-                ext_ip["ip"] = eip.public_ip
-                ext_ip["_private_ip"] = eip.private_ip
-
-                if provider.type != "ec2" and not eip.port_map:
-                    pf_for_eip = []
-                    for node in topology.get("nodes", []):
-                        node_data = node.get("data", {})
-                        if node_data.get("subtype") == "gateway":
-                            pf_for_eip = [
-                                pf
-                                for pf in node_data.get("portForwards", [])
-                                if pf.get("extIpId") == canvas_id
-                            ]
-                            break
-                    if pf_for_eip:
-                        port_map = allocate_transit_ports(s, eip, host, pf_for_eip)
-                        driver = get_provider_driver(provider)
-                        driver.update_eip_ports(
-                            provider,
-                            host,
-                            eip.allocation_id,
-                            [
-                                {
-                                    "port": int(ep),
-                                    "targetPort": tp,
-                                    "name": f"pf-{i}",
-                                }
-                                for i, (ep, tp) in enumerate(port_map.items())
-                            ],
-                        )
-
-                if eip.port_map:
-                    ext_ip["_transit_port_map"] = eip.port_map
-
-            # Clean up internal markers (keep EIP entries so port forward
-            # references remain valid — OCP Virt EIPs just have no allocated IP)
-            for ext_ip in external_ips:
-                ext_ip.pop("_skip", None)
-
-            project.topology = topology
-            s.commit()
-
-        # Auto-assign IPs to container NICs without static IPs (before network setup
-        # so dnsmasq gets static host entries for containers)
         _auto_assign_container_ips(topology)
 
-        # Step 1: Set up VXLAN networks (serialized to avoid nftables contention)
         _checkpoint(s, project_id, "networks")
         _update_deploy_progress(project_id, "networking", "waiting for lock")
         with _get_network_lock(host.id):
@@ -2947,7 +3648,6 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             logger.info(
                 "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
             )
-
             net_result = _setup_networks_via_troshkad(
                 host, topology, vni_map, s, project_id
             )
@@ -2959,132 +3659,16 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             _delete_deploy_progress(project_id)
             return
 
-        # Step 1a: Set up load balancer (HAProxy) if present
-        from app.services.vxlan import build_host_network_config as _build_net_config
+        lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
 
-        _net_config = _build_net_config(topology, vni_map, [])
-        lb_config = _net_config.get("loadbalancer")
-        if lb_config and lb_config.get("frontends"):
-            _update_deploy_progress(project_id, "load balancer", "starting HAProxy")
-            logger.info("Deploy %s: setting up load balancer", project_id[:8])
-            ns = f"troshka-{project_id[:8]}"
-            # Default LB IP to gateway+1 if not set
-            lb_ip = lb_config.get("lb_ip", "")
-            if not lb_ip:
-                net_list = _net_config.get("networks", [])
-                if net_list:
-                    import ipaddress as _ipa
-
-                    first_cidr = net_list[0].get("dhcp_config", {}).get("gateway", "")
-                    if first_cidr:
-                        try:
-                            lb_ip = str(_ipa.IPv4Address(first_cidr) + 1)
-                        except (ValueError, _ipa.AddressValueError):
-                            pass
-            lb_params = {
-                "ns": ns,
-                "project_id": project_id,
-                "frontends": lb_config["frontends"],
-                "backends": lb_config["backends"],
-                "lb_ip": lb_ip,
-            }
-            try:
-                lb_job = start_job(host, "/lb/setup", lb_params)
-                wait_for_job(host, lb_job, timeout=30)
-            except TroshkadError as e:
-                logger.warning("Deploy %s: LB setup failed: %s", project_id[:8], e)
-
-        # Step 1b: Sync SG rules for port forwards (gateway + LB)
         if external_ips:
-            from app.models.provider import Provider as _Prov
-            from app.services.eip_service import sync_security_group_rules
-
-            _provider = (
-                s.query(_Prov).filter_by(id=project.provider_id).first()
-                if project.provider_id
-                else None
-            )
-            if not _provider and host.provider_id:
-                _provider = s.query(_Prov).filter_by(id=host.provider_id).first()
-            if _provider:
-                desired_sg = []
-                gateway_node = next(
-                    (
-                        n
-                        for n in topology.get("nodes", [])
-                        if n.get("type") == "networkNode"
-                        and n.get("data", {}).get("subtype") == "gateway"
-                    ),
-                    None,
-                )
-                if (
-                    gateway_node
-                    and gateway_node.get("data", {}).get("gatewayMode")
-                    == "nat-portforward"
-                ):
-                    for pf in gateway_node.get("data", {}).get("portForwards", []):
-                        if pf.get("extPort"):
-                            desired_sg.append(
-                                {
-                                    "project_id": project_id,
-                                    "ext_port": int(pf["extPort"]),
-                                    "protocol": "tcp",
-                                }
-                            )
-                if (
-                    lb_config
-                    and lb_config.get("frontends")
-                    and lb_config.get("external", True)
-                ):
-                    for fe in lb_config["frontends"]:
-                        desired_sg.append(
-                            {
-                                "project_id": project_id,
-                                "ext_port": int(fe["bindPort"]),
-                                "protocol": "tcp",
-                            }
-                        )
-                if desired_sg:
-                    sync_security_group_rules(s, _provider, desired_sg)
+            _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
 
         if _project_deleted(project_id):
-            logger.info(
-                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
-            )
             _delete_deploy_progress(project_id)
             return
 
-        # Step 1c: Inject gateway IP for NTP into VM data (before seed ISOs)
-        gateway_ip = None
-        for node in topology.get("nodes", []):
-            if node.get("type") == "gatewayNode":
-                for edge in topology.get("edges", []):
-                    if edge.get("source") == node["id"]:
-                        target_node = next(
-                            (n for n in topology["nodes"] if n["id"] == edge["target"]),
-                            None,
-                        )
-                        if target_node and target_node.get("type") == "networkNode":
-                            net_data = target_node.get("data", {})
-                            cidr = net_data.get("cidr", "192.168.1.0/24")
-                            import ipaddress
-
-                            network = ipaddress.ip_network(cidr, strict=False)
-                            gateway_ip = str(network.network_address + 1)
-                            break
-                break
-
-        if gateway_ip:
-            for node in topology.get("nodes", []):
-                if node.get("type") == "vmNode" and node.get("data", {}).get(
-                    "cloudInit"
-                ):
-                    node["data"]["gateway_ip"] = gateway_ip
-            logger.info(
-                "Deploy %s: injected gateway_ip %s into VM cloud-init data",
-                project_id[:8],
-                gateway_ip,
-            )
+        _deploy_inject_gateway_ip(topology, project_id)
 
         if not project.guest_exec_enabled:
             for node in topology.get("nodes", []):
@@ -3093,87 +3677,21 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 ):
                     node["data"]["guestExecEnabled"] = False
 
-        # Create Route-based access for OCP Virt port forwards on 443/80
-        # Runs after network setup so nftables chains exist for DNAT rules
-        if host and host.provider_id:
-            from app.models.provider import Provider
-            from app.services.providers import get_provider_driver
+        _deploy_create_ocpvirt_routes(s, host, project_id, topology)
 
-            provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider and provider.type == "ocpvirt":
-                driver = get_provider_driver(provider)
-                external_endpoints = []
-                for node in topology.get("nodes", []):
-                    node_data = node.get("data", {})
-                    if node_data.get("subtype") != "gateway":
-                        continue
-                    for pf in node_data.get("portForwards", []):
-                        ext_port = int(pf.get("extPort", 0))
-                        if ext_port not in (80, 443, 6443):
-                            continue
-                        int_ip = pf.get("intIp", "")
-                        int_port = int(pf.get("intPort", ext_port))
-                        vm_name = _find_vm_name_by_ip(topology, int_ip)
-                        try:
-                            result = driver.create_route_access(
-                                provider,
-                                host,
-                                project_id,
-                                vm_name,
-                                int_ip,
-                                ext_port,
-                                int_port,
-                            )
-                            external_endpoints.append(
-                                {
-                                    "vmName": vm_name,
-                                    "vmIp": int_ip,
-                                    "port": ext_port,
-                                    "type": "route",
-                                    "hostname": result["hostname"],
-                                }
-                            )
-                            logger.info(
-                                "Deploy %s: created Route for %s:%d → %s",
-                                project_id[:8],
-                                vm_name,
-                                ext_port,
-                                result["hostname"],
-                            )
-                        except Exception:
-                            logger.warning(
-                                "Deploy %s: Route creation failed for %s:%d, continuing",
-                                project_id[:8],
-                                vm_name,
-                                ext_port,
-                                exc_info=True,
-                            )
-                    if external_endpoints:
-                        node_data["externalEndpoints"] = external_endpoints
-                    break
-
-                project.topology = topology
-                s.commit()
-
-        # Step 2: Create cloud-init seed ISOs
         _checkpoint(s, project_id, "seeds")
         _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
         logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
         _create_seed_isos_via_troshkad(host, project_id, topology, pool)
 
-        # Step 2b: Deploy metadata service
         _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
         logger.info("Deploy %s: deploying metadata service", project_id[:8])
         _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
         if _project_deleted(project_id):
-            logger.info(
-                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
-            )
             _delete_deploy_progress(project_id)
             return
 
-        # Step 3: Cache library images on host
         _checkpoint(s, project_id, "images")
         _update_deploy_progress(project_id, "downloading images", "0%")
         logger.info("Deploy %s: caching library images", project_id[:8])
@@ -3185,177 +3703,34 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
 
-        # Step 3b: Set up PXE boot services (extract kernel/initrd, start HTTP server)
         logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
         _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
-        # Step 3c: Pull container images
         _checkpoint(s, project_id, "container_pull")
-        containers = _extract_containers(topology)
-        logger.info(
-            "Deploy %s: found %d containers to pull", project_id[:8], len(containers)
-        )
-        if containers:
-            is_pattern_deploy = _is_pattern_deploy(topology)
-            pattern_id = None
-            if is_pattern_deploy:
-                # Extract pattern_id from any storage node
-                for node in topology.get("nodes", []):
-                    if node.get("type") == "storageNode":
-                        pattern_id = node.get("data", {}).get("patternId")
-                        if pattern_id:
-                            break
-
-            _update_deploy_progress(
-                project_id, step="container_pull", detail="Pulling container images..."
-            )
-            logger.info("Deploy %s: pulling container images", project_id[:8])
-            for ctr in containers:
-                if ctr.get("is_pod"):
-                    all_images = set()
-                    for ic in ctr.get("init_containers", []):
-                        if ic.get("image"):
-                            all_images.add(ic["image"])
-                    for pc in ctr.get("pod_containers", []):
-                        if pc.get("image"):
-                            all_images.add(pc["image"])
-                    for img in all_images:
-                        pull_params = {"image": img}
-                        cred_id = ctr.get("registry_credential_id")
-                        if cred_id:
-                            from app.core.encryption import decrypt
-                            from app.models.registry_credential import (
-                                RegistryCredential,
-                            )
-
-                            cred = (
-                                s.query(RegistryCredential)
-                                .filter_by(id=cred_id)
-                                .first()
-                            )
-                            if cred:
-                                pull_params["registry"] = cred.registry_url
-                                pull_params["username"] = cred.username
-                                pull_params["password"] = decrypt(cred.password)
-                        job_id = start_job(host, "/containers/pull", pull_params)
-                        wait_for_job(host, job_id, timeout=600)
-                    continue
-
-                if not ctr["image"]:
-                    continue
-
-                if is_pattern_deploy and pattern_id:
-                    # Load from pattern cache instead of pulling
-                    tar_filename = f"container-{ctr['node_id'][:8]}-image.tar.gz"
-                    cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{tar_filename}"
-                    s3_key = f"patterns/{pattern_id}/{tar_filename}"
-
-                    from app.services.s3_storage import _bucket, _get_s3_config
-
-                    creds = _get_s3_config()
-
-                    # Download from S3 if not cached
-                    logger.info(
-                        "Deploy %s: downloading container image %s from pattern cache",
-                        project_id[:8],
-                        ctr["image"],
-                    )
-                    job_id = start_job(
-                        host,
-                        "/images/cache",
-                        {
-                            "url": f"s3://{_bucket()}/{s3_key}",
-                            "cache_path": cache_path,
-                            "aws_access_key_id": creds.get("access_key_id", ""),
-                            "aws_secret_access_key": creds.get("secret_access_key", ""),
-                            "aws_region": creds.get("region", "us-east-1"),
-                            "aws_endpoint_url": creds.get("endpoint_url", ""),
-                        },
-                    )
-                    wait_for_job(host, job_id, timeout=600)
-
-                    # Load image from tar.gz
-                    logger.info(
-                        "Deploy %s: loading container image %s from cache",
-                        project_id[:8],
-                        ctr["image"],
-                    )
-                    job_id = start_job(
-                        host, "/containers/load-image", {"input_path": cache_path}
-                    )
-                    wait_for_job(host, job_id, timeout=300)
-                else:
-                    # Normal pull from registry
-                    pull_params = {"image": ctr["image"]}
-
-                    # Resolve registry credentials
-                    cred_id = ctr.get("registry_credential_id")
-                    if cred_id:
-                        from app.core.encryption import decrypt
-                        from app.models.registry_credential import RegistryCredential
-
-                        cred = s.query(RegistryCredential).filter_by(id=cred_id).first()
-                        if cred:
-                            pull_params["registry"] = cred.registry_url
-                            pull_params["username"] = cred.username
-                            pull_params["password"] = decrypt(cred.password)
-
-                    job_id = start_job(host, "/containers/pull", pull_params)
-                    wait_for_job(host, job_id, timeout=600)
+        _deploy_pull_container_images(host, project_id, topology, s)
 
         if _project_deleted(project_id):
-            logger.info(
-                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
+            _delete_deploy_progress(project_id)
+            return
+
+        bmc_err = _deploy_validate_bmc(project_id, topology)
+        if bmc_err:
+            logger.error("Deploy %s: %s", project_id[:8], bmc_err)
+            project.state = "error"
+            project.deploy_error = bmc_err
+            s.commit()
+            notify_project(
+                project_id,
+                {"type": "project-state", "state": "error", "deploy_error": bmc_err},
             )
             _delete_deploy_progress(project_id)
             return
 
-        # Step 3d: Validate BMC configuration
-        bmc_network_exists = any(
-            n.get("type") == "networkNode"
-            and n.get("data", {}).get("networkType") == "bmc"
-            for n in topology.get("nodes", [])
-        )
-        if bmc_network_exists:
-            missing_bmc_ips = [
-                n["data"].get("name", n["id"][:8])
-                for n in topology.get("nodes", [])
-                if n.get("type") == "vmNode"
-                and n.get("data", {}).get("bmcEnabled")
-                and not n.get("data", {}).get("bmcIp")
-            ]
-            if missing_bmc_ips:
-                error_msg = (
-                    f"BMC-enabled VMs missing BMC IP: {', '.join(missing_bmc_ips)}"
-                )
-                logger.error("Deploy %s: %s", project_id[:8], error_msg)
-                project.state = "error"
-                project.deploy_error = error_msg
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": error_msg,
-                    },
-                )
-                _delete_deploy_progress(project_id)
-                return
-
-        # Create BMC bridge (before VMs so libvirt can validate the bridge name)
         bmc_config = _extract_bmc_config(topology, project_id)
         if bmc_config:
-            from app.services.troshkad_client import (
-                start_job as _sj,
-            )
-            from app.services.troshkad_client import (
-                wait_for_job as _wj,
-            )
-
             net_data = bmc_config["bmc_network"]
             cidr = net_data.get("cidr", "192.168.100.0/24")
-            _bj = _sj(
+            _bj = start_job(
                 host,
                 "/bmc/create-bridge",
                 {
@@ -3365,298 +3740,46 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                     "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
                 },
             )
-            _wj(host, _bj, timeout=30)
+            wait_for_job(host, _bj, timeout=30)
             logger.info("Deploy %s: BMC bridge created", project_id[:8])
 
         if _project_deleted(project_id):
-            logger.info(
-                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
-            )
             _delete_deploy_progress(project_id)
             return
 
-        # Step 4: Create VM disks and definitions (parallel)
         _checkpoint(s, project_id, "disks")
         _update_deploy_progress(project_id, "creating", "VMs")
         logger.info("Deploy %s: creating VMs", project_id[:8])
-        vms = _extract_vms(topology)
+        vms = _deploy_create_disks(host, project_id, topology, pool)
 
-        # Fire all disk creation jobs in parallel (VMs + container volumes)
-        _update_deploy_progress(project_id, "creating disks", "preparing VM disks")
-        disk_jobs = []
-        for vm in vms:
-            vm_disks = _find_vm_disks(vm["node_id"], topology)
-            job_ids = _create_vm_disks_via_troshkad(
-                host, project_id, vm, vm_disks, pool
-            )
-            disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+        _deploy_handle_recert(s, host, project_id, topology, pool)
 
-        # Create raw volumes for containers
-        containers = _extract_containers(topology)
-        for ctr in containers:
-            ctr_vols = _find_container_volumes(
-                ctr["node_id"], topology, project_id, pool
-            )
-            for vol in ctr_vols:
-                jid = start_job(
-                    host,
-                    "/disks/create",
-                    {
-                        "path": vol["disk_path"],
-                        "size_gb": vol["size_gb"],
-                        "format": "raw",
-                    },
-                )
-                disk_jobs.append(jid)
-        for di, jid in enumerate(disk_jobs):
-            try:
-                _update_deploy_progress(
-                    project_id, "creating disks", f"{di}/{len(disk_jobs)}"
-                )
-                job = wait_for_job(host, jid, timeout=900)
-                if job.get("status") == "failed":
-                    raise TroshkadError(
-                        f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}"
-                    )
-            except TroshkadError as e:
-                logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
-                raise
-
-        # Step 4a: Recert RHCOS disks (must happen before virt-install locks the disks)
-        if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
-            _update_deploy_progress(project_id, "certs", "regenerating certificates")
-            deploy_recert = topology.pop("_deploy_recert", None)
-            common_password = topology.pop("_deploy_common_password", None)
-            if deploy_recert is None:
-                for node in topology.get("nodes", []):
-                    if node.get("type") == "storageNode":
-                        pid = node.get("data", {}).get("patternId")
-                        if pid:
-                            pat = s.query(Pattern).filter_by(id=pid).first()
-                            if pat and pat.recert:
-                                deploy_recert = True
-                            break
-            if not common_password:
-                for n in topology.get("nodes", []):
-                    if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
-                        common_password = n.get("data", {}).get("ciCloudUserPassword")
-                        if common_password:
-                            break
-            if deploy_recert and deploy_recert is not False:
-                has_recert_vm = any(
-                    n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
-                    for n in topology.get("nodes", [])
-                )
-                if not has_recert_vm:
-                    for n in topology.get("nodes", []):
-                        if (
-                            n.get("type") == "vmNode"
-                            and n.get("data", {}).get("os") == "rhcos"
-                        ):
-                            n.setdefault("data", {})["recertEnabled"] = True
-                    logger.info(
-                        "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
-                        project_id[:8],
-                    )
-            if deploy_recert is False:
-                logger.info(
-                    "Deploy %s: recert disabled by user, using guestfish",
-                    project_id[:8],
-                )
-            _clean_kubelet_certs(
-                host,
-                project_id,
-                topology,
-                pool,
-                pattern_recert=bool(deploy_recert),
-                common_password=common_password,
-            )
-
-        # Create VM definitions sequentially (virt-install storage pool race condition)
         _checkpoint(s, project_id, "vms")
-        for vi, vm in enumerate(vms):
-            vm_name = vm.get("name", vm["node_id"][:8])
-            items = []
-            for vj, v in enumerate(vms):
-                n = v.get("name", v["node_id"][:8])
-                if vj < vi:
-                    items.append(f"{n}: defined")
-                elif vj == vi:
-                    items.append(f"{n}: defining...")
-                else:
-                    items.append(f"{n}: pending")
-            _update_deploy_progress(
-                project_id, "creating VMs", f"{vi}/{len(vms)}", items=items
-            )
-            domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
-            try:
-                dom_check = start_job(host, "/vm/info", {"name": domain_name})
-                dom_result = wait_for_job(host, dom_check, timeout=10)
-                if dom_result.get("result", {}).get("state"):
-                    logger.info(
-                        "Deploy %s: stale domain %s exists, undefining before re-create",
-                        project_id[:8],
-                        domain_name,
-                    )
-                    try:
-                        j = start_job(
-                            host, _VMS_DESTROY_PATH, {"domain_name": domain_name}
-                        )
-                        wait_for_job(host, j, timeout=60)
-                    except TroshkadError:
-                        pass
-            except TroshkadError:
-                pass
+        _deploy_define_vms(
+            host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+        )
 
-            job_id = _create_vm_via_troshkad(
-                host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
-            )
-            if job_id:
-                try:
-                    job = wait_for_job(host, job_id, timeout=300)
-                    if job.get("status") == "failed":
-                        raise TroshkadError(
-                            f"VM definition failed: {job.get('result', {}).get('error', 'unknown')}"
-                        )
-                    dom_uuid = job.get("result", {}).get("domain_uuid", "")
-                    if dom_uuid:
-                        for n in topology.get("nodes", []):
-                            if n["id"] == vm["node_id"]:
-                                n.setdefault("data", {})["domainUuid"] = dom_uuid
-                                break
-                except TroshkadError as e:
-                    logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
-                    raise
-
-        # Persist domain UUIDs to topology
         project.topology = topology
         s.commit()
 
-        # Step 4b: Start BMC endpoints (after VMs are defined, before startup)
-        has_bmc_vms = any(
-            n.get("type") == "vmNode" and n.get("data", {}).get("bmcEnabled")
-            for n in topology.get("nodes", [])
-        )
-        bmc_config = _extract_bmc_config(topology, project_id)
-        if has_bmc_vms and not bmc_config:
-            error_msg = "VMs have BMC enabled but no BMC network (type: bmc) is defined"
-            logger.error("Deploy %s: %s", project_id[:8], error_msg)
+        bmc_err, bmc_config = _deploy_setup_bmc(host, project_id, topology)
+        if bmc_err:
             project.state = "error"
-            project.deploy_error = error_msg
+            project.deploy_error = bmc_err
             s.commit()
             _delete_deploy_progress(project_id)
             return
-        if bmc_config:
-            _update_deploy_progress(project_id, "bmc", "starting BMC endpoints")
-            notify_project(
-                project_id,
-                {
-                    "type": "deploy-progress",
-                    "progress": _get_deploy_progress_data(project_id) or {},
-                },
-            )
-            logger.info(
-                "Deploy %s: starting BMC endpoints for %d VMs",
-                project_id[:8],
-                len(bmc_config["vms"]),
-            )
-            bmc_result = _setup_bmc_via_troshkad(host, project_id, bmc_config)
-            if bmc_result is not True:
-                logger.error(
-                    "Deploy %s: BMC setup failed: %s", project_id[:8], bmc_result
-                )
-                project.state = "error"
-                project.deploy_error = f"BMC setup failed: {bmc_result}"
-                s.commit()
-                _delete_deploy_progress(project_id)
-                return
 
-        # Step 4c: Create and start containers
         _checkpoint(s, project_id, "containers")
-        containers = _extract_containers(topology)
-        logger.info(
-            "Deploy %s: found %d containers to create", project_id[:8], len(containers)
-        )
-        if containers:
-            _update_deploy_progress(
-                project_id, step="containers", detail="Creating containers..."
-            )
-            logger.info("Deploy %s: creating containers", project_id[:8])
-
-            # Respect start order for containers
-            start_order = topology.get("startOrder", [])
-            ordered_ids = set()
-            for entry in start_order:
-                if entry.get("entryType") == "container":
-                    ctr_id = entry.get("containerId", entry.get("vmId", ""))
-                    ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
-                    if ctr:
-                        ordered_ids.add(ctr_id)
-                        delay = entry.get("delaySeconds", 0)
-                        if delay > 0:
-                            _time.sleep(delay)
-                        if ctr.get("is_pod"):
-                            _create_and_start_pod(
-                                host, project_id, ctr, topology, vni_map, pool
-                            )
-                        else:
-                            _create_and_start_container(
-                                host, project_id, ctr, topology, vni_map, pool
-                            )
-
-            # Create any containers not in start order
-            for ctr in containers:
-                if ctr["node_id"] not in ordered_ids:
-                    if ctr.get("is_pod"):
-                        _create_and_start_pod(
-                            host, project_id, ctr, topology, vni_map, pool
-                        )
-                    else:
-                        _create_and_start_container(
-                            host, project_id, ctr, topology, vni_map, pool
-                        )
+        _deploy_create_containers(host, project_id, topology, vni_map, pool)
 
         if _project_deleted(project_id):
-            logger.info(
-                "Deploy %s: project deleted mid-deploy, aborting", project_id[:8]
-            )
             _delete_deploy_progress(project_id)
             return
 
-        # Step 5: Start VMs (unless auto_start is disabled)
         _checkpoint(s, project_id, "starting")
-        if auto_start:
-            _update_deploy_progress(project_id, "starting", "VMs")
-            notify_project(
-                project_id,
-                {
-                    "type": "deploy-progress",
-                    "progress": _get_deploy_progress_data(project_id) or {},
-                },
-            )
-            logger.info("Deploy %s: starting VMs", project_id[:8])
-            start_failures = _start_vms_via_troshkad(host, project_id, topology)
-
-            if start_failures:
-                failed_names = ", ".join(name for name, _ in start_failures)
-                error_msg = f"Failed to start VMs: {failed_names}"
-                logger.error("Deploy %s: %s", project_id[:8], error_msg)
-                project.state = "error"
-                project.deploy_error = error_msg
-                from app.services.placement import sync_host_capacity
-
-                sync_host_capacity(s, host)
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": error_msg,
-                    },
-                )
-                _delete_deploy_progress(project_id)
-                return
+        if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
+            return
 
         project.state = "active" if auto_start else "stopped"
         project.deploy_error = None
@@ -3664,92 +3787,11 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         project.deploy_progress = None
         project.deployed_topology = project.topology
 
-        # Start auto-stop timer if configured
-        if project.state == "active" and project.auto_stop_minutes:
-            now = datetime.datetime.now(datetime.UTC)
-            project.auto_stop_started_at = now
-            project.auto_stop_expires_at = now + datetime.timedelta(
-                minutes=project.auto_stop_minutes
-            )
-            project.auto_stop_warned = False
-
-        # Start auto-delete timer on first deploy
-        if project.auto_delete_minutes and not project.auto_delete_started_at:
-            now = datetime.datetime.now(datetime.UTC)
-            project.auto_delete_started_at = now
-            project.lifetime_expires_at = now + datetime.timedelta(
-                minutes=project.auto_delete_minutes
-            )
-            project.auto_delete_warned = False
-
-        # Create DNS records if DNS provider configured
-        if project.dns_provider_id and project.guid and project.domain:
-            from app.models.dns_provider import DnsProvider
-            from app.services.dns_service import create_dns_records, resolve_dns_records
-
-            dns_provider = (
-                s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
-            )
-            if dns_provider and lb_config:
-                _update_deploy_progress(
-                    project_id,
-                    "dns",
-                    f"creating records for {project.guid}.{project.domain}",
-                )
-
-                eip_address = None
-                for ext_ip in external_ips:
-                    pub = ext_ip.get("ip") or ext_ip.get("_public_ip")
-                    if pub:
-                        eip_address = pub
-                        break
-
-                dns_templates = lb_config.get("dns_records", [])
-                if dns_templates:
-                    records = resolve_dns_records(
-                        dns_templates,
-                        guid=project.guid,
-                        domain=project.domain,
-                        eip=eip_address,
-                    )
-                    errors = create_dns_records(
-                        dns_provider.type,
-                        dns_provider.config,
-                        records,
-                        ttl=lb_config.get("dns_ttl", 30),
-                    )
-
-                    deployed_topo = project.deployed_topology or {}
-                    deployed_topo["_dns_records"] = [
-                        r for r in records if r.get("value")
-                    ]
-                    project.deployed_topology = deployed_topo
-
-                    if errors:
-                        logger.warning(
-                            "Deploy %s: DNS record creation had errors: %s",
-                            project_id[:8],
-                            errors,
-                        )
-
-        # Store BMC addresses in deployed topology for UI display
-        if bmc_config:
-            node_map = {n["id"]: n for n in topology.get("nodes", [])}
-            deployed_topo = project.deployed_topology or {}
-            deployed_topo["bmc"] = {
-                "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
-                "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
-                "vms": {
-                    vm["node_id"]: {
-                        "ip": vm["bmc_ip"],
-                        "redfish_url": f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
-                        "redfish_url_ssl": f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/{node_map.get(vm['node_id'], {}).get('data', {}).get('domainUuid', vm['domain_name'])}",
-                        "ipmi_address": f"{vm['bmc_ip']}:623",
-                    }
-                    for vm in bmc_config["vms"]
-                },
-            }
-            project.deployed_topology = deployed_topo
+        _deploy_finalize_timers(project, auto_start)
+        _deploy_create_dns_records(
+            s, project_id, project, topology, lb_config, external_ips
+        )
+        _deploy_store_bmc_topology(project, topology, bmc_config)
 
         s.commit()
         notify_project(
@@ -3792,22 +3834,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             if project:
                 project.state = "error"
                 project.deploy_error = str(e)
-                if project.host_id:
-                    h = s.query(Host).filter_by(id=project.host_id).first()
-                    if h:
-                        pool = _get_host_pool(h, s)
-                        if pool and pool.mode.startswith("shared"):
-                            from app.models.storage_pool import SharedCacheEntry
-
-                            for entry in (
-                                s.query(SharedCacheEntry)
-                                .filter(
-                                    SharedCacheEntry.storage_pool_id == pool.id,
-                                    SharedCacheEntry.status == "downloading",
-                                )
-                                .all()
-                            ):
-                                s.delete(entry)
+                _cleanup_stale_shared_cache(s, project)
                 s.commit()
                 notify_project(
                     project_id,
@@ -6437,6 +6464,28 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
         _deploy_semaphore.release()
 
 
+def _wait_for_namespace_deletion(provider, project_id):
+    import time as _del_time
+
+    from kubernetes.client.exceptions import ApiException as _KApiErr
+
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    _, core_api, _ = _get_k8s_clients(provider)
+    ns_name = _project_ns(provider, project_id)
+    for _ in range(60):
+        try:
+            core_api.read_namespace(name=ns_name)
+            _del_time.sleep(5)
+        except _KApiErr as e:
+            if e.status == 404:
+                break
+            _del_time.sleep(5)
+        except Exception:
+            break
+    logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
+
+
 def _destroy_kubevirt_native(project_id, host, session, delete_record):
     """Destroy a project via KubeVirt operator and wait for namespace cleanup."""
     from app.models.provider import Provider
@@ -6469,25 +6518,7 @@ def _destroy_kubevirt_native(project_id, host, session, delete_record):
         _set_destroy_error(project_id, str(e))
         return
 
-    import time as _del_time
-
-    from kubernetes.client.exceptions import ApiException as _KApiErr
-
-    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-    _, core_api, _ = _get_k8s_clients(provider)
-    ns_name = _project_ns(provider, project_id)
-    for _ in range(60):
-        try:
-            core_api.read_namespace(name=ns_name)
-            _del_time.sleep(5)
-        except _KApiErr as e:
-            if e.status == 404:
-                break
-            _del_time.sleep(5)
-        except Exception:
-            break
-    logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
+    _wait_for_namespace_deletion(provider, project_id)
     if delete_record:
         _delete_project_record(project_id)
 
@@ -6651,25 +6682,20 @@ def _destroy_cleanup_route_access(host, project_id, session):
         )
 
 
-def _destroy_multihost(session, project):
-    """Destroy a multi-host project: VMs, networks, mesh."""
+def _get_connected_host(session, host_id):
     from app.models.host import Host
 
-    project_id = project.id
-    host_assignments = project.host_assignments or {}
-    network_host_id = project.mesh_network_host_id
-    vni_map = project.vni_map or {}
+    host = session.query(Host).filter_by(id=host_id).first()
+    if host and host.agent_status == "connected":
+        return host
+    return None
 
-    # Collect unique host IDs
-    unique_host_ids = set(host_assignments.values()) if host_assignments else set()
-    if project.host_id:
-        unique_host_ids.add(project.host_id)
 
-    # 1. Stop VMs on all hosts
+def _destroy_stop_all_vms(session, project_id, unique_host_ids):
     logger.info("Destroy %s: stopping VMs on all hosts", project_id[:8])
     for host_id in unique_host_ids:
-        host = session.query(Host).filter_by(id=host_id).first()
-        if not host or host.agent_status != "connected":
+        host = _get_connected_host(session, host_id)
+        if not host:
             logger.warning(
                 "Destroy %s: host %s not connected", project_id[:8], host_id[:8]
             )
@@ -6680,23 +6706,23 @@ def _destroy_multihost(session, project):
         except Exception as e:
             logger.warning("Failed to stop VMs on host %s: %s", host_id[:8], e)
 
-    # 2. Tear down VXLAN on remote hosts (non-network hosts)
+
+def _destroy_remote_networks(
+    session, project_id, unique_host_ids, network_host_id, vni_map
+):
     logger.info("Destroy %s: tearing down remote networks", project_id[:8])
+    vni_list = list(vni_map.values())
     for host_id in unique_host_ids:
         if host_id == network_host_id:
             continue
-        host = session.query(Host).filter_by(id=host_id).first()
-        if not host or host.agent_status != "connected":
+        host = _get_connected_host(session, host_id)
+        if not host:
             continue
-        vni_list = list(vni_map.values())
         try:
             job_id = start_job(
                 host,
                 "/networks/full-teardown",
-                {
-                    "project_id": project_id,
-                    "vni_list": vni_list,
-                },
+                {"project_id": project_id, "vni_list": vni_list},
             )
             wait_for_job(host, job_id, timeout=120)
         except Exception as e:
@@ -6704,26 +6730,44 @@ def _destroy_multihost(session, project):
                 "Failed to tear down remote network on %s: %s", host_id[:8], e
             )
 
-    # 3. Tear down network host (use existing single-host path)
-    logger.info("Destroy %s: tearing down network host", project_id[:8])
-    if network_host_id:
-        network_host = session.query(Host).filter_by(id=network_host_id).first()
-        if network_host and network_host.agent_status == "connected":
-            with _get_network_lock(network_host.id):
-                _teardown_networks_via_troshkad(network_host, project_id, vni_map)
 
-    # 4. Tear down WireGuard on all hosts
+def _destroy_mesh_on_all_hosts(session, project_id, unique_host_ids):
     logger.info("Destroy %s: tearing down mesh on all hosts", project_id[:8])
     for host_id in unique_host_ids:
-        host = session.query(Host).filter_by(id=host_id).first()
-        if not host or host.agent_status != "connected":
+        host = _get_connected_host(session, host_id)
+        if not host:
             continue
         try:
             troshkad_request(host, "DELETE", f"/mesh/teardown?project_id={project_id}")
         except Exception as e:
             logger.warning("Failed to teardown mesh on %s: %s", host_id[:8], e)
 
-    # 5. Clean up DB
+
+def _destroy_multihost(session, project):
+    """Destroy a multi-host project: VMs, networks, mesh."""
+    project_id = project.id
+    host_assignments = project.host_assignments or {}
+    network_host_id = project.mesh_network_host_id
+    vni_map = project.vni_map or {}
+
+    unique_host_ids = set(host_assignments.values()) if host_assignments else set()
+    if project.host_id:
+        unique_host_ids.add(project.host_id)
+
+    _destroy_stop_all_vms(session, project_id, unique_host_ids)
+    _destroy_remote_networks(
+        session, project_id, unique_host_ids, network_host_id, vni_map
+    )
+
+    logger.info("Destroy %s: tearing down network host", project_id[:8])
+    if network_host_id:
+        network_host = _get_connected_host(session, network_host_id)
+        if network_host:
+            with _get_network_lock(network_host.id):
+                _teardown_networks_via_troshkad(network_host, project_id, vni_map)
+
+    _destroy_mesh_on_all_hosts(session, project_id, unique_host_ids)
+
     logger.info("Destroy %s: cleaning up mesh DB entries", project_id[:8])
     delete_mesh_peers(session, project_id)
 
