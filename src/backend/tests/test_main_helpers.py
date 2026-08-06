@@ -1692,7 +1692,7 @@ class TestRetryPbAgentInstall:
             mock_deploy.assert_called_once()
             call_kwargs = mock_deploy.call_args
             assert call_kwargs[0][0] == "10.0.0.1"  # ssh_host
-            assert call_kwargs[1]["storage_mode"] == "local"
+            assert call_kwargs[1]["config"].storage_mode == "local"
 
     def test_fsx_pool_sets_shared_storage_mode(self):
         from app.main import _retry_pb_agent_install
@@ -1742,9 +1742,12 @@ class TestRetryPbAgentInstall:
             _retry_pb_agent_install("host-abcd1234", "pool-1")
             mock_deploy.assert_called_once()
             call_kwargs = mock_deploy.call_args
-            assert call_kwargs[1]["storage_mode"] == "shared"
-            assert call_kwargs[1]["nfs_server"] == "fs-abc.fsx.us-east-1.amazonaws.com"
-            assert call_kwargs[1]["nfs_path"] == "/fsx"
+            assert call_kwargs[1]["config"].storage_mode == "shared"
+            assert (
+                call_kwargs[1]["config"].nfs_server
+                == "fs-abc.fsx.us-east-1.amazonaws.com"
+            )
+            assert call_kwargs[1]["config"].nfs_path == "/fsx"
 
     def test_exception_is_caught_and_db_closed(self):
         from app.main import _retry_pb_agent_install

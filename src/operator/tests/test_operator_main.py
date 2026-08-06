@@ -133,9 +133,9 @@ class TestConfigureStartup:
             propagation_policy="Background",
         )
         custom_api.patch_namespaced_custom_object_status.assert_called_once()
-        patch_body = (
-            custom_api.patch_namespaced_custom_object_status.call_args[1]["body"]
-        )
+        patch_body = custom_api.patch_namespaced_custom_object_status.call_args[1][
+            "body"
+        ]
         assert patch_body["status"]["phase"] == "Deploying"
         assert patch_body["status"]["recertAttempts"] == 0
 

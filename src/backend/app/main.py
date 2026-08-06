@@ -458,6 +458,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
     from app.models.host import Host
     from app.models.storage_pool import StoragePool
     from app.services.agent_deployer import (
+        AgentDeployConfig,
         deploy_agent,
         get_provider_data_disk,
         get_provider_ssh_port,
@@ -502,17 +503,19 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
             ssh_host or "",
             host.private_key or "",
             host_id=host_id,
-            storage_mode=storage_mode,
-            host_cert=cert_pem,
-            host_key=key_pem,
-            ca_cert=ca_pem,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            data_disk_device=data_disk,
-            nfs_server=nfs_server,
-            nfs_path=nfs_path,
-            nfs_port=pool.nfs_port or 0,
-            agent_ca_cert=get_agent_ca_cert(),
+            config=AgentDeployConfig(
+                storage_mode=storage_mode,
+                host_cert=cert_pem,
+                host_key=key_pem,
+                ca_cert=ca_pem,
+                ssh_port=ssh_port,
+                ssh_user=ssh_user,
+                data_disk_device=data_disk,
+                nfs_server=nfs_server,
+                nfs_path=nfs_path,
+                nfs_port=pool.nfs_port or 0,
+                agent_ca_cert=get_agent_ca_cert(),
+            ),
         )
         logger.info("PB retry: agent installed on %s", host_id[:8])
     except Exception:

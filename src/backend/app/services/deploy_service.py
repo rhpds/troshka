@@ -486,6 +486,29 @@ def _collect_pattern_disks(nodes, db_session, pool):
     return items
 
 
+def _snapshot_disk_to_cache_item(sd, snapshot_item_id, data):
+    """Convert a snapshot disk record to a cache item dict, or None if no s3_key."""
+    if not sd.s3_key:
+        return None
+    parts = sd.s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
+    orig_disk_id = parts[0] if parts else sd.id
+    cache_path = _snapshot_cache_path(
+        snapshot_item_id,
+        orig_disk_id,
+        sd.format,
+    )
+    label = data.get("label") or data.get("name") or snapshot_item_id[:8]
+    return {
+        "item_id": sd.id,
+        "name": label,
+        "s3_key": sd.s3_key,
+        "cache_path": cache_path,
+        "expected_size": sd.size_bytes,
+        "source": "local",
+        "source_provider_id": None,
+    }
+
+
 def _collect_snapshot_disks(nodes, db_session):
     """Collect snapshot disk items from storage nodes for caching."""
     from app.models.library import LibraryItemDisk
@@ -510,28 +533,9 @@ def _collect_snapshot_disks(nodes, db_session):
             .all()
         )
         for sd in snap_disks:
-            if not sd.s3_key:
-                continue
-            parts = sd.s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
-            orig_disk_id = parts[0] if parts else sd.id
-            cache_path = _snapshot_cache_path(
-                snapshot_item_id,
-                orig_disk_id,
-                sd.format,
-            )
-            items.append(
-                {
-                    "item_id": sd.id,
-                    "name": data.get("label")
-                    or data.get("name")
-                    or snapshot_item_id[:8],
-                    "s3_key": sd.s3_key,
-                    "cache_path": cache_path,
-                    "expected_size": sd.size_bytes,
-                    "source": "local",
-                    "source_provider_id": None,
-                }
-            )
+            item = _snapshot_disk_to_cache_item(sd, snapshot_item_id, data)
+            if item:
+                items.append(item)
     return items
 
 
@@ -661,6 +665,17 @@ def _start_download_jobs(items_to_download, host):
     return active_jobs
 
 
+def _format_in_progress_download(name, expected_size, downloaded_gb):
+    """Format a progress string for an actively downloading item."""
+    total_gb = expected_size / (1024**3) if expected_size else 0
+    if downloaded_gb > 0 and total_gb > 0:
+        pct = min(99, int(downloaded_gb / total_gb * 100))
+        return f"{name}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
+    if total_gb > 0:
+        return f"{name}: downloading {total_gb:.1f} GB..."
+    return f"{name}: downloading..."
+
+
 def _build_download_progress_items(active_jobs, completed, failed, host):
     """Build progress display items for active download jobs."""
 
@@ -674,16 +689,7 @@ def _build_download_progress_items(active_jobs, completed, failed, host):
             items.append(f"{aj['name']}: failed")
         else:
             downloaded_gb = _get_download_progress_gb(host, aj["job_id"])
-            total_gb = exp / (1024**3) if exp else 0
-            if downloaded_gb > 0 and total_gb > 0:
-                pct = min(99, int(downloaded_gb / total_gb * 100))
-                items.append(
-                    f"{aj['name']}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
-                )
-            elif total_gb > 0:
-                items.append(f"{aj['name']}: downloading {total_gb:.1f} GB...")
-            else:
-                items.append(f"{aj['name']}: downloading...")
+            items.append(_format_in_progress_download(aj["name"], exp, downloaded_gb))
     return items
 
 
@@ -708,9 +714,34 @@ def _get_download_progress_gb(host, job_id):
     return 0.0
 
 
+def _poll_single_download_job(aj, host, completed, failed, is_shared, db_session, pool):
+    """Poll a single download job and update completed/failed sets."""
+    from app.services.troshkad_client import poll_job
+
+    if aj["job_id"] in completed or aj["job_id"] in failed:
+        return
+    try:
+        job = poll_job(host, aj["job_id"])
+    except TroshkadError:
+        return
+    if job["status"] == "completed":
+        completed.add(aj["job_id"])
+        logger.info("cache: %s downloaded", aj["name"])
+        if is_shared:
+            _mark_shared_cache_ready(db_session, pool.id, aj["item_id"], "image")
+    elif job["status"] == "failed":
+        failed.add(aj["job_id"])
+        logger.error(
+            "cache: %s failed: %s",
+            aj["name"],
+            job.get("result", {}).get("error", ""),
+        )
+        if is_shared:
+            _mark_shared_cache_error(db_session, pool.id, aj["item_id"], "image")
+
+
 def _poll_download_jobs(active_jobs, host, db_session, pool, progress_callback):
     """Poll download jobs until all complete or stall timeout is reached."""
-    from app.services.troshkad_client import poll_job
 
     completed: set[str] = set()
     failed: set[str] = set()
@@ -721,36 +752,9 @@ def _poll_download_jobs(active_jobs, host, db_session, pool, progress_callback):
     while len(completed) + len(failed) < len(active_jobs):
         _time.sleep(5)
         for aj in active_jobs:
-            if aj["job_id"] in completed or aj["job_id"] in failed:
-                continue
-            try:
-                job = poll_job(host, aj["job_id"])
-                if job["status"] == "completed":
-                    completed.add(aj["job_id"])
-                    logger.info("cache: %s downloaded", aj["name"])
-                    if is_shared:
-                        _mark_shared_cache_ready(
-                            db_session,
-                            pool.id,
-                            aj["item_id"],
-                            "image",
-                        )
-                elif job["status"] == "failed":
-                    failed.add(aj["job_id"])
-                    logger.error(
-                        "cache: %s failed: %s",
-                        aj["name"],
-                        job.get("result", {}).get("error", ""),
-                    )
-                    if is_shared:
-                        _mark_shared_cache_error(
-                            db_session,
-                            pool.id,
-                            aj["item_id"],
-                            "image",
-                        )
-            except TroshkadError:
-                pass  # Transient connection error, retry next poll
+            _poll_single_download_job(
+                aj, host, completed, failed, is_shared, db_session, pool
+            )
 
         if progress_callback:
             done_count = len(completed) + len(failed)
@@ -4279,6 +4283,31 @@ def _build_recert_params(vm, disk, bastion_disk_path, project_id, common_passwor
     return recert_params, kubeadmin_pw
 
 
+def _apply_recert_results(topology, vm_node_id, common_password, kubeadmin_pw, kc):
+    """Update topology node data with recert results (kubeconfig, password)."""
+    for n in topology.get("nodes", []):
+        if n["id"] == vm_node_id:
+            if common_password:
+                n.setdefault("data", {})["ocpKubeadminPassword"] = kubeadmin_pw
+            if kc:
+                n.setdefault("data", {})["ocpKubeconfig"] = kc
+            break
+
+
+def _handle_recert_failure(pattern_recert, project_id, vm_name, err):
+    """Handle a failed recert job. Raises RuntimeError if recert was required."""
+    if pattern_recert:
+        raise RuntimeError(
+            f"Recert required (pattern has expired certs) but failed for {vm_name}: {err}"
+        )
+    logger.warning(
+        "Deploy %s: recert failed for %s: %s — falling back to guestfish",
+        project_id[:8],
+        vm_name,
+        err,
+    )
+
+
 def _run_recert_for_vm(
     host,
     project_id,
@@ -4315,25 +4344,12 @@ def _run_recert_for_vm(
         if job.get("status") == "completed":
             logger.info("Deploy %s: recert completed for %s", project_id[:8], vm_name)
             kc = job.get("result", {}).get("kubeconfig")
-            for n in topology.get("nodes", []):
-                if n["id"] == vm["node_id"]:
-                    if common_password:
-                        n.setdefault("data", {})["ocpKubeadminPassword"] = kubeadmin_pw
-                    if kc:
-                        n.setdefault("data", {})["ocpKubeconfig"] = kc
-                    break
+            _apply_recert_results(
+                topology, vm["node_id"], common_password, kubeadmin_pw, kc
+            )
             return True
         err = job.get("result", {}).get("error", "unknown")
-        if pattern_recert:
-            raise RuntimeError(
-                f"Recert required (pattern has expired certs) but failed for {vm_name}: {err}"
-            )
-        logger.warning(
-            "Deploy %s: recert failed for %s: %s — falling back to guestfish",
-            project_id[:8],
-            vm_name,
-            err,
-        )
+        _handle_recert_failure(pattern_recert, project_id, vm_name, err)
     except RuntimeError:
         raise
     except Exception:
@@ -6728,6 +6744,51 @@ def _finalize_project_active(s, project, project_id, topology):
     )
 
 
+def _start_troshkad_host_project(s, project, host, project_id):
+    """Restart a stopped project on a troshkad-managed host.
+
+    Returns True on success, False on error (project state already set).
+    """
+    topology = project.topology or {}
+    vni_map = project.vni_map or {}
+
+    topology = _reassociate_eips_on_start(s, project_id, topology, host)
+
+    if vni_map:
+        with _get_network_lock(host.id):
+            net_result = _setup_networks_via_troshkad(
+                host, topology, vni_map, s, project_id
+            )
+        if net_result is not True:
+            project.state = "error"
+            project.deploy_error = f"Network setup failed on restart: {net_result}"
+            s.commit()
+            return False
+
+    cache_library_images(topology, host, s)
+    _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
+
+    start_failures = _start_vms_via_troshkad(host, project_id, topology)
+    if start_failures:
+        failed_names = ", ".join(name for name, _ in start_failures)
+        error_msg = f"Failed to start VMs: {failed_names}"
+        logger.error("Start %s: %s", project_id[:8], error_msg)
+        _set_project_error(s, project_id, error_msg, project=project)
+        return False
+
+    bmc_config = _extract_bmc_config(topology, project_id)
+    if bmc_config:
+        logger.info("Start %s: re-starting BMC endpoints", project_id[:8])
+        try:
+            _setup_bmc_via_troshkad(host, project_id, bmc_config)
+        except Exception:
+            logger.warning("Start %s: BMC setup failed (non-fatal)", project_id[:8])
+
+    _finalize_project_active(s, project, project_id, topology)
+    logger.info("Start %s: complete", project_id[:8])
+    return True
+
+
 def start_project_async(project_id: str):
     """Background thread: restart a stopped project."""
     from app.core.database import SessionLocal
@@ -6750,7 +6811,6 @@ def start_project_async(project_id: str):
             )
             return
 
-        # KubeVirt native: just patch VMs to running, no EIPs/networks/PXE
         if host.host_type == "kubevirt-cluster":
             topology = project.topology or {}
             vms = _extract_vms(topology)
@@ -6768,50 +6828,7 @@ def start_project_async(project_id: str):
             )
             return
 
-        topology = project.topology or {}
-        vni_map = project.vni_map or {}
-
-        # Re-associate EIPs first so topology has _private_ip for DNAT rules
-        topology = _reassociate_eips_on_start(s, project_id, topology, host)
-
-        # Recreate networks via troshkad (serialized to avoid nftables contention)
-        if vni_map:
-            with _get_network_lock(host.id):
-                net_result = _setup_networks_via_troshkad(
-                    host, topology, vni_map, s, project_id
-                )
-            if net_result is not True:
-                project.state = "error"
-                project.deploy_error = f"Network setup failed on restart: {net_result}"
-                s.commit()
-                return
-
-        # Re-cache any missing library images (ISOs, base disks)
-        cache_library_images(topology, host, s)
-
-        # Re-start PXE boot services if needed
-        _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
-
-        # Start VMs via troshkad
-        start_failures = _start_vms_via_troshkad(host, project_id, topology)
-        if start_failures:
-            failed_names = ", ".join(name for name, _ in start_failures)
-            error_msg = f"Failed to start VMs: {failed_names}"
-            logger.error("Start %s: %s", project_id[:8], error_msg)
-            _set_project_error(s, project_id, error_msg, project=project)
-            return
-
-        # Re-start BMC endpoints
-        bmc_config = _extract_bmc_config(topology, project_id)
-        if bmc_config:
-            logger.info("Start %s: re-starting BMC endpoints", project_id[:8])
-            try:
-                _setup_bmc_via_troshkad(host, project_id, bmc_config)
-            except Exception:
-                logger.warning("Start %s: BMC setup failed (non-fatal)", project_id[:8])
-
-        _finalize_project_active(s, project, project_id, topology)
-        logger.info("Start %s: complete", project_id[:8])
+        _start_troshkad_host_project(s, project, host, project_id)
 
     except Exception:
         logger.exception("Start %s failed", project_id[:8])

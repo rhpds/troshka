@@ -495,6 +495,36 @@ def _scan_flat_prefix_orphans(
     return deleted, deleted_bytes
 
 
+def _scan_library_user_items(
+    s3, paginator, bucket, op, user_prefix, active_ids, dry_run
+):
+    """Scan a single user's library prefix for orphaned item directories."""
+    deleted = 0
+    deleted_bytes = 0
+    for items_page in paginator.paginate(
+        Bucket=bucket, Prefix=user_prefix, Delimiter="/", **op
+    ):
+        for item_cp in items_page.get("CommonPrefixes", []):
+            item_prefix = item_cp["Prefix"]
+            item_id = item_prefix.strip("/").split("/")[-1]
+            if item_id in active_ids:
+                continue
+            if dry_run:
+                continue
+            count, nbytes = _delete_s3_prefix_objects(
+                s3, paginator, bucket, item_prefix, op
+            )
+            deleted += count
+            deleted_bytes += nbytes
+            if count:
+                log.info(
+                    "S3 GC: deleted %d objects from orphan library item %s",
+                    count,
+                    item_prefix,
+                )
+    return deleted, deleted_bytes
+
+
 def _scan_library_prefix_orphans(s3, paginator, bucket, op, active_ids, dry_run):
     """Scan library/ prefix (two-level nesting) for orphaned item directories."""
     deleted = 0
@@ -503,32 +533,11 @@ def _scan_library_prefix_orphans(s3, paginator, bucket, op, active_ids, dry_run)
         Bucket=bucket, Prefix="library/", Delimiter="/", **op
     ):
         for user_cp in page.get("CommonPrefixes", []):
-            user_prefix = user_cp["Prefix"]
-            for items_page in paginator.paginate(
-                Bucket=bucket, Prefix=user_prefix, Delimiter="/", **op
-            ):
-                for item_cp in items_page.get("CommonPrefixes", []):
-                    item_prefix = item_cp["Prefix"]
-                    item_id = item_prefix.strip("/").split("/")[-1]
-                    if item_id in active_ids:
-                        continue
-                    if dry_run:
-                        continue
-                    count, nbytes = _delete_s3_prefix_objects(
-                        s3,
-                        paginator,
-                        bucket,
-                        item_prefix,
-                        op,
-                    )
-                    deleted += count
-                    deleted_bytes += nbytes
-                    if count:
-                        log.info(
-                            "S3 GC: deleted %d objects from orphan library item %s",
-                            count,
-                            item_prefix,
-                        )
+            d, b = _scan_library_user_items(
+                s3, paginator, bucket, op, user_cp["Prefix"], active_ids, dry_run
+            )
+            deleted += d
+            deleted_bytes += b
     return deleted, deleted_bytes
 
 
@@ -787,24 +796,32 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
         db.close()
 
 
+def _extract_node_item_ids(node: dict) -> list[str]:
+    """Extract referenced item IDs from a single topology node."""
+    ids = []
+    node_type = node.get("type")
+    if node_type == "storageNode":
+        data = node.get("data", {})
+        lib_id = data.get("libraryItemId")
+        if lib_id:
+            ids.append(lib_id)
+        pattern_disk_id = data.get("patternDiskId")
+        if pattern_disk_id:
+            ids.append(pattern_disk_id)
+    elif node_type == "vmNode":
+        pxe_id = node.get("data", {}).get("pxeBootIsoId")
+        if pxe_id:
+            ids.append(pxe_id)
+    return ids
+
+
 def _collect_referenced_items(pool_projects) -> set[str]:
     """Collect all item IDs referenced by active projects in a pool."""
     referenced_items = set()
     for p in pool_projects:
         topo = p.deployed_topology or p.topology or {}
         for node in topo.get("nodes", []):
-            if node.get("type") == "storageNode":
-                data = node.get("data", {})
-                lib_id = data.get("libraryItemId")
-                if lib_id:
-                    referenced_items.add(lib_id)
-                pattern_disk_id = data.get("patternDiskId")
-                if pattern_disk_id:
-                    referenced_items.add(pattern_disk_id)
-            elif node.get("type") == "vmNode":
-                pxe_id = node.get("data", {}).get("pxeBootIsoId")
-                if pxe_id:
-                    referenced_items.add(pxe_id)
+            referenced_items.update(_extract_node_item_ids(node))
     return referenced_items
 
 

@@ -260,6 +260,7 @@ class TestSetBootDevice:
         """set_boot_device does NOT restart if no VMI exists."""
         drv, mock_api, mod = _make_driver()
         from kubernetes import client
+
         mock_api.get_namespaced_custom_object.side_effect = [
             self._vm_spec(disks=[{"name": "root", "disk": {}}]),
             client.ApiException(status=404),
@@ -420,8 +421,14 @@ class TestEjectImage:
                 "template": {
                     "spec": {
                         "volumes": [
-                            {"name": "disk-root", "persistentVolumeClaim": {"claimName": "root"}},
-                            {"name": "vmedia-cd", "dataVolume": {"name": "kv-vm-1-vmedia-cd"}},
+                            {
+                                "name": "disk-root",
+                                "persistentVolumeClaim": {"claimName": "root"},
+                            },
+                            {
+                                "name": "vmedia-cd",
+                                "dataVolume": {"name": "kv-vm-1-vmedia-cd"},
+                            },
                         ],
                         "domain": {
                             "devices": {
@@ -442,7 +449,10 @@ class TestEjectImage:
                 "template": {
                     "spec": {
                         "volumes": [
-                            {"name": "disk-root", "persistentVolumeClaim": {"claimName": "root"}},
+                            {
+                                "name": "disk-root",
+                                "persistentVolumeClaim": {"claimName": "root"},
+                            },
                         ],
                         "domain": {
                             "devices": {
@@ -463,7 +473,9 @@ class TestEjectImage:
         drv.eject_image("vm-uuid-1")
         patch_call = mock_api.patch_namespaced_custom_object.call_args[1]
         volumes = patch_call["body"]["spec"]["template"]["spec"]["volumes"]
-        disks = patch_call["body"]["spec"]["template"]["spec"]["domain"]["devices"]["disks"]
+        disks = patch_call["body"]["spec"]["template"]["spec"]["domain"]["devices"][
+            "disks"
+        ]
         assert all(v["name"] != "vmedia-cd" for v in volumes)
         assert all(d["name"] != "vmedia-cd" for d in disks)
         assert mock_api.delete_namespaced_custom_object.call_count >= 1
@@ -475,8 +487,7 @@ class TestEjectImage:
         drv.eject_image("vm-uuid-1")
         delete_calls = mock_api.delete_namespaced_custom_object.call_args_list
         vmi_deleted = any(
-            call[1].get("plural") == "virtualmachineinstances"
-            for call in delete_calls
+            call[1].get("plural") == "virtualmachineinstances" for call in delete_calls
         )
         assert vmi_deleted
 

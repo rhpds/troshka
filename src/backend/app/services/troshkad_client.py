@@ -128,6 +128,10 @@ def _execute_single_request(pool, host, method, path, body, timeout):
         raise TroshkadError(f"troshkad request failed: {e}")
 
 
+def _is_retryable_error(error: "TroshkadError") -> bool:
+    return error.status_code == 503 or "Cannot connect" in str(error)
+
+
 def troshkad_request(
     host,
     method,
@@ -161,21 +165,10 @@ def troshkad_request(
             return result
 
         except TroshkadError as e:
-            if e.status_code == 503 and attempt < retries - 1:
+            if _is_retryable_error(e) and attempt < retries - 1:
                 last_error = e
                 logger.info(
-                    "troshkad %s returned 503, retrying in 5s (%d/%d)...",
-                    host.ip_address,
-                    attempt + 1,
-                    retries,
-                )
-                time.sleep(5)
-                continue
-
-            if "Cannot connect" in str(e) and attempt < retries - 1:
-                last_error = e
-                logger.info(
-                    "troshkad %s connection failed, retrying in 5s (%d/%d)...",
+                    "troshkad %s request failed, retrying in 5s (%d/%d)...",
                     host.ip_address,
                     attempt + 1,
                     retries,

@@ -12,6 +12,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.logging_utils import sanitize_log
 from app.models.library import Library, LibraryItem, LibraryShare
 from app.models.user import User
 from app.services import s3_storage
@@ -512,8 +513,8 @@ def finalize_seed(
     db.commit()
 
     logger.info(
-        "Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes
-    )  # NOSONAR
+        "Finalized seed: %s (%d bytes)", sanitize_log(body.seed_key), item.size_bytes
+    )
     return {
         "id": item.id,
         "s3_key": item.s3_key,
@@ -843,11 +844,30 @@ def sync_central(user: CurrentUser, db: DbSession):
     return sync_central_library(db, owner_id=user.id)
 
 
-def _scan_s3_prefix(client, bucket, prefix):
-    """List all S3 objects under a prefix, grouped by parent ID."""
+def _classify_s3_object(client, bucket, groups, obj):
+    """Classify a single S3 object into its group."""
     import json
 
-    groups = {}  # id -> {metadata: dict|None, files: [{key, size}]}
+    key = obj["Key"]
+    parts = key.split("/")
+    if len(parts) < 3:
+        return
+    obj_id = parts[1]
+    if obj_id not in groups:
+        groups[obj_id] = {"metadata": None, "files": []}
+    if key.endswith("/metadata.json"):
+        try:
+            meta_resp = client.get_object(Bucket=bucket, Key=key)
+            groups[obj_id]["metadata"] = json.loads(meta_resp["Body"].read())
+        except Exception:
+            pass
+    else:
+        groups[obj_id]["files"].append({"key": key, "size": obj.get("Size", 0)})
+
+
+def _scan_s3_prefix(client, bucket, prefix):
+    """List all S3 objects under a prefix, grouped by parent ID."""
+    groups = {}
     cont = None
     while True:
         kw = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
@@ -855,26 +875,47 @@ def _scan_s3_prefix(client, bucket, prefix):
             kw["ContinuationToken"] = cont
         r = client.list_objects_v2(**kw)
         for obj in r.get("Contents", []):
-            key = obj["Key"]
-            parts = key.split("/")
-            if len(parts) < 3:
-                continue
-            obj_id = parts[1]
-            if obj_id not in groups:
-                groups[obj_id] = {"metadata": None, "files": []}
-            if key.endswith("/metadata.json"):
-                try:
-                    meta_resp = client.get_object(Bucket=bucket, Key=key)
-                    groups[obj_id]["metadata"] = json.loads(meta_resp["Body"].read())
-                except Exception:
-                    pass
-            else:
-                groups[obj_id]["files"].append({"key": key, "size": obj.get("Size", 0)})
+            _classify_s3_object(client, bucket, groups, obj)
         if r.get("IsTruncated"):
             cont = r.get("NextContinuationToken")
         else:
             break
     return groups
+
+
+def _try_import_library_object(db: Session, lib, obj):
+    """Try to import a single S3 object as a library item. Returns True if imported."""
+    key = obj["Key"]
+    parts = key.split("/")
+    if len(parts) < 4:
+        return False
+
+    item_id = parts[2]
+    filename = "/".join(parts[3:])
+    size = obj.get("Size", 0)
+
+    if db.query(LibraryItem).filter_by(id=item_id).first():
+        return False
+
+    if "." in filename:
+        name, fmt = filename.rsplit(".", 1)
+    else:
+        name, fmt = filename, "unknown"
+
+    item_type = "iso" if fmt.lower() == "iso" else "image"
+
+    item = LibraryItem(
+        id=item_id,
+        library_id=lib.id,
+        name=name,
+        type=item_type,
+        format=fmt.lower(),
+        size_bytes=size,
+        s3_key=key,
+        state="ready",
+    )
+    db.add(item)
+    return True
 
 
 def _import_library_items(db: Session, lib, client, bucket):
@@ -889,40 +930,8 @@ def _import_library_items(db: Session, lib, client, bucket):
         resp = client.list_objects_v2(**kwargs)
 
         for obj in resp.get("Contents", []):
-            key = obj["Key"]
-            parts = key.split("/")
-            # Expected: library/{user_id}/{item_id}/{filename}.{ext}
-            if len(parts) < 4:
-                continue
-
-            item_id = parts[2]
-            filename = "/".join(parts[3:])  # handle nested paths
-            size = obj.get("Size", 0)
-
-            # Skip if already in DB
-            if db.query(LibraryItem).filter_by(id=item_id).first():
-                continue
-
-            # Parse name and format from filename
-            if "." in filename:
-                name, fmt = filename.rsplit(".", 1)
-            else:
-                name, fmt = filename, "unknown"
-
-            item_type = "iso" if fmt.lower() == "iso" else "image"
-
-            item = LibraryItem(
-                id=item_id,
-                library_id=lib.id,
-                name=name,
-                type=item_type,
-                format=fmt.lower(),
-                size_bytes=size,
-                s3_key=key,
-                state="ready",
-            )
-            db.add(item)
-            imported += 1
+            if _try_import_library_object(db, lib, obj):
+                imported += 1
 
         if resp.get("IsTruncated"):
             continuation_token = resp.get("NextContinuationToken")
@@ -934,147 +943,169 @@ def _import_library_items(db: Session, lib, client, bucket):
     return imported
 
 
-def _import_snapshots(db: Session, lib, groups):
-    """Import snapshots from S3 scan groups."""
+def _parse_snapshot_metadata(item_id, group):
+    """Parse metadata for a snapshot group, returning kwargs for LibraryItem."""
+    meta = group["metadata"]
+    if meta:
+        return {
+            "name": meta.get("name", f"snapshot-{item_id[:8]}"),
+            "format": meta.get("format", "qcow2"),
+            "size_bytes": meta.get("size_bytes", 0),
+            "os_variant": meta.get("os_variant"),
+            "vm_config": meta.get("vm_config"),
+            "tags": meta.get("tags"),
+        }
+    return {
+        "name": f"orphan-snapshot-{item_id[:8]}",
+        "format": "qcow2",
+        "size_bytes": sum(f["size"] for f in group["files"]),
+        "os_variant": None,
+        "vm_config": None,
+        "tags": {"orphaned": True},
+    }
+
+
+def _add_snapshot_disks(db: Session, item_id, group):
+    """Add disk records for a snapshot."""
     from app.models.library import LibraryItemDisk
 
+    meta = group["metadata"]
+    if meta and meta.get("disks"):
+        for disk in meta["disks"]:
+            db.add(
+                LibraryItemDisk(
+                    library_item_id=item_id,
+                    s3_key=disk["s3_key"],
+                    format=disk.get("format", "qcow2"),
+                    size_bytes=disk.get("size_bytes", 0),
+                    virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                    boot_order=disk.get("boot_order", 0),
+                    state="available",
+                )
+            )
+    else:
+        for i, f in enumerate(group["files"]):
+            file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
+            db.add(
+                LibraryItemDisk(
+                    library_item_id=item_id,
+                    s3_key=f["key"],
+                    format=file_fmt,
+                    size_bytes=f["size"],
+                    boot_order=i,
+                    state="available",
+                )
+            )
+
+
+def _import_snapshots(db: Session, lib, groups):
+    """Import snapshots from S3 scan groups."""
     snapshot_count = 0
     for item_id, group in groups.items():
         if db.query(LibraryItem).filter_by(id=item_id).first():
             continue
-        meta = group["metadata"]
-        if meta:
-            name = meta.get("name", f"snapshot-{item_id[:8]}")
-            fmt = meta.get("format", "qcow2")
-            size = meta.get("size_bytes", 0)
-            os_variant = meta.get("os_variant")
-            vm_config = meta.get("vm_config")
-            tags = meta.get("tags")
-        else:
-            name = f"orphan-snapshot-{item_id[:8]}"
-            fmt = "qcow2"
-            size = sum(f["size"] for f in group["files"])
-            os_variant = None
-            vm_config = None
-            tags = {"orphaned": True}
-
+        attrs = _parse_snapshot_metadata(item_id, group)
         item = LibraryItem(
             id=item_id,
             library_id=lib.id,
-            name=name,
             type="image",
-            format=fmt,
-            size_bytes=size,
-            os_variant=os_variant,
-            vm_config=vm_config,
-            tags=tags,
             state="ready",
+            **attrs,
         )
         db.add(item)
         db.flush()
-
-        if meta and meta.get("disks"):
-            for disk in meta["disks"]:
-                db.add(
-                    LibraryItemDisk(
-                        library_item_id=item_id,
-                        s3_key=disk["s3_key"],
-                        format=disk.get("format", "qcow2"),
-                        size_bytes=disk.get("size_bytes", 0),
-                        virtual_size_bytes=disk.get("virtual_size_bytes", 0),
-                        boot_order=disk.get("boot_order", 0),
-                        state="available",
-                    )
-                )
-        else:
-            for i, f in enumerate(group["files"]):
-                file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
-                db.add(
-                    LibraryItemDisk(
-                        library_item_id=item_id,
-                        s3_key=f["key"],
-                        format=file_fmt,
-                        size_bytes=f["size"],
-                        boot_order=i,
-                        state="available",
-                    )
-                )
+        _add_snapshot_disks(db, item_id, group)
         snapshot_count += 1
     return snapshot_count
 
 
-def _import_patterns(db: Session, user_id, groups):
-    """Import patterns from S3 scan groups."""
+def _create_pattern_with_metadata(db: Session, pattern_id, user_id, meta):
+    """Create a pattern and its disks from S3 metadata."""
     import uuid as _uuid
 
     from app.models.pattern import Pattern, PatternDisk
+
+    pattern = Pattern(
+        id=pattern_id,
+        name=meta.get("name", f"pattern-{pattern_id[:8]}"),
+        description=meta.get("description"),
+        owner_id=user_id,
+        visibility=meta.get("visibility", "private"),
+        topology=meta.get("topology", {}),
+        state="available",
+        total_size_bytes=meta.get("total_size_bytes", 0),
+        tags=meta.get("tags"),
+    )
+    db.add(pattern)
+    db.flush()
+    for disk in meta.get("disks", []):
+        db.add(
+            PatternDisk(
+                id=disk.get("id", str(_uuid.uuid4())),
+                pattern_id=pattern_id,
+                source_disk_id=disk.get("source_disk_id", ""),
+                source_vm_id=disk.get("source_vm_id", ""),
+                s3_key=disk["s3_key"],
+                format=disk.get("format", "qcow2"),
+                size_bytes=disk.get("size_bytes", 0),
+                virtual_size_bytes=disk.get("virtual_size_bytes", 0),
+                state="available",
+            )
+        )
+
+
+def _create_orphan_pattern(db: Session, pattern_id, user_id, files):
+    """Create an orphan pattern and its disks from S3 files."""
+    import uuid as _uuid
+
+    from app.models.pattern import Pattern, PatternDisk
+
+    total_size = sum(f["size"] for f in files)
+    pattern = Pattern(
+        id=pattern_id,
+        name=f"orphan-pattern-{pattern_id[:8]}",
+        owner_id=user_id,
+        visibility="private",
+        topology={"nodes": [], "edges": []},
+        state="available",
+        total_size_bytes=total_size,
+        tags={"orphaned": True},
+    )
+    db.add(pattern)
+    db.flush()
+    for f in files:
+        file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
+        disk_id = (
+            f["key"].split("/")[-1].rsplit(".", 1)[0]
+            if "/" in f["key"]
+            else str(_uuid.uuid4())
+        )
+        db.add(
+            PatternDisk(
+                id=str(_uuid.uuid4()),
+                pattern_id=pattern_id,
+                source_disk_id=disk_id,
+                source_vm_id="",
+                s3_key=f["key"],
+                format=file_fmt,
+                size_bytes=f["size"],
+                state="available",
+            )
+        )
+
+
+def _import_patterns(db: Session, user_id, groups):
+    """Import patterns from S3 scan groups."""
+    from app.models.pattern import Pattern
 
     pattern_count = 0
     for pattern_id, group in groups.items():
         if db.query(Pattern).filter_by(id=pattern_id).first():
             continue
-        meta = group["metadata"]
-        if meta:
-            pattern = Pattern(
-                id=pattern_id,
-                name=meta.get("name", f"pattern-{pattern_id[:8]}"),
-                description=meta.get("description"),
-                owner_id=user_id,
-                visibility=meta.get("visibility", "private"),
-                topology=meta.get("topology", {}),
-                state="available",
-                total_size_bytes=meta.get("total_size_bytes", 0),
-                tags=meta.get("tags"),
-            )
-            db.add(pattern)
-            db.flush()
-            for disk in meta.get("disks", []):
-                db.add(
-                    PatternDisk(
-                        id=disk.get("id", str(_uuid.uuid4())),
-                        pattern_id=pattern_id,
-                        source_disk_id=disk.get("source_disk_id", ""),
-                        source_vm_id=disk.get("source_vm_id", ""),
-                        s3_key=disk["s3_key"],
-                        format=disk.get("format", "qcow2"),
-                        size_bytes=disk.get("size_bytes", 0),
-                        virtual_size_bytes=disk.get("virtual_size_bytes", 0),
-                        state="available",
-                    )
-                )
+        if group["metadata"]:
+            _create_pattern_with_metadata(db, pattern_id, user_id, group["metadata"])
         else:
-            total_size = sum(f["size"] for f in group["files"])
-            pattern = Pattern(
-                id=pattern_id,
-                name=f"orphan-pattern-{pattern_id[:8]}",
-                owner_id=user_id,
-                visibility="private",
-                topology={"nodes": [], "edges": []},
-                state="available",
-                total_size_bytes=total_size,
-                tags={"orphaned": True},
-            )
-            db.add(pattern)
-            db.flush()
-            for f in group["files"]:
-                file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
-                disk_id = (
-                    f["key"].split("/")[-1].rsplit(".", 1)[0]
-                    if "/" in f["key"]
-                    else str(_uuid.uuid4())
-                )
-                db.add(
-                    PatternDisk(
-                        id=str(_uuid.uuid4()),
-                        pattern_id=pattern_id,
-                        source_disk_id=disk_id,
-                        source_vm_id="",
-                        s3_key=f["key"],
-                        format=file_fmt,
-                        size_bytes=f["size"],
-                        state="available",
-                    )
-                )
+            _create_orphan_pattern(db, pattern_id, user_id, group["files"])
         pattern_count += 1
     return pattern_count
 

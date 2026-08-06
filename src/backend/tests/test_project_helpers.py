@@ -3627,51 +3627,56 @@ class TestProvisionHostValidation:
 class TestApplyPoolNfsConfig:
     """Tests for _apply_pool_nfs_config in app/api/hosts.py."""
 
-    def _call(self, kwargs, pool):
+    def _call(self, cfg, pool):
         from app.api.hosts import _apply_pool_nfs_config
 
-        return _apply_pool_nfs_config(kwargs, pool)
+        return _apply_pool_nfs_config(cfg, pool)
+
+    def _make_cfg(self):
+        from app.services.agent_deployer import AgentDeployConfig
+
+        return AgentDeployConfig()
 
     def test_fsx_pool(self):
         pool = MagicMock()
         pool.mode = "shared-fsx"
         pool.fsx_dns_name = "fsx.us-east-1.amazonaws.com"
-        kwargs = {}
-        self._call(kwargs, pool)
-        assert kwargs["nfs_server"] == "fsx.us-east-1.amazonaws.com"
-        assert kwargs["nfs_path"] == "/fsx"
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        assert cfg.nfs_server == "fsx.us-east-1.amazonaws.com"
+        assert cfg.nfs_path == "/fsx"
 
     def test_byo_pool_with_path_and_port(self):
         pool = MagicMock()
         pool.mode = "shared-byo"
         pool.nfs_endpoint = "10.0.0.5:/exports/data"
         pool.nfs_port = 2049
-        kwargs = {}
-        self._call(kwargs, pool)
-        assert kwargs["nfs_server"] == "10.0.0.5"
-        assert kwargs["nfs_path"] == "/exports/data"
-        assert kwargs["nfs_port"] == 2049
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        assert cfg.nfs_server == "10.0.0.5"
+        assert cfg.nfs_path == "/exports/data"
+        assert cfg.nfs_port == 2049
 
     def test_byo_pool_without_path(self):
         pool = MagicMock()
         pool.mode = "shared-byo"
         pool.nfs_endpoint = "10.0.0.5"
         pool.nfs_port = 0
-        kwargs = {}
-        self._call(kwargs, pool)
-        assert kwargs["nfs_server"] == "10.0.0.5"
-        assert kwargs["nfs_path"] == "/"
-        assert "nfs_port" not in kwargs
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        assert cfg.nfs_server == "10.0.0.5"
+        assert cfg.nfs_path == "/"
+        assert cfg.nfs_port == 0
 
     def test_ceph_nfs_pool(self):
         pool = MagicMock()
         pool.mode = "shared-ceph-nfs"
         pool.nfs_endpoint = "ceph-nfs.local:/cephfs"
         pool.nfs_port = 0
-        kwargs = {}
-        self._call(kwargs, pool)
-        assert kwargs["nfs_server"] == "ceph-nfs.local"
-        assert kwargs["nfs_path"] == "/cephfs"
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        assert cfg.nfs_server == "ceph-nfs.local"
+        assert cfg.nfs_path == "/cephfs"
 
     def test_fsx_pool_no_dns_name(self):
         pool = MagicMock()
@@ -3679,9 +3684,9 @@ class TestApplyPoolNfsConfig:
         pool.fsx_dns_name = ""
         pool.nfs_endpoint = ""
         pool.nfs_port = 0
-        kwargs = {}
-        self._call(kwargs, pool)
-        assert "nfs_server" not in kwargs
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        assert cfg.nfs_server == ""
 
     def test_local_pool_noop(self):
         pool = MagicMock()

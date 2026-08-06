@@ -533,15 +533,15 @@ def provision_host(
             ]
         )
 
-    launch_kwargs: dict[str, Any] = dict(
-        ImageId=ami_id,
-        InstanceType=instance_type,
-        KeyName=key_name,
-        MinCount=1,
-        MaxCount=1,
-        UserData=user_data,
-        BlockDeviceMappings=block_device_mappings,
-        TagSpecifications=[
+    launch_kwargs: dict[str, Any] = {
+        "ImageId": ami_id,
+        "InstanceType": instance_type,
+        "KeyName": key_name,
+        "MinCount": 1,
+        "MaxCount": 1,
+        "UserData": user_data,
+        "BlockDeviceMappings": block_device_mappings,
+        "TagSpecifications": [
             {
                 "ResourceType": "instance",
                 "Tags": [
@@ -552,7 +552,7 @@ def provision_host(
                 ],
             }
         ],
-        NetworkInterfaces=[
+        "NetworkInterfaces": [
             {
                 "DeviceIndex": 0,
                 "SubnetId": "",  # Set per subnet by _launch_with_subnet_fallback
@@ -560,7 +560,7 @@ def provision_host(
                 "AssociatePublicIpAddress": True,
             }
         ],
-    )
+    }
     if not is_pattern_buffer:
         launch_kwargs["CpuOptions"] = {"NestedVirtualization": "enabled"}
     if kwargs.get("console_zone_id"):

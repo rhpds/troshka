@@ -128,6 +128,40 @@ def _is_nic_on_network(
     return False
 
 
+def _extract_pxe_boot_config(vm_data: dict) -> dict:
+    """Extract PXE boot config fields from VM node data."""
+    config = {}
+    for field in (
+        "pxeMethod",
+        "pxeNextServer",
+        "pxeBootFile",
+        "ipxeScriptUrl",
+        "uefiBootUrl",
+    ):
+        if vm_data.get(field):
+            config[field] = vm_data[field]
+    return config
+
+
+def _collect_dhcp_hosts_for_vm(
+    vm_node: dict, vm_data: dict, network_node_id: str, edges: list
+) -> list[dict]:
+    """Collect DHCP host entries for NICs connected to a specific network."""
+    hosts = []
+    for vm_nic in vm_data.get("nics", []):
+        if not vm_nic.get("ip") or not vm_nic.get("mac"):
+            continue
+        if _is_nic_on_network(vm_node["id"], network_node_id, vm_nic["id"], edges):
+            hosts.append(
+                {
+                    "mac": vm_nic["mac"],
+                    "ip": vm_nic["ip"],
+                    "name": vm_data.get("name", ""),
+                }
+            )
+    return hosts
+
+
 def _find_connected_workloads(
     node_id: str, nodes: list, edges: list
 ) -> tuple[list, list, set, dict]:
@@ -157,26 +191,8 @@ def _find_connected_workloads(
         if pxe_iso_id:
             pxe_boot_iso_ids.add(pxe_iso_id)
         if not pxe_vm_boot_config:
-            for field in (
-                "pxeMethod",
-                "pxeNextServer",
-                "pxeBootFile",
-                "ipxeScriptUrl",
-                "uefiBootUrl",
-            ):
-                if vm_data.get(field):
-                    pxe_vm_boot_config[field] = vm_data[field]
-        for vm_nic in vm_data.get("nics", []):
-            if not vm_nic.get("ip") or not vm_nic.get("mac"):
-                continue
-            if _is_nic_on_network(vm_node["id"], node_id, vm_nic["id"], edges):
-                dhcp_hosts.append(
-                    {
-                        "mac": vm_nic["mac"],
-                        "ip": vm_nic["ip"],
-                        "name": vm_data.get("name", ""),
-                    }
-                )
+            pxe_vm_boot_config = _extract_pxe_boot_config(vm_data)
+        dhcp_hosts.extend(_collect_dhcp_hosts_for_vm(vm_node, vm_data, node_id, edges))
     return connected_vms, dhcp_hosts, pxe_boot_iso_ids, pxe_vm_boot_config
 
 
@@ -356,6 +372,39 @@ def _build_router_configs(nodes: list, edges: list, vni_map: dict) -> list:
     return router_configs
 
 
+def _find_connected_vm_ids(node_id: str, nodes: list, edges: list) -> set[str]:
+    """Find VM node IDs connected to a given node via edges."""
+    vm_ids = set()
+    for edge in edges:
+        if edge["source"] == node_id:
+            other_id = edge["target"]
+        elif edge["target"] == node_id:
+            other_id = edge["source"]
+        else:
+            continue
+        other_node = next((n for n in nodes if n["id"] == other_id), None)
+        if other_node and other_node.get("type") == "vmNode":
+            vm_ids.add(other_id)
+    return vm_ids
+
+
+def _build_lb_backends(vm_ids: set[str], nodes: list) -> list[dict]:
+    """Build backend entries from connected VM nodes."""
+    backends = []
+    for vm_id in vm_ids:
+        vm_node = next((n for n in nodes if n["id"] == vm_id), None)
+        if not vm_node:
+            continue
+        vm_data = vm_node.get("data", {})
+        vm_name = vm_data.get("name", vm_id[:8])
+        for nic in vm_data.get("nics", []):
+            ip = nic.get("ip")
+            if ip:
+                backends.append({"name": vm_name, "ip": ip})
+                break
+    return backends
+
+
 def _build_lb_config(nodes: list, edges: list) -> dict | None:
     """Build load balancer config from the LB node, if present."""
     for node in nodes:
@@ -365,32 +414,8 @@ def _build_lb_config(nodes: list, edges: list) -> dict | None:
         ):
             continue
         data = node.get("data", {})
-        node_id = node["id"]
-
-        connected_vm_ids = set()
-        for edge in edges:
-            if edge["source"] == node_id:
-                other_id = edge["target"]
-            elif edge["target"] == node_id:
-                other_id = edge["source"]
-            else:
-                continue
-            other_node = next((n for n in nodes if n["id"] == other_id), None)
-            if other_node and other_node.get("type") == "vmNode":
-                connected_vm_ids.add(other_id)
-
-        backends = []
-        for vm_id in connected_vm_ids:
-            vm_node = next((n for n in nodes if n["id"] == vm_id), None)
-            if not vm_node:
-                continue
-            vm_data = vm_node.get("data", {})
-            vm_name = vm_data.get("name", vm_id[:8])
-            for nic in vm_data.get("nics", []):
-                ip = nic.get("ip")
-                if ip:
-                    backends.append({"name": vm_name, "ip": ip})
-                    break
+        connected_vm_ids = _find_connected_vm_ids(node["id"], nodes, edges)
+        backends = _build_lb_backends(connected_vm_ids, nodes)
 
         return {
             "name": data.get("name"),

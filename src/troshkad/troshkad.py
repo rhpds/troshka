@@ -1134,6 +1134,25 @@ def _build_disk_arg(path, disk, disk_cache):
     return disk_arg
 
 
+def _build_boot_parts(firmware, secure_boot, boot_devs):
+    boot_parts = []
+    if firmware == "uefi":
+        if secure_boot:
+            boot_parts.append("uefi")
+        else:
+            boot_parts.append("loader=/usr/share/edk2/ovmf/OVMF_CODE.fd")
+            boot_parts.append("loader.readonly=yes")
+            boot_parts.append("loader.type=pflash")
+            boot_parts.append("loader.secure=no")
+            boot_parts.append("nvram.template=/usr/share/edk2/ovmf/OVMF_VARS.fd")
+    if boot_devs:
+        boot_parts.extend(boot_devs)
+    else:
+        boot_parts.append("hd")
+    boot_parts.append("menu=on")
+    return boot_parts
+
+
 def _handle_vm_create(job, params):
     domain = _validate_domain_name(params["domain_name"])
     vcpus = int(params["vcpus"])
@@ -1165,28 +1184,12 @@ def _handle_vm_create(job, params):
         "mac_in_use=off",
     ]
 
-    # UEFI requires q35 chipset — i440fx IDE controller is invisible to modern kernels
     if firmware == "uefi":
         cmd.extend(["--machine", "q35"])
 
     _hwuuid = domain_uuid
 
-    # Build --boot flag: firmware + boot device order
-    boot_parts = []
-    if firmware == "uefi":
-        if secure_boot:
-            boot_parts.append("uefi")
-        else:
-            boot_parts.append("loader=/usr/share/edk2/ovmf/OVMF_CODE.fd")
-            boot_parts.append("loader.readonly=yes")
-            boot_parts.append("loader.type=pflash")
-            boot_parts.append("loader.secure=no")
-            boot_parts.append("nvram.template=/usr/share/edk2/ovmf/OVMF_VARS.fd")
-    if boot_devs:
-        boot_parts.extend(boot_devs)
-    else:
-        boot_parts.append("hd")
-    boot_parts.append("menu=on")
+    boot_parts = _build_boot_parts(firmware, secure_boot, boot_devs)
     cmd.extend(["--boot", ",".join(boot_parts)])
     cmd.extend(["--install", "no_install=yes"])
     disk_cache = params.get("disk_cache")
@@ -1733,19 +1736,56 @@ def _reconfigure_nics(root, nics):
         model.set("type", nic.get("model", "virtio"))
 
 
+def _add_disk_element(job, devices, disk_info, used_targets, domain):
+    import xml.etree.ElementTree as ET
+
+    target_letters = "bcdefghijklmnop"
+    target_dev = None
+    for letter in target_letters:
+        dev_name = f"vd{letter}"
+        if dev_name not in used_targets:
+            target_dev = dev_name
+            used_targets.add(dev_name)
+            break
+    if not target_dev:
+        return
+
+    disk_elem = ET.SubElement(devices, "disk")
+    disk_elem.set("type", "file")
+    disk_elem.set("device", "disk")
+    driver = ET.SubElement(disk_elem, "driver")
+    driver.set("name", "qemu")
+    driver.set("type", disk_info.get("format", "qcow2"))
+    source = ET.SubElement(disk_elem, "source")
+    source.set("file", disk_info["path"])
+    target = ET.SubElement(disk_elem, "target")
+    target.set("dev", target_dev)
+    disk_bus = disk_info.get("bus", "virtio")
+    target.set("bus", disk_bus)
+    rr = disk_info.get("rotation_rate")
+    if rr and disk_bus in ("scsi", "sata", "ide"):
+        target.set("rotation_rate", str(int(rr)))
+    _job_log(job, f"Added disk {disk_info['path']} as {target_dev} to {domain}")
+
+
+def _collect_existing_disk_paths(existing_disks):
+    """Return set of file paths from existing disk elements."""
+    paths = set()
+    for d in existing_disks:
+        source = d.find("source")
+        if source is not None and source.get("file"):
+            paths.add(source.get("file"))
+    return paths
+
+
 def _reconfigure_disks(job, root, domain, disks):
     """Synchronize disk entries in libvirt XML with the desired list."""
     devices = root.find("devices")
     existing_disks = devices.findall("disk") if devices is not None else []
-    existing_paths = set()
-    for d in existing_disks:
-        source = d.find("source")
-        if source is not None and source.get("file"):
-            existing_paths.add(source.get("file"))
+    existing_paths = _collect_existing_disk_paths(existing_disks)
 
     desired_paths = {d["path"] for d in disks}
 
-    # Remove disks no longer in topology (skip cdroms)
     for d in existing_disks:
         if d.get("device") == "cdrom":
             continue
@@ -1755,8 +1795,6 @@ def _reconfigure_disks(job, root, domain, disks):
             devices.remove(d)
             _job_log(job, f"Removed disk {path} from {domain}")
 
-    # Add new disks
-    target_letters = "bcdefghijklmnop"
     used_targets = {
         d.find("target").get("dev")
         for d in devices.findall("disk")
@@ -1765,32 +1803,32 @@ def _reconfigure_disks(job, root, domain, disks):
     for disk_info in disks:
         if disk_info["path"] in existing_paths:
             continue
-        target_dev = None
-        for letter in target_letters:
-            dev_name = f"vd{letter}"
-            if dev_name not in used_targets:
-                target_dev = dev_name
-                used_targets.add(dev_name)
-                break
-        if not target_dev:
-            continue
+        _add_disk_element(job, devices, disk_info, used_targets, domain)
 
-        disk_elem = ET.SubElement(devices, "disk")
-        disk_elem.set("type", "file")
-        disk_elem.set("device", "disk")
-        driver = ET.SubElement(disk_elem, "driver")
-        driver.set("name", "qemu")
-        driver.set("type", disk_info.get("format", "qcow2"))
-        source = ET.SubElement(disk_elem, "source")
-        source.set("file", disk_info["path"])
-        target = ET.SubElement(disk_elem, "target")
-        target.set("dev", target_dev)
-        disk_bus = disk_info.get("bus", "virtio")
-        target.set("bus", disk_bus)
-        rr = disk_info.get("rotation_rate")
-        if rr and disk_bus in ("scsi", "sata", "ide"):
-            target.set("rotation_rate", str(int(rr)))
-        _job_log(job, f"Added disk {disk_info['path']} as {target_dev} to {domain}")
+
+def _add_cdrom_element(job, devices, path, cdrom_bus, dev_prefix, used_targets, domain):
+    import xml.etree.ElementTree as ET
+
+    target_letters_cd = "abcdefghijklmnop"
+    target_dev = None
+    for letter in target_letters_cd:
+        dev_name = f"{dev_prefix}{letter}"
+        if dev_name not in used_targets:
+            target_dev = dev_name
+            used_targets.add(dev_name)
+            break
+    if not target_dev:
+        return
+    disk_elem = ET.SubElement(devices, "disk")
+    disk_elem.set("type", "file")
+    disk_elem.set("device", "cdrom")
+    source = ET.SubElement(disk_elem, "source")
+    source.set("file", path)
+    target = ET.SubElement(disk_elem, "target")
+    target.set("dev", target_dev)
+    target.set("bus", cdrom_bus)
+    ET.SubElement(disk_elem, "readonly")
+    _job_log(job, f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
 
 
 def _reconfigure_cdroms(job, root, domain, cdroms):
@@ -1821,32 +1859,69 @@ def _reconfigure_cdroms(job, root, domain, cdroms):
         dev_prefix = "hd"
     else:
         dev_prefix = "vd"
-    target_letters_cd = "abcdefghijklmnop"
     used_targets = {
         d.find("target").get("dev")
         for d in devices.findall("disk")
         if d.find("target") is not None
     }
     for path in cdroms:
-        target_dev = None
-        for letter in target_letters_cd:
-            dev_name = f"{dev_prefix}{letter}"
-            if dev_name not in used_targets:
-                target_dev = dev_name
-                used_targets.add(dev_name)
-                break
-        if not target_dev:
-            continue
-        disk_elem = ET.SubElement(devices, "disk")
-        disk_elem.set("type", "file")
-        disk_elem.set("device", "cdrom")
-        source = ET.SubElement(disk_elem, "source")
-        source.set("file", path)
-        target = ET.SubElement(disk_elem, "target")
-        target.set("dev", target_dev)
-        target.set("bus", cdrom_bus)
-        ET.SubElement(disk_elem, "readonly")
-        _job_log(job, f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
+        _add_cdrom_element(job, devices, path, cdrom_bus, dev_prefix, used_targets, domain)
+
+
+def _try_hot_attach_disks(job, domain, disks, vcpus, ram_mb, nics, was_active, restart):
+    import xml.etree.ElementTree as ET
+
+    if was_active and disks is not None and not restart:
+        cur_xml = subprocess.run(
+            ["virsh", "dumpxml", domain], capture_output=True, text=True, timeout=10
+        ).stdout
+        cur_root = ET.fromstring(cur_xml)
+        if not vcpus and not ram_mb and not nics:
+            if _hot_attach_new_disks(job, domain, disks, cur_root):
+                return {"domain": domain, "status": "reconfigured", "restarted": False}
+    return None
+
+
+def _configure_vnc_graphics(root, vnc_listen):
+    import xml.etree.ElementTree as ET
+
+    devices = root.find("devices")
+    graphics = (
+        devices.find("graphics[@type='vnc']") if devices is not None else None
+    )
+    if graphics is not None:
+        graphics.set("listen", vnc_listen)
+        graphics.set("sharePolicy", "force-shared")
+        listen_elem = graphics.find("listen")
+        if listen_elem is not None:
+            listen_elem.set("address", vnc_listen)
+    elif devices is not None:
+        graphics = ET.SubElement(devices, "graphics")
+        graphics.set("type", "vnc")
+        graphics.set("port", "-1")
+        graphics.set("autoport", "yes")
+        graphics.set("listen", vnc_listen)
+        graphics.set("sharePolicy", "force-shared")
+        listen_sub = ET.SubElement(graphics, "listen")
+        listen_sub.set("type", "address")
+        listen_sub.set("address", vnc_listen)
+
+
+def _apply_vcpu_ram_changes(root, vcpus, ram_mb):
+    """Apply vCPU and RAM changes to libvirt XML root."""
+    if vcpus is not None:
+        vcpu_elem = root.find("vcpu")
+        vcpu_elem.text = str(vcpus)
+        vcpu_elem.set("placement", "static")
+    if ram_mb is not None:
+        ram_kib = ram_mb * 1024
+        mem = root.find("memory")
+        mem.text = str(ram_kib)
+        mem.set("unit", "KiB")
+        cur_mem = root.find("currentMemory")
+        if cur_mem is not None:
+            cur_mem.text = str(ram_kib)
+            cur_mem.set("unit", "KiB")
 
 
 def _handle_vm_reconfigure(job, params):
@@ -1866,7 +1941,6 @@ def _handle_vm_reconfigure(job, params):
     vnc_listen = params.get("vnc_listen", "127.0.0.1")
     restart = params.get("restart", True)
 
-    # Check if domain is running
     state_result = subprocess.run(
         ["virsh", "domstate", domain],
         capture_output=True,
@@ -1877,15 +1951,9 @@ def _handle_vm_reconfigure(job, params):
         state_result.returncode == 0 and "running" in state_result.stdout.lower()
     )
 
-    # Hot-attach new disks without restart if that's the only change
-    if was_active and disks is not None and not restart:
-        cur_xml = subprocess.run(
-            ["virsh", "dumpxml", domain], capture_output=True, text=True, timeout=10
-        ).stdout
-        cur_root = ET.fromstring(cur_xml)
-        if not vcpus and not ram_mb and not nics:
-            if _hot_attach_new_disks(job, domain, disks, cur_root):
-                return {"domain": domain, "status": "reconfigured", "restarted": False}
+    hot_attach_result = _try_hot_attach_disks(job, domain, disks, vcpus, ram_mb, nics, was_active, restart)
+    if hot_attach_result is not None:
+        return hot_attach_result
 
     if restart and was_active:
         _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
@@ -1902,61 +1970,22 @@ def _handle_vm_reconfigure(job, params):
 
     root = ET.fromstring(result.stdout)
 
-    # ── Boot devices ──
     if boot_devs is not None:
         _reconfigure_boot_devs(root, boot_devs)
 
-    # ── vCPUs ──
-    if vcpus is not None:
-        vcpu_elem = root.find("vcpu")
-        vcpu_elem.text = str(vcpus)
-        vcpu_elem.set("placement", "static")
+    _apply_vcpu_ram_changes(root, vcpus, ram_mb)
 
-    # ── RAM ──
-    if ram_mb is not None:
-        ram_kib = ram_mb * 1024
-        mem = root.find("memory")
-        mem.text = str(ram_kib)
-        mem.set("unit", "KiB")
-        cur_mem = root.find("currentMemory")
-        if cur_mem is not None:
-            cur_mem.text = str(ram_kib)
-            cur_mem.set("unit", "KiB")
-
-    # ── NICs ──
     if nics is not None:
         _reconfigure_nics(root, nics)
 
-    # ── Disks ──
     if disks is not None:
         _reconfigure_disks(job, root, domain, disks)
 
-    # ── CDROMs ──
     if cdroms is not None:
         _reconfigure_cdroms(job, root, domain, cdroms)
 
-    # ── VNC ──
     if vnc_listen:
-        devices = root.find("devices")
-        graphics = (
-            devices.find("graphics[@type='vnc']") if devices is not None else None
-        )
-        if graphics is not None:
-            graphics.set("listen", vnc_listen)
-            graphics.set("sharePolicy", "force-shared")
-            listen_elem = graphics.find("listen")
-            if listen_elem is not None:
-                listen_elem.set("address", vnc_listen)
-        elif devices is not None:
-            graphics = ET.SubElement(devices, "graphics")
-            graphics.set("type", "vnc")
-            graphics.set("port", "-1")
-            graphics.set("autoport", "yes")
-            graphics.set("listen", vnc_listen)
-            graphics.set("sharePolicy", "force-shared")
-            listen_sub = ET.SubElement(graphics, "listen")
-            listen_sub.set("type", "address")
-            listen_sub.set("address", vnc_listen)
+        _configure_vnc_graphics(root, vnc_listen)
 
     # Write new XML via virsh define
     new_xml = ET.tostring(root, encoding="unicode")
@@ -2069,42 +2098,7 @@ def _push_real_time_to_guest(job, domain):
         return False
 
 
-def _handle_vm_set_clock(job, params):
-    """Update a VM's clock offset in libvirt XML and push time to guest."""
-    import xml.etree.ElementTree as ET
-
-    domain = _validate_domain_name(params["domain_name"])
-    offset_seconds = params.get("offset_seconds")
-    target_epoch = params.get("target_epoch")
-
-    # Check if domain is running
-    state_result = subprocess.run(
-        ["virsh", "domstate", domain],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    is_running = (
-        state_result.returncode == 0 and "running" in state_result.stdout.lower()
-    )
-
-    # Update XML for persistence (on inactive config)
-    result = subprocess.run(
-        ["virsh", "dumpxml", "--inactive", domain],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to get XML for {domain}: {result.stderr}")
-
-    root = ET.fromstring(result.stdout)
-
-    # Find or create <clock> element
-    clock_elem = root.find("clock")
-    if clock_elem is None:
-        clock_elem = ET.SubElement(root, "clock")
-
+def _update_clock_element(clock_elem, offset_seconds):
     if offset_seconds is not None:
         clock_elem.set("offset", "variable")
         clock_elem.set("adjustment", str(int(offset_seconds)))
@@ -2116,7 +2110,42 @@ def _handle_vm_set_clock(job, params):
             if attr in clock_elem.attrib:
                 del clock_elem.attrib[attr]
 
-    # Write new XML
+
+def _handle_vm_set_clock(job, params):
+    """Update a VM's clock offset in libvirt XML and push time to guest."""
+    import xml.etree.ElementTree as ET
+
+    domain = _validate_domain_name(params["domain_name"])
+    offset_seconds = params.get("offset_seconds")
+    target_epoch = params.get("target_epoch")
+
+    state_result = subprocess.run(
+        ["virsh", "domstate", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    is_running = (
+        state_result.returncode == 0 and "running" in state_result.stdout.lower()
+    )
+
+    result = subprocess.run(
+        ["virsh", "dumpxml", "--inactive", domain],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get XML for {domain}: {result.stderr}")
+
+    root = ET.fromstring(result.stdout)
+
+    clock_elem = root.find("clock")
+    if clock_elem is None:
+        clock_elem = ET.SubElement(root, "clock")
+
+    _update_clock_element(clock_elem, offset_seconds)
+
     new_xml = ET.tostring(root, encoding="unicode")
     proc = subprocess.Popen(
         ["virsh", "define", "/dev/stdin"],
@@ -2130,7 +2159,6 @@ def _handle_vm_set_clock(job, params):
         raise RuntimeError(f"virsh define failed: {stderr}")
     _job_log(job, f"Updated clock XML for {domain}")
 
-    # Push time to running VM
     pushed = False
     if is_running and target_epoch is not None:
         pushed = _push_target_time_to_guest(job, domain, target_epoch)
@@ -2148,6 +2176,27 @@ def _handle_vm_set_clock(job, params):
 COMMAND_HANDLERS["vms/set-clock"] = _handle_vm_set_clock
 
 
+def _build_single_guestfish_command(op):
+    action = op.get("action", "")
+    path = op.get("path", "")
+    if action in ("rm-rf", "rm-f", "mkdir-p"):
+        return f"{action} {path}"
+    elif action == "write":
+        content = op.get("content", "")
+        return f'write {path} "{content}"'
+    elif action == "upload":
+        local_path = op.get("local_path", "")
+        if not local_path:
+            raise RuntimeError("local_path required for upload")
+        return f"upload {local_path} {path}"
+    elif action == "chmod":
+        mode = op.get("mode", "")
+        if not mode:
+            raise RuntimeError("mode required for chmod")
+        return f"chmod {mode} {path}"
+    return ""
+
+
 def _build_guestfish_commands(operations):
     """Validate operations and build guestfish command lines.
 
@@ -2163,21 +2212,9 @@ def _build_guestfish_commands(operations):
         path = op.get("path", "")
         if not path:
             raise RuntimeError(f"path required for action: {action}")
-        if action in ("rm-rf", "rm-f", "mkdir-p"):
-            cmds.append(f"{action} {path}")
-        elif action == "write":
-            content = op.get("content", "")
-            cmds.append(f'write {path} "{content}"')
-        elif action == "upload":
-            local_path = op.get("local_path", "")
-            if not local_path:
-                raise RuntimeError("local_path required for upload")
-            cmds.append(f"upload {local_path} {path}")
-        elif action == "chmod":
-            mode = op.get("mode", "")
-            if not mode:
-                raise RuntimeError("mode required for chmod")
-            cmds.append(f"chmod {mode} {path}")
+        cmd = _build_single_guestfish_command(op)
+        if cmd:
+            cmds.append(cmd)
     return cmds
 
 
@@ -2463,6 +2500,45 @@ def _setup_bastion_autologin(job, bastion_mount):
     _job_log(job, "Firefox auto-login scheduled for first boot")
 
 
+def _perform_bastion_disk_updates(job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password):
+    kc_dest = os.path.join(bastion_mount, bastion_kubeconfig_path.lstrip("/"))
+    os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
+    with open(kubeconfig_src) as f:
+        kc_content = f.read()
+    with open(kc_dest, "w") as f:
+        f.write(kc_content)
+    _job_log(job, "Bastion kubeconfig updated")
+
+    pem = os.path.join(
+        bastion_mount,
+        "etc/pki/ca-trust/source/anchors/ocp-ingress.pem",
+    )
+    if os.path.exists(pem):
+        os.unlink(pem)
+
+    if common_password:
+        pw_path = os.path.join(
+            bastion_mount,
+            "home/cloud-user/ocp-install/auth/kubeadmin-password",
+        )
+        if os.path.exists(os.path.dirname(pw_path)):
+            with open(pw_path, "w") as f:
+                f.write(common_password)
+            _job_log(job, "Bastion kubeadmin password updated")
+
+    ff_patterns = ["cert9.db", "key4.db", "logins.json"]
+    for pattern in ff_patterns:
+        for db_file in glob.glob(
+            os.path.join(
+                bastion_mount,
+                f"home/cloud-user/.mozilla/firefox/*.default*/{pattern}",
+            )
+        ):
+            os.unlink(db_file)
+
+    _setup_bastion_autologin(job, bastion_mount)
+
+
 def _update_bastion_disk(
     job, params, etc_k8s, common_password, bastion_kubeconfig_path, force_expire
 ):
@@ -2512,42 +2588,7 @@ def _update_bastion_disk(
         )
         bastion_mounted = True
 
-        kc_dest = os.path.join(bastion_mount, bastion_kubeconfig_path.lstrip("/"))
-        os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
-        with open(kubeconfig_src) as f:
-            kc_content = f.read()
-        with open(kc_dest, "w") as f:
-            f.write(kc_content)
-        _job_log(job, "Bastion kubeconfig updated")
-
-        pem = os.path.join(
-            bastion_mount,
-            "etc/pki/ca-trust/source/anchors/ocp-ingress.pem",
-        )
-        if os.path.exists(pem):
-            os.unlink(pem)
-
-        if common_password:
-            pw_path = os.path.join(
-                bastion_mount,
-                "home/cloud-user/ocp-install/auth/kubeadmin-password",
-            )
-            if os.path.exists(os.path.dirname(pw_path)):
-                with open(pw_path, "w") as f:
-                    f.write(common_password)
-                _job_log(job, "Bastion kubeadmin password updated")
-
-        ff_patterns = ["cert9.db", "key4.db", "logins.json"]
-        for pattern in ff_patterns:
-            for db_file in glob.glob(
-                os.path.join(
-                    bastion_mount,
-                    f"home/cloud-user/.mozilla/firefox/*.default*/{pattern}",
-                )
-            ):
-                os.unlink(db_file)
-
-        _setup_bastion_autologin(job, bastion_mount)
+        _perform_bastion_disk_updates(job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password)
 
     except Exception as e:
         _job_log(job, f"Bastion update failed: {e}")
@@ -3161,51 +3202,67 @@ def _extract_pxe_boot_files(job, mount_point, tftp_root):
     )
 
 
+def _try_uefi_bootloader(job, mount_point, tftp_root):
+    import shutil
+
+    efi_boot_dir = os.path.join(mount_point, "EFI", "BOOT")
+    if not os.path.isdir(efi_boot_dir):
+        return None
+    for fname in os.listdir(efi_boot_dir):
+        src = os.path.join(efi_boot_dir, fname)
+        if os.path.isfile(src):
+            dest = os.path.join(tftp_root, fname)
+            shutil.copy2(src, dest)
+            os.chmod(dest, 0o644)
+    _job_log(
+        job, f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)"
+    )
+    for bl_path in _UEFI_BOOTLOADER_PATHS:
+        bl_name = os.path.basename(bl_path)
+        if os.path.isfile(os.path.join(tftp_root, bl_name)):
+            return bl_name
+    return None
+
+
+def _try_bios_bootloader(job, mount_point, tftp_root):
+    import shutil
+
+    for bl_path in _BIOS_BOOTLOADER_PATHS:
+        bl_src = mount_point + bl_path
+        if os.path.isfile(bl_src):
+            bl_name = os.path.basename(bl_path)
+            bl_dest = os.path.join(tftp_root, bl_name)
+            shutil.copy2(bl_src, bl_dest)
+            os.chmod(bl_dest, 0o644)
+            _job_log(job, f"Copied BIOS bootloader from {bl_path}")
+            return bl_name
+    return None
+
+
+def _try_syslinux_bootloader(job, tftp_root):
+    import shutil
+
+    for syslinux_path in [
+        "/usr/share/syslinux/pxelinux.0",
+        "/usr/lib/syslinux/pxelinux.0",
+    ]:
+        if os.path.exists(syslinux_path):
+            shutil.copy2(syslinux_path, os.path.join(tftp_root, _PXE_LOADER))
+            _job_log(job, f"Copied pxelinux.0 from {syslinux_path}")
+            return _PXE_LOADER
+    return None
+
+
 def _find_pxe_bootloader(job, mount_point, tftp_root):
     """Find and copy a PXE bootloader (UEFI or BIOS) from the mounted ISO.
 
     Returns the boot filename to use in dnsmasq/PXE config.
     """
-    import shutil
-
-    boot_filename = None
-    efi_boot_dir = os.path.join(mount_point, "EFI", "BOOT")
-    if os.path.isdir(efi_boot_dir):
-        for fname in os.listdir(efi_boot_dir):
-            src = os.path.join(efi_boot_dir, fname)
-            if os.path.isfile(src):
-                dest = os.path.join(tftp_root, fname)
-                shutil.copy2(src, dest)
-                os.chmod(dest, 0o644)
-        _job_log(
-            job, f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)"
-        )
-        for bl_path in _UEFI_BOOTLOADER_PATHS:
-            bl_name = os.path.basename(bl_path)
-            if os.path.isfile(os.path.join(tftp_root, bl_name)):
-                boot_filename = bl_name
-                break
+    boot_filename = _try_uefi_bootloader(job, mount_point, tftp_root)
     if not boot_filename:
-        for bl_path in _BIOS_BOOTLOADER_PATHS:
-            bl_src = mount_point + bl_path
-            if os.path.isfile(bl_src):
-                bl_name = os.path.basename(bl_path)
-                bl_dest = os.path.join(tftp_root, bl_name)
-                shutil.copy2(bl_src, bl_dest)
-                os.chmod(bl_dest, 0o644)
-                _job_log(job, f"Copied BIOS bootloader from {bl_path}")
-                boot_filename = bl_name
-                break
+        boot_filename = _try_bios_bootloader(job, mount_point, tftp_root)
     if not boot_filename:
-        for syslinux_path in [
-            "/usr/share/syslinux/pxelinux.0",
-            "/usr/lib/syslinux/pxelinux.0",
-        ]:
-            if os.path.exists(syslinux_path):
-                shutil.copy2(syslinux_path, os.path.join(tftp_root, _PXE_LOADER))
-                boot_filename = _PXE_LOADER
-                _job_log(job, f"Copied pxelinux.0 from {syslinux_path}")
-                break
+        boot_filename = _try_syslinux_bootloader(job, tftp_root)
     if not boot_filename:
         boot_filename = _PXE_LOADER
         _job_log(job, "WARNING: No bootloader found in ISO or on host")
@@ -3624,6 +3681,64 @@ def _handle_reconnect_taps(job, params):
 COMMAND_HANDLERS["networks/reconnect-taps"] = _handle_reconnect_taps
 
 
+def _create_new_namespace(job, ns, veth_host, veth_ns, transit_host_ip, transit_ns_ip):
+    _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
+    _run_cmd(
+        job,
+        ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns],
+        timeout=10,
+    )
+    _run_cmd(job, ["ip", "link", "set", veth_ns, "netns", ns], timeout=10)
+    _run_cmd(
+        job,
+        ["ip", "addr", "add", f"{transit_host_ip}/24", "dev", veth_host],
+        timeout=10,
+    )
+    _run_cmd(job, ["ip", "link", "set", veth_host, "up"], timeout=10)
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "ip",
+            "addr",
+            "add",
+            f"{transit_ns_ip}/24",
+            "dev",
+            veth_ns,
+        ],
+        timeout=10,
+    )
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", ns, "ip", "link", "set", veth_ns, "up"],
+        timeout=10,
+    )
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"],
+        timeout=10,
+    )
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "ip",
+            "route",
+            "add",
+            "default",
+            "via",
+            transit_host_ip,
+        ],
+        timeout=10,
+    )
+
+
 def _setup_namespace_and_veth(
     job, ns, veth_host, veth_ns, transit_host_ip, transit_ns_ip, transit_cidr
 ):
@@ -3637,61 +3752,7 @@ def _setup_namespace_and_veth(
     if ns_exists:
         _job_log(job, f"Namespace {ns} already exists, reusing")
     else:
-        _run_cmd(job, ["ip", "netns", "add", ns], timeout=10)
-        _run_cmd(
-            job,
-            ["ip", "link", "add", veth_host, "type", "veth", "peer", "name", veth_ns],
-            timeout=10,
-        )
-        _run_cmd(job, ["ip", "link", "set", veth_ns, "netns", ns], timeout=10)
-        _run_cmd(
-            job,
-            ["ip", "addr", "add", f"{transit_host_ip}/24", "dev", veth_host],
-            timeout=10,
-        )
-        _run_cmd(job, ["ip", "link", "set", veth_host, "up"], timeout=10)
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                "ip",
-                "addr",
-                "add",
-                f"{transit_ns_ip}/24",
-                "dev",
-                veth_ns,
-            ],
-            timeout=10,
-        )
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", ns, "ip", "link", "set", veth_ns, "up"],
-            timeout=10,
-        )
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"],
-            timeout=10,
-        )
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                "ip",
-                "route",
-                "add",
-                "default",
-                "via",
-                transit_host_ip,
-            ],
-            timeout=10,
-        )
+        _create_new_namespace(job, ns, veth_host, veth_ns, transit_host_ip, transit_ns_ip)
     try:
         _run_cmd(
             job, ["ip", "route", "add", transit_cidr, "dev", veth_host], timeout=10
@@ -3703,55 +3764,8 @@ def _setup_namespace_and_veth(
     _job_log(job, "Namespace and veth pair configured")
 
 
-def _setup_vxlan_bridge(job, ns, host_ip, net, pid):
-    """Set up a single VXLAN + bridge pair inside the namespace."""
-    vni = int(net["vni"])
-    bridge = net["bridge_name"]
-    vxlan_if = net["vxlan_name"]
-    cidr = net.get("cidr", "")
-    peers = net.get("peers", [])
-
-    _validate_bridge_name(bridge)
-
-    # Clean up existing
-    try:
-        _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
-    except RuntimeError:
-        pass
-    try:
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if],
-            timeout=10,
-        )
-    except RuntimeError:
-        pass
-
-    # Create VXLAN in host namespace (may already exist from a previous deploy)
-    try:
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "link",
-                "add",
-                vxlan_if,
-                "type",
-                "vxlan",
-                "id",
-                str(vni),
-                "local",
-                host_ip,
-                "dstport",
-                "4789",
-                "nolearning",
-            ],
-            timeout=10,
-        )
-    except RuntimeError:
-        _job_log(job, f"VXLAN {vxlan_if} already exists, reusing")
-
-    # Add peers
+def _add_vxlan_fdb_peers(job, vxlan_if, peers, host_ip):
+    """Add FDB entries for VXLAN peers."""
     for peer in peers:
         if peer != host_ip:
             try:
@@ -3773,13 +3787,9 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, pid):
             except (ValueError, RuntimeError):
                 _job_log(job, f"Warning: skipping peer {peer}")
 
-    # Move VXLAN into namespace (may already be there)
-    try:
-        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
-    except RuntimeError:
-        _job_log(job, f"VXLAN {vxlan_if} already in namespace, reusing")
 
-    # Create bridge inside namespace (may already exist)
+def _attach_vxlan_to_ns_bridge(job, ns, vxlan_if, bridge):
+    """Create bridge inside namespace and attach VXLAN to it."""
     try:
         _run_cmd(
             job,
@@ -3835,10 +3845,9 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, pid):
     except RuntimeError:
         pass
 
-    # Create dummy bridge in host namespace for libvirt validation.
-    # This bridge carries no traffic — the qemu hook moves TAPs to the
-    # namespace bridge on VM start. We disable forwarding to prevent
-    # cross-project leaks if the hook ever fails.
+
+def _ensure_host_dummy_bridge(job, bridge):
+    """Create dummy bridge in host namespace for libvirt validation."""
     try:
         subprocess.run(
             ["ip", "link", "show", bridge],
@@ -3848,9 +3857,6 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, pid):
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         _run_cmd(job, ["ip", "link", "add", bridge, "type", "bridge"], timeout=10)
-        # Disable forwarding on dummy bridge for security isolation.
-        # If the qemu hook fails to move a TAP, it stays on this bridge
-        # with no connectivity — preventing cross-project traffic.
         subprocess.run(
             [
                 "ip",
@@ -3869,53 +3875,102 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, pid):
         )
     _run_cmd(job, ["ip", "link", "set", bridge, "up"], timeout=10)
 
-    # Assign bridge IP if DHCP/DNS is enabled
-    if net.get("dhcp_enabled") or net.get("dns_enabled"):
-        dhcp_cfg = net.get("dhcp_config", {})
-        gateway_ip = dhcp_cfg.get("gateway", "")
-        if gateway_ip and cidr:
-            prefix = cidr.split("/")[1] if "/" in cidr else "24"
-            try:
-                _run_cmd(
-                    job,
-                    [
-                        "ip",
-                        "netns",
-                        "exec",
-                        ns,
-                        "ip",
-                        "addr",
-                        "add",
-                        f"{gateway_ip}/{prefix}",
-                        "dev",
-                        bridge,
-                    ],
-                    timeout=10,
-                )
-            except RuntimeError:
-                pass
+
+def _assign_bridge_gateway_ip(job, ns, net, bridge, cidr):
+    """Assign bridge IP if DHCP/DNS is enabled."""
+    if not (net.get("dhcp_enabled") or net.get("dns_enabled")):
+        return
+    dhcp_cfg = net.get("dhcp_config", {})
+    gateway_ip = dhcp_cfg.get("gateway", "")
+    if gateway_ip and cidr:
+        prefix = cidr.split("/")[1] if "/" in cidr else "24"
+        try:
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    ns,
+                    "ip",
+                    "addr",
+                    "add",
+                    f"{gateway_ip}/{prefix}",
+                    "dev",
+                    bridge,
+                ],
+                timeout=10,
+            )
+        except RuntimeError:
+            pass
+
+
+def _setup_vxlan_bridge(job, ns, host_ip, net, _pid):
+    """Set up a single VXLAN + bridge pair inside the namespace."""
+    vni = int(net["vni"])
+    bridge = net["bridge_name"]
+    vxlan_if = net["vxlan_name"]
+    cidr = net.get("cidr", "")
+    peers = net.get("peers", [])
+
+    _validate_bridge_name(bridge)
+
+    # Clean up existing
+    try:
+        _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
+    except RuntimeError:
+        pass
+    try:
+        _run_cmd(
+            job,
+            ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if],
+            timeout=10,
+        )
+    except RuntimeError:
+        pass
+
+    # Create VXLAN in host namespace (may already exist from a previous deploy)
+    try:
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "link",
+                "add",
+                vxlan_if,
+                "type",
+                "vxlan",
+                "id",
+                str(vni),
+                "local",
+                host_ip,
+                "dstport",
+                "4789",
+                "nolearning",
+            ],
+            timeout=10,
+        )
+    except RuntimeError:
+        _job_log(job, f"VXLAN {vxlan_if} already exists, reusing")
+
+    _add_vxlan_fdb_peers(job, vxlan_if, peers, host_ip)
+
+    # Move VXLAN into namespace (may already be there)
+    try:
+        _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns], timeout=10)
+    except RuntimeError:
+        _job_log(job, f"VXLAN {vxlan_if} already in namespace, reusing")
+
+    _attach_vxlan_to_ns_bridge(job, ns, vxlan_if, bridge)
+
+    _ensure_host_dummy_bridge(job, bridge)
+
+    _assign_bridge_gateway_ip(job, ns, net, bridge, cidr)
 
     _job_log(job, f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
 
 
-def _setup_dnsmasq_for_network(job, ns, project_id, net):
-    """Configure and start dnsmasq for a single network (DHCP/DNS/PXE)."""
-    if not net.get("dhcp_enabled"):
-        return
-    vni = int(net["vni"])
-    bridge = net["bridge_name"]
-    dhcp_cfg = net.get("dhcp_config", {})
-    range_start = dhcp_cfg.get("range_start", "")
-    range_end = dhcp_cfg.get("range_end", "")
-    lease_time = dhcp_cfg.get("lease_time", "24h")
-    if not (range_start and range_end):
-        return
-
-    pid_short = project_id[:8]
-    dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{pid_short}-{vni}.conf"
-    dnsmasq_pid = f"/run/troshka-dnsmasq-{pid_short}-{vni}.pid"
-    dnsmasq_lease = f"{_DNSMASQ_PREFIX}-{pid_short}-{vni}.leases"
-
+def _build_dnsmasq_config_lines(project_id, net, dnsmasq_pid, dnsmasq_lease, range_start, range_end, lease_time, bridge):
     pid = project_id[:8]
     bmc_bridge = f"br-bmc-{pid}"
     conf_lines = [
@@ -3942,8 +3997,29 @@ def _setup_dnsmasq_for_network(job, ns, project_id, net):
         rec_ip = dns_rec.get("ip", "")
         if rec_name and rec_ip:
             conf_lines.append(f"address=/{rec_name}/{rec_ip}")
-
     _append_pxe_dnsmasq_config(conf_lines, net)
+    return conf_lines
+
+
+def _setup_dnsmasq_for_network(job, ns, project_id, net):
+    """Configure and start dnsmasq for a single network (DHCP/DNS/PXE)."""
+    if not net.get("dhcp_enabled"):
+        return
+    vni = int(net["vni"])
+    bridge = net["bridge_name"]
+    dhcp_cfg = net.get("dhcp_config", {})
+    range_start = dhcp_cfg.get("range_start", "")
+    range_end = dhcp_cfg.get("range_end", "")
+    lease_time = dhcp_cfg.get("lease_time", "24h")
+    if not (range_start and range_end):
+        return
+
+    pid_short = project_id[:8]
+    dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{pid_short}-{vni}.conf"
+    dnsmasq_pid = f"/run/troshka-dnsmasq-{pid_short}-{vni}.pid"
+    dnsmasq_lease = f"{_DNSMASQ_PREFIX}-{pid_short}-{vni}.leases"
+
+    conf_lines = _build_dnsmasq_config_lines(project_id, net, dnsmasq_pid, dnsmasq_lease, range_start, range_end, lease_time, bridge)
 
     os.makedirs("/etc/dnsmasq.d", exist_ok=True)
     with open(dnsmasq_conf, "w") as f:
@@ -3952,21 +4028,26 @@ def _setup_dnsmasq_for_network(job, ns, project_id, net):
     _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge)
 
 
+def _append_builtin_pxe_config(conf_lines, pxe):
+    """Append builtin TFTP/PXE boot lines to dnsmasq config."""
+    tftp_r = pxe["tftp_root"]
+    conf_lines.append("enable-tftp")
+    conf_lines.append(f"tftp-root={tftp_r}")
+    boot_file = _PXE_LOADER
+    for candidate in ["BOOTX64.EFI", "grubx64.efi", _PXE_LOADER]:
+        if os.path.isfile(os.path.join(tftp_r, candidate)):
+            boot_file = candidate
+            break
+    conf_lines.append(f"dhcp-boot={boot_file}")
+
+
 def _append_pxe_dnsmasq_config(conf_lines, net):
     """Append PXE boot configuration lines to a dnsmasq config."""
     pxe = net.get("pxe_config")
     if not pxe:
         return
     if pxe.get("server_mode") == "builtin" and pxe.get("tftp_root"):
-        tftp_r = pxe["tftp_root"]
-        conf_lines.append("enable-tftp")
-        conf_lines.append(f"tftp-root={tftp_r}")
-        boot_file = _PXE_LOADER
-        for candidate in ["BOOTX64.EFI", "grubx64.efi", _PXE_LOADER]:
-            if os.path.isfile(os.path.join(tftp_r, candidate)):
-                boot_file = candidate
-                break
-        conf_lines.append(f"dhcp-boot={boot_file}")
+        _append_builtin_pxe_config(conf_lines, pxe)
     else:
         method = pxe.get("method", "legacy")
         if method == "legacy" and pxe.get("next_server") and pxe.get("boot_file"):
@@ -3979,8 +4060,7 @@ def _append_pxe_dnsmasq_config(conf_lines, net):
             conf_lines.append(f"dhcp-boot={pxe['uefi_boot_url']}")
 
 
-def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
-    """Kill existing dnsmasq for a VNI and restart it in the namespace."""
+def _kill_existing_dnsmasq(dnsmasq_conf, dnsmasq_pid):
     if os.path.exists(dnsmasq_pid):
         try:
             with open(dnsmasq_pid) as f:
@@ -4000,9 +4080,13 @@ def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
             os.remove(dnsmasq_pid)
         except FileNotFoundError:
             pass
-    # Fallback: kill by conf file match in case pidfile was stale
     subprocess.run(["pkill", "-f", dnsmasq_conf], capture_output=True, timeout=5)
     time.sleep(0.3)
+
+
+def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
+    """Kill existing dnsmasq for a VNI and restart it in the namespace."""
+    _kill_existing_dnsmasq(dnsmasq_conf, dnsmasq_pid)
 
     _run_cmd(
         job,
@@ -4034,6 +4118,30 @@ def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
     _job_log(job, f"dnsmasq started for VNI {vni} on {bridge}")
 
 
+def _kill_existing_chronyd(chrony_pid):
+    """Kill existing chronyd by PID file and clean up."""
+    if not os.path.exists(chrony_pid):
+        return
+    try:
+        with open(chrony_pid) as f:
+            old_pid = int(f.read().strip())
+        _safe_kill(old_pid, signal.SIGTERM)
+        for _ in range(10):
+            try:
+                os.kill(old_pid, 0)
+                time.sleep(0.25)
+            except ProcessLookupError:
+                break
+        else:
+            _safe_kill(old_pid, signal.SIGKILL)
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.remove(chrony_pid)
+    except FileNotFoundError:
+        pass
+
+
 def _setup_chrony_ntp(job, ns, pid, networks):
     """Start chronyd NTP server in the project namespace."""
     chrony_dir = _CHRONY_DIR
@@ -4042,7 +4150,6 @@ def _setup_chrony_ntp(job, ns, pid, networks):
     chrony_pid = f"/run/troshka-chronyd-{pid}.pid"
     chrony_drift = f"{chrony_dir}/{pid}.drift"
 
-    # Find the first gateway IP from the networks
     chrony_bind_ip = None
     for net in networks:
         dhcp_cfg = net.get("dhcp_config", {})
@@ -4065,26 +4172,7 @@ def _setup_chrony_ntp(job, ns, pid, networks):
     with open(chrony_conf, "w") as f:
         f.write(conf_content)
 
-    # Kill existing chronyd for this project
-    if os.path.exists(chrony_pid):
-        try:
-            with open(chrony_pid) as f:
-                old_pid = int(f.read().strip())
-            _safe_kill(old_pid, signal.SIGTERM)
-            for _ in range(10):
-                try:
-                    os.kill(old_pid, 0)
-                    time.sleep(0.25)
-                except ProcessLookupError:
-                    break
-            else:
-                _safe_kill(old_pid, signal.SIGKILL)
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-        try:
-            os.remove(chrony_pid)
-        except FileNotFoundError:
-            pass
+    _kill_existing_chronyd(chrony_pid)
 
     try:
         _run_cmd(
@@ -5050,6 +5138,35 @@ def _teardown_metadata_service(job, pid):
             pass
 
 
+def _remove_nft_jump_rules(table, main_chain, proj_chain):
+    try:
+        result = subprocess.run(
+            ["nft", "-a", "list", "chain", "inet", table, main_chain],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.split("\n"):
+            if f"jump {proj_chain}" in line:
+                handle = line.strip().split("# handle ")[-1]
+                subprocess.run(
+                    [
+                        "nft",
+                        "delete",
+                        "rule",
+                        "inet",
+                        table,
+                        main_chain,
+                        "handle",
+                        handle,
+                    ],
+                    capture_output=True,
+                    timeout=5,
+                )
+    except Exception:
+        pass
+
+
 def _teardown_host_nftables(job, pid):
     """Remove jump rules from main chains, then delete project chains."""
     fwd_chain = f"troshka-fwd-{pid}"
@@ -5060,32 +5177,7 @@ def _teardown_host_nftables(job, pid):
         ("nat", "postrouting", post_chain),
         ("nat", "prerouting", pre_chain),
     ]:
-        try:
-            result = subprocess.run(
-                ["nft", "-a", "list", "chain", "inet", table, main_chain],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            for line in result.stdout.split("\n"):
-                if f"jump {proj_chain}" in line:
-                    handle = line.strip().split("# handle ")[-1]
-                    subprocess.run(
-                        [
-                            "nft",
-                            "delete",
-                            "rule",
-                            "inet",
-                            table,
-                            main_chain,
-                            "handle",
-                            handle,
-                        ],
-                        capture_output=True,
-                        timeout=5,
-                    )
-        except Exception:
-            pass
+        _remove_nft_jump_rules(table, main_chain, proj_chain)
         try:
             _run_cmd(
                 job, ["nft", "flush", "chain", "inet", table, proj_chain], timeout=10
@@ -5097,34 +5189,57 @@ def _teardown_host_nftables(job, pid):
             pass
 
 
-def _teardown_pxe_services(job, vni_list):
-    """Kill PXE HTTP servers, unmount ISOs, and remove PXE directories."""
+def _teardown_single_pxe_vni(vni):
+    """Tear down PXE services for a single VNI."""
     import shutil
 
-    for vni in vni_list:
-        pid_file = f"/run/troshka-pxe-http-{vni}.pid"
-        if os.path.exists(pid_file):
-            try:
-                with open(pid_file) as f:
-                    http_pid = int(f.read().strip())
-                _safe_kill(http_pid, signal.SIGTERM)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-            try:
-                os.remove(pid_file)
-            except FileNotFoundError:
-                pass
-        mount_point = f"{_PXE_DIR}/{vni}/mnt"
+    pid_file = f"/run/troshka-pxe-http-{vni}.pid"
+    if os.path.exists(pid_file):
         try:
-            subprocess.run(["umount", mount_point], capture_output=True, timeout=10)
-        except (subprocess.TimeoutExpired, OSError):
+            with open(pid_file) as f:
+                http_pid = int(f.read().strip())
+            _safe_kill(http_pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
             pass
-        pxe_dir = f"{_PXE_DIR}/{vni}"
-        if os.path.isdir(pxe_dir):
-            try:
-                shutil.rmtree(pxe_dir)
-            except OSError:
-                pass
+        try:
+            os.remove(pid_file)
+        except FileNotFoundError:
+            pass
+    mount_point = f"{_PXE_DIR}/{vni}/mnt"
+    try:
+        subprocess.run(["umount", mount_point], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    pxe_dir = f"{_PXE_DIR}/{vni}"
+    if os.path.isdir(pxe_dir):
+        try:
+            shutil.rmtree(pxe_dir)
+        except OSError:
+            pass
+
+
+def _teardown_pxe_services(_job, vni_list):
+    """Kill PXE HTTP servers, unmount ISOs, and remove PXE directories."""
+    for vni in vni_list:
+        _teardown_single_pxe_vni(vni)
+
+
+def _teardown_vxlan_interfaces(job, ns, vni_list):
+    """Delete VXLAN interfaces from namespace and host before namespace deletion."""
+    for vni in vni_list:
+        vxlan_if = f"vxlan-{vni}"
+        try:
+            _run_cmd(
+                job,
+                ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if],
+                timeout=10,
+            )
+        except RuntimeError:
+            pass
+        try:
+            _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
+        except RuntimeError:
+            pass
 
 
 def _handle_network_full_teardown(job, params):
@@ -5142,24 +5257,7 @@ def _handle_network_full_teardown(job, params):
     ns = f"troshka-{pid}"
     veth_host = f"ve{pid}h"
 
-    # Delete VXLAN interfaces inside namespace BEFORE deleting the namespace.
-    # ip netns del destroys the interfaces but does NOT release VNI registrations
-    # from the kernel, causing "A VXLAN device with the specified VNI already exists"
-    # on the next deploy. Explicitly deleting them first releases the VNIs.
-    for vni in vni_list:
-        vxlan_if = f"vxlan-{vni}"
-        try:
-            _run_cmd(
-                job,
-                ["ip", "netns", "exec", ns, "ip", "link", "del", vxlan_if],
-                timeout=10,
-            )
-        except RuntimeError:
-            pass
-        try:
-            _run_cmd(job, ["ip", "link", "del", vxlan_if], timeout=10)
-        except RuntimeError:
-            pass
+    _teardown_vxlan_interfaces(job, ns, vni_list)
 
     _teardown_haproxy(job, pid)
 
@@ -5906,55 +6004,65 @@ def _discover_orphan_domains(job, known_domains):
     return orphan_domains
 
 
+def _collect_vm_bridges():
+    all_vm_bridges = set()
+    vm_list = subprocess.run(
+        ["virsh", "list", "--all", "--name"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    for vm_name in vm_list.stdout.strip().split("\n"):
+        if not vm_name.strip():
+            continue
+        xml = subprocess.run(
+            ["virsh", "dumpxml", vm_name.strip()],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if xml.returncode == 0:
+            all_vm_bridges.update(_SOURCE_BRIDGE_RE.findall(xml.stdout))
+    return all_vm_bridges
+
+
+def _check_bridge_is_orphan(bridge_name, all_vm_bridges):
+    """Return True if the bridge is an orphan (br-* prefix, not used by VMs, exists in host namespace)."""
+    if not bridge_name.startswith("br-") or bridge_name in all_vm_bridges:
+        return False
+    ns_check = subprocess.run(
+        ["ip", "link", "show", bridge_name],
+        capture_output=True,
+        timeout=5,
+    )
+    return ns_check.returncode == 0
+
+
+def _find_orphan_host_bridges(job, all_vm_bridges):
+    orphan_bridges = []
+    result = subprocess.run(
+        ["ip", "-o", "link", "show", "type", "bridge"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split(":", 2)
+            if len(parts) >= 2:
+                bridge_name = parts[1].strip().split("@")[0]
+                if _check_bridge_is_orphan(bridge_name, all_vm_bridges):
+                    orphan_bridges.append(bridge_name)
+                    _job_log(job, f"Orphan bridge: {bridge_name}")
+    return orphan_bridges
+
+
 def _discover_orphan_bridges(job):
     """List orphan bridges — both br-troshka-* and dummy br-{vni} bridges not referenced by any defined VM."""
     orphan_bridges = []
     try:
-        import re as _re_gc
-
-        all_vm_bridges = set()
-        vm_list = subprocess.run(
-            ["virsh", "list", "--all", "--name"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        for vm_name in vm_list.stdout.strip().split("\n"):
-            if not vm_name.strip():
-                continue
-            xml = subprocess.run(
-                ["virsh", "dumpxml", vm_name.strip()],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if xml.returncode == 0:
-                all_vm_bridges.update(_SOURCE_BRIDGE_RE.findall(xml.stdout))
-
-        result = subprocess.run(
-            ["ip", "-o", "link", "show", "type", "bridge"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            for line in result.stdout.strip().split("\n"):
-                parts = line.split(":", 2)
-                if len(parts) >= 2:
-                    bridge_name = parts[1].strip().split("@")[0]
-                    if (
-                        bridge_name.startswith("br-")
-                        and bridge_name not in all_vm_bridges
-                    ):
-                        # Skip namespace-internal bridges (they're inside namespaces, not in host)
-                        ns_check = subprocess.run(
-                            ["ip", "link", "show", bridge_name],
-                            capture_output=True,
-                            timeout=5,
-                        )
-                        if ns_check.returncode == 0:
-                            orphan_bridges.append(bridge_name)
-                            _job_log(job, f"Orphan bridge: {bridge_name}")
+        all_vm_bridges = _collect_vm_bridges()
+        orphan_bridges = _find_orphan_host_bridges(job, all_vm_bridges)
     except Exception as e:
         _job_log(job, f"Failed to list bridges: {e}")
     return orphan_bridges
@@ -6047,17 +6155,23 @@ def _discover_orphan_bmc(job, known_bmc_project_ids):
     return orphaned_bmc
 
 
+def _get_active_tmpdirs():
+    """Collect all active temp directories from running jobs."""
+    active_tmpdirs = set()
+    with _jobs_lock:
+        for j in _jobs.values():
+            if j["status"] == "running":
+                for td in j.get("_tmpdirs", []):
+                    active_tmpdirs.add(os.path.realpath(td))
+    return active_tmpdirs
+
+
 def _discover_stale_temps(job):
     """Scan temp dir — cross-reference against running jobs' _tmpdirs."""
     stale_temps = []
     _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     if os.path.exists(_s3_tmpdir):
-        active_tmpdirs = set()
-        with _jobs_lock:
-            for j in _jobs.values():
-                if j["status"] == "running":
-                    for td in j.get("_tmpdirs", []):
-                        active_tmpdirs.add(os.path.realpath(td))
+        active_tmpdirs = _get_active_tmpdirs()
         try:
             for entry in os.listdir(_s3_tmpdir):
                 full_path = os.path.realpath(os.path.join(_s3_tmpdir, entry))
@@ -6180,29 +6294,51 @@ def _clean_orphan_containers(job, orphan_containers):
     return removed
 
 
+def _kill_bmc_processes(job, bmc_dir):
+    """Kill all BMC processes in a directory."""
+    for fname in os.listdir(bmc_dir):
+        if fname.endswith(".pid"):
+            pid_path = os.path.join(bmc_dir, fname)
+            try:
+                with open(pid_path) as f:
+                    p = int(f.read().strip())
+                _safe_kill(p, signal.SIGTERM)
+                _job_log(job, f"Killed BMC process PID {p} ({fname})")
+            except (
+                ValueError,
+                ProcessLookupError,
+                PermissionError,
+                FileNotFoundError,
+            ):
+                pass
+
+
+def _remove_bmc_bridge(job, project_id):
+    """Remove BMC bridge in namespace and host."""
+    pid_short = project_id[:8]
+    bridge = f"br-bmc-{pid_short}"
+    ns = f"troshka-{pid_short}"
+    try:
+        _run_cmd(
+            job,
+            ["ip", "netns", "exec", ns, "ip", "link", "del", bridge],
+            timeout=10,
+        )
+    except RuntimeError:
+        pass
+    try:
+        _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
+    except RuntimeError:
+        pass
+
+
 def _clean_orphan_bmc(job, orphan_bmc_ids):
     """Clean up orphaned BMC resources (PIDs, pools, dirs, bridges). Returns count removed."""
     removed = 0
     for project_id in orphan_bmc_ids:
         bmc_dir = f"{_BMC_DIR}/{project_id}"
         if os.path.isdir(bmc_dir):
-            # Kill any running BMC processes
-            for fname in os.listdir(bmc_dir):
-                if fname.endswith(".pid"):
-                    pid_path = os.path.join(bmc_dir, fname)
-                    try:
-                        with open(pid_path) as f:
-                            p = int(f.read().strip())
-                        _safe_kill(p, signal.SIGTERM)
-                        _job_log(job, f"Killed BMC process PID {p} ({fname})")
-                    except (
-                        ValueError,
-                        ProcessLookupError,
-                        PermissionError,
-                        FileNotFoundError,
-                    ):
-                        pass
-            # Remove libvirt storage pool
+            _kill_bmc_processes(job, bmc_dir)
             pool_name = f"troshka-vmedia-{project_id[:8]}"
             subprocess.run(
                 ["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10
@@ -6210,27 +6346,11 @@ def _clean_orphan_bmc(job, orphan_bmc_ids):
             subprocess.run(
                 ["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10
             )
-            # Remove directory
             shutil.rmtree(bmc_dir, ignore_errors=True)
             _job_log(job, f"Removed BMC dir + pool: {bmc_dir}")
             removed += 1
 
-        # Remove BMC bridge
-        pid_short = project_id[:8]
-        bridge = f"br-bmc-{pid_short}"
-        ns = f"troshka-{pid_short}"
-        try:
-            _run_cmd(
-                job,
-                ["ip", "netns", "exec", ns, "ip", "link", "del", bridge],
-                timeout=10,
-            )
-        except RuntimeError:
-            pass
-        try:
-            _run_cmd(job, ["ip", "link", "del", bridge], timeout=10)
-        except RuntimeError:
-            pass
+        _remove_bmc_bridge(job, project_id)
     return removed
 
 
@@ -6256,46 +6376,39 @@ def _clean_stale_temps(job, stale_temps):
     return removed
 
 
-def _handle_gc_clean(job, params):
-    """Remove specific orphaned resources provided by the backend."""
-    # 1. Remove orphan dirs
-    removed_dirs = _clean_orphan_dirs(job, params.get("orphan_dirs", []))
-
-    # 2. Remove orphan domains
-    removed_domains = _clean_orphan_domains(job, params.get("orphan_domains", []))
-
-    # 2b. Remove orphan containers
-    removed_containers = _clean_orphan_containers(
-        job, params.get("orphan_containers", [])
-    )
-
-    # 3. Remove orphan bridges
-    removed_bridges = 0
-    for bridge in params.get("orphan_bridges", []):
+def _clean_orphan_bridges(job, orphan_bridges):
+    """Remove orphan bridges. Returns count removed."""
+    removed = 0
+    for bridge in orphan_bridges:
         try:
             _validate_bridge_name(bridge)
             _run_cmd(job, ["ip", "link", "delete", bridge], timeout=10)
             _job_log(job, f"Removed bridge: {bridge}")
-            removed_bridges += 1
+            removed += 1
         except Exception as e:
             _job_log(job, f"Failed to remove bridge {bridge}: {e}")
+    return removed
 
-    # 4. Remove orphan namespaces
-    removed_namespaces = 0
-    for ns in params.get("orphan_namespaces", []):
+
+def _clean_orphan_namespaces(job, orphan_namespaces):
+    """Remove orphan namespaces. Returns count removed."""
+    removed = 0
+    for ns in orphan_namespaces:
         try:
-            # Validate it starts with troshka-
             if not ns.startswith("troshka-"):
                 raise ValueError(f"Invalid namespace name: {ns}")
             _run_cmd(job, ["ip", "netns", "delete", ns], timeout=10)
             _job_log(job, f"Removed namespace: {ns}")
-            removed_namespaces += 1
+            removed += 1
         except Exception as e:
             _job_log(job, f"Failed to remove namespace {ns}: {e}")
+    return removed
 
-    # 5. Remove cache items (validated paths)
-    removed_cache = 0
-    for path in params.get("cache_items", []):
+
+def _clean_cache_items(job, cache_items):
+    """Remove cache items. Returns count removed."""
+    removed = 0
+    for path in cache_items:
         try:
             validated = _validate_path(path)
             if os.path.isdir(validated):
@@ -6304,18 +6417,18 @@ def _handle_gc_clean(job, params):
             else:
                 os.remove(validated)
                 _job_log(job, f"Removed cache file: {validated}")
-            removed_cache += 1
+            removed += 1
         except FileNotFoundError:
             _job_log(job, f"Cache item not found (skipped): {path}")
         except Exception as e:
             _job_log(job, f"Failed to remove cache item {path}: {e}")
+    return removed
 
-    # 6. Clean up orphaned BMC resources
-    removed_bmc = _clean_orphan_bmc(job, params.get("orphan_bmc_project_ids", []))
 
-    # 7. Remove orphan metadata scripts + logs
-    removed_metadata = 0
-    for project_id in params.get("orphan_metadata_ids", []):
+def _clean_orphan_metadata(job, orphan_metadata_ids):
+    """Remove orphan metadata scripts and logs. Returns count removed."""
+    removed = 0
+    for project_id in orphan_metadata_ids:
         pid_short = project_id[:8]
         try:
             _run_cmd(
@@ -6333,11 +6446,28 @@ def _handle_gc_clean(job, params):
             try:
                 os.remove(meta_path)
                 _job_log(job, f"Removed orphan: {meta_path}")
-                removed_metadata += 1
+                removed += 1
             except FileNotFoundError:
                 pass
+    return removed
 
-    # 8. Remove stale temp files
+
+def _handle_gc_clean(job, params):
+    """Remove specific orphaned resources provided by the backend."""
+    removed_dirs = _clean_orphan_dirs(job, params.get("orphan_dirs", []))
+    removed_domains = _clean_orphan_domains(job, params.get("orphan_domains", []))
+    removed_containers = _clean_orphan_containers(
+        job, params.get("orphan_containers", [])
+    )
+    removed_bridges = _clean_orphan_bridges(job, params.get("orphan_bridges", []))
+    removed_namespaces = _clean_orphan_namespaces(
+        job, params.get("orphan_namespaces", [])
+    )
+    removed_cache = _clean_cache_items(job, params.get("cache_items", []))
+    removed_bmc = _clean_orphan_bmc(job, params.get("orphan_bmc_project_ids", []))
+    removed_metadata = _clean_orphan_metadata(
+        job, params.get("orphan_metadata_ids", [])
+    )
     removed_temps = _clean_stale_temps(job, params.get("stale_temps", []))
 
     return {
@@ -7015,6 +7145,80 @@ def _upload_and_cache_disk(
         _job_log(job, f"Cache copy failed: {cache_error[0]}")
 
 
+def _process_single_disk_capture(
+    job,
+    disk_info,
+    domain_name,
+    running,
+    snapshotted,
+    aws_access_key,
+    aws_secret_key,
+    aws_region,
+    aws_endpoint_url,
+):
+    """Process a single disk for pattern capture."""
+    disk_path = _validate_path(disk_info["disk_path"])
+    s3_url = disk_info["s3_url"]
+    cache_path = _validate_path(disk_info["cache_path"])
+
+    if not os.path.exists(disk_path):
+        raise RuntimeError(f"Disk not found: {disk_path}")
+
+    import tempfile as _tf
+
+    _local_tmp = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
+    os.makedirs(_local_tmp, exist_ok=True)
+    with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
+        job.setdefault("_tmpdirs", []).append(tmpdir)
+        tmp_flat = os.path.join(tmpdir, "flat.qcow2")
+
+        flat_size = _flatten_disk_with_progress(
+            job, disk_path, tmp_flat, running, snapshotted
+        )
+
+        if job.get("_cancelled"):
+            raise RuntimeError("Cancelled")
+
+        flat_size_gb = round(flat_size / (1024**3), 1)
+        _job_log(job, f"Flattened: {flat_size_gb} GB (compressed)")
+
+        commit_thread = None
+        snapshot_committed = False
+        if snapshotted:
+
+            def _do_commit():
+                _commit_snapshot(job, domain_name)
+                return None
+
+            commit_thread = threading.Thread(target=_do_commit, daemon=True)
+            commit_thread.start()
+            snapshot_committed = True
+
+        if job.get("_cancelled"):
+            raise RuntimeError("Cancelled")
+
+        _upload_and_cache_disk(
+            job,
+            tmp_flat,
+            flat_size,
+            s3_url,
+            cache_path,
+            aws_access_key,
+            aws_secret_key,
+            aws_region,
+            aws_endpoint_url,
+        )
+
+        if job.get("_cancelled"):
+            raise RuntimeError("Cancelled")
+
+        if commit_thread:
+            commit_thread.join(timeout=600)
+
+    size_bytes = os.path.getsize(cache_path)
+    return {"size_bytes": size_bytes}, snapshot_committed
+
+
 def _handle_pattern_capture_direct(job, params):
     """Capture disks by path — uses external snapshot for running VMs.
 
@@ -7044,65 +7248,20 @@ def _handle_pattern_capture_direct(job, params):
     result_disks = []
     try:
         for disk_info in disks:
-            disk_path = _validate_path(disk_info["disk_path"])
-            s3_url = disk_info["s3_url"]
-            cache_path = _validate_path(disk_info["cache_path"])
-
-            if not os.path.exists(disk_path):
-                raise RuntimeError(f"Disk not found: {disk_path}")
-
-            import tempfile as _tf
-
-            _local_tmp = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
-            os.makedirs(_local_tmp, exist_ok=True)
-            with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
-                job.setdefault("_tmpdirs", []).append(tmpdir)
-                tmp_flat = os.path.join(tmpdir, "flat.qcow2")
-
-                flat_size = _flatten_disk_with_progress(
-                    job, disk_path, tmp_flat, running, snapshotted
-                )
-
-                if job.get("_cancelled"):
-                    raise RuntimeError("Cancelled")
-
-                flat_size_gb = round(flat_size / (1024**3), 1)
-                _job_log(job, f"Flattened: {flat_size_gb} GB (compressed)")
-
-                commit_thread = None
-                if snapshotted:
-
-                    def _do_commit():
-                        _commit_snapshot(job, domain_name)
-                        return None
-
-                    commit_thread = threading.Thread(target=_do_commit, daemon=True)
-                    commit_thread.start()
-                    snapshotted = False
-
-                if job.get("_cancelled"):
-                    raise RuntimeError("Cancelled")
-
-                _upload_and_cache_disk(
-                    job,
-                    tmp_flat,
-                    flat_size,
-                    s3_url,
-                    cache_path,
-                    aws_access_key,
-                    aws_secret_key,
-                    aws_region,
-                    aws_endpoint_url,
-                )
-
-                if job.get("_cancelled"):
-                    raise RuntimeError("Cancelled")
-
-                if commit_thread:
-                    commit_thread.join(timeout=600)
-
-            size_bytes = os.path.getsize(cache_path)
-            result_disks.append({"size_bytes": size_bytes})
+            disk_result, committed = _process_single_disk_capture(
+                job,
+                disk_info,
+                domain_name,
+                running,
+                snapshotted,
+                aws_access_key,
+                aws_secret_key,
+                aws_region,
+                aws_endpoint_url,
+            )
+            result_disks.append(disk_result)
+            if committed:
+                snapshotted = False
     finally:
         if snapshotted:
             _commit_snapshot(job, domain_name)
@@ -7157,18 +7316,17 @@ def handle_disk_usage(handler, params):
     handler._send_json(200, {"partitions": _get_partitions()})
 
 
-@route("GET", "/vms/states")
-def handle_vm_states(handler, params):
-    """Return all troshka-* domain states in one call."""
-    global _libvirt_events_available
-    if _libvirt_events_available:
-        with _vm_state_cache_lock:
-            domains = {
-                name: {"state": info["state"]} for name, info in _vm_state_cache.items()
-            }
-        if domains:
-            handler._send_json(200, {"domains": domains, "source": "events"})
-            return
+def _get_domains_from_cache():
+    """Get domain states from event cache."""
+    with _vm_state_cache_lock:
+        domains = {
+            name: {"state": info["state"]} for name, info in _vm_state_cache.items()
+        }
+    return domains
+
+
+def _get_domains_via_virsh():
+    """Get domain states via virsh commands."""
     domains = {}
     try:
         result = subprocess.run(
@@ -7198,6 +7356,19 @@ def handle_vm_states(handler, params):
                 domains[name] = {"state": state_map.get(raw, raw)}
     except Exception as e:
         logger.warning("Failed to list VM states: %s", e)
+    return domains
+
+
+@route("GET", "/vms/states")
+def handle_vm_states(handler, params):
+    """Return all troshka-* domain states in one call."""
+    global _libvirt_events_available
+    if _libvirt_events_available:
+        domains = _get_domains_from_cache()
+        if domains:
+            handler._send_json(200, {"domains": domains, "source": "events"})
+            return
+    domains = _get_domains_via_virsh()
     handler._send_json(200, {"domains": domains, "source": "virsh"})
 
 
@@ -7249,6 +7420,19 @@ def _seed_libvirt_cache(conn, _lv):
         logger.warning("Failed to seed VM state cache: %s", e)
 
 
+def _rearm_block_threshold(dom, dev, threshold):
+    """Re-arm block threshold at next increment (80% -> 90%)."""
+    try:
+        info = dom.blockInfo(dev)
+        if info:
+            capacity = info[0]
+            new_threshold = int(capacity * 0.9)
+            if new_threshold > threshold:
+                dom.setBlockThreshold(dev, new_threshold)
+    except Exception:
+        pass
+
+
 def _start_libvirt_event_loop():
     """Start libvirt event loop for domain lifecycle events."""
     global _libvirt_events_available
@@ -7295,17 +7479,7 @@ def _start_libvirt_event_loop():
             }
         )
         logger.warning("Block threshold exceeded: %s disk %s", name, dev)
-
-        # Re-arm at next increment (80% → 90%)
-        try:
-            info = dom.blockInfo(dev)
-            if info:
-                capacity = info[0]
-                new_threshold = int(capacity * 0.9)
-                if new_threshold > threshold:
-                    dom.setBlockThreshold(dev, new_threshold)
-        except Exception:
-            pass
+        _rearm_block_threshold(dom, dev, threshold)
 
     def _event_loop():
         while True:
@@ -7883,9 +8057,8 @@ def _check_dnsmasq_project_alive(pidfile, conf_path, project_prefix):
     return False
 
 
-def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
-    """Restart a dead dnsmasq process from its config. Returns True if restarted."""
-    # Log death info
+def _log_dead_dnsmasq_info(pidfile):
+    """Log information about dead dnsmasq process."""
     try:
         with open(pidfile) as f:
             dead_pid = int(f.read().strip())
@@ -7899,7 +8072,10 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
             "dnsmasq PID file %s missing or corrupt — restarting",
             os.path.basename(pidfile),
         )
-    # Find the namespace from the config file
+
+
+def _find_namespace_from_conf(conf_path):
+    """Extract namespace name from dnsmasq config file."""
     ns_name = None
     try:
         with open(conf_path) as f:
@@ -7910,9 +8086,15 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
                     break
     except Exception:
         pass
+    return ns_name
+
+
+def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
+    """Restart a dead dnsmasq process from its config. Returns True if restarted."""
+    _log_dead_dnsmasq_info(pidfile)
+    ns_name = _find_namespace_from_conf(conf_path)
     if not ns_name:
         return False
-    # Verify namespace exists
     ns_check = subprocess.run(
         ["ip", "netns", "list"], capture_output=True, text=True, timeout=5
     )
@@ -7931,7 +8113,6 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
             capture_output=True,
             timeout=10,
         )
-        # Read the new PID and set an audit watch on it
         try:
             with open(
                 pidfile.replace(_CONF_EXT, ".pid").replace("/etc/dnsmasq.d/", "/run/")
@@ -7963,45 +8144,62 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
         return False
 
 
+def _get_conf_from_pidfile(pidfile):
+    """Convert pidfile name to config file name and path."""
+    conf_name = (
+        os.path.basename(pidfile)
+        .replace("troshka-dnsmasq-", "troshka-")
+        .replace(".pid", _CONF_EXT)
+    )
+    conf_path = f"/etc/dnsmasq.d/{conf_name}"
+    return conf_name, conf_path
+
+
+def _get_project_prefix_from_pidfile(pidfile):
+    """Extract project prefix from pidfile name."""
+    parts = (
+        os.path.basename(pidfile)
+        .replace("troshka-dnsmasq-", "")
+        .replace(".pid", "")
+        .split("-")
+    )
+    return parts[0] if parts else ""
+
+
+def _is_process_alive(pidfile):
+    """Check if process from pidfile is alive."""
+    try:
+        with open(pidfile) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _process_single_dnsmasq_pidfile(pidfile):
+    """Process a single dnsmasq pidfile, restart if needed. Returns True if restarted."""
+    conf_name, conf_path = _get_conf_from_pidfile(pidfile)
+    if not os.path.exists(conf_path):
+        try:
+            os.remove(pidfile)
+        except OSError:
+            pass
+        return False
+    project_prefix = _get_project_prefix_from_pidfile(pidfile)
+    if not _check_dnsmasq_project_alive(pidfile, conf_path, project_prefix):
+        return False
+    if not _is_process_alive(pidfile):
+        return _restart_dead_dnsmasq(pidfile, conf_path, conf_name)
+    return False
+
+
 def _check_and_restart_dnsmasq():
     """Check all dnsmasq PID files — restart any that died."""
     restarted = 0
     for pidfile in glob.glob("/run/troshka-dnsmasq-*.pid"):
-        # PID file: troshka-dnsmasq-{project_id[:8]}-{vni}.pid
-        conf_name = (
-            os.path.basename(pidfile)
-            .replace("troshka-dnsmasq-", "troshka-")
-            .replace(".pid", _CONF_EXT)
-        )
-        conf_path = f"/etc/dnsmasq.d/{conf_name}"
-        if not os.path.exists(conf_path):
-            # Orphan PID file — config gone, remove it
-            try:
-                os.remove(pidfile)
-            except OSError:
-                pass
-            continue
-        # Check if any VM domains exist for this project
-        parts = (
-            os.path.basename(pidfile)
-            .replace("troshka-dnsmasq-", "")
-            .replace(".pid", "")
-            .split("-")
-        )
-        project_prefix = parts[0] if parts else ""
-        if not _check_dnsmasq_project_alive(pidfile, conf_path, project_prefix):
-            continue
-        alive = False
-        try:
-            with open(pidfile) as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            alive = True
-        except (ValueError, OSError):
-            pass
-        if not alive:
-            if _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
-                restarted += 1
+        if _process_single_dnsmasq_pidfile(pidfile):
+            restarted += 1
     return restarted
 
 
@@ -8154,48 +8352,30 @@ def _restore_sushy_emulators(bmc_dir, ns, venv_bin):
         )
 
 
-def _restore_vbmcd(bmc_dir, ns, venv_bin, project_short):
-    """Restart vbmcd and re-register vbmc entries from a BMC directory."""
-    vbmcd_conf = os.path.join(bmc_dir, "virtualbmc.conf")
-    vbmcd_pid_path = os.path.join(bmc_dir, _VBMCD_PID)
-    if not os.path.exists(vbmcd_conf):
+def _kill_stale_vbmcd(vbmcd_pid_path):
+    """Kill stale vbmcd process by PID file and clean up."""
+    if not os.path.exists(vbmcd_pid_path):
         return
-    # Kill stale vbmcd
-    if os.path.exists(vbmcd_pid_path):
-        try:
-            with open(vbmcd_pid_path) as f:
-                old_pid = int(f.read().strip())
-            if _safe_kill(old_pid, signal.SIGTERM, "vbmcd"):
-                for _ in range(10):
-                    time.sleep(0.5)
-                    try:
-                        os.kill(old_pid, 0)
-                    except ProcessLookupError:
-                        break
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-        try:
-            os.remove(vbmcd_pid_path)
-        except FileNotFoundError:
-            pass
+    try:
+        with open(vbmcd_pid_path) as f:
+            old_pid = int(f.read().strip())
+        if _safe_kill(old_pid, signal.SIGTERM, "vbmcd"):
+            for _ in range(10):
+                time.sleep(0.5)
+                try:
+                    os.kill(old_pid, 0)
+                except ProcessLookupError:
+                    break
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.remove(vbmcd_pid_path)
+    except FileNotFoundError:
+        pass
 
-    env = os.environ.copy()
-    env["VIRTUALBMC_CONFIG"] = vbmcd_conf
-    subprocess.Popen(
-        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-        start_new_session=True,
-    )
-    # Wait for vbmcd to write its PID file
-    for _ in range(20):
-        time.sleep(0.5)
-        if os.path.exists(vbmcd_pid_path):
-            break
-    logger.info("BMC restore: vbmcd started for %s", project_short)
 
-    # Re-register vbmc entries from the config dir
+def _register_vbmc_entries(bmc_dir, ns, venv_bin, env):
+    """Re-register vbmc entries from the config dir."""
     vbmcd_conf_dir = os.path.join(bmc_dir, "vbmcd")
     if not os.path.isdir(vbmcd_conf_dir):
         return
@@ -8221,6 +8401,33 @@ def _restore_vbmcd(bmc_dir, ns, venv_bin, project_short):
                 logger.info("BMC restore: vbmc started %s", entry)
             except Exception:
                 logger.warning("BMC restore: failed to start vbmc %s", entry)
+
+
+def _restore_vbmcd(bmc_dir, ns, venv_bin, project_short):
+    """Restart vbmcd and re-register vbmc entries from a BMC directory."""
+    vbmcd_conf = os.path.join(bmc_dir, "virtualbmc.conf")
+    vbmcd_pid_path = os.path.join(bmc_dir, _VBMCD_PID)
+    if not os.path.exists(vbmcd_conf):
+        return
+
+    _kill_stale_vbmcd(vbmcd_pid_path)
+
+    env = os.environ.copy()
+    env["VIRTUALBMC_CONFIG"] = vbmcd_conf
+    subprocess.Popen(
+        ["ip", "netns", "exec", ns, f"{venv_bin}/vbmcd"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        start_new_session=True,
+    )
+    for _ in range(20):
+        time.sleep(0.5)
+        if os.path.exists(vbmcd_pid_path):
+            break
+    logger.info("BMC restore: vbmcd started for %s", project_short)
+
+    _register_vbmc_entries(bmc_dir, ns, venv_bin, env)
 
 
 def _restore_bmc_services():
@@ -9029,6 +9236,43 @@ def _serial_clean_output(raw, outf, marker):
     return "\n".join(out_lines)
 
 
+def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_prompt):
+    """Poke the serial console and handle login if needed. Returns error dict or None."""
+    child.send("stty echo 2>/dev/null\r")
+    time.sleep(0.3)
+
+    child.send("\x03\r")
+    time.sleep(0.5)
+
+    def _login():
+        if not password:
+            raise RuntimeError("VM is at login prompt but no password provided")
+        child.send(username + "\r")
+        child.expect("[Pp]assword:", timeout=5)
+        child.send(password + "\r")
+        idx = child.expect([shell_prompt, "Last login", "incorrect", any_prompt[-1]], timeout=10)
+        if idx == 1:
+            child.expect(shell_prompt, timeout=5)
+        elif idx != 0:
+            raise RuntimeError("Login failed")
+
+    idx = child.expect(any_prompt, timeout=3)
+    if idx == 0:
+        _login()
+    elif idx == 3:
+        child.send("\r")
+        idx2 = child.expect(any_prompt, timeout=3)
+        if idx2 == 0:
+            _login()
+        elif idx2 == 3:
+            return {
+                "domain": domain,
+                "output": "",
+                "error": "Console not responding",
+            }
+    return None
+
+
 def _handle_vm_serial_exec(job, params):
     """Execute a command on a VM via serial console using pexpect fdspawn on the raw PTY."""
     domain = _validate_domain_name(params["domain_name"])
@@ -9056,42 +9300,11 @@ def _handle_vm_serial_exec(job, params):
     SHELL = r"[#\$] "
     ANY_PROMPT = ["login:", SHELL, r"[>%] ", TIMEOUT]
 
-    def _login():
-        if not password:
-            raise RuntimeError("VM is at login prompt but no password provided")
-        child.send(username + "\r")
-        child.expect("[Pp]assword:", timeout=5)
-        child.send(password + "\r")
-        idx = child.expect([SHELL, "Last login", "incorrect", TIMEOUT], timeout=10)
-        if idx == 1:
-            child.expect(SHELL, timeout=5)
-        elif idx != 0:
-            raise RuntimeError("Login failed")
-
     try:
-        # Always restore echo first in case previous call left it off
-        child.send("stty echo 2>/dev/null\r")
-        time.sleep(0.3)
+        err = _serial_poke_and_login(child, username, password, domain, ANY_PROMPT, SHELL)
+        if err is not None:
+            return err
 
-        # Poke console
-        child.send("\x03\r")
-        time.sleep(0.5)
-        idx = child.expect(ANY_PROMPT, timeout=3)
-        if idx == 0:
-            _login()
-        elif idx == 3:
-            child.send("\r")
-            idx2 = child.expect(ANY_PROMPT, timeout=3)
-            if idx2 == 0:
-                _login()
-            elif idx2 == 3:
-                return {
-                    "domain": domain,
-                    "output": "",
-                    "error": "Console not responding",
-                }
-
-        # Run command via temp file, read back with split marker
         import random
 
         rid = random.randint(10000, 99999)
@@ -9753,6 +9966,31 @@ def _scp_push_small_file(
                 pass
 
 
+def _prepare_ssh_key_file(private_key):
+    """Write private key to a temporary file and return the path."""
+    if not private_key:
+        return ""
+    key_file = f"/tmp/troshka-scp-key-{uuid.uuid4()}"
+    fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(private_key)
+    return key_file
+
+
+def _validate_file_push_data(handler, data, key_file):
+    """Validate file data and return temp path, or send error and return None."""
+    if not data:
+        if key_file:
+            os.unlink(key_file)
+        handler._send_json(400, {"error": "Empty file body"})
+        return None
+
+    tmp_path = f"/tmp/troshka-xfer-{uuid.uuid4()}"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    return tmp_path
+
+
 @route("POST", "/vm/file-push")
 def handle_vm_file_push(handler, params):
     """Push a file to a VM via SCP. Binary body, metadata in query params."""
@@ -9777,23 +10015,12 @@ def handle_vm_file_push(handler, params):
         )
         return
 
-    key_file = ""
-    if private_key:
-        key_file = f"/tmp/troshka-scp-key-{uuid.uuid4()}"
-        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(private_key)
+    key_file = _prepare_ssh_key_file(private_key)
 
     data = handler._read_raw_body()
-    if not data:
-        if key_file:
-            os.unlink(key_file)
-        handler._send_json(400, {"error": "Empty file body"})
+    tmp_path = _validate_file_push_data(handler, data, key_file)
+    if tmp_path is None:
         return
-
-    tmp_path = f"/tmp/troshka-xfer-{uuid.uuid4()}"
-    with open(tmp_path, "wb") as f:
-        f.write(data)
 
     file_size = len(data)
 
@@ -9904,28 +10131,33 @@ def _cleanup_nbd_ports():
         subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
 
 
+def _reap_stale_nbd_exports():
+    """Find and kill NBD exports older than NBD_MAX_AGE."""
+    now = time.time()
+    stale = []
+    with _nbd_ports_lock:
+        for port, info in _nbd_ports.items():
+            if now - info.get("started", now) > NBD_MAX_AGE:
+                stale.append(port)
+    for port in stale:
+        logger.warning("Reaping stale NBD export on port %d", port)
+        with _nbd_ports_lock:
+            info = _nbd_ports.pop(port, None)
+        if info and info.get("pid"):
+            try:
+                os.kill(info["pid"], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        subprocess.run(
+            ["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5
+        )
+
+
 def _nbd_reaper_loop():
     """Periodically clean up stale NBD exports."""
     while True:
         time.sleep(300)
-        now = time.time()
-        stale = []
-        with _nbd_ports_lock:
-            for port, info in _nbd_ports.items():
-                if now - info.get("started", now) > NBD_MAX_AGE:
-                    stale.append(port)
-        for port in stale:
-            logger.warning("Reaping stale NBD export on port %d", port)
-            with _nbd_ports_lock:
-                info = _nbd_ports.pop(port, None)
-            if info and info.get("pid"):
-                try:
-                    os.kill(info["pid"], signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            subprocess.run(
-                ["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5
-            )
+        _reap_stale_nbd_exports()
         _cleanup_nbd_ports()
 
 
@@ -9964,6 +10196,22 @@ def _get_disk_actual_size(disk_path):
     return 0
 
 
+def _get_nbd_process_pid(port):
+    """Get the PID of the qemu-nbd process listening on the given port."""
+    try:
+        ps = subprocess.run(
+            ["fuser", f"{port}/tcp"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if ps.stdout.strip():
+            return int(ps.stdout.strip().split()[-1])
+    except Exception:
+        pass
+    return None
+
+
 def _handle_nbd_export(job, params):
     """Snapshot a VM disk and serve it read-only over TLS-secured NBD."""
     domain_name = params.get("domain_name", "")
@@ -9981,7 +10229,6 @@ def _handle_nbd_export(job, params):
 
     port = _allocate_nbd_port()
 
-    # Kill any orphaned qemu-nbd on this port
     subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
 
     cmd = [
@@ -10004,17 +10251,7 @@ def _handle_nbd_export(job, params):
             _commit_snapshot(job, domain_name)
         raise RuntimeError(f"qemu-nbd failed: {result.stderr.strip()}")
 
-    pid = None
-    try:
-        ps = subprocess.run(
-            ["fuser", f"{port}/tcp"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        pid = int(ps.stdout.strip().split()[-1]) if ps.stdout.strip() else None
-    except Exception:
-        pass
+    pid = _get_nbd_process_pid(port)
 
     with _nbd_ports_lock:
         _nbd_ports[port] = {
@@ -10068,6 +10305,30 @@ def _handle_nbd_stop(job, params):
 COMMAND_HANDLERS["nbd/stop"] = _handle_nbd_stop
 
 
+def _log_flatten_progress(job, output_path, total_bytes, total_gb, prev_bytes, prev_time):
+    """Compute and log flatten transfer progress."""
+    if not os.path.exists(output_path):
+        return
+    cur = os.path.getsize(output_path)
+    cur_gb = round(cur / (1024**3), 1)
+    now = time.time()
+    dt = now - prev_time[0]
+    rate_mbps = (
+        round((cur - prev_bytes[0]) / (1024**2) / dt) if dt > 0 else 0
+    )
+    prev_bytes[0] = cur
+    prev_time[0] = now
+    rate_str = f" ({rate_mbps} MB/s)" if rate_mbps > 0 else ""
+    if total_bytes:
+        pct = min(100, int(cur * 100 / total_bytes))
+        _job_log(
+            job,
+            f"Flattening: {cur_gb} of {total_gb} GB ({pct}%){rate_str}",
+        )
+    else:
+        _job_log(job, f"Flattening: {cur_gb} GB written{rate_str}")
+
+
 def _flatten_progress_monitor(job, output_path, total_bytes, flatten_done):
     """Monitor flatten progress, logging transfer rate and percentage."""
     total_gb = round(total_bytes / (1024**3), 1) if total_bytes else 0
@@ -10075,25 +10336,7 @@ def _flatten_progress_monitor(job, output_path, total_bytes, flatten_done):
     prev_time = [time.time()]
     while not flatten_done.is_set():
         try:
-            if os.path.exists(output_path):
-                cur = os.path.getsize(output_path)
-                cur_gb = round(cur / (1024**3), 1)
-                now = time.time()
-                dt = now - prev_time[0]
-                rate_mbps = (
-                    round((cur - prev_bytes[0]) / (1024**2) / dt) if dt > 0 else 0
-                )
-                prev_bytes[0] = cur
-                prev_time[0] = now
-                rate_str = f" ({rate_mbps} MB/s)" if rate_mbps > 0 else ""
-                if total_bytes:
-                    pct = min(100, int(cur * 100 / total_bytes))
-                    _job_log(
-                        job,
-                        f"Flattening: {cur_gb} of {total_gb} GB ({pct}%){rate_str}",
-                    )
-                else:
-                    _job_log(job, f"Flattening: {cur_gb} GB written{rate_str}")
+            _log_flatten_progress(job, output_path, total_bytes, total_gb, prev_bytes, prev_time)
         except OSError:
             pass
         flatten_done.wait(10)
@@ -10325,9 +10568,147 @@ def _build_container_cmd(
     return cmd
 
 
+def _setup_container_veth_pair(job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge):
+    """Create and configure a veth pair for container networking."""
+    proj_ns = "troshka-" + name.split("-")[1]
+
+    _job_log(job, f"Attaching to {bridge} (eth{idx})")
+    try:
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "link",
+                "add",
+                veth_host,
+                "type",
+                "veth",
+                "peer",
+                "name",
+                veth_ctr,
+            ],
+            timeout=10,
+        )
+    except RuntimeError:
+        _job_log(job, f"Veth {veth_host} already exists, reusing")
+
+    if mac:
+        _run_cmd(
+            job,
+            ["ip", "link", "set", veth_ctr, "address", mac],
+            timeout=5,
+        )
+
+    _run_cmd(
+        job,
+        ["ip", "link", "set", veth_ctr, "netns", netns_name],
+        timeout=10,
+    )
+
+    _run_cmd(
+        job,
+        ["ip", "link", "set", veth_host, "netns", proj_ns],
+        timeout=10,
+    )
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            proj_ns,
+            "ip",
+            "link",
+            "set",
+            veth_host,
+            "master",
+            bridge,
+        ],
+        timeout=10,
+    )
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
+        timeout=5,
+    )
+
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "link",
+            "set",
+            veth_ctr,
+            "name",
+            f"eth{idx}",
+        ],
+        timeout=5,
+    )
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "link",
+            "set",
+            f"eth{idx}",
+            "up",
+        ],
+        timeout=5,
+    )
+
+
+def _configure_container_interface_ip(job, idx, ip, cidr, netns_name):
+    """Configure IP address and default route for container interface."""
+    prefix = cidr.split("/")[1] if "/" in cidr else "24"
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "addr",
+            "add",
+            f"{ip}/{prefix}",
+            "dev",
+            f"eth{idx}",
+        ],
+        timeout=5,
+    )
+    if idx == 0:
+        gw = ip.rsplit(".", 1)[0] + ".1"
+        try:
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    netns_name,
+                    "ip",
+                    "route",
+                    "add",
+                    "default",
+                    "via",
+                    gw,
+                ],
+                timeout=5,
+            )
+        except RuntimeError:
+            pass
+
+
 def _attach_container_to_bridges(job, name, networks):
     """Attach a container to VXLAN bridges via veth pairs."""
-    # Start the container to get a PID for its network namespace
     _run_cmd(job, ["podman", "start", name], timeout=30)
 
     inspect = subprocess.run(
@@ -10340,7 +10721,6 @@ def _attach_container_to_bridges(job, name, networks):
         raise RuntimeError(f"Failed to get container PID: {inspect.stderr}")
     ctr_pid = inspect.stdout.strip()
 
-    # Create netns symlink so ip netns exec works
     netns_path = f"/var/run/netns/ctr-{name[-8:]}"
     os.makedirs("/var/run/netns", exist_ok=True)
     try:
@@ -10356,151 +10736,14 @@ def _attach_container_to_bridges(job, name, networks):
         ip = net.get("ip", "")
         cidr = net.get("cidr", "10.0.0.0/24")
 
-        # veth pair: host side joins bridge, container side gets IP
         veth_host = f"vc{name[-8:]}{idx}h"[:15]
         veth_ctr = f"vc{name[-8:]}{idx}n"[:15]
 
-        _job_log(job, f"Attaching to {bridge} (eth{idx})")
-        try:
-            _run_cmd(
-                job,
-                [
-                    "ip",
-                    "link",
-                    "add",
-                    veth_host,
-                    "type",
-                    "veth",
-                    "peer",
-                    "name",
-                    veth_ctr,
-                ],
-                timeout=10,
-            )
-        except RuntimeError:
-            _job_log(job, f"Veth {veth_host} already exists, reusing")
+        _setup_container_veth_pair(job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge)
 
-        # Set MAC on container side before moving to namespace
-        if mac:
-            _run_cmd(
-                job,
-                ["ip", "link", "set", veth_ctr, "address", mac],
-                timeout=5,
-            )
-
-        # Move container side into container netns
-        _run_cmd(
-            job,
-            ["ip", "link", "set", veth_ctr, "netns", netns_name],
-            timeout=10,
-        )
-
-        # Move host side into project network namespace and attach to bridge
-        # Project namespace: troshka-{project_id[:8]} (extracted from container name)
-        proj_ns = "troshka-" + name.split("-")[1]
-        _run_cmd(
-            job,
-            ["ip", "link", "set", veth_host, "netns", proj_ns],
-            timeout=10,
-        )
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                proj_ns,
-                "ip",
-                "link",
-                "set",
-                veth_host,
-                "master",
-                bridge,
-            ],
-            timeout=10,
-        )
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
-            timeout=5,
-        )
-
-        # Rename and configure inside container namespace
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                netns_name,
-                "ip",
-                "link",
-                "set",
-                veth_ctr,
-                "name",
-                f"eth{idx}",
-            ],
-            timeout=5,
-        )
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                netns_name,
-                "ip",
-                "link",
-                "set",
-                f"eth{idx}",
-                "up",
-            ],
-            timeout=5,
-        )
-
-        # Set IP address (assigned by deploy service — CNI-style, no DHCP client needed)
         if ip:
-            prefix = cidr.split("/")[1] if "/" in cidr else "24"
-            _run_cmd(
-                job,
-                [
-                    "ip",
-                    "netns",
-                    "exec",
-                    netns_name,
-                    "ip",
-                    "addr",
-                    "add",
-                    f"{ip}/{prefix}",
-                    "dev",
-                    f"eth{idx}",
-                ],
-                timeout=5,
-            )
-            # Add default route via gateway (.1) for the first NIC
-            if idx == 0:
-                gw = ip.rsplit(".", 1)[0] + ".1"
-                try:
-                    _run_cmd(
-                        job,
-                        [
-                            "ip",
-                            "netns",
-                            "exec",
-                            netns_name,
-                            "ip",
-                            "route",
-                            "add",
-                            "default",
-                            "via",
-                            gw,
-                        ],
-                        timeout=5,
-                    )
-                except RuntimeError:
-                    pass
+            _configure_container_interface_ip(job, idx, ip, cidr, netns_name)
 
-    # Clean up netns symlink
     try:
         os.remove(netns_path)
     except FileNotFoundError:
@@ -10710,6 +10953,120 @@ def _handle_container_exec(job, params):
 COMMAND_HANDLERS["containers/exec"] = _handle_container_exec
 
 
+def _setup_pod_veth_pair(job, _full_pod_name, idx, veth_host, veth_ctr, mac, netns_name, proj_ns, bridge):
+    """Create and configure a veth pair for pod networking."""
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "link",
+            "add",
+            veth_host,
+            "type",
+            "veth",
+            "peer",
+            "name",
+            veth_ctr,
+        ],
+    )
+
+    if mac:
+        _run_cmd(job, ["ip", "link", "set", veth_ctr, "address", mac])
+
+    _run_cmd(job, ["ip", "link", "set", veth_ctr, "netns", netns_name])
+
+    _run_cmd(job, ["ip", "link", "set", veth_host, "netns", proj_ns])
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            proj_ns,
+            "ip",
+            "link",
+            "set",
+            veth_host,
+            "master",
+            bridge,
+        ],
+    )
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
+    )
+
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "link",
+            "set",
+            veth_ctr,
+            "name",
+            f"eth{idx}",
+        ],
+    )
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "link",
+            "set",
+            f"eth{idx}",
+            "up",
+        ],
+    )
+
+
+def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name):
+    """Configure IP address and default route for pod interface."""
+    prefix = cidr.split("/")[1] if "/" in cidr else "24"
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "addr",
+            "add",
+            f"{ip_addr}/{prefix}",
+            "dev",
+            f"eth{idx}",
+        ],
+    )
+
+    if idx == 0:
+        parts = ip_addr.split(".")
+        gw = f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                netns_name,
+                "ip",
+                "route",
+                "add",
+                "default",
+                "via",
+                gw,
+            ],
+            check=False,
+        )
+
+
 def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     """Attach a pod's infra container to VXLAN bridges via veth pairs."""
     netns_name = f"ctr-{full_pod_name[-8:]}"
@@ -10730,114 +11087,55 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
         veth_host = f"vp{full_pod_name[-8:]}{idx}h"[:15]
         veth_ctr = f"vp{full_pod_name[-8:]}{idx}n"[:15]
 
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "link",
-                "add",
-                veth_host,
-                "type",
-                "veth",
-                "peer",
-                "name",
-                veth_ctr,
-            ],
-        )
-
-        if mac:
-            _run_cmd(job, ["ip", "link", "set", veth_ctr, "address", mac])
-
-        _run_cmd(job, ["ip", "link", "set", veth_ctr, "netns", netns_name])
-
-        _run_cmd(job, ["ip", "link", "set", veth_host, "netns", proj_ns])
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                proj_ns,
-                "ip",
-                "link",
-                "set",
-                veth_host,
-                "master",
-                bridge,
-            ],
-        )
-        _run_cmd(
-            job,
-            ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
-        )
-
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                netns_name,
-                "ip",
-                "link",
-                "set",
-                veth_ctr,
-                "name",
-                f"eth{idx}",
-            ],
-        )
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                netns_name,
-                "ip",
-                "link",
-                "set",
-                f"eth{idx}",
-                "up",
-            ],
-        )
+        _setup_pod_veth_pair(job, full_pod_name, idx, veth_host, veth_ctr, mac, netns_name, proj_ns, bridge)
 
         if ip_addr and cidr:
-            prefix = cidr.split("/")[1] if "/" in cidr else "24"
-            _run_cmd(
-                job,
-                [
-                    "ip",
-                    "netns",
-                    "exec",
-                    netns_name,
-                    "ip",
-                    "addr",
-                    "add",
-                    f"{ip_addr}/{prefix}",
-                    "dev",
-                    f"eth{idx}",
-                ],
-            )
+            _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name)
 
-            if idx == 0:
-                parts = ip_addr.split(".")
-                gw = f"{parts[0]}.{parts[1]}.{parts[2]}.1"
-                _run_cmd(
-                    job,
-                    [
-                        "ip",
-                        "netns",
-                        "exec",
-                        netns_name,
-                        "ip",
-                        "route",
-                        "add",
-                        "default",
-                        "via",
-                        gw,
-                    ],
-                    check=False,
-                )
+
+def _create_init_container(job, full_pod_name, ic):
+    """Create a single init container in a pod."""
+    ic_name = f"{full_pod_name}-init-{ic['name']}"
+    cmd = ["podman", "create", "--pod", full_pod_name, "--name", ic_name]
+    for k, v in (ic.get("env") or {}).items():
+        cmd.extend(["-e", f"{k}={v}"])
+    for vol in ic.get("mounts") or []:
+        cmd.extend(["-v", vol])
+    if ic.get("command"):
+        cmd.extend(["--entrypoint", ic["command"]])
+    cmd.append(ic["image"])
+    _run_cmd(job, cmd)
+    _job_log(job, f"Init container created: {ic['name']}")
+
+
+def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
+    """Create a single main container in a pod."""
+    ctr_name = f"{full_pod_name}-{ctr['name']}"
+    cmd = [
+        "podman",
+        "create",
+        "--pod",
+        full_pod_name,
+        "--name",
+        ctr_name,
+        "--restart",
+        restart_policy,
+    ]
+    if ctr.get("cpus"):
+        cmd.extend(["--cpus", str(ctr["cpus"])])
+    if ctr.get("memory"):
+        cmd.extend(["--memory", f"{ctr['memory']}m"])
+    for k, v in (ctr.get("env") or {}).items():
+        cmd.extend(["-e", f"{k}={v}"])
+    for vol in ctr.get("mounts") or []:
+        cmd.extend(["-v", vol])
+    if privileged:
+        cmd.append("--privileged")
+    if ctr.get("command"):
+        cmd.extend(["--entrypoint", ctr["command"]])
+    cmd.append(ctr["image"])
+    _run_cmd(job, cmd)
+    _job_log(job, f"Main container created: {ctr['name']}")
 
 
 def _create_pod_containers(
@@ -10845,45 +11143,10 @@ def _create_pod_containers(
 ):
     """Create init containers and main containers inside a pod."""
     for ic in init_containers:
-        ic_name = f"{full_pod_name}-init-{ic['name']}"
-        cmd = ["podman", "create", "--pod", full_pod_name, "--name", ic_name]
-        for k, v in (ic.get("env") or {}).items():
-            cmd.extend(["-e", f"{k}={v}"])
-        for vol in ic.get("mounts") or []:
-            cmd.extend(["-v", vol])
-        if ic.get("command"):
-            cmd.extend(["--entrypoint", ic["command"]])
-        cmd.append(ic["image"])
-        _run_cmd(job, cmd)
-        _job_log(job, f"Init container created: {ic['name']}")
+        _create_init_container(job, full_pod_name, ic)
 
     for ctr in containers:
-        ctr_name = f"{full_pod_name}-{ctr['name']}"
-        cmd = [
-            "podman",
-            "create",
-            "--pod",
-            full_pod_name,
-            "--name",
-            ctr_name,
-            "--restart",
-            restart_policy,
-        ]
-        if ctr.get("cpus"):
-            cmd.extend(["--cpus", str(ctr["cpus"])])
-        if ctr.get("memory"):
-            cmd.extend(["--memory", f"{ctr['memory']}m"])
-        for k, v in (ctr.get("env") or {}).items():
-            cmd.extend(["-e", f"{k}={v}"])
-        for vol in ctr.get("mounts") or []:
-            cmd.extend(["-v", vol])
-        if privileged:
-            cmd.append("--privileged")
-        if ctr.get("command"):
-            cmd.extend(["--entrypoint", ctr["command"]])
-        cmd.append(ctr["image"])
-        _run_cmd(job, cmd)
-        _job_log(job, f"Main container created: {ctr['name']}")
+        _create_main_container(job, full_pod_name, ctr, restart_policy, privileged)
 
 
 def _handle_pod_create(job, params):
@@ -11033,42 +11296,48 @@ def _get_container_states():
     return containers
 
 
+def _get_container_namespace_ips(name):
+    """Get IP addresses for a running container via its network namespace."""
+    try:
+        pid_result = subprocess.run(
+            ["podman", "inspect", "--format", _STATE_PID_FMT, name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pid = pid_result.stdout.strip()
+        if not pid or pid == "0":
+            return []
+
+        ip_result = subprocess.run(
+            ["nsenter", "-t", pid, "-n", "ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        ips = []
+        for ip_line in ip_result.stdout.strip().split("\n"):
+            if "scope global" in ip_line:
+                addr_part = (
+                    ip_line.split(_INET_PREFIX)[1].split("/")[0]
+                    if _INET_PREFIX in ip_line
+                    else ""
+                )
+                if addr_part:
+                    ips.append(addr_part)
+        return ips
+    except Exception:
+        return []
+
+
 def _enrich_container_ips(containers):
     """Query IPs for running containers via their network namespace."""
     for name, info in containers.items():
         if info["state"] != "running":
             continue
-        try:
-            pid_result = subprocess.run(
-                ["podman", "inspect", "--format", _STATE_PID_FMT, name],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            pid = pid_result.stdout.strip()
-            if not pid or pid == "0":
-                continue
-            ip_result = subprocess.run(
-                ["nsenter", "-t", pid, "-n", "ip", "-4", "-o", "addr", "show"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            ips = []
-            for ip_line in ip_result.stdout.strip().split("\n"):
-                if "scope global" in ip_line:
-                    # Format: "2: eth0    inet 10.0.0.5/24 ..."
-                    addr_part = (
-                        ip_line.split(_INET_PREFIX)[1].split("/")[0]
-                        if _INET_PREFIX in ip_line
-                        else ""
-                    )
-                    if addr_part:
-                        ips.append(addr_part)
-            if ips:
-                info["ips"] = ips
-        except Exception:
-            pass
+        ips = _get_container_namespace_ips(name)
+        if ips:
+            info["ips"] = ips
 
 
 def _get_pod_states():

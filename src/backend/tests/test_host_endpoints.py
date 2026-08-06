@@ -1575,7 +1575,7 @@ class TestInstallBg:
                 "troshkad_credentials": {"token": "new-tok", "fingerprint": "fp1"},
             },
         ), patch(
-            "app.api.hosts._build_pool_install_kwargs", return_value={}
+            "app.api.hosts._build_pool_install_kwargs", return_value=MagicMock()
         ), patch(
             "app.api.hosts._verify_and_update_agent_version"
         ):

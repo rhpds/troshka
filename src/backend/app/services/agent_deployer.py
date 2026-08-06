@@ -9,8 +9,30 @@ import os
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentDeployConfig:
+    """Grouped configuration for agent deployment."""
+
+    api_url: str = ""
+    storage_mode: str = "local"
+    nfs_server: str = ""
+    nfs_path: str = ""
+    nfs_port: int = 0
+    ca_cert: str = ""
+    host_cert: str = ""
+    host_key: str = ""
+    console_domain: str = ""
+    vncd_no_tls: bool = False
+    host_type: str = "shared"
+    ssh_port: int = 22
+    ssh_user: str = "ec2-user"
+    data_disk_device: str = "sdf"
+    agent_ca_cert: str = ""
 
 
 def get_provider_ssh_user(provider_type: str) -> str:
@@ -819,63 +841,60 @@ def deploy_agent(
     host_ip: str,
     private_key: str,
     host_id: str,
-    api_url: str = "",
-    storage_mode: str = "local",
-    nfs_server: str = "",
-    nfs_path: str = "",
-    nfs_port: int = 0,
-    ca_cert: str = "",
-    host_cert: str = "",
-    host_key: str = "",
-    console_domain: str = "",
-    vncd_no_tls: bool = False,
-    host_type: str = "shared",
-    ssh_port: int = 22,
-    ssh_user: str = "ec2-user",
-    data_disk_device: str = "sdf",
-    agent_ca_cert: str = "",
+    config: AgentDeployConfig | None = None,
 ) -> dict:
     """Deploy the troshka agent to a remote host via SSH."""
     import base64
 
-    from app.core.config import config
+    from app.core.config import config as app_config
 
-    actual_api_url = api_url or getattr(config.app, "external_url", "")
+    if config is None:
+        config = AgentDeployConfig()
+
+    actual_api_url = config.api_url or getattr(app_config.app, "external_url", "")
     if not actual_api_url:
         logger.warning(
             "No external_url configured — agent will not be able to call back to the API"
         )
     base_script = (
         PATTERN_BUFFER_INSTALL_SCRIPT
-        if host_type == "pattern_buffer"
+        if config.host_type == "pattern_buffer"
         else AGENT_INSTALL_SCRIPT
     )
     script = (
         base_script.replace("{host_id}", host_id)
         .replace("{api_url}", actual_api_url)
-        .replace("{storage_mode}", storage_mode)
-        .replace("{nfs_server}", nfs_server)
-        .replace("{nfs_path}", nfs_path)
-        .replace("{nfs_port}", str(nfs_port))
+        .replace("{storage_mode}", config.storage_mode)
+        .replace("{nfs_server}", config.nfs_server)
+        .replace("{nfs_path}", config.nfs_path)
+        .replace("{nfs_port}", str(config.nfs_port))
         .replace(
             "{ca_cert_b64}",
-            base64.b64encode(ca_cert.encode()).decode() if ca_cert else "",
+            base64.b64encode(config.ca_cert.encode()).decode()
+            if config.ca_cert
+            else "",
         )
         .replace(
             "{host_cert_b64}",
-            base64.b64encode(host_cert.encode()).decode() if host_cert else "",
+            base64.b64encode(config.host_cert.encode()).decode()
+            if config.host_cert
+            else "",
         )
         .replace(
             "{host_key_b64}",
-            base64.b64encode(host_key.encode()).decode() if host_key else "",
+            base64.b64encode(config.host_key.encode()).decode()
+            if config.host_key
+            else "",
         )
-        .replace("{console_domain}", console_domain)
-        .replace("{vncd_no_tls}", "1" if vncd_no_tls else "")
-        .replace("{ssh_user}", ssh_user)
-        .replace("{data_disk_device}", data_disk_device)
+        .replace("{console_domain}", config.console_domain)
+        .replace("{vncd_no_tls}", "1" if config.vncd_no_tls else "")
+        .replace("{ssh_user}", config.ssh_user)
+        .replace("{data_disk_device}", config.data_disk_device)
         .replace(
             "{agent_ca_cert_b64}",
-            base64.b64encode(agent_ca_cert.encode()).decode() if agent_ca_cert else "",
+            base64.b64encode(config.agent_ca_cert.encode()).decode()
+            if config.agent_ca_cert
+            else "",
         )
     )
 
@@ -897,11 +916,14 @@ def deploy_agent(
             "-i",
             key_path,
         ]
-        ssh_port_opts = ["-p", str(ssh_port)] if ssh_port != 22 else []
-        scp_port_opts = ["-P", str(ssh_port)] if ssh_port != 22 else []
+        ssh_port_opts = ["-p", str(config.ssh_port)] if config.ssh_port != 22 else []
+        scp_port_opts = ["-P", str(config.ssh_port)] if config.ssh_port != 22 else []
 
         logger.info(
-            "Deploying agent to %s (user=%s, port=%d)", host_ip, ssh_user, ssh_port
+            "Deploying agent to %s (user=%s, port=%d)",
+            host_ip,
+            config.ssh_user,
+            config.ssh_port,
         )
         deploy_start = time.time()
 
@@ -914,7 +936,7 @@ def deploy_agent(
             troshkad_path,
             "/opt/troshka/troshkad.py",
             host_ip,
-            ssh_user,
+            config.ssh_user,
             ssh_opts,
             ssh_port_opts,
             scp_port_opts,
@@ -927,7 +949,7 @@ def deploy_agent(
             vncd_path,
             "/opt/troshka/troshka-vncd.py",
             host_ip,
-            ssh_user,
+            config.ssh_user,
             ssh_opts,
             ssh_port_opts,
             scp_port_opts,
@@ -944,7 +966,7 @@ def deploy_agent(
                     *scp_port_opts,
                     *ssh_opts,
                     troshka_files,
-                    f"{ssh_user}@{host_ip}:/tmp/troshka-fs-monitor.sh",
+                    f"{config.ssh_user}@{host_ip}:/tmp/troshka-fs-monitor.sh",
                 ],
                 capture_output=True,
                 text=True,
@@ -955,7 +977,7 @@ def deploy_agent(
                     "ssh",
                     *ssh_opts,
                     *ssh_port_opts,
-                    f"{ssh_user}@{host_ip}",
+                    f"{config.ssh_user}@{host_ip}",
                     "sudo",
                     "mv",
                     "/tmp/troshka-fs-monitor.sh",
@@ -972,7 +994,7 @@ def deploy_agent(
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
         return _run_install_script_via_ssh(
-            script, host_ip, ssh_user, ssh_opts, ssh_port_opts, deploy_start
+            script, host_ip, config.ssh_user, ssh_opts, ssh_port_opts, deploy_start
         )
     finally:
         os.unlink(key_path)

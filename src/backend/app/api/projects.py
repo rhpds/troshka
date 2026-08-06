@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 from app.core.auth import get_current_user, require_role
 from app.core.database import get_db
+from app.core.logging_utils import sanitize_log
 from app.models.host import Host
 from app.models.project import Project
 from app.models.user import User
@@ -444,35 +445,38 @@ def _parse_clock_target(clock_target_str):
     return clock_target_str
 
 
-@router.post("/from-template", status_code=201, responses={400: {}, 404: {}})
-def create_project_from_template(
-    body: dict,
-    user: CurrentUser,
-    db: DbSession,
-):
-    from app.services.template_loader import (
-        generate_topology_from_template,
-        resolve_inline_template,
-        resolve_template,
-    )
+def _resolve_template_source(body):
+    """Resolve template from either template_yaml or template_id."""
+    from app.services.template_loader import resolve_inline_template, resolve_template
 
     template_yaml = body.get("template_yaml")
     template_id = body.get("template_id")
 
     if template_yaml:
         resolved = resolve_inline_template(template_yaml)
-        template_id = resolved.get("name", "inline")
-    elif template_id:
+        return resolved, resolved.get("name", "inline")
+    if template_id:
         try:
             resolved = resolve_template(template_id)
         except FileNotFoundError:
             raise HTTPException(
                 status_code=404, detail=f"Template '{template_id}' not found"
             )
-    else:
-        raise HTTPException(
-            status_code=400, detail="template_id or template_yaml is required"
-        )
+        return resolved, template_id
+    raise HTTPException(
+        status_code=400, detail="template_id or template_yaml is required"
+    )
+
+
+@router.post("/from-template", status_code=201, responses={400: {}, 404: {}})
+def create_project_from_template(
+    body: dict,
+    user: CurrentUser,
+    db: DbSession,
+):
+    from app.services.template_loader import generate_topology_from_template
+
+    resolved, template_id = _resolve_template_source(body)
 
     # Apply defaults from template's ocp section
     ocp_cfg = resolved.get("ocp", {})
@@ -601,66 +605,79 @@ def _validate_template_yaml(template_yaml):
         )
 
 
-def _resolve_template_library_items(db, user, vms_def):
-    """Resolve and validate all library item references in the template VMs."""
+def _find_library_item(db, user_id, item_id, item_name, label, missing):
+    """Look up a library item by ID, falling back to name. Appends to missing if not found."""
     from app.models.library import Library, LibraryItem
 
+    if item_id:
+        item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(LibraryItem.id == item_id, Library.owner_id == user_id)
+            .first()
+        )
+        if item:
+            return item
+    if item_name:
+        item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(LibraryItem.name == item_name, Library.owner_id == user_id)
+            .first()
+        )
+        if item:
+            return item
+    if item_id or item_name:
+        missing.append(f"{label}: '{item_name or item_id}' not found")
+    return None
+
+
+def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
+    """Resolve all library item references for a single VM definition."""
+    for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
+        item = _find_library_item(
+            db,
+            user_id,
+            disk_cfg.get("library_item_id"),
+            disk_cfg.get("library_item_name"),
+            f"VM '{vm_name}' disk {di}",
+            missing,
+        )
+        if item:
+            disk_cfg["library_item_id"] = item.id
+            disk_cfg["library_item_name"] = item.name
+    iso_id = vm_cfg.get("pxe_boot_iso_id")
+    if iso_id:
+        item = _find_library_item(
+            db,
+            user_id,
+            iso_id,
+            vm_cfg.get("pxe_boot_iso_name"),
+            f"VM '{vm_name}' PXE boot ISO",
+            missing,
+        )
+        if item:
+            vm_cfg["pxe_boot_iso_id"] = item.id
+            vm_cfg["pxe_boot_iso_name"] = item.name
+    for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
+        item = _find_library_item(
+            db,
+            user_id,
+            iso_cfg.get("library_item_id"),
+            iso_cfg.get("library_item_name"),
+            f"VM '{vm_name}' ISO {ii}",
+            missing,
+        )
+        if item:
+            iso_cfg["library_item_id"] = item.id
+            iso_cfg["library_item_name"] = item.name
+
+
+def _resolve_template_library_items(db, user, vms_def):
+    """Resolve and validate all library item references in the template VMs."""
     missing = []
-
-    def _resolve_one(item_id, item_name, label):
-        """Look up a library item by ID, falling back to name."""
-        if item_id:
-            item = (
-                db.query(LibraryItem)
-                .join(Library)
-                .filter(LibraryItem.id == item_id, Library.owner_id == user.id)
-                .first()
-            )
-            if item:
-                return item
-        if item_name:
-            item = (
-                db.query(LibraryItem)
-                .join(Library)
-                .filter(LibraryItem.name == item_name, Library.owner_id == user.id)
-                .first()
-            )
-            if item:
-                return item
-        if item_id or item_name:
-            missing.append(f"{label}: '{item_name or item_id}' not found")
-        return None
-
     for vm_name, vm_cfg in vms_def.items():
-        for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
-            item = _resolve_one(
-                disk_cfg.get("library_item_id"),
-                disk_cfg.get("library_item_name"),
-                f"VM '{vm_name}' disk {di}",
-            )
-            if item:
-                disk_cfg["library_item_id"] = item.id
-                disk_cfg["library_item_name"] = item.name
-        iso_id = vm_cfg.get("pxe_boot_iso_id")
-        if iso_id:
-            item = _resolve_one(
-                iso_id,
-                vm_cfg.get("pxe_boot_iso_name"),
-                f"VM '{vm_name}' PXE boot ISO",
-            )
-            if item:
-                vm_cfg["pxe_boot_iso_id"] = item.id
-                vm_cfg["pxe_boot_iso_name"] = item.name
-        for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
-            item = _resolve_one(
-                iso_cfg.get("library_item_id"),
-                iso_cfg.get("library_item_name"),
-                f"VM '{vm_name}' ISO {ii}",
-            )
-            if item:
-                iso_cfg["library_item_id"] = item.id
-                iso_cfg["library_item_name"] = item.name
-
+        _resolve_vm_library_refs(db, user.id, vm_name, vm_cfg, missing)
     if missing:
         raise HTTPException(
             status_code=400,
@@ -1715,8 +1732,8 @@ def forcestop_vm(
                 return {"action": "forcestop", "success": True}
             except Exception as e:
                 logger.exception(
-                    "Failed to force-stop KubeVirt VM %s: %s", kv_name, e
-                )  # NOSONAR
+                    "Failed to force-stop KubeVirt VM %s: %s", sanitize_log(kv_name), e
+                )
                 return {"action": "forcestop", "success": False}
         return {"action": "forcestop", "success": False}
 
@@ -1906,6 +1923,15 @@ def vm_ready(
     return {"ready": False, "reason": "exec failed"}
 
 
+def _resolve_console_credentials(root_password, password, username, method_label):
+    """Resolve console credentials. Returns (effective_user, effective_pass, error)."""
+    effective_pass = root_password or password
+    if not effective_pass:
+        return None, None, f"{method_label}: no password available"
+    effective_user = "root" if root_password else username
+    return effective_user, effective_pass, None
+
+
 def _try_kubevirt_method(
     m: str,
     provider,
@@ -1941,34 +1967,26 @@ def _try_kubevirt_method(
             None,
         )
     if m == "vnc":
-        vnc_pass = root_password or password
-        if not vnc_pass:
-            return None, "vnc: no password available"
+        user_, pass_, err = _resolve_console_credentials(
+            root_password, password, username, "vnc"
+        )
+        if err:
+            return None, err
         return (
             kubevirt_exec_vnc(
-                provider,
-                project_id,
-                vm_id,
-                "root" if root_password else username,
-                vnc_pass,
-                command,
-                timeout,
+                provider, project_id, vm_id, user_, pass_, command, timeout
             ),
             None,
         )
     if m in ("console", "serial"):
-        console_pass = root_password or password
-        if not console_pass:
-            return None, "console: no password available"
+        user_, pass_, err = _resolve_console_credentials(
+            root_password, password, username, "console"
+        )
+        if err:
+            return None, err
         return (
             kubevirt_exec_console(
-                provider,
-                project_id,
-                vm_id,
-                "root" if root_password else username,
-                console_pass,
-                command,
-                timeout,
+                provider, project_id, vm_id, user_, pass_, command, timeout
             ),
             None,
         )
@@ -2149,6 +2167,36 @@ def _troshkad_exec_console(
     return None, f"console: {job.get('result', {}).get('error', 'failed')}"
 
 
+def _dispatch_troshkad_method(
+    host,
+    dom,
+    m,
+    project_id,
+    vm_ip,
+    username,
+    password,
+    private_key,
+    root_password,
+    command,
+    timeout,
+    force_tty,
+):
+    """Dispatch a single exec method on a troshkad host. Returns (result, error)."""
+    if m == "guest-agent":
+        return _troshkad_exec_guest_agent(host, dom, command, timeout)
+    if m == "ssh":
+        return _troshkad_exec_ssh(
+            host, project_id, vm_ip, username, password, private_key, command, timeout
+        )
+    if m == "serial":
+        return _troshkad_exec_serial(host, dom, username, password, command, timeout)
+    if m in ("console", "console-text"):
+        return _troshkad_exec_console(
+            host, dom, username, password, root_password, command, timeout, force_tty, m
+        )
+    return None, f"{m}: unknown method"
+
+
 def _exec_troshkad(
     host,
     project_id: str,
@@ -2170,47 +2218,20 @@ def _exec_troshkad(
 
     for m in methods:
         try:
-            if m == "guest-agent":
-                result, err = _troshkad_exec_guest_agent(
-                    host,
-                    dom,
-                    command,
-                    timeout,
-                )
-            elif m == "ssh":
-                result, err = _troshkad_exec_ssh(
-                    host,
-                    project_id,
-                    vm_ip,
-                    username,
-                    password,
-                    private_key,
-                    command,
-                    timeout,
-                )
-            elif m == "serial":
-                result, err = _troshkad_exec_serial(
-                    host,
-                    dom,
-                    username,
-                    password,
-                    command,
-                    timeout,
-                )
-            elif m in ("console", "console-text"):
-                result, err = _troshkad_exec_console(
-                    host,
-                    dom,
-                    username,
-                    password,
-                    root_password,
-                    command,
-                    timeout,
-                    force_tty,
-                    m,
-                )
-            else:
-                result, err = None, f"{m}: unknown method"
+            result, err = _dispatch_troshkad_method(
+                host,
+                dom,
+                m,
+                project_id,
+                vm_ip,
+                username,
+                password,
+                private_key,
+                root_password,
+                command,
+                timeout,
+                force_tty,
+            )
 
             if result is not None:
                 return result

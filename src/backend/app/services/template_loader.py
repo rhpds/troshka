@@ -8,6 +8,7 @@ import yaml  # type: ignore[import-untyped]
 _DEFAULT_TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "templates"
 )
+_STORAGE_EDGE_STROKE = "rgba(251,191,36,0.6)"
 
 
 def load_template(name: str, templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> dict:
@@ -451,21 +452,7 @@ def _parse_pod_sub_container(sc_cfg, default_name, disk_name_to_id):
     }
 
 
-def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
-    """Build VM node and associated disk/iso/edge nodes from VM config."""
-    role = vm_cfg.get("role", "")
-    os_type = vm_cfg.get("os", "rhcos")
-    power_on = vm_cfg.get("power_on", True)
-    has_bmc = vm_cfg.get("bmc", role == "control-plane")
-    bmc_ip = vm_cfg.get("bmc_ip", "")
-    disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
-    nics_cfg = vm_cfg.get("nics", [])
-
-    icon = "\U0001f5a5"
-    if os_type == "blank":
-        icon = "\U0001f4e6"
-
-    # Build NICs
+def _build_vm_nics(nics_cfg, nets_def):
     nics = []
     for i, nic_cfg in enumerate(nics_cfg):
         mac_fn = (
@@ -482,80 +469,23 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
         if nic_cfg.get("ip"):
             nic["ip"] = nic_cfg["ip"]
         nics.append(nic)
+    return nics
 
-    # Build disk controllers and storage nodes
-    disk_controllers = []
-    disk_nodes = []
-    disk_edges_list = []
-    boot_device_ids = []
-    for di, disk_cfg in enumerate(disks_cfg):
-        dc = {"id": f"dp-{_id()}", "name": f"disk{di}", "bus": "virtio"}
-        disk_controllers.append(dc)
-        disk_id = _id()
-        if di == 0:
-            boot_device_ids.append(disk_id)
-        disk_data = {
-            "label": disk_cfg.get("name", f"{vm_name}-disk{di}"),
-            "name": disk_cfg.get("name", f"{vm_name}-disk{di}"),
-            "size": disk_cfg.get("size_gb", 50),
-            "format": "qcow2",
-            "icon": "\U0001f6e2",
-        }
-        if disk_cfg.get("library_item_id"):
-            disk_data["libraryItemId"] = disk_cfg["library_item_id"]
-            disk_data["source"] = "library"
-        if disk_cfg.get("library_item_name"):
-            disk_data["libraryItemName"] = disk_cfg["library_item_name"]
-        if disk_cfg.get("ocp_mount"):
-            disk_data["ocpMount"] = disk_cfg["ocp_mount"]
-        disk_node = {
-            "id": disk_id,
-            "type": "storageNode",
-            "position": {"x": vm_x - 190, "y": vm_row_y + 70 + di * 100},
-            "data": disk_data,
-        }
-        disk_edge = {
-            "id": _id(),
-            "source": disk_id,
-            "target": "",  # filled after VM node is created
-            "sourceHandle": "right",
-            "targetHandle": f"dp-{dc['id']}-left",
-            "type": "smoothstep",
-            "style": {
-                "stroke": "rgba(251,191,36,0.6)",
-                "strokeWidth": 2,
-                "strokeDasharray": "4 4",
-            },
-            "animated": False,
-            "className": "edge-storage-pulse",
-        }
-        disk_nodes.append(disk_node)
-        disk_edges_list.append(disk_edge)
 
-    # Add cdrom controller for non-blank VMs
-    if os_type != "blank":
-        dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
-        disk_controllers.append(dc_cdrom)
+def _apply_vm_cloud_init_fields(vm_cfg, vm_data):
+    if vm_cfg.get("cloud_init"):
+        vm_data["cloudInit"] = True
+    if vm_cfg.get("cloud_user_password"):
+        vm_data["ciCloudUserPassword"] = vm_cfg["cloud_user_password"]
+    if vm_cfg.get("user_data"):
+        vm_data["ciUserData"] = vm_cfg["user_data"]
+    if vm_cfg.get("packages"):
+        vm_data["ciPackages"] = vm_cfg["packages"]
+    if vm_cfg.get("network_config"):
+        vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
 
-    vm_data = {
-        "label": vm_name,
-        "name": vm_name,
-        "vcpus": vm_cfg.get("vcpus", 2),
-        "ram": vm_cfg.get("ram_gb", 4),
-        "os": os_type,
-        "icon": icon,
-        "nics": nics,
-        "diskControllers": disk_controllers,
-        "bmcEnabled": has_bmc,
-        "recertEnabled": vm_cfg.get("recert", False),
-        "ocpMonitor": vm_cfg.get("ocp_monitor", False),
-        "configureBastionBrowser": vm_cfg.get("configure_bastion_browser", False),
-        "firmware": vm_cfg.get("firmware", "uefi"),
-        "secureBoot": vm_cfg.get("secure_boot", False),
-        "bootDevices": boot_device_ids,
-        "bootMethod": "disk",
-        "powerOnAtDeploy": power_on,
-    }
+
+def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if vm_cfg.get("uuid"):
         try:
             uuid.UUID(vm_cfg["uuid"])
@@ -571,7 +501,6 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
     if vm_cfg.get("pxe_boot_iso_name"):
         vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
 
-    # Tags: use explicit tags if provided, otherwise derive from role
     if vm_cfg.get("tags"):
         vm_data["tags"] = vm_cfg["tags"]
     elif role == "control-plane":
@@ -581,43 +510,23 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
     elif role == "bastion":
         vm_data["tags"] = {"AnsibleGroup": "bastions,showroom"}
 
-    # Cloud-init
-    if vm_cfg.get("cloud_init"):
-        vm_data["cloudInit"] = True
-    if vm_cfg.get("cloud_user_password"):
-        vm_data["ciCloudUserPassword"] = vm_cfg["cloud_user_password"]
-    if vm_cfg.get("user_data"):
-        vm_data["ciUserData"] = vm_cfg["user_data"]
-    if vm_cfg.get("packages"):
-        vm_data["ciPackages"] = vm_cfg["packages"]
-    if vm_cfg.get("network_config"):
-        vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
+    _apply_vm_cloud_init_fields(vm_cfg, vm_data)
 
-    # Affinity group and anti-affinity
     if vm_cfg.get("affinity_group"):
         vm_data["affinityGroup"] = vm_cfg["affinity_group"]
     if vm_cfg.get("separate_host"):
         vm_data["separateHost"] = vm_cfg["separate_host"]
 
-    vm_node = {
-        "id": _id(),
-        "type": "vmNode",
-        "position": {"x": vm_x, "y": vm_row_y},
-        "data": vm_data,
-    }
 
-    # Fix up disk edge targets
-    for de in disk_edges_list:
-        de["target"] = vm_node["id"]
-
-    # Create ISO storage nodes from template isos field
+def _build_vm_iso_nodes(
+    vm_cfg, vm_name, vm_node_id, disk_controllers, disks_cfg, vm_x, vm_row_y
+):
     iso_nodes_edges = []
-    isos_cfg = vm_cfg.get("isos", [])
     cdrom_dc = next(
         (dc for dc in disk_controllers if dc.get("name", "").startswith("cdrom")),
         None,
     )
-    for iso_cfg in isos_cfg:
+    for iso_cfg in vm_cfg.get("isos", []):
         if not cdrom_dc:
             break
         iso_id = _id()
@@ -646,12 +555,12 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
         iso_edge = {
             "id": _id(),
             "source": iso_id,
-            "target": vm_node["id"],
+            "target": vm_node_id,
             "sourceHandle": "right",
             "targetHandle": f"dp-{cdrom_dc['id']}-left",
             "type": "smoothstep",
             "style": {
-                "stroke": "rgba(251,191,36,0.6)",
+                "stroke": _STORAGE_EDGE_STROKE,
                 "strokeWidth": 2,
                 "strokeDasharray": "4 4",
             },
@@ -659,8 +568,120 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
             "className": "edge-storage-pulse",
         }
         iso_nodes_edges.append((iso_node, iso_edge))
+    return iso_nodes_edges
 
-    # Connect NICs to networks
+
+def _build_disk_node_and_edge(vm_name, disk_cfg, di, vm_x, vm_row_y):
+    dc = {"id": f"dp-{_id()}", "name": f"disk{di}", "bus": "virtio"}
+    disk_id = _id()
+    disk_data = {
+        "label": disk_cfg.get("name", f"{vm_name}-disk{di}"),
+        "name": disk_cfg.get("name", f"{vm_name}-disk{di}"),
+        "size": disk_cfg.get("size_gb", 50),
+        "format": "qcow2",
+        "icon": "\U0001f6e2",
+    }
+    if disk_cfg.get("library_item_id"):
+        disk_data["libraryItemId"] = disk_cfg["library_item_id"]
+        disk_data["source"] = "library"
+    if disk_cfg.get("library_item_name"):
+        disk_data["libraryItemName"] = disk_cfg["library_item_name"]
+    if disk_cfg.get("ocp_mount"):
+        disk_data["ocpMount"] = disk_cfg["ocp_mount"]
+    disk_node = {
+        "id": disk_id,
+        "type": "storageNode",
+        "position": {"x": vm_x - 190, "y": vm_row_y + 70 + di * 100},
+        "data": disk_data,
+    }
+    disk_edge = {
+        "id": _id(),
+        "source": disk_id,
+        "target": "",
+        "sourceHandle": "right",
+        "targetHandle": f"dp-{dc['id']}-left",
+        "type": "smoothstep",
+        "style": {
+            "stroke": _STORAGE_EDGE_STROKE,
+            "strokeWidth": 2,
+            "strokeDasharray": "4 4",
+        },
+        "animated": False,
+        "className": "edge-storage-pulse",
+    }
+    return dc, disk_id, disk_node, disk_edge
+
+
+def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y):
+    """Build VM node and associated disk/iso/edge nodes from VM config."""
+    role = vm_cfg.get("role", "")
+    os_type = vm_cfg.get("os", "rhcos")
+    power_on = vm_cfg.get("power_on", True)
+    has_bmc = vm_cfg.get("bmc", role == "control-plane")
+    bmc_ip = vm_cfg.get("bmc_ip", "")
+    disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
+    nics_cfg = vm_cfg.get("nics", [])
+
+    icon = "\U0001f5a5"
+    if os_type == "blank":
+        icon = "\U0001f4e6"
+
+    nics = _build_vm_nics(nics_cfg, nets_def)
+
+    disk_controllers = []
+    disk_nodes = []
+    disk_edges_list = []
+    boot_device_ids = []
+    for di, disk_cfg in enumerate(disks_cfg):
+        dc, disk_id, disk_node, disk_edge = _build_disk_node_and_edge(
+            vm_name, disk_cfg, di, vm_x, vm_row_y
+        )
+        disk_controllers.append(dc)
+        if di == 0:
+            boot_device_ids.append(disk_id)
+        disk_nodes.append(disk_node)
+        disk_edges_list.append(disk_edge)
+
+    if os_type != "blank":
+        dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
+        disk_controllers.append(dc_cdrom)
+
+    vm_data = {
+        "label": vm_name,
+        "name": vm_name,
+        "vcpus": vm_cfg.get("vcpus", 2),
+        "ram": vm_cfg.get("ram_gb", 4),
+        "os": os_type,
+        "icon": icon,
+        "nics": nics,
+        "diskControllers": disk_controllers,
+        "bmcEnabled": has_bmc,
+        "recertEnabled": vm_cfg.get("recert", False),
+        "ocpMonitor": vm_cfg.get("ocp_monitor", False),
+        "configureBastionBrowser": vm_cfg.get("configure_bastion_browser", False),
+        "firmware": vm_cfg.get("firmware", "uefi"),
+        "secureBoot": vm_cfg.get("secure_boot", False),
+        "bootDevices": boot_device_ids,
+        "bootMethod": "disk",
+        "powerOnAtDeploy": power_on,
+    }
+
+    _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip)
+
+    vm_node = {
+        "id": _id(),
+        "type": "vmNode",
+        "position": {"x": vm_x, "y": vm_row_y},
+        "data": vm_data,
+    }
+
+    for de in disk_edges_list:
+        de["target"] = vm_node["id"]
+
+    iso_nodes_edges = _build_vm_iso_nodes(
+        vm_cfg, vm_name, vm_node["id"], disk_controllers, disks_cfg, vm_x, vm_row_y
+    )
+
     nic_edges = []
     for ni, nic_cfg in enumerate(nics_cfg):
         net_name = nic_cfg.get("network", "")
@@ -671,11 +692,7 @@ def _build_vm_data(vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, vm_row_y):
     return vm_node, disk_nodes, disk_edges_list, iso_nodes_edges, nic_edges
 
 
-def _build_container_node(ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y):
-    """Build container node and associated disk/edge nodes from container config."""
-    ctr_id = _id()
-    is_pod = ctr_cfg.get("type") == "pod"
-
+def _build_container_nics_and_edges(ctr_id, ctr_cfg, net_ids):
     ctr_nics = []
     nic_edges = []
     for i, nic_cfg in enumerate(ctr_cfg.get("nics", [])):
@@ -693,7 +710,6 @@ def _build_container_node(ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y):
             }
         )
 
-        # Create edge from container NIC to network node
         net_name = nic_cfg.get("network", "")
         net_node_id = net_ids.get(net_name)
         if net_node_id:
@@ -708,6 +724,15 @@ def _build_container_node(ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y):
                     "style": {"stroke": "rgba(96,165,250,0.5)", "strokeWidth": 2},
                 }
             )
+    return ctr_nics, nic_edges
+
+
+def _build_container_node(ctr_key, ctr_cfg, net_ids, _nets_def, vm_x, vm_row_y):
+    """Build container node and associated disk/edge nodes from container config."""
+    ctr_id = _id()
+    is_pod = ctr_cfg.get("type") == "pod"
+
+    ctr_nics, nic_edges = _build_container_nics_and_edges(ctr_id, ctr_cfg, net_ids)
 
     disk_name_to_id = {}
     disk_nodes = []
@@ -745,7 +770,7 @@ def _build_container_node(ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y):
                 "targetHandle": f"mnt-{disk_id}-left",
                 "type": "smoothstep",
                 "style": {
-                    "stroke": "rgba(251,191,36,0.6)",
+                    "stroke": _STORAGE_EDGE_STROKE,
                     "strokeWidth": 2,
                     "strokeDasharray": "4 4",
                 },
@@ -818,81 +843,121 @@ def _build_container_node(ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y):
     return ctr_node, disk_nodes, disk_edges, nic_edges
 
 
+def _build_container_start_entry(entry, container_name_to_id):
+    ctr_id = container_name_to_id.get(entry["container"], "")
+    if not ctr_id:
+        return None
+    return {
+        "vmId": ctr_id,
+        "containerId": ctr_id,
+        "entryType": "container",
+        "autoStart": True,
+        "waitForVm": None,
+        "waitForService": "none",
+        "waitForPort": "",
+        "delaySeconds": entry.get("delay", 0),
+    }
+
+
+def _build_vm_start_entry(entry, vm_name_to_id):
+    vm_id = vm_name_to_id.get(entry.get("vm", ""), "")
+    if not vm_id:
+        return None
+    so = {"vmId": vm_id, "autoStart": entry.get("auto_start", True)}
+    wait_name = entry.get("wait_for", "")
+    if wait_name and wait_name in vm_name_to_id:
+        so["waitForVm"] = vm_name_to_id[wait_name]
+    if entry.get("delay"):
+        so["delay"] = entry["delay"]
+    return so
+
+
 def _build_start_order(tmpl, vm_name_to_id, container_name_to_id):
     """Build startOrder array from template start_order section."""
     start_order = []
     for entry in tmpl.get("start_order", []):
         if "container" in entry:
-            ctr_name = entry["container"]
-            ctr_id = container_name_to_id.get(ctr_name, "")
-            if ctr_id:
-                so = {
-                    "vmId": ctr_id,
-                    "containerId": ctr_id,
-                    "entryType": "container",
-                    "autoStart": True,
-                    "waitForVm": None,
-                    "waitForService": "none",
-                    "waitForPort": "",
-                    "delaySeconds": entry.get("delay", 0),
-                }
-                start_order.append(so)
+            so = _build_container_start_entry(entry, container_name_to_id)
         elif "vm" in entry:
-            vm_id = vm_name_to_id.get(entry.get("vm", ""), "")
-            if not vm_id:
-                continue
-            so = {"vmId": vm_id, "autoStart": entry.get("auto_start", True)}
-            wait_name = entry.get("wait_for", "")
-            if wait_name and wait_name in vm_name_to_id:
-                so["waitForVm"] = vm_name_to_id[wait_name]
-            if entry.get("delay"):
-                so["delay"] = entry["delay"]
+            so = _build_vm_start_entry(entry, vm_name_to_id)
+        else:
+            so = None
+        if so:
             start_order.append(so)
     return start_order
+
+
+def _generate_ocp_dns_records(ocp_cfg, top_dns):
+    if not (ocp_cfg.get("cluster_name") and ocp_cfg.get("base_domain")):
+        return
+    cn = ocp_cfg["cluster_name"]
+    bd = ocp_cfg["base_domain"]
+    api_vip = ocp_cfg.get("api_vip", "")
+    ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+    if not api_vip:
+        return
+    for rec_name in [f"api.{cn}.{bd}", f"api-int.{cn}.{bd}"]:
+        if not any(r.get("name") == rec_name for r in top_dns):
+            top_dns.append({"name": rec_name, "ip": api_vip})
+    apps_name = f".apps.{cn}.{bd}"
+    if not any(r.get("name") == apps_name for r in top_dns):
+        top_dns.append({"name": apps_name, "ip": ingress_vip})
+
+
+def _collect_vm_ips(nodes):
+    vm_ips = {}
+    for n in nodes:
+        if n.get("type") == "vmNode":
+            nics = n.get("data", {}).get("nics", [])
+            if nics:
+                vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
+    return vm_ips
+
+
+def _merge_dns_to_network(net_node, top_dns, vm_ips):
+    existing = net_node["data"].get("dnsRecords", [])
+    existing_names = {r["name"] for r in existing}
+    for rec in top_dns:
+        target = rec.get("target", "")
+        ip = rec.get("ip", "")
+        if target and not ip:
+            ip = vm_ips.get(target, "")
+        if ip and rec.get("name") and rec["name"] not in existing_names:
+            existing.append({"name": rec["name"], "ip": ip})
+    if existing:
+        net_node["data"]["dnsRecords"] = existing
 
 
 def _apply_dns_records(tmpl, nodes):
     """Apply top-level DNS records to network nodes, with OCP auto-generation."""
     top_dns = list(tmpl.get("dns_records", []))
-    ocp_cfg = tmpl.get("ocp", {})
-    if ocp_cfg.get("cluster_name") and ocp_cfg.get("base_domain"):
-        cn = ocp_cfg["cluster_name"]
-        bd = ocp_cfg["base_domain"]
-        api_vip = ocp_cfg.get("api_vip", "")
-        ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
-        if api_vip:
-            for rec_name in [f"api.{cn}.{bd}", f"api-int.{cn}.{bd}"]:
-                if not any(r.get("name") == rec_name for r in top_dns):
-                    top_dns.append({"name": rec_name, "ip": api_vip})
-            apps_name = f".apps.{cn}.{bd}"
-            if not any(r.get("name") == apps_name for r in top_dns):
-                top_dns.append({"name": apps_name, "ip": ingress_vip})
+    _generate_ocp_dns_records(tmpl.get("ocp", {}), top_dns)
 
-    if top_dns:
-        vm_ips = {}
-        for n in nodes:
-            if n.get("type") == "vmNode":
-                nics = n.get("data", {}).get("nics", [])
-                if nics:
-                    vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
-        for net_node in nodes:
-            if (
-                net_node.get("type") == "networkNode"
-                and net_node.get("data", {}).get("subtype") == "network"
-                and net_node.get("data", {}).get("networkType") != "bmc"
-            ):
-                existing = net_node["data"].get("dnsRecords", [])
-                existing_names = {r["name"] for r in existing}
-                for rec in top_dns:
-                    target = rec.get("target", "")
-                    ip = rec.get("ip", "")
-                    if target and not ip:
-                        ip = vm_ips.get(target, "")
-                    if ip and rec.get("name") and rec["name"] not in existing_names:
-                        existing.append({"name": rec["name"], "ip": ip})
-                if existing:
-                    net_node["data"]["dnsRecords"] = existing
-                break
+    if not top_dns:
+        return
+
+    vm_ips = _collect_vm_ips(nodes)
+    for net_node in nodes:
+        if (
+            net_node.get("type") == "networkNode"
+            and net_node.get("data", {}).get("subtype") == "network"
+            and net_node.get("data", {}).get("networkType") != "bmc"
+        ):
+            _merge_dns_to_network(net_node, top_dns, vm_ips)
+            break
+
+
+def _validate_uuid_uniqueness(nodes):
+    seen_uuids = {}
+    for n in nodes:
+        d = n.get("data", {})
+        u = d.get("smbiosUuid") or d.get("uuid")
+        if n.get("type") == "vmNode" and u:
+            if u in seen_uuids:
+                raise ValueError(
+                    f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{d.get('name')}'"
+                )
+            seen_uuids[u] = d.get("name", "")
 
 
 def _generate_topology_from_vms(
@@ -917,13 +982,11 @@ def _generate_topology_from_vms(
     NET_ROW_Y = 150
     VM_ROW_Y = 350
 
-    # Create network nodes
     net_nodes, net_ids = _create_network_nodes(
         nets_def, bmc_password, NET_ROW_Y, VM_SPACING
     )
     nodes.extend(net_nodes)
 
-    # Create gateway node
     gw_node, external_ips, gw_edges, gw_net_name = _create_gateway_node(
         gw_def, vms_def, tmpl, external_access, GW_Y, nets_def
     )
@@ -932,7 +995,6 @@ def _generate_topology_from_vms(
     if gw_net_name and gw_net_name in net_ids:
         edges.append(_gw_net_edge(gw_node["id"], net_ids[gw_net_name]))
 
-    # Build VMs
     vm_name_to_id = {}
     vm_x = 150
     for vm_name, vm_cfg in vms_def.items():
@@ -949,7 +1011,6 @@ def _generate_topology_from_vms(
         vm_name_to_id[vm_name] = vm_node["id"]
         vm_x += VM_SPACING
 
-    # Build containers
     container_name_to_id = {}
     containers_def = tmpl.get("containers", {})
     for ctr_key, ctr_cfg in containers_def.items():
@@ -963,25 +1024,10 @@ def _generate_topology_from_vms(
         container_name_to_id[ctr_key] = ctr_node["id"]
         vm_x += VM_SPACING
 
-    # Build start order
     start_order = _build_start_order(tmpl, vm_name_to_id, container_name_to_id)
-
-    # Apply DNS records
     _apply_dns_records(tmpl, nodes)
+    _validate_uuid_uniqueness(nodes)
 
-    # Validate UUID uniqueness
-    seen_uuids = {}
-    for n in nodes:
-        d = n.get("data", {})
-        u = d.get("smbiosUuid") or d.get("uuid")
-        if n.get("type") == "vmNode" and u:
-            if u in seen_uuids:
-                raise ValueError(
-                    f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{d.get('name')}'"
-                )
-            seen_uuids[u] = d.get("name", "")
-
-    # Build hiddenNodeIds from template
     hidden_ids = []
     all_name_to_id = {**vm_name_to_id, **container_name_to_id, **net_ids}
     for name in tmpl.get("hidden_nodes", []):
@@ -1046,6 +1092,27 @@ def _build_nic_to_net_map(
     return nic_to_net
 
 
+def _export_single_network(d):
+    net_out = {}
+    if d.get("cidr"):
+        net_out["cidr"] = d["cidr"]
+    if d.get("dhcp"):
+        net_out["dhcp"] = True
+    if d.get("dnsDomain"):
+        net_out["domain"] = d["dnsDomain"]
+    if d.get("dnsRecords"):
+        net_out["dns_records"] = d["dnsRecords"]
+    if d.get("dnsUpstream"):
+        net_out["dns_upstream"] = True
+    if d.get("networkType") == "bmc":
+        net_out["type"] = "bmc"
+        if d.get("bmcUsername"):
+            net_out["bmc_username"] = d["bmcUsername"]
+        if d.get("bmcPassword"):
+            net_out["bmc_password"] = d["bmcPassword"]
+    return net_out
+
+
 def _export_networks(net_nodes: dict, net_names: dict[str, str]) -> dict:
     """Export networks section from network nodes."""
     networks = {}
@@ -1053,26 +1120,47 @@ def _export_networks(net_nodes: dict, net_names: dict[str, str]) -> dict:
         d = nn.get("data", {})
         if d.get("subtype") == "gateway":
             continue
-        name = net_names[nid]
-        net_out = {}
-        if d.get("cidr"):
-            net_out["cidr"] = d["cidr"]
-        if d.get("dhcp"):
-            net_out["dhcp"] = True
-        if d.get("dnsDomain"):
-            net_out["domain"] = d["dnsDomain"]
-        if d.get("dnsRecords"):
-            net_out["dns_records"] = d["dnsRecords"]
-        if d.get("dnsUpstream"):
-            net_out["dns_upstream"] = True
-        if d.get("networkType") == "bmc":
-            net_out["type"] = "bmc"
-            if d.get("bmcUsername"):
-                net_out["bmc_username"] = d["bmcUsername"]
-            if d.get("bmcPassword"):
-                net_out["bmc_password"] = d["bmcPassword"]
-        networks[name] = net_out
+        networks[net_names[nid]] = _export_single_network(d)
     return networks
+
+
+def _parse_outbound_ports(d):
+    ports_str = d.get("outboundPorts", "")
+    if not ports_str or d.get("outboundPolicy") != "restrict":
+        return []
+    ports: list[int | str] = []
+    for p in ports_str.split(","):
+        p = p.strip()
+        if p.isdigit():
+            ports.append(int(p))
+        elif p:
+            ports.append(p)
+    return ports
+
+
+def _export_port_forwards(d):
+    pfs = d.get("portForwards", [])
+    if not pfs:
+        return []
+    return [
+        {
+            "ext_port": int(pf.get("extPort", 0)),
+            "int_ip": pf.get("intIp", ""),
+            "int_port": int(pf.get("intPort", 0)),
+            "proto": pf.get("proto", "tcp"),
+        }
+        for pf in pfs
+        if pf.get("extPort") and pf.get("intIp")
+    ]
+
+
+def _find_gateway_network(gw_id, edges, net_names):
+    for e in edges:
+        if e.get("source") == gw_id and e.get("target") in net_names:
+            return net_names[e["target"]]
+        if e.get("target") == gw_id and e.get("source") in net_names:
+            return net_names[e["source"]]
+    return None
 
 
 def _export_gateway(
@@ -1082,43 +1170,56 @@ def _export_gateway(
     gateway: dict[str, object] = {}
     for nn in net_nodes.values():
         d = nn.get("data", {})
-        if d.get("subtype") == "gateway":
-            ports_str = d.get("outboundPorts", "")
-            if ports_str and d.get("outboundPolicy") == "restrict":
-                ports: list[int | str] = []
-                for p in ports_str.split(","):
-                    p = p.strip()
-                    if p.isdigit():
-                        ports.append(int(p))
-                    elif p:
-                        ports.append(p)
-                if ports:
-                    gateway["outbound_ports"] = ports
-            if d.get("gatewayMode") == "nat-portforward":
-                gateway["external_access"] = True
-                pfs = d.get("portForwards", [])
-                if pfs:
-                    gateway["port_forwards"] = [
-                        {
-                            "ext_port": int(pf.get("extPort", 0)),
-                            "int_ip": pf.get("intIp", ""),
-                            "int_port": int(pf.get("intPort", 0)),
-                            "proto": pf.get("proto", "tcp"),
-                        }
-                        for pf in pfs
-                        if pf.get("extPort") and pf.get("intIp")
-                    ]
-            # Find which network the gateway connects to
-            gw_id = nn["id"]
-            for e in edges:
-                if e.get("source") == gw_id and e.get("target") in net_names:
-                    gateway["network"] = net_names[e["target"]]
-                    break
-                if e.get("target") == gw_id and e.get("source") in net_names:
-                    gateway["network"] = net_names[e["source"]]
-                    break
-            break
+        if d.get("subtype") != "gateway":
+            continue
+        ports = _parse_outbound_ports(d)
+        if ports:
+            gateway["outbound_ports"] = ports
+        if d.get("gatewayMode") == "nat-portforward":
+            gateway["external_access"] = True
+            port_forwards = _export_port_forwards(d)
+            if port_forwards:
+                gateway["port_forwards"] = port_forwards
+        net_name = _find_gateway_network(nn["id"], edges, net_names)
+        if net_name:
+            gateway["network"] = net_name
+        break
     return gateway
+
+
+def _is_iso_storage_node(snode, _iso_item_ids):
+    sd = snode.get("data", {})
+    if sd.get("format") == "iso":
+        return True
+    lid = sd.get("libraryItemId", "")
+    return lid in _iso_item_ids
+
+
+def _build_disk_output(sn):
+    sd = sn.get("data", {})
+    disk_out = {}
+    disk_name = sd.get("name", "")
+    if disk_name:
+        disk_out["name"] = disk_name
+    disk_out["size_gb"] = sd.get("size", 50)
+    if sd.get("libraryItemId"):
+        disk_out["library_item_id"] = sd["libraryItemId"]
+    if sd.get("libraryItemName"):
+        disk_out["library_item_name"] = sd["libraryItemName"]
+    return disk_out
+
+
+def _find_disk_for_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_item_ids):
+    for sid in storage_ids:
+        sn = storage_nodes.get(sid)
+        if not sn:
+            continue
+        for e in vm_edges:
+            if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+                if _is_iso_storage_node(sn, _iso_item_ids):
+                    break
+                return _build_disk_output(sn)
+    return None
 
 
 def _export_vm_disks(
@@ -1133,43 +1234,48 @@ def _export_vm_disks(
     disk_controllers = d.get("diskControllers", [])
     disks = []
 
-    def _is_iso_storage(snode):
-        sd = snode.get("data", {})
-        if sd.get("format") == "iso":
-            return True
-        lid = sd.get("libraryItemId", "")
-        return lid in _iso_item_ids
-
-    # Maintain controller order
     for dc in disk_controllers:
         if dc.get("name", "").startswith("cdrom"):
             continue
-        for sid in storage_ids:
-            sn = storage_nodes.get(sid)
-            if not sn:
-                continue
-            # Match by edge targetHandle containing controller id
-            for e in vm_edges:
-                if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
-                    if _is_iso_storage(sn):
-                        break
-                    sd = sn.get("data", {})
-                    disk_out = {}
-                    disk_name = sd.get("name", "")
-                    if disk_name:
-                        disk_out["name"] = disk_name
-                    disk_out["size_gb"] = sd.get("size", 50)
-                    if sd.get("libraryItemId"):
-                        disk_out["library_item_id"] = sd["libraryItemId"]
-                    if sd.get("libraryItemName"):
-                        disk_out["library_item_name"] = sd["libraryItemName"]
-                    disks.append(disk_out)
-                    break
+        disk_out = _find_disk_for_controller(
+            dc, storage_ids, storage_nodes, vm_edges, _iso_item_ids
+        )
+        if disk_out:
+            disks.append(disk_out)
     if not disks:
         for dc in disk_controllers:
             if not dc.get("name", "").startswith("cdrom"):
                 disks.append({"size_gb": 50})
     return disks
+
+
+def _extract_iso_entry(sn, is_cdrom, _iso_item_ids):
+    if not (is_cdrom or _is_iso_storage_node(sn, _iso_item_ids)):
+        return None
+    sd = sn.get("data", {})
+    if not sd.get("libraryItemId"):
+        return None
+    return {
+        "name": sd.get("name", "iso"),
+        "library_item_id": sd["libraryItemId"],
+        "library_item_name": sd.get("libraryItemName", ""),
+    }
+
+
+def _check_iso_from_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_item_ids):
+    is_cdrom = dc.get("name", "").startswith("cdrom")
+    isos = []
+    for sid in storage_ids:
+        sn = storage_nodes.get(sid)
+        if not sn:
+            continue
+        for e in vm_edges:
+            if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+                entry = _extract_iso_entry(sn, is_cdrom, _iso_item_ids)
+                if entry:
+                    isos.append(entry)
+                break
+    return isos
 
 
 def _export_vm_isos(
@@ -1183,63 +1289,28 @@ def _export_vm_isos(
     d = vm.get("data", {})
     disk_controllers = d.get("diskControllers", [])
     isos = []
-
-    def _is_iso_storage(snode):
-        sd = snode.get("data", {})
-        if sd.get("format") == "iso":
-            return True
-        lid = sd.get("libraryItemId", "")
-        return lid in _iso_item_ids
-
     for dc in disk_controllers:
-        is_cdrom = dc.get("name", "").startswith("cdrom")
-        for sid in storage_ids:
-            sn = storage_nodes.get(sid)
-            if not sn:
-                continue
-            for e in vm_edges:
-                if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
-                    if is_cdrom or _is_iso_storage(sn):
-                        sd = sn.get("data", {})
-                        if sd.get("libraryItemId"):
-                            isos.append(
-                                {
-                                    "name": sd.get("name", "iso"),
-                                    "library_item_id": sd["libraryItemId"],
-                                    "library_item_name": sd.get("libraryItemName", ""),
-                                }
-                            )
-                    break
+        isos.extend(
+            _check_iso_from_controller(
+                dc, storage_ids, storage_nodes, vm_edges, _iso_item_ids
+            )
+        )
     return isos
 
 
-def _export_vm(
-    vm: dict,
-    edge_by_target: dict,
-    nodes: list[dict],
-    net_names: dict[str, str],
-    nic_to_net: dict[str, str],
-    _iso_item_ids: set[str],
-) -> dict:
-    """Export a single VM to template dict format."""
-    d = vm.get("data", {})
-    vm_out: dict[str, object] = {}
-
-    # Role from tags
+def _export_vm_role(d):
     tags = d.get("tags", {})
     ag = tags.get("AnsibleGroup", "")
     if "bastions" in ag:
-        vm_out["role"] = "bastion"
-    elif "controllers" in ag:
-        vm_out["role"] = "control-plane"
-    elif d.get("os") == "blank":
-        vm_out["role"] = "blank"
+        return "bastion"
+    if "controllers" in ag:
+        return "control-plane"
+    if d.get("os") == "blank":
+        return "blank"
+    return ""
 
-    vm_out["vcpus"] = d.get("vcpus", 2)
-    vm_out["ram_gb"] = d.get("ram", 4)
-    vm_out["os"] = d.get("os", "rhcos")
-    vm_out["firmware"] = d.get("firmware", "uefi")
 
+def _export_vm_flags(d, vm_out):
     if d.get("secureBoot"):
         vm_out["secure_boot"] = True
     smbios_uuid = d.get("smbiosUuid") or d.get("uuid")
@@ -1258,6 +1329,7 @@ def _export_vm(
     if d.get("bmcIp"):
         vm_out["bmc_ip"] = d["bmcIp"]
 
+    tags = d.get("tags", {})
     if (
         tags
         and tags != {"AnsibleGroup": "controllers"}
@@ -1265,7 +1337,8 @@ def _export_vm(
     ):
         vm_out["tags"] = tags
 
-    # Cloud-init
+
+def _export_vm_cloud_init(d, vm_out):
     if d.get("cloudInit"):
         vm_out["cloud_init"] = True
     if d.get("ciCloudUserPassword"):
@@ -1276,35 +1349,13 @@ def _export_vm(
         vm_out["packages"] = d["ciPackages"]
     if d.get("ciNetworkConfig"):
         vm_out["network_config"] = d["ciNetworkConfig"]
-
-    # Affinity group and anti-affinity
     if d.get("affinityGroup"):
         vm_out["affinity_group"] = d["affinityGroup"]
     if d.get("separateHost"):
         vm_out["separate_host"] = True
 
-    # Disks — find storage nodes connected to this VM
-    vm_edges = edge_by_target.get(vm["id"], [])
-    storage_ids = [
-        e["source"] for e in vm_edges if e.get("targetHandle", "").startswith("dp-")
-    ]
-    storage_nodes = {n["id"]: n for n in nodes if n.get("type") == "storageNode"}
 
-    vm_out["disks"] = _export_vm_disks(
-        vm, vm_edges, storage_ids, storage_nodes, _iso_item_ids
-    )
-
-    # ISOs — find cdrom-attached or ISO-format storage nodes
-    isos = _export_vm_isos(vm, vm_edges, storage_ids, storage_nodes, _iso_item_ids)
-    if isos:
-        vm_out["isos"] = isos
-
-    if d.get("pxeBootIsoId"):
-        vm_out["pxe_boot_iso_id"] = d["pxeBootIsoId"]
-    if d.get("pxeBootIsoName"):
-        vm_out["pxe_boot_iso_name"] = d["pxeBootIsoName"]
-
-    # NICs
+def _export_vm_nics(d, nic_to_net):
     nics_out = []
     for nic in d.get("nics", []):
         nic_out = {}
@@ -1316,9 +1367,207 @@ def _export_vm(
         if nic.get("ip"):
             nic_out["ip"] = nic["ip"]
         nics_out.append(nic_out)
-    vm_out["nics"] = nics_out
+    return nics_out
+
+
+def _export_vm(
+    vm: dict,
+    edge_by_target: dict,
+    nodes: list[dict],
+    _net_names: dict[str, str],
+    nic_to_net: dict[str, str],
+    _iso_item_ids: set[str],
+) -> dict:
+    """Export a single VM to template dict format."""
+    d = vm.get("data", {})
+    vm_out: dict[str, object] = {}
+
+    role = _export_vm_role(d)
+    if role:
+        vm_out["role"] = role
+
+    vm_out["vcpus"] = d.get("vcpus", 2)
+    vm_out["ram_gb"] = d.get("ram", 4)
+    vm_out["os"] = d.get("os", "rhcos")
+    vm_out["firmware"] = d.get("firmware", "uefi")
+
+    _export_vm_flags(d, vm_out)
+    _export_vm_cloud_init(d, vm_out)
+
+    vm_edges = edge_by_target.get(vm["id"], [])
+    storage_ids = [
+        e["source"] for e in vm_edges if e.get("targetHandle", "").startswith("dp-")
+    ]
+    storage_nodes = {n["id"]: n for n in nodes if n.get("type") == "storageNode"}
+
+    vm_out["disks"] = _export_vm_disks(
+        vm, vm_edges, storage_ids, storage_nodes, _iso_item_ids
+    )
+
+    isos = _export_vm_isos(vm, vm_edges, storage_ids, storage_nodes, _iso_item_ids)
+    if isos:
+        vm_out["isos"] = isos
+
+    if d.get("pxeBootIsoId"):
+        vm_out["pxe_boot_iso_id"] = d["pxeBootIsoId"]
+    if d.get("pxeBootIsoName"):
+        vm_out["pxe_boot_iso_name"] = d["pxeBootIsoName"]
+
+    vm_out["nics"] = _export_vm_nics(d, nic_to_net)
 
     return vm_out
+
+
+def _resolve_disk_name(disk_node_id, all_storage_nodes):
+    node = all_storage_nodes.get(disk_node_id)
+    if node:
+        return node.get("data", {}).get("name", disk_node_id[:8])
+    return disk_node_id[:8]
+
+
+def _find_container_nic_net_name(nic_id, ctr_node_id, edges, net_nodes):
+    handle_top = f"nic-{nic_id}-top"
+    handle_bottom = f"nic-{nic_id}-bottom"
+    for edge in edges:
+        if edge.get("source") == ctr_node_id and edge.get("sourceHandle") in (
+            handle_top,
+            handle_bottom,
+        ):
+            net_node = net_nodes.get(edge["target"])
+            if net_node:
+                return net_node.get("data", {}).get("name")
+        elif edge.get("target") == ctr_node_id and edge.get("targetHandle") in (
+            handle_top,
+            handle_bottom,
+        ):
+            net_node = net_nodes.get(edge["source"])
+            if net_node:
+                return net_node.get("data", {}).get("name")
+    return None
+
+
+def _export_container_nics(cd, ctr_node_id, edges, net_nodes):
+    nics_export = []
+    for nic in cd.get("nics", []):
+        nic_id = nic.get("id", "")
+        net_name = _find_container_nic_net_name(nic_id, ctr_node_id, edges, net_nodes)
+        nic_entry = {}
+        if net_name:
+            nic_entry["network"] = net_name
+        if nic.get("ip"):
+            nic_entry["ip"] = nic["ip"]
+        if nic.get("model") and nic["model"] != "virtio":
+            nic_entry["model"] = nic["model"]
+        if nic_entry:
+            nics_export.append(nic_entry)
+    return nics_export
+
+
+def _export_container_disks(cd, all_storage_nodes):
+    disks_export = []
+    for mount in cd.get("mounts", []):
+        disk_node = all_storage_nodes.get(mount.get("diskNodeId", ""))
+        if disk_node:
+            dd = disk_node.get("data", {})
+            disks_export.append(
+                {
+                    "size_gb": dd.get("size", 10),
+                    "mount_path": mount.get("mountPath", ""),
+                }
+            )
+    return disks_export
+
+
+def _export_sub_container(sc, all_storage_nodes):
+    entry: dict = {"name": sc["name"], "image": sc.get("image", "")}
+    if sc.get("command"):
+        entry["command"] = sc["command"]
+    if sc.get("envVars"):
+        entry["env"] = {ev["key"]: ev["value"] for ev in sc["envVars"] if ev.get("key")}
+    if sc.get("mounts"):
+        entry["mounts"] = [
+            {
+                "disk": _resolve_disk_name(m.get("diskNodeId", ""), all_storage_nodes),
+                "mount_path": m.get("mountPath", ""),
+            }
+            for m in sc["mounts"]
+            if m.get("diskNodeId")
+        ]
+    if sc.get("ports"):
+        entry["ports"] = [
+            p["containerPort"] for p in sc["ports"] if p.get("containerPort")
+        ]
+    return entry
+
+
+def _export_pod_container(cd, nics_export, disks_export, all_storage_nodes):
+    ctr_export: dict = {"type": "pod"}
+    if nics_export:
+        ctr_export["nics"] = nics_export
+    if cd.get("restartPolicy", "always") != "always":
+        ctr_export["restart_policy"] = cd["restartPolicy"]
+    if cd.get("privileged"):
+        ctr_export["privileged"] = True
+
+    init_ctrs_export = []
+    for ic in cd.get("initContainers", []):
+        init_ctrs_export.append(_export_sub_container(ic, all_storage_nodes))
+    if init_ctrs_export:
+        ctr_export["init_containers"] = init_ctrs_export
+
+    pod_ctrs_export = []
+    for pc in cd.get("podContainers", []):
+        pc_entry = _export_sub_container(pc, all_storage_nodes)
+        if pc.get("cpus", 1) != 1:
+            pc_entry["cpus"] = pc["cpus"]
+        if pc.get("memory", 512) != 512:
+            pc_entry["memory_mb"] = pc["memory"]
+        pod_ctrs_export.append(pc_entry)
+    if pod_ctrs_export:
+        ctr_export["containers"] = pod_ctrs_export
+
+    if disks_export:
+        ctr_export["disks"] = disks_export
+
+    return ctr_export
+
+
+def _export_single_container(cd, nics_export, disks_export):
+    ctr_export: dict = {"image": cd.get("image", "")}
+    if cd.get("registryCredentialName"):
+        ctr_export["registry_credential"] = cd["registryCredentialName"]
+    if cd.get("cpus", 1) != 1:
+        ctr_export["cpus"] = cd["cpus"]
+    if cd.get("memory", 512) != 512:
+        ctr_export["memory_mb"] = cd["memory"]
+    if cd.get("privileged"):
+        ctr_export["privileged"] = True
+    if cd.get("restartPolicy", "always") != "always":
+        ctr_export["restart_policy"] = cd["restartPolicy"]
+    if cd.get("command"):
+        ctr_export["command"] = cd["command"]
+    if nics_export:
+        ctr_export["nics"] = nics_export
+    if cd.get("envVars"):
+        ctr_export["env"] = {
+            ev["key"]: ev["value"] for ev in cd["envVars"] if ev.get("key")
+        }
+    if cd.get("ports"):
+        ctr_export["ports"] = [
+            {
+                "container_port": p["containerPort"],
+                **({"host_port": p["hostPort"]} if p.get("hostPort") else {}),
+                **(
+                    {"protocol": p["protocol"]}
+                    if p.get("protocol", "tcp") != "tcp"
+                    else {}
+                ),
+            }
+            for p in cd["ports"]
+        ]
+    if disks_export:
+        ctr_export["disks"] = disks_export
+    return ctr_export
 
 
 def _export_containers(
@@ -1328,178 +1577,52 @@ def _export_containers(
     all_storage_nodes: dict,
 ) -> dict:
     """Export containers section from container nodes."""
-
-    def _resolve_disk_name(disk_node_id, all_storage_nodes):
-        node = all_storage_nodes.get(disk_node_id)
-        if node:
-            return node.get("data", {}).get("name", disk_node_id[:8])
-        return disk_node_id[:8]
-
     containers = {}
     for ctr_node in container_nodes:
         cd = ctr_node.get("data", {})
         ctr_name = cd.get("name", "container")
 
-        # Resolve NIC → network connections (same edge-walking as VMs)
-        nics_export = []
-        for nic in cd.get("nics", []):
-            nic_id = nic.get("id", "")
-            handle_top = f"nic-{nic_id}-top"
-            handle_bottom = f"nic-{nic_id}-bottom"
-            net_name = None
-            for edge in edges:
-                if edge.get("source") == ctr_node["id"] and edge.get(
-                    "sourceHandle"
-                ) in (handle_top, handle_bottom):
-                    net_node = net_nodes.get(edge["target"])
-                    if net_node:
-                        net_name = net_node.get("data", {}).get("name")
-                elif edge.get("target") == ctr_node["id"] and edge.get(
-                    "targetHandle"
-                ) in (handle_top, handle_bottom):
-                    net_node = net_nodes.get(edge["source"])
-                    if net_node:
-                        net_name = net_node.get("data", {}).get("name")
-            nic_entry = {}
-            if net_name:
-                nic_entry["network"] = net_name
-            if nic.get("ip"):
-                nic_entry["ip"] = nic["ip"]
-            if nic.get("model") and nic["model"] != "virtio":
-                nic_entry["model"] = nic["model"]
-            if nic_entry:
-                nics_export.append(nic_entry)
-
-        # Resolve mount → storage connections
-        disks_export = []
-        for mount in cd.get("mounts", []):
-            disk_node = all_storage_nodes.get(mount.get("diskNodeId", ""))
-            if disk_node:
-                dd = disk_node.get("data", {})
-                disks_export.append(
-                    {
-                        "size_gb": dd.get("size", 10),
-                        "mount_path": mount.get("mountPath", ""),
-                    }
-                )
+        nics_export = _export_container_nics(cd, ctr_node["id"], edges, net_nodes)
+        disks_export = _export_container_disks(cd, all_storage_nodes)
 
         if cd.get("isPod"):
-            ctr_export: dict = {"type": "pod"}
-            if nics_export:
-                ctr_export["nics"] = nics_export
-            if cd.get("restartPolicy", "always") != "always":
-                ctr_export["restart_policy"] = cd["restartPolicy"]
-            if cd.get("privileged"):
-                ctr_export["privileged"] = True
-
-            init_ctrs_export = []
-            for ic in cd.get("initContainers", []):
-                ic_entry: dict = {"name": ic["name"], "image": ic.get("image", "")}
-                if ic.get("command"):
-                    ic_entry["command"] = ic["command"]
-                if ic.get("envVars"):
-                    ic_entry["env"] = {
-                        ev["key"]: ev["value"] for ev in ic["envVars"] if ev.get("key")
-                    }
-                if ic.get("mounts"):
-                    ic_entry["mounts"] = [
-                        {
-                            "disk": _resolve_disk_name(
-                                m.get("diskNodeId", ""), all_storage_nodes
-                            ),
-                            "mount_path": m.get("mountPath", ""),
-                        }
-                        for m in ic["mounts"]
-                        if m.get("diskNodeId")
-                    ]
-                if ic.get("ports"):
-                    ic_entry["ports"] = [
-                        p["containerPort"]
-                        for p in ic["ports"]
-                        if p.get("containerPort")
-                    ]
-                init_ctrs_export.append(ic_entry)
-            if init_ctrs_export:
-                ctr_export["init_containers"] = init_ctrs_export
-
-            pod_ctrs_export = []
-            for pc in cd.get("podContainers", []):
-                pc_entry: dict = {"name": pc["name"], "image": pc.get("image", "")}
-                if pc.get("cpus", 1) != 1:
-                    pc_entry["cpus"] = pc["cpus"]
-                if pc.get("memory", 512) != 512:
-                    pc_entry["memory_mb"] = pc["memory"]
-                if pc.get("command"):
-                    pc_entry["command"] = pc["command"]
-                if pc.get("envVars"):
-                    pc_entry["env"] = {
-                        ev["key"]: ev["value"] for ev in pc["envVars"] if ev.get("key")
-                    }
-                if pc.get("ports"):
-                    pc_entry["ports"] = [
-                        p["containerPort"]
-                        for p in pc["ports"]
-                        if p.get("containerPort")
-                    ]
-                if pc.get("mounts"):
-                    pc_entry["mounts"] = [
-                        {
-                            "disk": _resolve_disk_name(
-                                m.get("diskNodeId", ""), all_storage_nodes
-                            ),
-                            "mount_path": m.get("mountPath", ""),
-                        }
-                        for m in pc["mounts"]
-                        if m.get("diskNodeId")
-                    ]
-                pod_ctrs_export.append(pc_entry)
-            if pod_ctrs_export:
-                ctr_export["containers"] = pod_ctrs_export
-
-            if disks_export:
-                ctr_export["disks"] = disks_export
-
-            containers[ctr_name] = ctr_export
-            continue
-
-        ctr_export = {"image": cd.get("image", "")}
-        if cd.get("registryCredentialName"):
-            ctr_export["registry_credential"] = cd["registryCredentialName"]
-        if cd.get("cpus", 1) != 1:
-            ctr_export["cpus"] = cd["cpus"]
-        if cd.get("memory", 512) != 512:
-            ctr_export["memory_mb"] = cd["memory"]
-        if cd.get("privileged"):
-            ctr_export["privileged"] = True
-        if cd.get("restartPolicy", "always") != "always":
-            ctr_export["restart_policy"] = cd["restartPolicy"]
-        if cd.get("command"):
-            ctr_export["command"] = cd["command"]
-        if nics_export:
-            ctr_export["nics"] = nics_export
-        if cd.get("envVars"):
-            ctr_export["env"] = {
-                ev["key"]: ev["value"] for ev in cd["envVars"] if ev.get("key")
-            }
-        if cd.get("ports"):
-            ctr_export["ports"] = [
-                {
-                    "container_port": p["containerPort"],
-                    **({"host_port": p["hostPort"]} if p.get("hostPort") else {}),
-                    **(
-                        {"protocol": p["protocol"]}
-                        if p.get("protocol", "tcp") != "tcp"
-                        else {}
-                    ),
-                }
-                for p in cd["ports"]
-            ]
-        if disks_export:
-            ctr_export["disks"] = disks_export
-
-        containers[ctr_name] = ctr_export
+            containers[ctr_name] = _export_pod_container(
+                cd, nics_export, disks_export, all_storage_nodes
+            )
+        else:
+            containers[ctr_name] = _export_single_container(
+                cd, nics_export, disks_export
+            )
 
     return containers
+
+
+def _export_container_start_entry(entry, container_nodes):
+    ctr_node = next(
+        (
+            n
+            for n in container_nodes
+            if n["id"] == entry.get("containerId", entry.get("vmId", ""))
+        ),
+        None,
+    )
+    if not ctr_node:
+        return None
+    so_entry = {"container": ctr_node["data"]["name"]}
+    if entry.get("delaySeconds"):
+        so_entry["delay"] = entry["delaySeconds"]
+    return so_entry
+
+
+def _export_vm_start_entry(entry, id_to_name):
+    so_entry = {"vm": id_to_name.get(entry.get("vmId", ""), "")}
+    if entry.get("waitForVm"):
+        so_entry["wait_for"] = id_to_name.get(entry["waitForVm"], "")
+    if "autoStart" in entry:
+        so_entry["auto_start"] = entry["autoStart"]
+    if entry.get("delay"):
+        so_entry["delay"] = entry["delay"]
+    return so_entry
 
 
 def _export_start_order(
@@ -1513,29 +1636,11 @@ def _export_start_order(
     so_out = []
     for entry in start_order:
         if entry.get("entryType") == "container":
-            ctr_node = next(
-                (
-                    n
-                    for n in container_nodes
-                    if n["id"] == entry.get("containerId", entry.get("vmId", ""))
-                ),
-                None,
-            )
-            if ctr_node:
-                so_entry = {"container": ctr_node["data"]["name"]}
-                if entry.get("delaySeconds"):
-                    so_entry["delay"] = entry["delaySeconds"]
+            so_entry = _export_container_start_entry(entry, container_nodes)
+            if so_entry:
                 so_out.append(so_entry)
         else:
-            # VM start order entry
-            so_entry = {"vm": id_to_name.get(entry.get("vmId", ""), "")}
-            if entry.get("waitForVm"):
-                so_entry["wait_for"] = id_to_name.get(entry["waitForVm"], "")
-            if "autoStart" in entry:
-                so_entry["auto_start"] = entry["autoStart"]
-            if entry.get("delay"):
-                so_entry["delay"] = entry["delay"]
-            so_out.append(so_entry)
+            so_out.append(_export_vm_start_entry(entry, id_to_name))
     return so_out
 
 

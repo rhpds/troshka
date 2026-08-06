@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_role
 from app.core.database import get_db
+from app.core.logging_utils import sanitize_log
 from app.models.provider import Provider
 from app.models.user import User
 
@@ -1400,8 +1401,8 @@ def install_operator(
                 ),
             )
         logger.exception(
-            "Failed to install operator for %s", provider_id[:8]
-        )  # NOSONAR
+            "Failed to install operator for %s", sanitize_log(provider_id[:8])
+        )
         raise HTTPException(status_code=500, detail=f"Failed to install operator: {e}")
 
     from app.models.host import Host
@@ -1558,8 +1559,8 @@ def setup_console(
             zone_id = resp["HostedZone"]["Id"].split("/")[-1]
             nameservers = resp["DelegationSet"]["NameServers"]
             logger.info(
-                "Created hosted zone %s for %s", zone_id, base_domain
-            )  # NOSONAR
+                "Created hosted zone %s for %s", zone_id, sanitize_log(base_domain)
+            )
 
         # Create IAM role + instance profile (idempotent)
         iam = boto3.client(
@@ -1641,8 +1642,8 @@ def setup_console(
         raise
     except Exception as e:
         logger.exception(
-            "Failed to setup console for provider %s", provider_id
-        )  # NOSONAR
+            "Failed to setup console for provider %s", sanitize_log(provider_id)
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 

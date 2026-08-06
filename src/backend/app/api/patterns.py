@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.logging_utils import sanitize_log
 from app.models.pattern import Pattern, PatternDisk, PatternShare
 from app.models.project import Project
 from app.models.user import User
@@ -640,8 +641,8 @@ def delete_pattern(
         s3_storage.delete_prefix(f"patterns/{pattern_id}/")
     except Exception:
         logger.warning(
-            "Failed to clean S3 prefix patterns/%s/", pattern_id[:8]
-        )  # NOSONAR
+            "Failed to clean S3 prefix patterns/%s/", sanitize_log(pattern_id[:8])
+        )
 
     db.delete(pattern)
     db.commit()

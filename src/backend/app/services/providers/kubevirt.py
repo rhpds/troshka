@@ -112,25 +112,38 @@ def _apply_crds(ext_api, operator_dir):
                 raise
 
 
+def _try_existing_cluster_resource(kind, name, body, rbac_api):
+    """Try to read/patch an existing cluster-scoped resource. Returns True if handled."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        if kind == "ClusterRole":
+            rbac_api.read_cluster_role(name=name)
+            logger.info(f"ClusterRole {name} already exists, skipping")
+            return True
+        rbac_api.patch_cluster_role_binding(name=name, body=body)
+        logger.info(f"ClusterRoleBinding {name} patched")
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+
+def _handle_create_conflict(kind, name, ns, body, apps_api):
+    """Patch a Deployment on 409 Conflict during creation."""
+    if kind == "Deployment":
+        apps_api.patch_namespaced_deployment(name=name, namespace=ns, body=body)
+    logger.info(f"Updated {kind} {name}")
+
+
 def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
     """Create or patch a single Kubernetes manifest by kind."""
     from kubernetes.client.exceptions import ApiException
 
     if kind in ("ClusterRole", "ClusterRoleBinding"):
-        try:
-            if kind == "ClusterRole":
-                rbac_api.read_cluster_role(name=name)
-                logger.info(f"ClusterRole {name} already exists, skipping")
-                return
-            else:
-                rbac_api.patch_cluster_role_binding(name=name, body=body)
-                logger.info(f"ClusterRoleBinding {name} patched")
-                return
-        except ApiException as e:
-            if e.status == 404:
-                pass  # Not found — fall through to create below
-            else:
-                raise
+        if _try_existing_cluster_resource(kind, name, body, rbac_api):
+            return
 
     try:
         if kind == "Namespace":
@@ -146,9 +159,7 @@ def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
         logger.info(f"Created {kind} {name}")
     except ApiException as e:
         if e.status == 409:
-            if kind == "Deployment":
-                apps_api.patch_namespaced_deployment(name=name, namespace=ns, body=body)
-            logger.info(f"Updated {kind} {name}")
+            _handle_create_conflict(kind, name, ns, body, apps_api)
         else:
             raise
 
@@ -1329,24 +1340,8 @@ def _vnc_login(
     return False
 
 
-def kubevirt_exec_vnc(
-    provider, project_id, vm_id, username, password, command, timeout=600
-):
-    """Execute command via VNC console: virsh send-key + screenshot + OCR.
-
-    Screenshot taken in virt-launcher pod, OCR runs in the exec/tools pod
-    (which has tesseract installed).
-    """
-    import re
-    import time
-
-    if not password:
-        raise RuntimeError("Password required for VNC console exec")
-
-    _, core_v1, _ = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-    vm_name = f"troshka-vm-{vm_id[:8]}"
-
+def _find_vnc_pods(core_v1, namespace, vm_name):
+    """Find the virt-launcher and exec pods for VNC operations."""
     all_pods: list = getattr(core_v1.list_namespaced_pod(namespace), "items", [])
     launcher = None
     exec_pod = None
@@ -1361,15 +1356,19 @@ def kubevirt_exec_vnc(
         raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
     if not exec_pod:
         raise RuntimeError("No running exec pod for VNC OCR")
+    return launcher, exec_pod
 
+
+def _make_pod_exec_fn(core_v1, pod_name, namespace, container):
+    """Create a callable that executes commands in a specific pod container."""
     from kubernetes.stream import stream as k8s_stream
 
-    def _launcher_exec(cmd, req_timeout=15):
+    def _exec(cmd, req_timeout=15):
         ws = k8s_stream(
             core_v1.connect_get_namespaced_pod_exec,
-            launcher.metadata.name,
+            pod_name,
             namespace,
-            container="compute",
+            container=container,
             command=cmd,
             stderr=True,
             stdout=True,
@@ -1380,21 +1379,95 @@ def kubevirt_exec_vnc(
         )
         return ws.strip() if isinstance(ws, str) else ""
 
-    def _tools_exec(cmd, req_timeout=15):
-        ws = k8s_stream(
-            core_v1.connect_get_namespaced_pod_exec,
-            exec_pod.metadata.name,
-            namespace,
-            container="exec",
-            command=cmd,
-            stderr=True,
-            stdout=True,
-            stdin=False,
-            tty=False,
-            _preload_content=True,
-            _request_timeout=req_timeout,
-        )
-        return ws.strip() if isinstance(ws, str) else ""
+    return _exec
+
+
+def _detect_vnc_state(ocr_text):
+    """Detect console state from OCR text: login, password, shell, or unknown."""
+    import re
+
+    text = ocr_text.strip()
+    if not text or len(text) < 3:
+        return "unknown"
+    last_lines = "\n".join(text.split("\n")[-5:])
+    if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login"
+    if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
+        return "password"
+    if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
+        return "shell"
+    return "unknown"
+
+
+def _vnc_screenshot_ocr(launcher_exec_fn, tools_exec_fn, domain):
+    """Take a screenshot via virsh and OCR it via the tools pod."""
+    img_path = "/tmp/troshka-screen.ppm"
+    launcher_exec_fn(["virsh", "-c", _QEMU_SESSION_URI, "screenshot", domain, img_path])
+    b64 = launcher_exec_fn(["base64", "-w0", img_path], req_timeout=10)
+    launcher_exec_fn(["rm", "-f", img_path])
+    if not b64:
+        return ""
+    tools_exec_fn(
+        ["bash", "-c", f"cat > /tmp/screen.b64 << 'ENDOFB64'\n{b64}\nENDOFB64"],
+        req_timeout=10,
+    )
+    result = tools_exec_fn(
+        [
+            "bash",
+            "-c",
+            "base64 -d /tmp/screen.b64 | tesseract stdin stdout 2>/dev/null;"
+            " rm -f /tmp/screen.b64",
+        ],
+        req_timeout=15,
+    )
+    return result
+
+
+def _vnc_send_text(send_keys_fn, text):
+    """Send text character-by-character via virsh send-key."""
+    for ch in text:
+        keys = _CHAR_TO_KEYS.get(ch)
+        if keys:
+            send_keys_fn(*keys)
+
+
+def _parse_vnc_markers(text):
+    """Extract output and exit code from VNC OCR text between markers."""
+    import re
+
+    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", text, re.DOTALL)
+    if m:
+        output = m.group(1).strip()
+        exit_code = int(m.group(2)) if m.group(2) else None
+    else:
+        output = text.strip()
+        exit_code = None
+    return output, exit_code
+
+
+def kubevirt_exec_vnc(
+    provider, project_id, vm_id, username, password, command, timeout=600
+):
+    """Execute command via VNC console: virsh send-key + screenshot + OCR.
+
+    Screenshot taken in virt-launcher pod, OCR runs in the exec/tools pod
+    (which has tesseract installed).
+    """
+    import time
+
+    if not password:
+        raise RuntimeError("Password required for VNC console exec")
+
+    _, core_v1, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    launcher, exec_pod = _find_vnc_pods(core_v1, namespace, vm_name)
+
+    _launcher_exec = _make_pod_exec_fn(
+        core_v1, launcher.metadata.name, namespace, "compute"
+    )
+    _tools_exec = _make_pod_exec_fn(core_v1, exec_pod.metadata.name, namespace, "exec")
 
     resp = _launcher_exec(["virsh", "-c", _QEMU_SESSION_URI, "list", "--name"])
     domain = resp.split("\n")[0].strip()
@@ -1406,58 +1479,17 @@ def kubevirt_exec_vnc(
             ["virsh", "-c", _QEMU_SESSION_URI, "send-key", domain] + list(keys)
         )
 
-    def _send_text(text):
-        for ch in text:
-            keys = _CHAR_TO_KEYS.get(ch)
-            if keys:
-                _send_keys(*keys)
+    def send_text_fn(text):
+        return _vnc_send_text(_send_keys, text)
 
-    def _screenshot_ocr():
-        img_path = "/tmp/troshka-screen.ppm"
-        _launcher_exec(
-            ["virsh", "-c", _QEMU_SESSION_URI, "screenshot", domain, img_path]
-        )
-        b64 = _launcher_exec(["base64", "-w0", img_path], req_timeout=10)
-        _launcher_exec(["rm", "-f", img_path])
-        if not b64:
-            return ""
-        # Write base64 to file in tools pod then decode + OCR
-        # (avoids shell arg length limits on large PPM screenshots)
-        _tools_exec(
-            ["bash", "-c", f"cat > /tmp/screen.b64 << 'ENDOFB64'\n{b64}\nENDOFB64"],
-            req_timeout=10,
-        )
-        result = _tools_exec(
-            [
-                "bash",
-                "-c",
-                "base64 -d /tmp/screen.b64 | tesseract stdin stdout 2>/dev/null;"
-                " rm -f /tmp/screen.b64",
-            ],
-            req_timeout=15,
-        )
-        return result
+    def screenshot_fn():
+        return _vnc_screenshot_ocr(_launcher_exec, _tools_exec, domain)
 
-    def _detect_state(ocr_text):
-        text = ocr_text.strip()
-        if not text or len(text) < 3:
-            return "unknown"
-        last_lines = "\n".join(text.split("\n")[-5:])
-        if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
-            return "login"
-        if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
-            return "password"
-        if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
-            return "shell"
-        return "unknown"
-
-    # Switch to TTY3 to avoid graphical desktop
     _send_keys("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
     time.sleep(2)
 
-    # Login loop via extracted helper
     logged_in = _vnc_login(
-        _send_keys, _send_text, _screenshot_ocr, _detect_state, username, password
+        _send_keys, send_text_fn, screenshot_fn, _detect_vnc_state, username, password
     )
 
     if not logged_in:
@@ -1468,31 +1500,21 @@ def kubevirt_exec_vnc(
             "method": "vnc",
         }
 
-    # Clear screen and send command with markers
-    _send_text("clear\n")
+    send_text_fn("clear\n")
     time.sleep(0.5)
     wrapped = f"echo TROSHKA_BEGIN; {command} 2>&1; echo TROSHKA_EXIT $?"
-    _send_text(wrapped + "\n")
+    send_text_fn(wrapped + "\n")
 
-    # Poll for output markers
     ocr = ""
     deadline = time.time() + min(timeout, 60)
     while time.time() < deadline:
         time.sleep(2)
-        ocr = _screenshot_ocr()
+        ocr = screenshot_fn()
         if "TROSHKA_EXIT" in ocr:
             break
 
-    # Extract output between markers
-    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", ocr, re.DOTALL)
-    if m:
-        output = m.group(1).strip()
-        exit_code = int(m.group(2)) if m.group(2) else None
-    else:
-        output = ocr.strip()
-        exit_code = None
+    output, exit_code = _parse_vnc_markers(ocr)
 
-    # Switch back to TTY1
     _send_keys("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F1")
 
     return {
@@ -1503,23 +1525,8 @@ def kubevirt_exec_vnc(
     }
 
 
-def kubevirt_exec_console(
-    provider, project_id, vm_id, username, password, command, timeout=600
-):
-    """Execute command via KubeVirt serial console (WebSocket-based)."""
-    import re
-    import time
-
-    _, _core_v1, _api_client = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-    vm_name = f"troshka-vm-{vm_id[:8]}"
-
-    if not password:
-        raise RuntimeError("Password required for console exec")
-
-    # Use websocket to connect to the console subresource
-    # The kubernetes client doesn't have a native console stream helper,
-    # so we use the raw API path with the websocket protocol.
+def _create_console_ws(provider, namespace, vm_name, timeout):
+    """Create a WebSocket connection to the KubeVirt serial console."""
     import ssl
 
     import websocket
@@ -1537,89 +1544,112 @@ def kubevirt_exec_console(
         f"/virtualmachineinstances/{vm_name}/console"
     )
     full_url = f"{ws_url}{console_path}"
+    return websocket.create_connection(
+        full_url,
+        header=[f"Authorization: Bearer {token}"],
+        subprotocols=["plain.kubevirt.io"],
+        sslopt=ssl_opts,
+        timeout=min(timeout, 30),
+    )
+
+
+def _console_ws_read(ws, secs):
+    """Read all available data from WebSocket within timeout."""
+    import time
+
+    import websocket
+
+    buf = ""
+    deadline = time.time() + secs
+    ws.settimeout(0.5)
+    while time.time() < deadline:
+        try:
+            data = ws.recv()
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", errors="replace")
+            buf += data
+        except websocket.WebSocketTimeoutException:
+            if buf:
+                break
+    return buf
+
+
+def _console_ws_send(ws, text):
+    """Send text data over WebSocket."""
+    ws.send(text.encode("utf-8") if isinstance(text, str) else text)
+
+
+def _console_handle_login(ws, combined, username, password):
+    """Detect and handle login/password prompts on the serial console."""
+    if "login:" in combined.lower():
+        _console_ws_send(ws, f"{username}\n")
+        _console_ws_read(ws, 2)
+        _console_ws_send(ws, f"{password}\n")
+        login_resp = _console_ws_read(ws, 3)
+        if "login incorrect" in login_resp.lower():
+            raise RuntimeError("Console login failed")
+    elif "password:" in combined.lower():
+        _console_ws_send(ws, f"{password}\n")
+        login_resp = _console_ws_read(ws, 3)
+        if "login incorrect" in login_resp.lower():
+            raise RuntimeError("Console login failed")
+
+
+def _parse_console_output(raw_output):
+    """Strip ANSI codes and extract output between TROSHKA markers."""
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw_output)
+    begin_idx = clean.find("TROSHKA_BEGIN")
+    end_idx = clean.find("TROSHKA_END")
+    if begin_idx >= 0 and end_idx >= 0:
+        body = clean[begin_idx + len("TROSHKA_BEGIN") : end_idx].strip()
+        end_line = clean[end_idx:].split("\n")[0]
+        exit_code_match = re.search(r"TROSHKA_END\s+(\d+)", end_line)
+        exit_code = int(exit_code_match.group(1)) if exit_code_match else None
+    else:
+        body = clean
+        exit_code = None
+    return body, exit_code
+
+
+def kubevirt_exec_console(
+    provider, project_id, vm_id, username, password, command, timeout=600
+):
+    """Execute command via KubeVirt serial console (WebSocket-based)."""
+    import time
+
+    _, _core_v1, _api_client = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    if not password:
+        raise RuntimeError("Password required for console exec")
 
     ws = None
     try:
-        ws = websocket.create_connection(
-            full_url,
-            header=[f"Authorization: Bearer {token}"],
-            subprotocols=["plain.kubevirt.io"],
-            sslopt=ssl_opts,
-            timeout=min(timeout, 30),
-        )
+        ws = _create_console_ws(provider, namespace, vm_name, timeout)
 
-        def _ws_read(secs):
-            """Read all available data from WebSocket within timeout."""
-            buf = ""
-            deadline = time.time() + secs
-            ws.settimeout(0.5)
-            while time.time() < deadline:
-                try:
-                    data = ws.recv()
-                    if isinstance(data, bytes):
-                        data = data.decode("utf-8", errors="replace")
-                    buf += data
-                except websocket.WebSocketTimeoutException:
-                    if buf:
-                        break
-            return buf
-
-        def _ws_send(text):
-            ws.send(text.encode("utf-8") if isinstance(text, str) else text)
-
-        def _strip_ansi(s):
-            return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", s)
-
-        # Read initial output to detect state
-        initial = _ws_read(3)
-
-        # Send enter to wake up console
-        _ws_send("\n")
-        prompt_check = _ws_read(3)
+        initial = _console_ws_read(ws, 3)
+        _console_ws_send(ws, "\n")
+        prompt_check = _console_ws_read(ws, 3)
         combined = initial + prompt_check
 
-        # Detect state: login prompt, password prompt, or shell
-        if "login:" in combined.lower():
-            _ws_send(f"{username}\n")
-            _ws_read(2)
-            _ws_send(f"{password}\n")
-            login_resp = _ws_read(3)
-            if "login incorrect" in login_resp.lower():
-                raise RuntimeError("Console login failed")
-        elif "password:" in combined.lower():
-            _ws_send(f"{password}\n")
-            login_resp = _ws_read(3)
-            if "login incorrect" in login_resp.lower():
-                raise RuntimeError("Console login failed")
-        # else: already at a shell prompt
+        _console_handle_login(ws, combined, username, password)
 
-        # Send command wrapped with markers
-        _ws_send("echo TROSHKA_BEGIN\n")
-        _ws_read(1)
-        _ws_send(f"({command}) 2>&1; echo TROSHKA_END $?\n")
+        _console_ws_send(ws, "echo TROSHKA_BEGIN\n")
+        _console_ws_read(ws, 1)
+        _console_ws_send(ws, f"({command}) 2>&1; echo TROSHKA_END $?\n")
 
-        # Read until TROSHKA_END marker
         output = ""
         deadline = time.time() + min(timeout, 300)
         while time.time() < deadline:
-            chunk = _ws_read(2)
+            chunk = _console_ws_read(ws, 2)
             output += chunk
             if "TROSHKA_END" in output:
                 break
 
-        # Parse output between markers
-        clean = _strip_ansi(output)
-        begin_idx = clean.find("TROSHKA_BEGIN")
-        end_idx = clean.find("TROSHKA_END")
-        if begin_idx >= 0 and end_idx >= 0:
-            body = clean[begin_idx + len("TROSHKA_BEGIN") : end_idx].strip()
-            # Extract exit code from the TROSHKA_END line
-            end_line = clean[end_idx:].split("\n")[0]
-            exit_code_match = re.search(r"TROSHKA_END\s+(\d+)", end_line)
-            exit_code = int(exit_code_match.group(1)) if exit_code_match else None
-        else:
-            body = clean
-            exit_code = None
+        body, exit_code = _parse_console_output(output)
 
         return {
             "output": body,

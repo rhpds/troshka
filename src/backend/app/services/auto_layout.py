@@ -44,13 +44,12 @@ def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
     }
 
 
-def _build_connection_maps(
+def _build_storage_maps(
     nodes: list[dict], edges: list[dict]
-) -> tuple[dict[str, list[str]], dict[str, str], dict[str, list[str]]]:
-    """Build adjacency maps: vm_to_storage, storage_to_vm, network_to_vms."""
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Build workload-to-storage and storage-to-workload adjacency maps."""
     vm_to_storage: dict[str, list[str]] = {}
     storage_to_vm: dict[str, str] = {}
-
     for e in edges:
         src = _find(nodes, e.get("source", ""))
         tgt = _find(nodes, e.get("target", ""))
@@ -64,7 +63,11 @@ def _build_connection_maps(
         if tgt_type in _WORKLOAD_TYPES and src_type == "storageNode":
             vm_to_storage.setdefault(tgt["id"], []).append(src["id"])
             storage_to_vm[src["id"]] = tgt["id"]
+    return vm_to_storage, storage_to_vm
 
+
+def _build_network_to_vms(nodes: list[dict], edges: list[dict]) -> dict[str, list[str]]:
+    """Build network-to-workload adjacency map."""
     network_to_vms: dict[str, list[str]] = {}
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -77,47 +80,62 @@ def _build_connection_maps(
             network_to_vms.setdefault(tgt["id"], []).append(src["id"])
         if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
             network_to_vms.setdefault(src["id"], []).append(tgt["id"])
+    return network_to_vms
 
+
+def _build_connection_maps(
+    nodes: list[dict], edges: list[dict]
+) -> tuple[dict[str, list[str]], dict[str, str], dict[str, list[str]]]:
+    """Build adjacency maps: vm_to_storage, storage_to_vm, network_to_vms."""
+    vm_to_storage, storage_to_vm = _build_storage_maps(nodes, edges)
+    network_to_vms = _build_network_to_vms(nodes, edges)
     return vm_to_storage, storage_to_vm, network_to_vms
+
+
+def _classify_network_by_handle(
+    handle: str, net_id: str, top_ids: set, bottom_ids: set
+):
+    """Place a network ID into top or bottom set based on a workload edge handle."""
+    if "top" in handle:
+        top_ids.add(net_id)
+    elif "bottom" in handle:
+        bottom_ids.add(net_id)
+    else:
+        top_ids.add(net_id)
+
+
+def _classify_networks_from_edges(
+    nodes: list[dict], edges: list[dict]
+) -> tuple[set[str], set[str]]:
+    """Classify networks as top/bottom based on workload edge handle positions."""
+    top_net_ids: set[str] = set()
+    bottom_net_ids: set[str] = set()
+    for e in edges:
+        src = _find(nodes, e.get("source", ""))
+        tgt = _find(nodes, e.get("target", ""))
+        if not src or not tgt:
+            continue
+        src_type = src.get("type", "")
+        tgt_type = tgt.get("type", "")
+        if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
+            handle = (e.get("sourceHandle") or "").lower()
+            _classify_network_by_handle(handle, tgt["id"], top_net_ids, bottom_net_ids)
+        if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
+            handle = (e.get("targetHandle") or "").lower()
+            _classify_network_by_handle(handle, src["id"], top_net_ids, bottom_net_ids)
+    return top_net_ids, bottom_net_ids
 
 
 def _classify_network_positions(
     nodes: list[dict], edges: list[dict], networks: list[dict]
 ) -> tuple[list[dict], list[dict]]:
     """Determine which networks go on top vs bottom based on edge handles."""
-    top_net_ids: set[str] = set()
-    bottom_net_ids: set[str] = set()
+    top_net_ids, bottom_net_ids = _classify_networks_from_edges(nodes, edges)
 
-    for e in edges:
-        src = _find(nodes, e.get("source", ""))
-        tgt = _find(nodes, e.get("target", ""))
-        if not src or not tgt:
-            continue
-        s_h = (e.get("sourceHandle") or "").lower()
-        t_h = (e.get("targetHandle") or "").lower()
-        src_type = src.get("type", "")
-        tgt_type = tgt.get("type", "")
-        if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
-            if "top" in s_h:
-                top_net_ids.add(tgt["id"])
-            elif "bottom" in s_h:
-                bottom_net_ids.add(tgt["id"])
-            else:
-                top_net_ids.add(tgt["id"])
-        if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
-            if "top" in t_h:
-                top_net_ids.add(src["id"])
-            elif "bottom" in t_h:
-                bottom_net_ids.add(src["id"])
-            else:
-                top_net_ids.add(src["id"])
-
-    # BMC networks always bottom
     for n in networks:
         if n.get("data", {}).get("networkType") == "bmc":
             top_net_ids.discard(n["id"])
             bottom_net_ids.add(n["id"])
-    # Unconnected networks go to top
     for n in networks:
         if n["id"] not in top_net_ids and n["id"] not in bottom_net_ids:
             top_net_ids.add(n["id"])

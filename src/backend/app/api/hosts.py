@@ -1,6 +1,9 @@
 import logging
 import os
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+if TYPE_CHECKING:
+    from app.services.agent_deployer import AgentDeployConfig
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
@@ -506,66 +509,69 @@ def _setup_console_dns(
         logger.warning("Failed to create console record for %s: %s", h.id[:8], e)
 
 
-def _apply_pool_nfs_config(kwargs: dict[str, Any], pool) -> None:
-    """Add NFS server/path/port kwargs from a shared storage pool."""
+def _apply_pool_nfs_config(cfg: "AgentDeployConfig", pool) -> None:
+    """Add NFS server/path/port to config from a shared storage pool."""
     if pool.mode == "shared-fsx" and pool.fsx_dns_name:
-        kwargs["nfs_server"] = pool.fsx_dns_name
-        kwargs["nfs_path"] = "/fsx"
+        cfg.nfs_server = pool.fsx_dns_name
+        cfg.nfs_path = "/fsx"
     elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
         parts = pool.nfs_endpoint.split(":", 1)
-        kwargs["nfs_server"] = parts[0]
-        kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
+        cfg.nfs_server = parts[0]
+        cfg.nfs_path = parts[1] if len(parts) > 1 else "/"
         if pool.nfs_port:
-            kwargs["nfs_port"] = pool.nfs_port
+            cfg.nfs_port = pool.nfs_port
 
 
-def _apply_pool_tls_config(kwargs: dict[str, Any], pool, h: Host) -> None:
-    """Sign and add TLS cert/key kwargs from a shared storage pool."""
+def _apply_pool_tls_config(cfg: "AgentDeployConfig", pool, h: Host) -> None:
+    """Sign and add TLS cert/key to config from a shared storage pool."""
     if not (pool.ca_cert and pool.ca_key and h.ip_address):
         return
     from app.services.storage_pool_service import sign_host_cert
 
     hc, hk = sign_host_cert(pool.ca_cert, pool.ca_key, h.ip_address, h.private_ip or "")
-    kwargs["ca_cert"] = pool.ca_cert
-    kwargs["host_cert"] = hc
-    kwargs["host_key"] = hk
+    cfg.ca_cert = pool.ca_cert
+    cfg.host_cert = hc
+    cfg.host_key = hk
 
 
-def _build_pool_install_kwargs(h: Host, s: Session, provider_type: str) -> dict:
-    """Build deploy_agent kwargs including pool/storage/console config.
+def _build_pool_install_kwargs(
+    h: Host, s: Session, provider_type: str
+) -> "AgentDeployConfig":
+    """Build AgentDeployConfig including pool/storage/console config.
 
     Looks up the host's storage pool from DB and assembles NFS, TLS, and SSH
-    kwargs. Returns a dict ready for ``deploy_agent(**kwargs)``.
+    config. Returns an AgentDeployConfig ready for ``deploy_agent(config=...)``.
     """
     from app.services.agent_ca_service import get_agent_ca_cert
     from app.services.agent_deployer import (
+        AgentDeployConfig,
         get_provider_data_disk,
         get_provider_ssh_port,
         get_provider_ssh_user,
     )
 
-    kwargs: dict[str, Any] = {
-        "ssh_user": get_provider_ssh_user(provider_type),
-        "ssh_port": get_provider_ssh_port(provider_type),
-        "data_disk_device": get_provider_data_disk(provider_type),
-        "vncd_no_tls": provider_type == "ocpvirt",
-        "agent_ca_cert": get_agent_ca_cert(),
-    }
+    cfg = AgentDeployConfig(
+        ssh_user=get_provider_ssh_user(provider_type),
+        ssh_port=get_provider_ssh_port(provider_type),
+        data_disk_device=get_provider_data_disk(provider_type),
+        vncd_no_tls=provider_type == "ocpvirt",
+        agent_ca_cert=get_agent_ca_cert(),
+    )
     if h.console_domain:
-        kwargs["console_domain"] = h.console_domain
+        cfg.console_domain = h.console_domain
     if not h.storage_pool_id:
-        return kwargs
+        return cfg
 
     from app.models.storage_pool import StoragePool
 
     pool = s.get(StoragePool, h.storage_pool_id)
     if not pool or not pool.mode.startswith("shared"):
-        return kwargs
+        return cfg
 
-    kwargs["storage_mode"] = "shared"
-    _apply_pool_nfs_config(kwargs, pool)
-    _apply_pool_tls_config(kwargs, pool, h)
-    return kwargs
+    cfg.storage_mode = "shared"
+    _apply_pool_nfs_config(cfg, pool)
+    _apply_pool_tls_config(cfg, pool, h)
+    return cfg
 
 
 def _verify_and_update_agent_version(h: Host) -> None:
@@ -717,6 +723,7 @@ def _do_ssh_wait_and_install(
 ) -> None:
     """Wait for SSH, deploy agent, store credentials, and set up console DNS."""
     from app.services.agent_deployer import (
+        AgentDeployConfig,
         deploy_agent,
         get_provider_data_disk,
         get_provider_ssh_user,
@@ -741,19 +748,21 @@ def _do_ssh_wait_and_install(
         ssh_host or h.ip_address,  # type: ignore[arg-type]
         h.private_key,  # type: ignore[arg-type]
         h.id,
-        storage_mode=_sm,
-        nfs_server=nfs_kwargs.get("nfs_server", ""),
-        nfs_path=nfs_kwargs.get("nfs_path", ""),
-        nfs_port=nfs_kwargs.get("nfs_port", 0),
-        ssh_port=ssh_port,
-        ssh_user=_ssh_user,
-        ca_cert=_ca_cert,
-        host_cert=_host_cert,
-        host_key=_host_key,
-        console_domain=h.console_domain or "",
-        vncd_no_tls=provider_type == "ocpvirt",
-        data_disk_device=_data_disk,
-        agent_ca_cert=_get_aca(),
+        config=AgentDeployConfig(
+            storage_mode=_sm,
+            nfs_server=nfs_kwargs.get("nfs_server", ""),
+            nfs_path=nfs_kwargs.get("nfs_path", ""),
+            nfs_port=nfs_kwargs.get("nfs_port", 0),
+            ssh_port=ssh_port,
+            ssh_user=_ssh_user,
+            ca_cert=_ca_cert,
+            host_cert=_host_cert,
+            host_key=_host_key,
+            console_domain=h.console_domain or "",
+            vncd_no_tls=provider_type == "ocpvirt",
+            data_disk_device=_data_disk,
+            agent_ca_cert=_get_aca(),
+        ),
     )
     h.agent_status = "connected" if result["success"] else "install_failed"
     _store_agent_credentials(h, result)
@@ -961,9 +970,9 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
         h.agent_status = "installing"
         s.commit()
 
-        _install_kwargs = _build_pool_install_kwargs(h, s, _provider_type)
+        _install_config = _build_pool_install_kwargs(h, s, _provider_type)
         result = deploy_agent(
-            host_ip=h_ip, private_key=h_key, host_id=h_id, **_install_kwargs
+            host_ip=h_ip, private_key=h_key, host_id=h_id, config=_install_config
         )
         h.agent_status = "connected" if result["success"] else "install_failed"
 
@@ -1301,8 +1310,8 @@ def _reinstall_agent_after_poweron(h: Host, s: Session) -> dict | None:
     h.agent_status = "installing"
     s.commit()
 
-    _kwargs = _build_pool_install_kwargs(h, s, _provider_type)
-    result = deploy_agent(h.ip_address, h.private_key, h.id, **_kwargs)  # type: ignore[arg-type]
+    _deploy_config = _build_pool_install_kwargs(h, s, _provider_type)
+    result = deploy_agent(h.ip_address, h.private_key, h.id, config=_deploy_config)  # type: ignore[arg-type]
     h.agent_status = "connected" if result["success"] else "disconnected"
 
     troshkad_creds = result.get("troshkad_credentials", {})

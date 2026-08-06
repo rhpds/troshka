@@ -102,6 +102,7 @@ def _wait_and_install_agent(
     """
     from app.services.agent_ca_service import get_agent_ca_cert
     from app.services.agent_deployer import (
+        AgentDeployConfig,
         deploy_agent,
         get_provider_data_disk,
         get_provider_ssh_user,
@@ -143,19 +144,21 @@ def _wait_and_install_agent(
         host_ip=ssh_host,
         private_key=result["private_key"],
         host_id=host.id,
-        storage_mode=storage_mode,
-        nfs_server=nfs_kwargs.get("nfs_server", ""),
-        nfs_path=nfs_kwargs.get("nfs_path", ""),
-        nfs_port=nfs_kwargs.get("nfs_port", 0),
-        ca_cert=ca_pem,
-        host_cert=cert_pem,
-        host_key=key_pem,
-        host_type="pattern_buffer",
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        data_disk_device=data_disk,
-        vncd_no_tls=provider.type == "ocpvirt",
-        agent_ca_cert=get_agent_ca_cert(),
+        config=AgentDeployConfig(
+            storage_mode=storage_mode,
+            nfs_server=nfs_kwargs.get("nfs_server", ""),
+            nfs_path=nfs_kwargs.get("nfs_path", ""),
+            nfs_port=nfs_kwargs.get("nfs_port", 0),
+            ca_cert=ca_pem,
+            host_cert=cert_pem,
+            host_key=key_pem,
+            host_type="pattern_buffer",
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            data_disk_device=data_disk,
+            vncd_no_tls=provider.type == "ocpvirt",
+            agent_ca_cert=get_agent_ca_cert(),
+        ),
     )
 
     creds = deploy_result.get("troshkad_credentials", {})

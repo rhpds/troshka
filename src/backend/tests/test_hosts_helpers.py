@@ -136,14 +136,14 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["ssh_user"], "ec2-user")
-        self.assertEqual(result["ssh_port"], 22)
-        self.assertEqual(result["data_disk_device"], "/dev/sdf")
-        self.assertFalse(result["vncd_no_tls"])
-        self.assertEqual(result["agent_ca_cert"], "--AGENT-CA--")
-        self.assertNotIn("storage_mode", result)
-        self.assertNotIn("nfs_server", result)
-        self.assertNotIn("console_domain", result)
+        self.assertEqual(result.ssh_user, "ec2-user")
+        self.assertEqual(result.ssh_port, 22)
+        self.assertEqual(result.data_disk_device, "/dev/sdf")
+        self.assertFalse(result.vncd_no_tls)
+        self.assertEqual(result.agent_ca_cert, "--AGENT-CA--")
+        self.assertEqual(result.storage_mode, "local")
+        self.assertEqual(result.nfs_server, "")
+        self.assertEqual(result.console_domain, "")
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -165,7 +165,7 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["console_domain"], "i-abc123.console.example.com")
+        self.assertEqual(result.console_domain, "i-abc123.console.example.com")
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -198,10 +198,10 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["storage_mode"], "shared")
-        self.assertEqual(result["nfs_server"], "fs-abc.fsx.us-east-1.amazonaws.com")
-        self.assertEqual(result["nfs_path"], "/fsx")
-        self.assertNotIn("nfs_port", result)
+        self.assertEqual(result.storage_mode, "shared")
+        self.assertEqual(result.nfs_server, "fs-abc.fsx.us-east-1.amazonaws.com")
+        self.assertEqual(result.nfs_path, "/fsx")
+        self.assertEqual(result.nfs_port, 0)
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -234,10 +234,10 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["storage_mode"], "shared")
-        self.assertEqual(result["nfs_server"], "nfs-server.local")
-        self.assertEqual(result["nfs_path"], "/exports/troshka")
-        self.assertEqual(result["nfs_port"], 2049)
+        self.assertEqual(result.storage_mode, "shared")
+        self.assertEqual(result.nfs_server, "nfs-server.local")
+        self.assertEqual(result.nfs_path, "/exports/troshka")
+        self.assertEqual(result.nfs_port, 2049)
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -270,9 +270,9 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["nfs_server"], "nfs-server.local")
-        self.assertEqual(result["nfs_path"], "/")
-        self.assertNotIn("nfs_port", result)
+        self.assertEqual(result.nfs_server, "nfs-server.local")
+        self.assertEqual(result.nfs_path, "/")
+        self.assertEqual(result.nfs_port, 0)
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -305,9 +305,9 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["storage_mode"], "shared")
-        self.assertEqual(result["nfs_server"], "ceph-nfs.local")
-        self.assertEqual(result["nfs_path"], "/cephfs")
+        self.assertEqual(result.storage_mode, "shared")
+        self.assertEqual(result.nfs_server, "ceph-nfs.local")
+        self.assertEqual(result.nfs_path, "/cephfs")
 
     @patch("app.services.storage_pool_service.sign_host_cert")
     @patch(
@@ -345,9 +345,9 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertEqual(result["ca_cert"], "--CA-CERT--")
-        self.assertEqual(result["host_cert"], "--HOST-CERT--")
-        self.assertEqual(result["host_key"], "--HOST-KEY--")
+        self.assertEqual(result.ca_cert, "--CA-CERT--")
+        self.assertEqual(result.host_cert, "--HOST-CERT--")
+        self.assertEqual(result.host_key, "--HOST-KEY--")
         mock_sign.assert_called_once_with(
             "--CA-CERT--", "--CA-KEY--", "10.0.0.5", "172.16.0.10"
         )
@@ -373,9 +373,9 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "azure")
 
-        self.assertEqual(result["ssh_user"], "troshka")
-        self.assertEqual(result["data_disk_device"], "/dev/disk/azure/scsi1/lun0")
-        self.assertFalse(result["vncd_no_tls"])
+        self.assertEqual(result.ssh_user, "troshka")
+        self.assertEqual(result.data_disk_device, "/dev/disk/azure/scsi1/lun0")
+        self.assertFalse(result.vncd_no_tls)
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -399,9 +399,9 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ocpvirt")
 
-        self.assertEqual(result["ssh_user"], "cloud-user")
-        self.assertEqual(result["ssh_port"], 22000)
-        self.assertTrue(result["vncd_no_tls"])
+        self.assertEqual(result.ssh_user, "cloud-user")
+        self.assertEqual(result.ssh_port, 22000)
+        self.assertTrue(result.vncd_no_tls)
 
     @patch(
         "app.services.agent_ca_service.get_agent_ca_cert", return_value="--AGENT-CA--"
@@ -429,8 +429,8 @@ class TestBuildPoolInstallKwargs(unittest.TestCase):
 
         result = _build_pool_install_kwargs(host, session, "ec2")
 
-        self.assertNotIn("storage_mode", result)
-        self.assertNotIn("nfs_server", result)
+        self.assertEqual(result.storage_mode, "local")
+        self.assertEqual(result.nfs_server, "")
 
 
 class TestVerifyAndUpdateAgentVersion(unittest.TestCase):
@@ -822,20 +822,25 @@ class TestSetupConsoleDns(unittest.TestCase):
 class TestApplyPoolNfsConfig(unittest.TestCase):
     """Tests for _apply_pool_nfs_config."""
 
-    def _call(self, kwargs, pool):
+    def _call(self, cfg, pool):
         from app.api.hosts import _apply_pool_nfs_config
 
-        return _apply_pool_nfs_config(kwargs, pool)
+        return _apply_pool_nfs_config(cfg, pool)
+
+    def _make_cfg(self):
+        from app.services.agent_deployer import AgentDeployConfig
+
+        return AgentDeployConfig()
 
     def test_fsx_pool(self):
         """shared-fsx pool -> sets nfs_server to fsx_dns_name, path to /fsx."""
         pool = MagicMock()
         pool.mode = "shared-fsx"
         pool.fsx_dns_name = "fs-abc.fsx.us-east-1.amazonaws.com"
-        kwargs = {}
-        self._call(kwargs, pool)
-        self.assertEqual(kwargs["nfs_server"], "fs-abc.fsx.us-east-1.amazonaws.com")
-        self.assertEqual(kwargs["nfs_path"], "/fsx")
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        self.assertEqual(cfg.nfs_server, "fs-abc.fsx.us-east-1.amazonaws.com")
+        self.assertEqual(cfg.nfs_path, "/fsx")
 
     def test_byo_with_port(self):
         """shared-byo with nfs_port -> parses endpoint and includes port."""
@@ -844,11 +849,11 @@ class TestApplyPoolNfsConfig(unittest.TestCase):
         pool.fsx_dns_name = None
         pool.nfs_endpoint = "nfs.local:/exports/data"
         pool.nfs_port = 2049
-        kwargs = {}
-        self._call(kwargs, pool)
-        self.assertEqual(kwargs["nfs_server"], "nfs.local")
-        self.assertEqual(kwargs["nfs_path"], "/exports/data")
-        self.assertEqual(kwargs["nfs_port"], 2049)
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        self.assertEqual(cfg.nfs_server, "nfs.local")
+        self.assertEqual(cfg.nfs_path, "/exports/data")
+        self.assertEqual(cfg.nfs_port, 2049)
 
     def test_byo_without_path(self):
         """shared-byo endpoint with no colon path -> defaults to '/'."""
@@ -857,11 +862,11 @@ class TestApplyPoolNfsConfig(unittest.TestCase):
         pool.fsx_dns_name = None
         pool.nfs_endpoint = "nfs-server.local"
         pool.nfs_port = None
-        kwargs = {}
-        self._call(kwargs, pool)
-        self.assertEqual(kwargs["nfs_server"], "nfs-server.local")
-        self.assertEqual(kwargs["nfs_path"], "/")
-        self.assertNotIn("nfs_port", kwargs)
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        self.assertEqual(cfg.nfs_server, "nfs-server.local")
+        self.assertEqual(cfg.nfs_path, "/")
+        self.assertEqual(cfg.nfs_port, 0)
 
     def test_ceph_nfs(self):
         """shared-ceph-nfs -> same parsing as byo."""
@@ -870,25 +875,30 @@ class TestApplyPoolNfsConfig(unittest.TestCase):
         pool.fsx_dns_name = None
         pool.nfs_endpoint = "ceph.local:/cephfs/troshka"
         pool.nfs_port = None
-        kwargs = {}
-        self._call(kwargs, pool)
-        self.assertEqual(kwargs["nfs_server"], "ceph.local")
-        self.assertEqual(kwargs["nfs_path"], "/cephfs/troshka")
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        self.assertEqual(cfg.nfs_server, "ceph.local")
+        self.assertEqual(cfg.nfs_path, "/cephfs/troshka")
 
     def test_local_pool_no_changes(self):
-        """local pool -> does not modify kwargs."""
+        """local pool -> does not modify config."""
         pool = MagicMock()
         pool.mode = "local"
         pool.fsx_dns_name = None
         pool.nfs_endpoint = None
-        kwargs = {}
-        self._call(kwargs, pool)
-        self.assertNotIn("nfs_server", kwargs)
-        self.assertNotIn("nfs_path", kwargs)
+        cfg = self._make_cfg()
+        self._call(cfg, pool)
+        self.assertEqual(cfg.nfs_server, "")
+        self.assertEqual(cfg.nfs_path, "")
 
 
 class TestApplyPoolTlsConfig(unittest.TestCase):
     """Tests for _apply_pool_tls_config."""
+
+    def _make_cfg(self):
+        from app.services.agent_deployer import AgentDeployConfig
+
+        return AgentDeployConfig()
 
     @patch("app.services.storage_pool_service.sign_host_cert")
     def test_success(self, mock_sign):
@@ -905,18 +915,18 @@ class TestApplyPoolTlsConfig(unittest.TestCase):
         h.ip_address = "10.0.0.1"
         h.private_ip = "172.16.0.5"
 
-        kwargs = {}
-        _apply_pool_tls_config(kwargs, pool, h)
+        cfg = self._make_cfg()
+        _apply_pool_tls_config(cfg, pool, h)
 
-        self.assertEqual(kwargs["ca_cert"], "--CA-CERT--")
-        self.assertEqual(kwargs["host_cert"], "--HOST-CERT--")
-        self.assertEqual(kwargs["host_key"], "--HOST-KEY--")
+        self.assertEqual(cfg.ca_cert, "--CA-CERT--")
+        self.assertEqual(cfg.host_cert, "--HOST-CERT--")
+        self.assertEqual(cfg.host_key, "--HOST-KEY--")
         mock_sign.assert_called_once_with(
             "--CA-CERT--", "--CA-KEY--", "10.0.0.1", "172.16.0.5"
         )
 
     def test_missing_ca_cert_returns_early(self):
-        """Pool without ca_cert -> returns early, no TLS kwargs set."""
+        """Pool without ca_cert -> returns early, no TLS config set."""
         from app.api.hosts import _apply_pool_tls_config
 
         pool = MagicMock()
@@ -926,12 +936,12 @@ class TestApplyPoolTlsConfig(unittest.TestCase):
         h = MagicMock()
         h.ip_address = "10.0.0.1"
 
-        kwargs = {}
-        _apply_pool_tls_config(kwargs, pool, h)
-        self.assertNotIn("ca_cert", kwargs)
+        cfg = self._make_cfg()
+        _apply_pool_tls_config(cfg, pool, h)
+        self.assertEqual(cfg.ca_cert, "")
 
     def test_missing_ip_address_returns_early(self):
-        """Host without ip_address -> returns early, no TLS kwargs set."""
+        """Host without ip_address -> returns early, no TLS config set."""
         from app.api.hosts import _apply_pool_tls_config
 
         pool = MagicMock()
@@ -941,9 +951,9 @@ class TestApplyPoolTlsConfig(unittest.TestCase):
         h = MagicMock()
         h.ip_address = None
 
-        kwargs = {}
-        _apply_pool_tls_config(kwargs, pool, h)
-        self.assertNotIn("ca_cert", kwargs)
+        cfg = self._make_cfg()
+        _apply_pool_tls_config(cfg, pool, h)
+        self.assertEqual(cfg.ca_cert, "")
 
     @patch("app.services.storage_pool_service.sign_host_cert")
     def test_no_private_ip_uses_empty_string(self, mock_sign):
@@ -960,11 +970,11 @@ class TestApplyPoolTlsConfig(unittest.TestCase):
         h.ip_address = "10.0.0.1"
         h.private_ip = None
 
-        kwargs = {}
-        _apply_pool_tls_config(kwargs, pool, h)
+        cfg = self._make_cfg()
+        _apply_pool_tls_config(cfg, pool, h)
 
         mock_sign.assert_called_once_with("--CA--", "--CAKEY--", "10.0.0.1", "")
-        self.assertEqual(kwargs["ca_cert"], "--CA--")
+        self.assertEqual(cfg.ca_cert, "--CA--")
 
 
 class TestResetStoppedProjectsToDraft(unittest.TestCase):

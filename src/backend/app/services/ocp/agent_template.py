@@ -15,11 +15,29 @@ Flow:
 import ipaddress
 import re
 import uuid
+from dataclasses import dataclass
 
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 _YAML_BLOCK_SCALAR = "  - |\n"
 _MKDIR_OCP_INSTALL = "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+_DEFAULT_API_VIP = "10.0.0.2"
+_DEFAULT_INGRESS_VIP = "10.0.0.3"
+
+
+@dataclass
+class BastionOCPConfig:
+    """OCP cluster configuration for bastion cloud-init setup."""
+
+    cluster_name: str
+    base_domain: str
+    ocp_version: str
+    template_id: str
+    auto_install_ocp: bool
+    api_vip: str
+    ingress_vip: str
+    bastion_bmc_ip: str
+    pull_through_registry: dict | None = None
 
 
 def _find_bastion_ip(topology):
@@ -315,6 +333,16 @@ def _find_sno_node_ip(topology):
     return None
 
 
+def _apply_controller_vips(ocp_cfg, cp_ip, api_vip, ingress_vip):
+    if not cp_ip:
+        return api_vip, ingress_vip
+    if not ocp_cfg.get("api_vip"):
+        api_vip = cp_ip
+    if not ocp_cfg.get("ingress_vip"):
+        ingress_vip = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1))
+    return api_vip, ingress_vip
+
+
 def _resolve_ocp_vips(topology, ocp_cfg):
     """Resolve API and Ingress VIPs from ocp config or topology control-plane nodes."""
     api_vip = ocp_cfg.get("api_vip", "")
@@ -336,14 +364,9 @@ def _resolve_ocp_vips(topology, ocp_cfg):
             and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
         ):
             cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
-            if not cp_ip:
-                break
-            if not ocp_cfg.get("api_vip"):
-                api_vip = cp_ip
-            if not ocp_cfg.get("ingress_vip"):
-                ingress_vip = str(
-                    ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1)
-                )
+            api_vip, ingress_vip = _apply_controller_vips(
+                ocp_cfg, cp_ip, api_vip, ingress_vip
+            )
             break
     return api_vip, ingress_vip
 
@@ -389,15 +412,17 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         ssh_keys,
         bastion_iso,
         pull_secret_json,
-        cluster_name,
-        base_domain,
-        ocp_version,
-        auto_install_ocp,
-        template_id,
-        api_vip,
-        ingress_vip,
-        bastion_bmc_ip,
-        pull_through_registry=pull_through_registry,
+        BastionOCPConfig(
+            cluster_name=cluster_name,
+            base_domain=base_domain,
+            ocp_version=ocp_version,
+            template_id=template_id,
+            auto_install_ocp=auto_install_ocp,
+            api_vip=api_vip,
+            ingress_vip=ingress_vip,
+            bastion_bmc_ip=bastion_bmc_ip,
+            pull_through_registry=pull_through_registry,
+        ),
     )
 
     return topology
@@ -650,6 +675,250 @@ def _write_itms_manifest(node, guard, pull_through_registry):
     )
 
 
+def _setup_bastion_auto_install(
+    node,
+    topology,
+    password,
+    ssh_pub_key,
+    ssh_key_ids,
+    ssh_keys,
+    bastion_iso,
+    pull_secret_json,
+    ocp_config: BastionOCPConfig,
+):
+    node["data"]["cloudInit"] = True
+    node["data"]["ciPackages"] = [
+        "git",
+        "ansible-core",
+        "python3-pip",
+        "bind-utils",
+        "nmstate",
+        "@Server with GUI",
+        "firefox",
+        "ptyxis",
+        "gnome-shell-extension-dash-to-dock",
+        "google-noto-sans-fonts",
+        "google-noto-sans-mono-fonts",
+        "dejavu-sans-fonts",
+        "desktop-backgrounds-gnome",
+    ]
+    cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
+    if cloud_user_pw:
+        node["data"]["ciCloudUserPassword"] = cloud_user_pw
+    if ssh_key_ids:
+        node["data"]["ciSshKeyIds"] = ssh_key_ids
+    if ssh_keys:
+        node["data"]["ciSshKeys"] = ssh_keys
+
+    if bastion_iso:
+        node["data"]["ciUserData"] = (
+            "mounts:\n"
+            '  - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]\n'
+            "yum_repos:\n"
+            "  rhel-dvd-baseos:\n"
+            "    name: RHEL DVD BaseOS\n"
+            "    baseurl: file:///mnt/rhel-dvd/BaseOS\n"
+            "    enabled: true\n"
+            "    gpgcheck: false\n"
+            "  rhel-dvd-appstream:\n"
+            "    name: RHEL DVD AppStream\n"
+            "    baseurl: file:///mnt/rhel-dvd/AppStream\n"
+            "    enabled: true\n"
+            "    gpgcheck: false\n"
+            "runcmd:\n"
+            "  - nmcli con up cluster-nic 2>/dev/null || true\n"
+        )
+
+    if "ciUserData" not in node["data"]:
+        node["data"]["ciUserData"] = "runcmd:\n"
+
+    _guard = "    [ -f /home/cloud-user/ocp-install/auth/kubeconfig ] && exit 0\n"
+
+    if pull_secret_json:
+        node["data"]["ciUserData"] += (
+            _YAML_BLOCK_SCALAR
+            + _guard
+            + "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
+            f"    {pull_secret_json}\n"
+            "    PULLSECRETEOF\n"
+            "    chown cloud-user:cloud-user /home/cloud-user/pull-secret.json\n"
+            "    chmod 600 /home/cloud-user/pull-secret.json\n"
+        )
+
+    if ocp_config.pull_through_registry and ocp_config.pull_through_registry.get(
+        "enabled"
+    ):
+        node["data"]["ciUserData"] += _generate_ptr_registries_conf(
+            ocp_config.pull_through_registry,
+            _guard,
+        )
+
+    install_config = _build_install_config(
+        topology,
+        ocp_config.template_id,
+        ocp_config.cluster_name,
+        ocp_config.base_domain,
+        ocp_config.api_vip,
+        ocp_config.ingress_vip,
+        password,
+        pull_secret_json,
+        ssh_pub_key,
+        pull_through_registry=ocp_config.pull_through_registry,
+    )
+    agent_config = _build_agent_config(
+        topology,
+        ocp_config.cluster_name,
+        ocp_config.base_domain,
+        ocp_config.api_vip,
+        ocp_config.ingress_vip,
+    )
+
+    bmc_ips_str, bmc_pw = _collect_bmc_ips_and_password(topology, password)
+
+    node["data"]["ciUserData"] += _build_install_script(
+        ocp_config.ocp_version,
+        ocp_config.auto_install_ocp,
+        bmc_pw,
+        bmc_ips_str,
+        ocp_config.cluster_name,
+        ocp_config.base_domain,
+        topology=topology,
+    )
+
+    _write_ocp_config_files(node, _guard, install_config, agent_config)
+    _write_itms_manifest(node, _guard, ocp_config.pull_through_registry)
+
+    node["data"][
+        "ciUserData"
+    ] += "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
+
+    node["data"]["ciUserData"] += (
+        _YAML_BLOCK_SCALAR
+        + _guard
+        + "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
+        + "    #!/bin/bash\n"
+        "    set -x\n"
+        "    dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null\n"
+        "    sed -i 's|^ExecStart=.*gsd-subman|#ExecStart=/usr/libexec/gsd-subman|' /lib/systemd/user/org.gnome.SettingsDaemon.Subscription.service 2>/dev/null\n"
+        "    systemctl disable --now rhsmcertd 2>/dev/null\n"
+        "    systemctl mask rhsmcertd 2>/dev/null\n"
+        "    mkdir -p /etc/skel/.config\n"
+        "    echo yes > /etc/skel/.config/gnome-initial-setup-done\n"
+        "    for u in root cloud-user; do\n"
+        "      d=$(eval echo ~$u)\n"
+        "      mkdir -p $d/.config\n"
+        "      echo yes > $d/.config/gnome-initial-setup-done\n"
+        "      chown -R $u:$u $d/.config\n"
+        "    done\n"
+        "    if rpm -q ptyxis >/dev/null 2>&1; then\n"
+        "      TERM_APP=org.gnome.Ptyxis.desktop\n"
+        "    else\n"
+        "      TERM_APP=org.gnome.Terminal.desktop\n"
+        "    fi\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/favorite-apps \"['$TERM_APP', 'firefox.desktop']\"\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/overlay-scrolling false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/screensaver/lock-enabled false\n"
+        '    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/session/idle-delay "uint32 0"\n'
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type \"'nothing'\"\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/idle-dim false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/color-scheme \"'prefer-dark'\"\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/gtk-theme \"'Adwaita-dark'\"\n"
+        "    sudo -u cloud-user dbus-run-session gnome-extensions enable dash-to-dock@micxgx.gmail.com 2>/dev/null\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/dock-fixed false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/autohide true\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/intellihide true\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/show-trash false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/show-mounts false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/mutter/dynamic-workspaces false\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/num-workspaces 1\n"
+        "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/button-layout \"'appmenu:minimize,maximize,close'\"\n"
+        "    # Ptyxis terminal: Hurtado palette (dark theme with readable Ansible output)\n"
+        "    if rpm -q ptyxis >/dev/null 2>&1; then\n"
+        '      PROFILE_UUID=$(sudo -u cloud-user dbus-run-session dconf read /org/gnome/Ptyxis/default-profile-uuid 2>/dev/null | tr -d "\'")\n'
+        '      if [ -z "$PROFILE_UUID" ]; then\n'
+        "        PROFILE_UUID=$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)\n"
+        "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/default-profile-uuid \"'$PROFILE_UUID'\"\n"
+        "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/profile-uuids \"['$PROFILE_UUID']\"\n"
+        "      fi\n"
+        "      sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/Profiles/$PROFILE_UUID/palette \"'Hurtado'\"\n"
+        "    fi\n"
+        "    MONITORS_XML='<monitors version=\"2\"><configuration><logicalmonitor><x>0</x><y>0</y><scale>1</scale><primary>yes</primary><monitor><monitorspec><connector>Virtual-1</connector><vendor>unknown</vendor><product>unknown</product><serial>unknown</serial></monitorspec><mode><width>1920</width><height>1080</height><rate>60</rate></mode></monitor></logicalmonitor></configuration></monitors>'\n"
+        "    for u in root cloud-user; do\n"
+        "      d=$(eval echo ~$u)\n"
+        "      mkdir -p $d/.config\n"
+        '      echo "$MONITORS_XML" > $d/.config/monitors.xml\n'
+        "      chown -R $u:$u $d/.config\n"
+        "    done\n"
+        "    mkdir -p /var/lib/gdm/.config\n"
+        '    echo "$MONITORS_XML" > /var/lib/gdm/.config/monitors.xml\n'
+        "    chown -R gdm:gdm /var/lib/gdm/.config\n"
+        "    sed -i '/^\\[daemon\\]/a AutomaticLoginEnable=True' /etc/gdm/custom.conf\n"
+        "    sed -i '/^AutomaticLoginEnable/a AutomaticLogin=cloud-user' /etc/gdm/custom.conf\n"
+        "    grep -q KUBECONFIG /home/cloud-user/.bashrc || echo 'export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig' >> /home/cloud-user/.bashrc\n"
+        "    systemctl set-default graphical.target\n"
+        "    systemctl isolate graphical.target\n"
+        "    DESKTOPEOF\n"
+        "    chmod 755 /root/setup-desktop.sh\n"
+        "    [ -f /var/log/desktop-install.log ] || nohup /root/setup-desktop.sh > /var/log/desktop-install.log 2>&1 &\n"
+    )
+
+    console_url = f"https://console-openshift-console.apps.{ocp_config.cluster_name}.{ocp_config.base_domain}"
+    node["data"]["ciUserData"] += (
+        _YAML_BLOCK_SCALAR
+        + _guard
+        + "    mkdir -p /etc/firefox/policies\n"
+        + "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
+        "    {\n"
+        '      "policies": {\n'
+        f'        "Homepage": {{"URL": "{console_url}", "Locked": true, "StartPage": "homepage"}},\n'
+        '        "OverrideFirstRunPage": "",\n'
+        '        "OverridePostUpdatePage": "",\n'
+        '        "UserMessaging": {"WhatsNew": false, "ExtensionRecommendations": false, "FeatureRecommendations": false, "UrlbarInterventions": false, "SkipOnboarding": true, "MoreFromMozilla": false},\n'
+        '        "DisableTelemetry": true,\n'
+        '        "Certificates": {"ImportEnterpriseRoots": true},\n'
+        '        "NoDefaultBookmarks": true,\n'
+        '        "DontCheckDefaultBrowser": true,\n'
+        '        "DisableAppUpdate": true\n'
+        "      }\n"
+        "    }\n"
+        "    FPEOF\n"
+    )
+    node["data"]["ciUserData"] += (
+        _YAML_BLOCK_SCALAR
+        + _guard
+        + "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
+        + '    if [ -n "$FIREFOX_DIR" ]; then\n'
+        "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
+        "      cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'\n"
+        '    pref("browser.sessionstore.resume_from_crash", false);\n'
+        '    pref("browser.shell.checkDefaultBrowser", false);\n'
+        '    pref("browser.startup.homepage_override.mstone", "ignore");\n'
+        '    pref("browser.disableResetPrompt", true);\n'
+        '    pref("browser.slowStartup.notificationDisabled", true);\n'
+        '    pref("browser.laterrun.enabled", false);\n'
+        "    ACEOF\n"
+        "    fi\n"
+    )
+
+    bmc_ip = str(ipaddress.IPv4Address(ocp_config.bastion_bmc_ip))
+    nics = node["data"].get("nics", [])
+    cluster_mac = nics[0]["mac"] if len(nics) > 0 else ""
+    bmc_mac = nics[1]["mac"] if len(nics) > 1 else ""
+    node["data"]["ciNetworkConfig"] = (
+        "version: 2\n"
+        "ethernets:\n"
+        "  cluster-nic:\n"
+        f"    match:\n"
+        f'      macaddress: "{cluster_mac}"\n'
+        "    dhcp4: true\n"
+        "  bmc-nic:\n"
+        f"    match:\n"
+        f'      macaddress: "{bmc_mac}"\n'
+        "    addresses:\n"
+        f"      - {bmc_ip}/24\n"
+    )
+
+
 def _setup_bastion_cloud_init(
     topology,
     password,
@@ -658,15 +927,7 @@ def _setup_bastion_cloud_init(
     ssh_keys,
     bastion_iso,
     pull_secret_json,
-    cluster_name,
-    base_domain,
-    ocp_version,
-    auto_install_ocp,
-    template_id,
-    api_vip,
-    ingress_vip,
-    bastion_bmc_ip,
-    pull_through_registry=None,
+    ocp_config: BastionOCPConfig,
 ):
     for node in topology.get("nodes", []):
         if (
@@ -675,252 +936,26 @@ def _setup_bastion_cloud_init(
         ):
             continue
 
-        if not auto_install_ocp:
+        if not ocp_config.auto_install_ocp:
             _setup_bastion_no_auto_install(
                 node,
                 password,
                 ssh_key_ids,
                 ssh_keys,
-                pull_through_registry,
+                ocp_config.pull_through_registry,
             )
             break
 
-        node["data"]["cloudInit"] = True
-        node["data"]["ciPackages"] = [
-            "git",
-            "ansible-core",
-            "python3-pip",
-            "bind-utils",
-            "nmstate",
-            "@Server with GUI",
-            "firefox",
-            "ptyxis",
-            "gnome-shell-extension-dash-to-dock",
-            "google-noto-sans-fonts",
-            "google-noto-sans-mono-fonts",
-            "dejavu-sans-fonts",
-            "desktop-backgrounds-gnome",
-        ]
-        cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
-        if cloud_user_pw:
-            node["data"]["ciCloudUserPassword"] = cloud_user_pw
-        if ssh_key_ids:
-            node["data"]["ciSshKeyIds"] = ssh_key_ids
-        if ssh_keys:
-            node["data"]["ciSshKeys"] = ssh_keys
-
-        # DVD mount + yum repos (mounts: runs before packages:)
-        if bastion_iso:
-            node["data"]["ciUserData"] = (
-                "mounts:\n"
-                '  - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]\n'
-                "yum_repos:\n"
-                "  rhel-dvd-baseos:\n"
-                "    name: RHEL DVD BaseOS\n"
-                "    baseurl: file:///mnt/rhel-dvd/BaseOS\n"
-                "    enabled: true\n"
-                "    gpgcheck: false\n"
-                "  rhel-dvd-appstream:\n"
-                "    name: RHEL DVD AppStream\n"
-                "    baseurl: file:///mnt/rhel-dvd/AppStream\n"
-                "    enabled: true\n"
-                "    gpgcheck: false\n"
-                "runcmd:\n"
-                "  - nmcli con up cluster-nic 2>/dev/null || true\n"
-            )
-
-        if "ciUserData" not in node["data"]:
-            node["data"]["ciUserData"] = "runcmd:\n"
-
-        _guard = "    [ -f /home/cloud-user/ocp-install/auth/kubeconfig ] && exit 0\n"
-
-        if pull_secret_json:
-            node["data"]["ciUserData"] += (
-                _YAML_BLOCK_SCALAR
-                + _guard
-                + "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
-                f"    {pull_secret_json}\n"
-                "    PULLSECRETEOF\n"
-                "    chown cloud-user:cloud-user /home/cloud-user/pull-secret.json\n"
-                "    chmod 600 /home/cloud-user/pull-secret.json\n"
-            )
-
-        if pull_through_registry and pull_through_registry.get("enabled"):
-            node["data"]["ciUserData"] += _generate_ptr_registries_conf(
-                pull_through_registry,
-                _guard,
-            )
-
-        install_config = _build_install_config(
+        _setup_bastion_auto_install(
+            node,
             topology,
-            template_id,
-            cluster_name,
-            base_domain,
-            api_vip,
-            ingress_vip,
             password,
-            pull_secret_json,
             ssh_pub_key,
-            pull_through_registry=pull_through_registry,
-        )
-        agent_config = _build_agent_config(
-            topology,
-            cluster_name,
-            base_domain,
-            api_vip,
-            ingress_vip,
-        )
-
-        bmc_ips_str, bmc_pw = _collect_bmc_ips_and_password(topology, password)
-
-        node["data"]["ciUserData"] += _build_install_script(
-            ocp_version,
-            auto_install_ocp,
-            bmc_pw,
-            bmc_ips_str,
-            cluster_name,
-            base_domain,
-            topology=topology,
-        )
-
-        _write_ocp_config_files(node, _guard, install_config, agent_config)
-        _write_itms_manifest(node, _guard, pull_through_registry)
-
-        # Launch OCP installer in background
-        node["data"][
-            "ciUserData"
-        ] += "  - sudo -u cloud-user nohup /home/cloud-user/install-ocp.sh > /home/cloud-user/install.log 2>&1 &\n"
-
-        # Desktop setup script — written as a file to avoid nested quoting issues
-        node["data"]["ciUserData"] += (
-            _YAML_BLOCK_SCALAR
-            + _guard
-            + "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
-            + "    #!/bin/bash\n"
-            "    set -x\n"
-            "    dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null\n"
-            "    sed -i 's|^ExecStart=.*gsd-subman|#ExecStart=/usr/libexec/gsd-subman|' /lib/systemd/user/org.gnome.SettingsDaemon.Subscription.service 2>/dev/null\n"
-            "    systemctl disable --now rhsmcertd 2>/dev/null\n"
-            "    systemctl mask rhsmcertd 2>/dev/null\n"
-            "    mkdir -p /etc/skel/.config\n"
-            "    echo yes > /etc/skel/.config/gnome-initial-setup-done\n"
-            "    for u in root cloud-user; do\n"
-            "      d=$(eval echo ~$u)\n"
-            "      mkdir -p $d/.config\n"
-            "      echo yes > $d/.config/gnome-initial-setup-done\n"
-            "      chown -R $u:$u $d/.config\n"
-            "    done\n"
-            "    if rpm -q ptyxis >/dev/null 2>&1; then\n"
-            "      TERM_APP=org.gnome.Ptyxis.desktop\n"
-            "    else\n"
-            "      TERM_APP=org.gnome.Terminal.desktop\n"
-            "    fi\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/favorite-apps \"['$TERM_APP', 'firefox.desktop']\"\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/overlay-scrolling false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/screensaver/lock-enabled false\n"
-            '    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/session/idle-delay "uint32 0"\n'
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type \"'nothing'\"\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/settings-daemon/plugins/power/idle-dim false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/color-scheme \"'prefer-dark'\"\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/interface/gtk-theme \"'Adwaita-dark'\"\n"
-            "    sudo -u cloud-user dbus-run-session gnome-extensions enable dash-to-dock@micxgx.gmail.com 2>/dev/null\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/dock-fixed false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/autohide true\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/intellihide true\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/show-trash false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/shell/extensions/dash-to-dock/show-mounts false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/mutter/dynamic-workspaces false\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/num-workspaces 1\n"
-            "    sudo -u cloud-user dbus-run-session dconf write /org/gnome/desktop/wm/preferences/button-layout \"'appmenu:minimize,maximize,close'\"\n"
-            "    # Ptyxis terminal: Hurtado palette (dark theme with readable Ansible output)\n"
-            "    if rpm -q ptyxis >/dev/null 2>&1; then\n"
-            '      PROFILE_UUID=$(sudo -u cloud-user dbus-run-session dconf read /org/gnome/Ptyxis/default-profile-uuid 2>/dev/null | tr -d "\'")\n'
-            '      if [ -z "$PROFILE_UUID" ]; then\n'
-            "        PROFILE_UUID=$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 32)\n"
-            "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/default-profile-uuid \"'$PROFILE_UUID'\"\n"
-            "        sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/profile-uuids \"['$PROFILE_UUID']\"\n"
-            "      fi\n"
-            "      sudo -u cloud-user dbus-run-session dconf write /org/gnome/Ptyxis/Profiles/$PROFILE_UUID/palette \"'Hurtado'\"\n"
-            "    fi\n"
-            "    MONITORS_XML='<monitors version=\"2\"><configuration><logicalmonitor><x>0</x><y>0</y><scale>1</scale><primary>yes</primary><monitor><monitorspec><connector>Virtual-1</connector><vendor>unknown</vendor><product>unknown</product><serial>unknown</serial></monitorspec><mode><width>1920</width><height>1080</height><rate>60</rate></mode></monitor></logicalmonitor></configuration></monitors>'\n"
-            "    for u in root cloud-user; do\n"
-            "      d=$(eval echo ~$u)\n"
-            "      mkdir -p $d/.config\n"
-            '      echo "$MONITORS_XML" > $d/.config/monitors.xml\n'
-            "      chown -R $u:$u $d/.config\n"
-            "    done\n"
-            "    mkdir -p /var/lib/gdm/.config\n"
-            '    echo "$MONITORS_XML" > /var/lib/gdm/.config/monitors.xml\n'
-            "    chown -R gdm:gdm /var/lib/gdm/.config\n"
-            "    sed -i '/^\\[daemon\\]/a AutomaticLoginEnable=True' /etc/gdm/custom.conf\n"
-            "    sed -i '/^AutomaticLoginEnable/a AutomaticLogin=cloud-user' /etc/gdm/custom.conf\n"
-            "    grep -q KUBECONFIG /home/cloud-user/.bashrc || echo 'export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig' >> /home/cloud-user/.bashrc\n"
-            "    systemctl set-default graphical.target\n"
-            "    systemctl isolate graphical.target\n"
-            "    DESKTOPEOF\n"
-            "    chmod 755 /root/setup-desktop.sh\n"
-            "    [ -f /var/log/desktop-install.log ] || nohup /root/setup-desktop.sh > /var/log/desktop-install.log 2>&1 &\n"
-        )
-
-        # Firefox enterprise policies
-        console_url = (
-            f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
-        )
-        node["data"]["ciUserData"] += (
-            _YAML_BLOCK_SCALAR
-            + _guard
-            + "    mkdir -p /etc/firefox/policies\n"
-            + "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
-            "    {\n"
-            '      "policies": {\n'
-            f'        "Homepage": {{"URL": "{console_url}", "Locked": true, "StartPage": "homepage"}},\n'
-            '        "OverrideFirstRunPage": "",\n'
-            '        "OverridePostUpdatePage": "",\n'
-            '        "UserMessaging": {"WhatsNew": false, "ExtensionRecommendations": false, "FeatureRecommendations": false, "UrlbarInterventions": false, "SkipOnboarding": true, "MoreFromMozilla": false},\n'
-            '        "DisableTelemetry": true,\n'
-            '        "Certificates": {"ImportEnterpriseRoots": true},\n'
-            '        "NoDefaultBookmarks": true,\n'
-            '        "DontCheckDefaultBrowser": true,\n'
-            '        "DisableAppUpdate": true\n'
-            "      }\n"
-            "    }\n"
-            "    FPEOF\n"
-        )
-        # Firefox default prefs (suppress crash recovery, update prompts)
-        node["data"]["ciUserData"] += (
-            _YAML_BLOCK_SCALAR
-            + _guard
-            + "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
-            + '    if [ -n "$FIREFOX_DIR" ]; then\n'
-            "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
-            "      cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'\n"
-            '    pref("browser.sessionstore.resume_from_crash", false);\n'
-            '    pref("browser.shell.checkDefaultBrowser", false);\n'
-            '    pref("browser.startup.homepage_override.mstone", "ignore");\n'
-            '    pref("browser.disableResetPrompt", true);\n'
-            '    pref("browser.slowStartup.notificationDisabled", true);\n'
-            '    pref("browser.laterrun.enabled", false);\n'
-            "    ACEOF\n"
-            "    fi\n"
-        )
-
-        # Static IP on BMC NIC — use MAC matching for firmware-agnostic naming
-        bmc_ip = str(ipaddress.IPv4Address(bastion_bmc_ip))
-        nics = node["data"].get("nics", [])
-        cluster_mac = nics[0]["mac"] if len(nics) > 0 else ""
-        bmc_mac = nics[1]["mac"] if len(nics) > 1 else ""
-        node["data"]["ciNetworkConfig"] = (
-            "version: 2\n"
-            "ethernets:\n"
-            "  cluster-nic:\n"
-            f"    match:\n"
-            f'      macaddress: "{cluster_mac}"\n'
-            "    dhcp4: true\n"
-            "  bmc-nic:\n"
-            f"    match:\n"
-            f'      macaddress: "{bmc_mac}"\n'
-            "    addresses:\n"
-            f"      - {bmc_ip}/24\n"
+            ssh_key_ids,
+            ssh_keys,
+            bastion_iso,
+            pull_secret_json,
+            ocp_config,
         )
         break
 
@@ -1077,12 +1112,33 @@ def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gate
     )
 
 
+def _extract_agent_host(node, gateway_ip, prefix_len):
+    if node.get("type") != "vmNode":
+        return None
+    td = node.get("data", {})
+    if not td.get("bmcEnabled") or not td.get("bmcIp"):
+        return None
+    group = td.get("tags", {}).get("AnsibleGroup", "")
+    if group not in ("controllers", "workers"):
+        return None
+    vm_name = td.get("name", "")
+    cluster_ip = td.get("nics", [{}])[0].get("ip", "")
+    boot_mac = td.get("nics", [{}])[0].get("mac", "")
+    if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+        return None
+    role = "master" if group == "controllers" else "worker"
+    host_yaml = _build_agent_host_yaml(
+        vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip
+    )
+    return host_yaml, cluster_ip
+
+
 def _build_agent_config(
     topology,
     cluster_name,
     _base_domain,
-    _api_vip="10.0.0.2",
-    _ingress_vip="10.0.0.3",  # NOSONAR
+    _api_vip=_DEFAULT_API_VIP,
+    _ingress_vip=_DEFAULT_INGRESS_VIP,
 ):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
     cluster_cidr = _find_cluster_cidr(topology)
@@ -1093,30 +1149,11 @@ def _build_agent_config(
     rendezvous_ip = ""
     hosts_yaml = ""
     for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        td = node.get("data", {})
-        if not td.get("bmcEnabled") or not td.get("bmcIp"):
-            continue
-        group = td.get("tags", {}).get("AnsibleGroup", "")
-        if group not in ("controllers", "workers"):
-            continue
-        vm_name = td.get("name", "")
-        cluster_ip = td.get("nics", [{}])[0].get("ip", "")
-        boot_mac = td.get("nics", [{}])[0].get("mac", "")
-        if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
-            continue
-        role = "master" if group == "controllers" else "worker"
-        if not rendezvous_ip and cluster_ip:
-            rendezvous_ip = cluster_ip
-        hosts_yaml += _build_agent_host_yaml(
-            vm_name,
-            role,
-            boot_mac,
-            cluster_ip,
-            prefix_len,
-            gateway_ip,
-        )
+        result = _extract_agent_host(node, gateway_ip, prefix_len)
+        if result:
+            hosts_yaml += result[0]
+            if not rendezvous_ip and result[1]:
+                rendezvous_ip = result[1]
 
     if not rendezvous_ip:
         rendezvous_ip = str(net.network_address + 10)
