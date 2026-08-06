@@ -20,7 +20,7 @@ RUN dnf install -y \
     util-linux \
     tesseract \
     && dnf clean all \
-    && curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
+    && curl --proto =https -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
     | tar xzf - -C /usr/local/bin oc kubectl
 
 # recert for OCP certificate regeneration

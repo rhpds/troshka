@@ -21,8 +21,8 @@ _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
 _YAML_BLOCK_SCALAR = "  - |\n"
 _MKDIR_OCP_INSTALL = "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
-_DEFAULT_API_VIP = "10.0.0.2"
-_DEFAULT_INGRESS_VIP = "10.0.0.3"
+_API_VIP_OFFSET = 2
+_INGRESS_VIP_OFFSET = 3
 
 
 @dataclass
@@ -1137,13 +1137,17 @@ def _build_agent_config(
     topology,
     cluster_name,
     _base_domain,
-    _api_vip=_DEFAULT_API_VIP,
-    _ingress_vip=_DEFAULT_INGRESS_VIP,
+    api_vip_override="",
+    ingress_vip_override="",
 ):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
     cluster_cidr = _find_cluster_cidr(topology)
     net = ipaddress.ip_network(cluster_cidr, strict=False)
     gateway_ip = str(net.network_address + 1)
+    _api_vip = api_vip_override or str(net.network_address + _API_VIP_OFFSET)
+    _ingress_vip = ingress_vip_override or str(
+        net.network_address + _INGRESS_VIP_OFFSET
+    )
     prefix_len = net.prefixlen
 
     rendezvous_ip = ""

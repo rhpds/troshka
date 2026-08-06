@@ -1435,7 +1435,9 @@ def _parse_vnc_markers(text):
     """Extract output and exit code from VNC OCR text between markers."""
     import re
 
-    m = re.search(r"TROSHKA_BEGIN\s*\n(.*?)TROSHKA_EXIT\s*(\d+)?", text, re.DOTALL)
+    m = re.search(
+        r"TROSHKA_BEGIN[^\S\n]*\n(.*?)TROSHKA_EXIT[^\S\n]*(\d+)?", text, re.DOTALL
+    )
     if m:
         output = m.group(1).strip()
         exit_code = int(m.group(2)) if m.group(2) else None
