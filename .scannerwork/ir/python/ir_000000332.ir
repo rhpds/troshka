@@ -1,79 +1,0 @@
-
-
-"metadata"str
-"spec"str
-"ReadWriteOnce"str
--
-"apiGroup"str
-"accessModes"str
-"name"str
-"."snapshot.storage.k8s.io"str
-
-0int
-"resources"str
-#	"storage"str
-!
-"requests"str
-"apiVersion"str
-$"{size_gb}Gi"str
-("dataSource"str
- 
-"PersistentVolumeClaim"str
-"v1"str
-	"kind"str
-+"VolumeSnapshot"str
-"namespace"strname! (%	namespace' (0snapshot_name2 (?size_gbA (Hlist"¢$
-"
- &("#new-object#Bdict 
-
- ("	#map-set#: 
-
- ('"	#map-set#:	
-$
-"
- (	"#new-object#Bdict 
-
- ("	#map-set#: 
-
- (""	#map-set#: 
-
- (	"	#map-set#:$
-"
- %(	"#new-object#Bdict'
-%
- (,"#unknown-value#Blist&
-$
- (,"
-#is-exact#:Bbool
-
- (,"
-#assume#:8
-6
- (,"#set-field# __collection_size:Bint&
-$
- (,"#array-add-last#: 
-
- (,"	#map-set#:$
-"
- (B "#new-object#Bdict$
-"
-& (A""#new-object#Bdict 
-
-' (@%"	#map-set#:"#$ 
-
- (A&"	#map-set#: !" 
-
- (B'"	#map-set#: $
-"
-  $()"#new-object#Bdict 
-
-! !(%*"	#map-set#:) 
-
-" "((,"	#map-set#:)	+ 
-
-# #(5/"	#map-set#:)-. 
-
-  $(0"	#map-set#:() 
-
- %(	1"	#map-set#:
- &(*8/Users/prutledg/troshka/src/operator/helpers/patterns.py

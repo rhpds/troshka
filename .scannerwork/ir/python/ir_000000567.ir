@@ -1,7 +1,0 @@
-
-90"Extract subscription_id from credentials dict."str
-"subscription_id"str
-creds_dict^ ^(#"4"
- 
-` `(("#array-read#:
-` `((*C/Users/prutledg/troshka/src/backend/app/services/providers/azure.py

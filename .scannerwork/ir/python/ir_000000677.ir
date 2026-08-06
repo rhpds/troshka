@@ -1,9 +1,0 @@
-
-@7"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-seed.iso"str
-project_id
-» »(
-vm_node_id
-»  »(/pool
-»1 »(:"
-
-¼ ¼(C*B/Users/prutledg/troshka/src/backend/app/services/deploy_service.py

@@ -1,60 +1,0 @@
-
-30int
-"start"str
-"status"str
-	"started"str
-"container_name"str
-"podman"str
-'"Starting container {name}..."str
-truebool
-
-0intjob
-L L(params
-L! L('
-list"¸*
-(
-
-L L(#name"#array-read#:*
-(
-
-L L(2"
-troshkad_job_log:)
-'
-
-L L(+	"#unknown-value#Blist(
-&
-
-L L(+"
-#is-exact#:	
-Bbool
-
-
-L L(+"
-#assume#::
-8
-
-L L(+"#set-field# __collection_size:	Bint(
-&
-
-L L(+"#array-add-last#:	(
-&
-
-L L(+"#array-add-last#:	(
-&
-
-L L(+"#array-add-last#:	,
-*
-
-L L(8"
-troshkad_run_cmd:	&
-$
-
-‘L ‘L(8"#new-object#Bdict"
- 
-
-‘L ‘L(""	#map-set#:"
- 
-
-‘L$ ‘L(7"	#map-set#:
-
-‘L ‘L(8*0/Users/prutledg/troshka/src/troshkad/troshkad.py

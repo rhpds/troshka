@@ -1,197 +1,0 @@
-
-0kubevirt_driver.KubeVirtDriver._patch_vm_devicesL
-B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.py= =("2*¨
-2> >(M¦
-£
-? ?(&
-%1"'kubevirt_driver.KubeVirtDriver._kv_name*>
-
-__unknown_file (" 
-kubevirt_driver.KubeVirtDriver*(
-
-__unknown_file (
-
-
-identity>
-<
-? ?(&
-name"__id*"
-
-__unknown_file (
-
-%1
-@ M(	
-%2"dict
-A L(
-%3"dict
-B K(
-%4"dict
-C J(
-%5"dict
-D" I(
-%6"dict
-E' H(
-%7"dict
-Œ
-F  F(.
-%8"__mapSet*"
-
-__unknown_file (
-
-%7*%
-
-__unknown_file (	
-disks*%
-
-__unknown_file (	
-
-disks™
-–
-G  G(8
-%9"__mapSet*"
-
-__unknown_file (
-
-%7**
-
-__unknown_file (
-
-interfaces**
-
-__unknown_file (
-
-
-interfaces
-Œ
-E H(
-%10"__mapSet*"
-
-__unknown_file (
-
-%6*'
-
-__unknown_file (	
-devices*"
-
-__unknown_file (
-
-%7Ž
-‹
-D I(
-%11"__mapSet*"
-
-__unknown_file (
-
-%5*&
-
-__unknown_file (
-
-domain*"
-
-__unknown_file (
-
-%6Œ
-‰
-C J(
-%12"__mapSet*"
-
-__unknown_file (
-
-%4*$
-
-__unknown_file (
-spec*"
-
-__unknown_file (
-
-%5
-
-B K(
-%13"__mapSet*"
-
-__unknown_file (
-
-%3*(
-
-__unknown_file (
-
-template*"
-
-__unknown_file (
-
-%4Œ
-‰
-A L(
-%14"__mapSet*"
-
-__unknown_file (
-
-%2*$
-
-__unknown_file (
-spec*"
-
-__unknown_file (
-
-%3?
-=
-@ M(	
-patch"__id*"
-
-__unknown_file (
-
-%2i
-g
-N N(
-%15"__id*N
-
-__unknown_file (2*0 
-kubevirt_driver.KubeVirtDriver"
-
-custom_apih
-f
-Q Q($
-%16"__id*M
-
-__unknown_file (1*/ 
-kubevirt_driver.KubeVirtDriver"
-	namespaceöó
-N U(	
-%17*#
-
-__unknown_file (
-
-%152patch_namespaced_custom_object: 
-group
-
-_KUBEVIRT_API_GROUP:$
-version
-
-_KUBEVIRT_API_VERSION:
-	namespace
-
-%16:
-plural
-
-
-_VM_PLURAL:
-name
-
-name:
-body	
-
-patch*
-3*8
-3
-kubevirt_driver.py"
-W W(
-implicit return:
-=  =((
-
-identity:
-=* =(/
-disks:
-=1 =(;
-
-interfacesB" 
-kubevirt_driver.KubeVirtDriver

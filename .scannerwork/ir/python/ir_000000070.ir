@@ -1,11 +1,0 @@
-
-5,"Resize is not supported for OCP Virt hosts"strself
-Â Â(provider
-Â Â("instance_id
-Â$ Â(/!new_instance_type
-Â1 Â(B"VB
-@
-
-Ã Ã(O"NotImplementedError*:BNotImplementedError2
-
-Ã Ã(O*E/Users/prutledg/troshka/src/backend/app/services/providers/ocpvirt.py

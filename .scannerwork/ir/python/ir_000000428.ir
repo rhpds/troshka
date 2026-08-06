@@ -1,110 +1,0 @@
-
-("6 4"str
-"source"str
-,truebool
-"bottom"str
-"sourceHandle"str
-"data"str
-"targetHandle"str
-""rgba(34,211,238,0.5)"str
-"nics"str
-"style"str
-"smoothstep"str
-
-%2int
-"type"str
-"id"str
-'"strokeDasharray"str
-&"nic-{nic['id']}-{vm_handle}"str
-+
-"animated"str
-$"strokeWidth"str
-!"stroke"str
-"target"str
-"top"strnet_id
-Ø Ø(vm_node
-Ø Ø(	nic_index
-Ø Ø(*	vm_handle
-Ø, Ø(;"Ä$
-"
-
-Ù
- Ù("#array-read#:$
-"
-
-Ù
- Ù(!"#array-read#:)
-'
-
-Ù
- Ù(,	nic"#array-read#:&
-$
-
-Ú ç(
-"#new-object#Bdict5
-3
-
-Û Û("#
-app.services.template_loader_id"
- 
-
-Û Û("	#map-set#:
-"
- 
-
-Ü Ü("	#map-set#:
-$
-"
-
-Ý Ý("#array-read#:"
- 
-
-Ý Ý("	#map-set#:
-,
-*
-
-Þ$ Þ(6"
-#binop ==#2==:Bbool,"*
-
-Þ$ Þ(6 *
-Þ! Þ(#2
-Þ7 Þ(;"
-
-Þ Þ(A"
-
-Þ Þ(A"î*"
- 
-
-Þ Þ(A"	#map-set#:
-"
- 
-
-ß ß(6"	#map-set#:
-"
- 
-
-à à("	#map-set#:
-&
-$
-
-á å(	 "#new-object#Bdict"
- 
-
-â â(,#"	#map-set#: !""
- 
-
-ã ã(&"	#map-set#: $%"
- 
-
-ä ä($)"	#map-set#: '("
- 
-
-á å(	*"	#map-set#:
- "
- 
-
-æ æ(-"	#map-set#:
-+,
-
-Ú ç(
-*C/Users/prutledg/troshka/src/backend/app/services/template_loader.py

@@ -1,21 +1,0 @@
-
-9app.services.providers.base.ProviderDriver.deploy_projectL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyh h("3*-
-3	
-base.py"
-m m(
-implicit return:
-h h(%
-
-provider:
-h' h(1
-
-project_id:
-h3 h(;
-
-topology:
-h= h(F
-	s3_config:
-hH h(P
-kwargsB.,
-*app.services.providers.base.ProviderDriverH

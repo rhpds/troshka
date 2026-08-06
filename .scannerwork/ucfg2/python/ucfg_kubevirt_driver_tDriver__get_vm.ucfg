@@ -1,66 +1,0 @@
-
-&kubevirt_driver.KubeVirtDriver._get_vmL
-B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.py ("2*¾
-2 (&¦
-£
- (&
-%1"'kubevirt_driver.KubeVirtDriver._kv_name*>
-
-__unknown_file (" 
-kubevirt_driver.KubeVirtDriver*(
-
-__unknown_file (
-
-
-identity>
-<
- (&
-name"__id*"
-
-__unknown_file (
-
-%1h
-f
- (
-%2"__id*N
-
-__unknown_file (2*0 
-kubevirt_driver.KubeVirtDriver"
-
-custom_apig
-e
- ($
-%3"__id*M
-
-__unknown_file (1*/ 
-kubevirt_driver.KubeVirtDriver"
-	namespaceÞÛ
- !(	
-%4*"
-
-__unknown_file (
-
-%22get_namespaced_custom_object: 
-group
-
-_KUBEVIRT_API_GROUP:$
-version
-
-_KUBEVIRT_API_VERSION:
-	namespace
-
-%3:
-plural
-
-
-_VM_PLURAL:
-name
-
-name"
- !(	
-
-%4:
- (
-
-identityB" 
-kubevirt_driver.KubeVirtDriver

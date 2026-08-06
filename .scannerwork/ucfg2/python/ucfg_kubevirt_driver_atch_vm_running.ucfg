@@ -1,105 +1,0 @@
-
-0kubevirt_driver.KubeVirtDriver._patch_vm_runningL
-B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.pyl l("2*™
-2m m(.¦
-£
-n n(&
-%1"'kubevirt_driver.KubeVirtDriver._kv_name*>
-
-__unknown_file (" 
-kubevirt_driver.KubeVirtDriver*(
-
-__unknown_file (
-
-
-identity>
-<
-n n(&
-name"__id*"
-
-__unknown_file (
-
-%1h
-f
-o o(
-%2"__id*N
-
-__unknown_file (2*0 
-kubevirt_driver.KubeVirtDriver"
-
-custom_apig
-e
-r r($
-%3"__id*M
-
-__unknown_file (1*/ 
-kubevirt_driver.KubeVirtDriver"
-	namespace
-u u(/
-%4"dict
-u u(.
-%5"dict“
-
-u u(-
-%6"__mapSet*"
-
-__unknown_file (
-
-%5*'
-
-__unknown_file (	
-running*'
-
-__unknown_file (
-	
-running‹
-ˆ
-u u(.
-%7"__mapSet*"
-
-__unknown_file (
-
-%4*$
-
-__unknown_file (
-spec*"
-
-__unknown_file (
-
-%5ðí
-o v(	
-%8*"
-
-__unknown_file (
-
-%22patch_namespaced_custom_object: 
-group
-
-_KUBEVIRT_API_GROUP:$
-version
-
-_KUBEVIRT_API_VERSION:
-	namespace
-
-%3:
-plural
-
-
-_VM_PLURAL:
-name
-
-name:
-body
-
-%4*
-3*8
-3
-kubevirt_driver.py"
-x x(
-implicit return:
-l  l((
-
-identity:
-l* l(1	
-runningB" 
-kubevirt_driver.KubeVirtDriver

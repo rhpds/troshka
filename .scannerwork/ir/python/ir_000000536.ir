@@ -1,37 +1,0 @@
-
-,#"172.30.{octet3}.{octet4_base + 1}"str
-,#"172.30.{octet3}.{octet4_base + 2}"str
-
-2int
-"ns_ip"str
-255int
-
-3int
-
-	4int
-+""172.30.{octet3}.{octet4_base}/30"str
-"cidr"str
-	"host_ip"str
-×Í"Calculate the unique /30 transit subnet for a VNI's veth pair.
-
-    Returns dict with host_ip, ns_ip, and cidr for the transit link.
-    Uses 172.30.0.0/16 space, derived deterministically from VNI.
-    "strvni ("Á!
-
-   ("#unknown-value#)
-'
-   (octet3"#unknown-value#!
-
-! !("#unknown-value#2
-0
-! !("
-octet4_base"	#binop *#*2*:	$
-"
-" &("#new-object#Bdict 
-
-# #(7"	#map-set#: 
-
-$ $(5"	#map-set#: 
-
-% %(3"	#map-set#:
-" &(*9/Users/prutledg/troshka/src/backend/app/services/vxlan.py

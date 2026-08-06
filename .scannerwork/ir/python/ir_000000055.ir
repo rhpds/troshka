@@ -1,115 +1,0 @@
-
-$"mount"str
-
-0int
-.truebool
-falsebool
-"host:{host.id}"str
-"/var/lib/troshka"str
-(
-"used_pct"str
-!"/var/lib/troshka/local"strhost (list"ª4
-2
- (#"!#get-field# auto_extend_enabled:)
-'
- (#"
-__bool__*:BboolH)
-'
- (#"#unaryop !#2!:Bbool"
- (# * ("
- ("v3
-1
- (" #get-field# auto_extend_max_gb:)
-'
- ("
-__bool__*:BboolH"
- ( "¥0
-.
-# (7"#get-field# storage_size_gb:3
-1
-; (R	" #get-field# auto_extend_max_gb:*
-(
-# (R
-"
-#binop >=#2>=:	Bbool
- (R"]*
-)
-'
- (R"
-__bool__*:BboolH"
- (R * ("
- ("‹>
-<
- (&"+
-app.services.storage_extend_on_cooldown:)
-'
- (&"
-__bool__*:BboolH"
- (& * ("
- ("~;
-9
- ($warnings"#get-field# storage_warnings:)
-'
- ($"
-__bool__*:BboolH"
- ($
- 	"Æ	1
-/
-( (*warnings"#unknown-value#Blist&
-$
-( (*"
-#is-exact#:Bbool
-
-( (*"
-#assume#:8
-6
-( (*"#set-field# __collection_size:Bint
- (*
-"î
-*warnings	4
-2
- (@data_mounts"#unknown-value#Blist&
-$
- (@"
-#is-exact#:Bbool
-
- (@"
-#assume#:8
-6
- (@"#set-field# __collection_size:Bint&
-$
- (@"#array-add-last#:&
-$
- (@ "#array-add-last#:7
-5
- (!"
-builtinsiter*:Btyping.Iterator
- ("**host
-**&data_mounts
-&2
-0
- (""
-builtins
-__has_next*:!Bbool"
- (" * (H"‘)
-'
- $(#w"
-builtinsnext*:!"
- 
-   (%"#array-read#:#$*
-(
-   (%'"
-#binop in#2in:%&Bbool"
-   (%' "
-$ $("ž"
- 
-! !()"#array-read#:#(:
-8
-!! !(?+"'%#get-field# auto_extend_threshold_pct:**
-(
-! !(?,"
-#binop >=#2>=:)+Bbool
-  !(?"2*-',"
- "(	- * (
-"
-# #(."*B/Users/prutledg/troshka/src/backend/app/services/storage_extend.py

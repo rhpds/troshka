@@ -1,4 +1,0 @@
-
-“‰"Set up console infrastructure for a provider. Returns dict with
-        console_base_domain, console_zone_id, console_nameservers, etc."strself$ $(provider$ $($base_domain$& $(1NotImplementedError"2
-' '(!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

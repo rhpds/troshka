@@ -1,440 +1,0 @@
-
-o"spec"str
-ž"memory"str
-¤"4"str
-f"namespace"str
-"claimName"str
-b
-"metadata"str
-™
-"requests"str
-"image"str
-[VR"umount /etc/kubernetes /etc/machine-config-daemon /var/lib/kubelet 2>/dev/null\n"str
-²"restartPolicy"str
-\"apiVersion"str
-—"resources"str
-_"kind"str
-KTB"kill $ETCD_PID 2>/dev/null; wait $ETCD_PID 2>/dev/null || true\n"str
- "persistentVolumeClaim"str
- s"activeDeadlineSeconds"str
-¦"4Gi"str
-d"recert-{name}"str
-j"troshka-role"str
-/"/rhcos"str
-°	"volumes"str
-k"recert"str
-„	"command"str
-'X"echo "Recert job complete"\n"str
-h"labels"str
-v
-"template"str
-BW9"umount /mnt/rhcos; kpartx -dv $LOOP; losetup -d $LOOP\n"str
-²R¨"#!/bin/bash\nset -e\necho "Connecting RHCOS disk..."\nLOOP=$(losetup -f --show /rhcos/disk.img)\nLOOP_BASE=$(basename $LOOP)\nkpartx -av $LOOP\nsleep 1\nRHCOS_PART=''\nmkdir -p /mnt/rhcos\nfor p in /dev/mapper/${LOOP_BASE}p4 /dev/mapper/${LOOP_BASE}p3 /dev/mapper/${LOOP_BASE}p2 /dev/mapper/${LOOP_BASE}p1; do\n  [ -e $p ] || continue\n  if ! mount $p /mnt/rhcos 2>/dev/null && ! mount -o nouuid $p /mnt/rhcos 2>/dev/null; then\n    xfs_repair -L $p >/dev/null 2>&1 && echo "Repaired XFS log on $p"\n    mount $p /mnt/rhcos 2>/dev/null || mount -o nouuid $p /mnt/rhcos 2>/dev/null || continue\n  fi\n  if [ -d /mnt/rhcos/ostree/deploy/rhcos ]; then\n    RHCOS_PART=$p; break\n  fi; umount /mnt/rhcos\ndone\n[ -n \"$RHCOS_PART\" ] || { echo 'ERROR: no RHCOS partition found'; fdisk -l $LOOP 2>&1; kpartx -dv $LOOP; losetup -d $LOOP; exit 1; }\necho "Found RHCOS on $RHCOS_PART"\nDEPLOY_DIR=/mnt/rhcos/ostree/deploy/rhcos/deploy\nDEPLOY_HASH=$(ls $DEPLOY_DIR | grep -v .origin | head -1)\n[ -n "$DEPLOY_HASH" ] || { echo "ERROR: no OSTree deploy"; umount /mnt/rhcos; qemu-nbd --disconnect /dev/nbd0; exit 1; }\necho "OSTree: ${DEPLOY_HASH:0:12}"\nDEPLOY_ROOT="$DEPLOY_DIR/$DEPLOY_HASH"\nVAR_ROOT="/mnt/rhcos/ostree/deploy/rhcos/var"\nETC_K8S="$DEPLOY_ROOT/etc/kubernetes"\nETC_MCD="$DEPLOY_ROOT/etc/machine-config-daemon"\nVAR_KUBELET="$VAR_ROOT/lib/kubelet"\nVAR_ETCD="$VAR_ROOT/lib/etcd"\n# Bind-mount so recert sees standard paths (same as troshkad podman -v)\nmkdir -p /etc/kubernetes /etc/machine-config-daemon /var/lib/kubelet\nmount --bind $ETC_K8S /etc/kubernetes\nmount --bind $ETC_MCD /etc/machine-config-daemon\nmount --bind $VAR_KUBELET /var/lib/kubelet\nETCD_BIN=etcd; ETCDCTL_BIN=etcdctl\necho "Using etcd $(etcd --version 2>&1 | head -1)"\necho "Starting etcd..."\n$ETCD_BIN --data-dir=$VAR_ETCD --name=recert-temp --listen-client-urls=http://127.0.0.1:2479 --advertise-client-urls=http://127.0.0.1:2479 --listen-peer-urls=http://127.0.0.1:2489 --force-new-cluster &\nETCD_PID=$!\nfor i in $(seq 1 30); do $ETCDCTL_BIN --endpoints=http://127.0.0.1:2479 endpoint health 2>/dev/null | grep -q healthy && break; sleep 1; done\necho "Running recert..."\nrecert --etcd-endpoint=http://127.0.0.1:2479 --crypto-dir /etc/kubernetes --crypto-dir /etc/machine-config-daemon --crypto-dir /var/lib/kubelet --cluster-customization-dir /etc/kubernetes --cluster-customization-dir /var/lib/kubelet {recert_flags} {password_args}\necho "Recert done"\n# Relax kube-apiserver liveness probe to survive boot storm\n# (cert-regeneration sidecar causes brief TLS disruptions that kill apiserver\n#  before OVN can sync â€” increasing failureThreshold from 3 to 8 gives 80s)\nAPIMAN="/etc/kubernetes/manifests/kube-apiserver-pod.yaml"\nif [ -f "$APIMAN" ]; then\n  python3 -c "\nimport json, sys\nwith open(sys.argv[1]) as f: pod = json.load(f)\nfor c in pod.get('spec',{}).get('containers',[]):\n  for probe in ('livenessProbe','startupProbe'):\n    if probe in c:\n      c[probe]['failureThreshold'] = 8\nwith open(sys.argv[1],'w') as f: json.dump(pod, f)\n" "$APIMAN" && echo \'Relaxed apiserver liveness probe\'\nfi\nKC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\n[ -f "$KC" ] && cp "$KC" /output/kubeconfig\n[ -f "$KC" ] && echo "KUBECONFIG_B64_BEGIN" && base64 -w0 "$KC" && echo && echo "KUBECONFIG_B64_END"\n"str
-y"serviceAccountName"str
-`"Job"str
-z"troshka-recert"str
-MD"Build a Job that runs recert on a cloned RHCOS PVC before VM boot."str
-"--force-expire"str
-ìHâ"echo "Mounting bastion disk..."\nBLOOP=$(losetup -f --show /bastion/disk.img)\nBLOOP_BASE=$(basename $BLOOP)\nkpartx -av $BLOOP\nsleep 1\nBPART=/dev/mapper/${BLOOP_BASE}p3; [ -e $BPART ] || BPART=/dev/mapper/${BLOOP_BASE}p1\nmkdir -p /mnt/bastion\nif ! mount $BPART /mnt/bastion 2>/dev/null && ! mount -o nouuid $BPART /mnt/bastion 2>/dev/null; then\n  xfs_repair -L $BPART >/dev/null 2>&1 && echo 'Repaired XFS log on bastion disk'\n  mount $BPART /mnt/bastion 2>/dev/null || mount -o nouuid $BPART /mnt/bastion\nfi\nKC_SRC="/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/lb-ext.kubeconfig"\nif [ -f "$KC_SRC" ]; then\n  KC_DIR="/mnt/bastion/home/cloud-user/ocp-install/auth"\n  mkdir -p "$KC_DIR"\n"str
-“"privileged"str
-‚"Always"str
-‚Py"umount /mnt/bastion 2>/dev/null || true\nkpartx -dv $BLOOP 2>/dev/null || true\nlosetup -d $BLOOP 2>/dev/null || true\n"str
-@7"--kubeadmin-password-hash "{kubeadmin_password_hash}""str
-|"containers"str
-"imagePullPolicy"str
-…"bash"str
-]
-"batch/v1"str
-³"Never"str
-""str
-"rhcos-disk"str
-›"cpu"str
-UML"  rm -f /mnt/bastion/etc/pki/ca-trust/source/anchors/ocp-ingress.pem\nfi\n"str
-œ"1"str
-="bastion-disk"str
-!
-"emptyDir"str
-”truebool
-3	"/output"str
-0K'"  cp "$KC_SRC" "$KC_DIR/kubeconfig"\n"str
-q"backoffLimit"str
-E
-"/bastion"str
-"output"str
-"volumeMounts"str
-t600int
-Ÿ"2Gi"str
-†"-c"str
-‘"securityContext"str
-"--extend-expiration"str
-"name"str
-."mountPath"str
-¢"limits"str
-
-(0int
-jJa"  cp "$KC_SRC" "$KC_DIR/kubeconfig-{vm_name}"\n  echo "Wrote kubeconfig-{vm_name} to bastion"\n"strname
-Ÿ Ÿ(	namespace
-   (	rhcos_pvc
-¡ ¡(bastion_pvc
-¢ ¢(!extend_expiration
-£ £('kubeadmin_password_hash
-¤ ¤( vm_name
-¥ ¥(%list"Ž1
-/
-
-¨ ¨('	TOOLS_IMAGE"?python-unknown?+
-)
-
-ª, ª(=
-"
-__bool__*:BboolH,"*
-
-ª, ª(=
- *
-ª) ª(+2
-ª> ª(B"
-
-ª ª(S"
-
-ª ª(S"¢*recert_flags/
--
-
-« «(password_args"#id#:Bstr+
-)
-
-¬ ¬("
-__bool__*:BboolH "
-
-¬ ¬( *
-¬ ¬("9/
--
-
-­ ­(Ppassword_args"#id#:Bstr"Œ
-.
-,
-
-¯ ¯(bastion_cmds"#id#:Bstr1
-/
-
-° °(bastion_cleanup"#id#:Bstr&
-$
-
-² ²(Q"#new-object#Bdict"
- 
-
-²	 ²("	#map-set#:&
-$
-
-²8 ²(P"#new-object#Bdict"
- 
-
-²9 ²(O"	#map-set#:"
- 
-
-² ²(P"	#map-set#:&
-$
-
-³ ³(*"#new-object#Bdict"
- 
-
-³	 ³( "	#map-set#:&
-$
-
-³' ³()""#new-object#Bdict"
- 
-
-³ ³()#"	#map-set#:!"2
-0
-
-± ´($volumes"#unknown-value#Blist(
-&
-
-± ´(&"
-#is-exact#:$%Bbool
-
-
-± ´('"
-#assume#:&:
-8
-
-± ´()"#set-field# __collection_size:$(Bint(
-&
-
-± ´(*"#array-add-last#:$(
-&
-
-± ´(+"#array-add-last#:$&
-$
-
-¶ ¶(5,"#new-object#Bdict"
- 
-
-¶	 ¶(-"	#map-set#:,"
- 
-
-¶ ¶(40"	#map-set#:,./&
-$
-
-· ·(21"#new-object#Bdict"
- 
-
-·	 ·(2"	#map-set#:1"
- 
-
-· ·(14"	#map-set#:1.38
-6
-
-µ ¸(5volume_mounts"#unknown-value#Blist(
-&
-
-µ ¸(6"
-#is-exact#:5%Bbool
-
-
-µ ¸(7"
-#assume#:6:
-8
-
-µ ¸(8"#set-field# __collection_size:5(Bint(
-&
-
-µ ¸(9"#array-add-last#:5,(
-&
-
-µ ¸(:"#array-add-last#:51+
-)
-
-º º(;"
-__bool__*:BboolH "
-
-º º(; *
-º º("÷&
-$
-
-¼ ¿(<"#new-object#Bdict"
- 
-
-½ ½(&>"	#map-set#:<=&
-$
-
-¾) ¾(C?"#new-object#Bdict"
- 
-
-¾* ¾(B@"	#map-set#:?"
- 
-
-¾ ¾(CA"	#map-set#:<?5
-3
-
-» À(	B"
-listappend* :$<BNoneTypeH&
-$
-
-Á Á(NC"#new-object#Bdict"
- 
-
-Á Á(4D"	#map-set#:C="
- 
-
-Á6 Á(MF"	#map-set#:C.E5
-3
-
-Á Á(OG"
-listappend* :5CBNoneTypeH+
-)
-
-Õ Õ(I"
-__bool__*:BboolH,"*
-
-Õ Õ(I 	*
-Õ Õ(2
-Ö Ö("þ!*Ubastion_cleanup
-Q*Sbastion_cmds
-O.
-,
-
-â ²((Y"	#binop +#2+:RSTUVWXBstr(
-&
-
-á ³(Zscript"#id#:YBstr&
-$
-
-µ Ö(["#new-object#Bdict"
- 
-
-¶ ¶( ^"	#map-set#:[\]"
- 
-
-· ·(a"	#map-set#:[_`&
-$
-
-¸ ¼(	c"#new-object#Bdict"
- 
-
-¹ ¹($e"	#map-set#:cd"
- 
-
-º º("g"	#map-set#:cf&
-$
-
-» »(0i"#new-object#Bdict"
- 
-
-» »(/l"	#map-set#:ijk"
- 
-
-» »(0m"	#map-set#:chi"
- 
-
-¸ ¼(	n"	#map-set#:[bc&
-$
-
-½ Õ(	p"#new-object#Bdict"
- 
-
-¾ ¾(r"	#map-set#:pq("
- 
-
-¿ ¿((u"	#map-set#:pst&
-$
-
-À Ô(w"#new-object#Bdict&
-$
-
-Á Ó(x"#new-object#Bdict"
- 
-
-Â Â(:{"	#map-set#:xyz&
-$
-
-Ä Ï(}"#new-object#Bdict"
- 
-
-Å Å(,~"	#map-set#:}k#
-!
-
-Æ Æ(0€"	#map-set#:}	%
-#
-
-Ç Ç(7ƒ"	#map-set#:}‚*
-(
-
-È' È(=‡"#unknown-value#Blist*
-(
-
-È' È(=ˆ"
-#is-exact#:‡%Bbool!
-
-
-È' È(=‰"
-#assume#:ˆ<
-:
-
-È' È(=Š"#set-field# __collection_size:‡(Bint+
-)
-
-È' È(=‹"#array-add-last#:‡…+
-)
-
-È' È(=Œ"#array-add-last#:‡†*
-(
-
-È' È(="#array-add-last#:‡Z%
-#
-
-È È(=Ž"	#map-set#:}„‡$
-"
-
-É É(9"	#map-set#:}5'
-%
-
-Ê/ Ê(C’"#new-object#Bdict&
-$
-
-Ê0 Ê(B•"	#map-set#:’“”%
-#
-
-Ê Ê(C–"	#map-set#:}‘’'
-%
-
-Ë) Î(˜"#new-object#Bdict'
-%
-
-Ì, Ì(Iš"#new-object#Bdict&
-$
-
-Ì- Ì(7"	#map-set#:š›œ&
-$
-
-Ì9 Ì(H "	#map-set#:šžŸ&
-$
-
-Ì  Ì(I¡"	#map-set#:˜™š'
-%
-
-Í* Í(G£"#new-object#Bdict&
-$
-
-Í+ Í(5¥"	#map-set#:£›¤&
-$
-
-Í7 Í(F§"	#map-set#:£ž¦&
-$
-
-Í  Í(G¨"	#map-set#:˜¢£%
-#
-
-Ë Î(©"	#map-set#:}—˜*
-(
-
-Ã" Ð(ª"#unknown-value#Blist*
-(
-
-Ã" Ð(«"
-#is-exact#:ª%Bbool!
-
-
-Ã" Ð(¬"
-#assume#:«<
-:
-
-Ã" Ð(­"#set-field# __collection_size:ª(Bint*
-(
-
-Ã" Ð(®"#array-add-last#:ª}$
-"
-
-Ã Ð(¯"	#map-set#:x|ª$
-"
-
-Ñ Ñ(&±"	#map-set#:x°$%
-#
-
-Ò Ò(,´"	#map-set#:x²³#
-!
-
-Á Ó(µ"	#map-set#:wox#
-!
-
-À Ô(¶"	#map-set#:pvw#
-!
-
-½ Õ(	·"	#map-set#:[op
-
-µ Ö(["
-
-Ó Ö(<
-"	
-
-Ó Ö(<
-"©
-*LJ	K*
-(
-
-Ã Ù(N"	#binop +#2+:HLMBstr.
-,
-
-Â Ú(	Obastion_cmds"#id#:NBstr1
-/
-
-Û ß(	Qbastion_cleanup"#id#:PBstr*8/Users/prutledg/troshka/src/operator/helpers/kubevirt.py

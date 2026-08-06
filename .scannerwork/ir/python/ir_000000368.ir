@@ -1,3 +1,0 @@
-
-*!"trk_{secrets.token_urlsafe(32)}"str"
- (-*9/Users/prutledg/troshka/src/backend/app/models/api_key.py

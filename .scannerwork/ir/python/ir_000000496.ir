@@ -1,19 +1,0 @@
-
-âØ"Provision a new host. Returns dict with:
-        host_id, instance_id, instance_type, public_ip, private_ip,
-        total_vcpus, total_ram_mb, private_key, key_pair_name,
-        storage_size_gb, max_eips
-        "strself
- 
-(provider
- 
-(host_id
- 
-(instance_type
-! 
-(.storage_size_gb
-0 
-(?kwargs
-A 
-(I"dictNotImplementedError"2
- (!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

@@ -1,124 +1,0 @@
-
-""cdi.kubevirt.io/v1beta1"str
-"spec"str
-
-"metadata"str
-)"resources"str
-"name"str
-4.+"{max(size_gb + 10, int(size_gb * 1.2))}Gi"str
--	"storage"str
-"accessModes"str
-2"storageClassName"str
-"apiVersion"str
-"namespace"str
-"DataVolume"str
-
-%0int
-"pvc"str
-+
-"requests"str
-
-"kind"str
-"source"str
- "ReadWriteOnce"strname
-Ç Ç(	namespace
-Ç! Ç(*
-source_pvc
-Ç, Ç(6 source_namespace
-Ç8 Ç(Hsize_gb
-ÇJ Ç(Q"list"ì	&
-$
-
-É õ("#new-object#Bdict"
- 
-
-Ñ Ñ(/	"	#map-set#:"
- 
-
-Ö Ö("	#map-set#:
-&
-$
-
-Ü â(	"#new-object#Bdict"
- 
-
-á á("	#map-set#:"
- 
-
-à à(""	#map-set#:"
- 
-
-Ü â(	"	#map-set#:&
-$
-
-ä ö(	"#new-object#Bdict&
-$
-
-ã ê("#new-object#Bdict&
-$
-
-å è("#new-object#Bdict"
- 
-
-ç ç(&"	#map-set#:"
- 
-
-é é(1"	#map-set#:"
- 
-
-å è("	#map-set#:"
- 
-
-ã ê("	#map-set#:&
-$
-
-ë ô("#new-object#Bdict)
-'
-
-í í(0!"#unknown-value#Blist(
-&
-
-í í(0#"
-#is-exact#:!"Bbool
-
-
-í í(0$"
-#assume#:#:
-8
-
-í í(0&"#set-field# __collection_size:!%Bint(
-&
-
-í í(0'"#array-add-last#:! "
- 
-
-í í(0("	#map-set#:!&
-$
-
-ì ó(*"#new-object#Bdict&
-$
-
-î  ñ(,"#new-object#Bdict"
- 
-
-ï ï(O/"	#map-set#:,-."
- 
-
-î ñ(0"	#map-set#:*+,"
- 
-
-ì ó(1"	#map-set#:)*#
-!
-
-ò$ ò(13"#unknown-value#"
- 
-
-ò ò(14"	#map-set#:23"
- 
-
-ë ô(5"	#map-set#:"
- 
-
-ä ö(	6"	#map-set#:
-
-É õ(*8/Users/prutledg/troshka/src/operator/helpers/kubevirt.py

@@ -1,14 +1,0 @@
-
-=app.services.providers.base.ProviderDriver.get_project_statusL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.pym m("3*-
-3	
-base.py"
-r r(
-implicit return:
-m! m()
-
-provider:
-m+ m(5
-
-project_idB.,
-*app.services.providers.base.ProviderDriverH

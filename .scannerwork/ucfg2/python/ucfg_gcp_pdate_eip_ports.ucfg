@@ -1,21 +1,0 @@
-
-5app.services.providers.gcp.GCPDriver.update_eip_portsM
-A/Users/prutledg/troshka/src/backend/app/services/providers/gcp.py¢ ¢("3*,
-3
-gcp.py"
-¥ ¥
-implicit return:
-
-¢ ¢('
-
-provider:
-
-¢) ¢(-
-host:
-
-¢/ ¢(<
-allocation_id:
-
-¢> ¢(C
-portsB(&
-$app.services.providers.gcp.GCPDriverH

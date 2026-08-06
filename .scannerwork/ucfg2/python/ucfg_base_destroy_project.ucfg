@@ -1,14 +1,0 @@
-
-:app.services.providers.base.ProviderDriver.destroy_projectL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.pyr r("3*+
-3	
-base.py"
-u u
-implicit return:
-r r(&
-
-provider:
-r( r(2
-
-project_idB.,
-*app.services.providers.base.ProviderDriverH

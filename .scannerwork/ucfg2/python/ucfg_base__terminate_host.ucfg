@@ -1,13 +1,0 @@
-
-9app.services.providers.base.ProviderDriver.terminate_hostL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.py ("3*-
-3	
-base.py"
- (
-implicit return:
- (%
-
-provider:
-' (2
-instance_idB.,
-*app.services.providers.base.ProviderDriverH

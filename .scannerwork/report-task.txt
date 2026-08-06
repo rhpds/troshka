@@ -1,6 +1,0 @@
-projectKey=com.redhat.rhpds.troshka
-serverUrl=https://sonarqube.corp.redhat.com
-serverVersion=2026.2.1.121354
-dashboardUrl=https://sonarqube.corp.redhat.com/dashboard?id=com.redhat.rhpds.troshka
-ceTaskId=2e99c5a6-540f-41c9-b5a5-c3c4f1b36daa
-ceTaskUrl=https://sonarqube.corp.redhat.com/api/ce/task?id=2e99c5a6-540f-41c9-b5a5-c3c4f1b36daa

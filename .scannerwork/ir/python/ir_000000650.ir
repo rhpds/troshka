@@ -1,61 +1,0 @@
-
-
-0int
-	"sshpass"str
-"-p"str
-
-"LogLevel=ERROR"str
-"ssh"str
-"-i"str
-'	"UserKnownHostsFile=/dev/null"str
-7."SSH args shared by file transfer operations."str
-"-o"str
-#"StrictHostKeyChecking=no"str
-"ConnectTimeout=10"strpassword
-¢E ¢E( key_file
-¢E" ¢E(-list"O+
-)
-
-¤E ¤E("
-__bool__*:BboolH "
-
-¤E ¤E( *
-¤E ¤E("õ)
-'
-
-¥E ±E(	"#unknown-value#Blist(
-&
-
-¥E ±E(	"
-#is-exact#:Bbool
-
-
-¥E ±E(	"
-#assume#::
-8
-
-¥E ±E(	"#set-field# __collection_size:Bint-
-+
-
-¥E ±E(	"?python-unknown?*Blist
-
-¥E ±E(	"õ)
-'
-
-²E ¿E("#unknown-value#Blist(
-&
-
-²E ¿E("
-#is-exact#:Bbool
-
-
-²E ¿E("
-#assume#::
-8
-
-²E ¿E("#set-field# __collection_size:Bint-
-+
-
-²E ¿E("?python-unknown?*Blist
-
-²E ¿E(*0/Users/prutledg/troshka/src/troshkad/troshkad.py

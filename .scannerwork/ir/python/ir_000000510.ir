@@ -1,5 +1,0 @@
-
-°¦"Associate an EIP with a host.
-        Returns dict with optional keys: private_ip, association_id.
-        Empty dict if no association step needed (e.g. OCP Virt)."strselfJ J(providerJ J($hostJ& J(*allocation_idJ, J(9NotImplementedError"2
-N N(!*B/Users/prutledg/troshka/src/backend/app/services/providers/base.py

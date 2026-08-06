@@ -1,80 +1,0 @@
-
-*kubevirt_driver.KubeVirtDriver._delete_vmiL
-B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.py^ ^("2*û
-2_ _(6¦
-£
-` `(&
-%5"'kubevirt_driver.KubeVirtDriver._kv_name*>
-
-__unknown_file (" 
-kubevirt_driver.KubeVirtDriver*(
-
-__unknown_file (
-
-
-identity>
-<
-` `(&
-name"__id*"
-
-__unknown_file (
-
-%5*
-6*8
-3
-kubevirt_driver.py"
-l l(
-implicit return*f
-5i i("R
-P
-i i("
-%1"__id*8
-
-__unknown_file (*
-
-client"
-ApiException*
-3*Í
-6b h(h
-f
-b b(
-%2"__id*N
-
-__unknown_file (2*0 
-kubevirt_driver.KubeVirtDriver"
-
-custom_apig
-e
-e e((
-%3"__id*M
-
-__unknown_file (1*/ 
-kubevirt_driver.KubeVirtDriver"
-	namespaceâß
-b h(
-%4*"
-
-__unknown_file (
-
-%22delete_namespaced_custom_object: 
-group
-
-_KUBEVIRT_API_GROUP:$
-version
-
-_KUBEVIRT_API_VERSION:
-	namespace
-
-%3:
-plural
-
-_VMI_PLURAL:
-name
-
-name*
-3
-5:
-^ ^("
-
-identityB" 
-kubevirt_driver.KubeVirtDriver

@@ -1,19 +1,0 @@
-
-"ExpectedBucketOwner"str
-[R"Return ``{'ExpectedBucketOwner': account_id}`` for AWS S3, empty dict otherwise."str	s3_config] ]( "˜C
-A
-_ _(%acct"*
-app.services.s3_storage_get_account_id:)
-'
-`, `(0"
-__bool__*:BboolH&"$
-`, `(0 *`) `(+2`1 `(5"Z$
-"
-` `(("#new-object#Bdict 
-
-` `('"	#map-set#:
-` `(8"8$
-"
-`6 `(8"#new-object#Bdict
-` `(8"$*	
-` `(8	*>/Users/prutledg/troshka/src/backend/app/services/s3_storage.py

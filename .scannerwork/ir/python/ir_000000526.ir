@@ -1,36 +1,0 @@
-
-$"{CRD_GROUP}/{CRD_VERSION}"str
-
-
-"metadata"str
-"controller"str
-"apiVersion"str
-	"name"str
-"uid"str
-truebool
-"kind"strcr ("”$
-"
- ("#new-object#Bdict 
-
- (2"	#map-set#:"
- 
- ("#array-read#: 
-
- ("	#map-set#:"
- 
- ("#array-read#:
-"
- 
- (&"#array-read#:	 
-
- (&"	#map-set#:	"
- 
- ("#array-read#:
-"
- 
- ($"#array-read#: 
-
- ($"	#map-set#: 
-
- ("	#map-set#:
- (*3/Users/prutledg/troshka/src/operator/helpers/k8s.py

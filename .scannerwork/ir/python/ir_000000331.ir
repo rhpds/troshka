@@ -1,45 +1,0 @@
-
-
-"metadata"str
-$"persistentVolumeClaimName"str
-"apiVersion"str
-	"VolumeSnapshot"str
-""volumeSnapshotClassName"str
-"spec"str
-"kind"str
-"name"str
-"namespace"str
-%"snapshot.storage.k8s.io/v1"str
-"source"strname (	namespace  ()pvc_name+ (3"ý$
-"
- ("#new-object#Bdict 
-
- (2"	#map-set#: 
-
-	 	( 
-"	#map-set#:	$
-"
-
- (	"#new-object#Bdict 
-
- ("	#map-set#: 
-
- (""	#map-set#: 
-
-
- (	"	#map-set#:$
-"
- (	"#new-object#Bdict!
-
-' (5"#unknown-value# 
-
- (5"	#map-set#:$
-"
- (="#new-object#Bdict 
-
- (<"	#map-set#: 
-
- (="	#map-set#: 
-
- (	"	#map-set#:
- (*8/Users/prutledg/troshka/src/operator/helpers/patterns.py

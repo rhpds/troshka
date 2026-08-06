@@ -1,46 +1,0 @@
-
-"exists"str
-"path"str
-
-0int
-"size"strjob
-ü4 ü4(params
-ü4 ü4(""Á$
-"
-
-ý4 ý4(("#array-read#:5
-3
-
-ý4 ý4()path"
-troshkad_validate_path:4
-2
-
-þ4 þ4(!exists"
-os.pathexists:Bbool,"*
-
-ÿ4$ ÿ4(* *
-ÿ4! ÿ4(#2
-ÿ4+ ÿ4(/"B,
-*
-
-ÿ4 ÿ4( "
-os.pathgetsize:Bint
-
-ÿ4 ÿ4(1"
-
-ÿ4 ÿ4(1"œ*	size&
-$
-
-€5 €5(+
-"#new-object#Bdict"
- 
-
-€5 €5("	#map-set#:
-"
- 
-
-€5 €5(*"	#map-set#:
-	
-
-€5 €5(+
-*0/Users/prutledg/troshka/src/troshkad/troshkad.py

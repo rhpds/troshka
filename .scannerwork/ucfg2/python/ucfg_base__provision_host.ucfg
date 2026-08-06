@@ -1,29 +1,0 @@
-
-9app.services.providers.base.ProviderDriver.provision_hostL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.py	 	("3*-
-3	
-base.py"
- (
-implicit return:
-
- 
-(
-
-provider:
-
- 
-(	
-host_id:
-
-! 
-(.
-instance_type:
-
-0 
-(?
-storage_size_gb:
-
-A 
-(I
-kwargsB.,
-*app.services.providers.base.ProviderDriverH

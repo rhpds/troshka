@@ -1,39 +1,0 @@
-
-X	O"Handle disk provisioning and removal for a VM update. Returns disk_pvcs dict."strold_spec
-’ ’(new_spec
-’ ’(name
-’ ’(	namespace
-’ ’('body
-’) ’(-core_api
-’/ ’(7
-custom_api
-’9 ’(Cpatch
-’E ’(J"Ã8
-6
-
-• •(G
-	old_disks"?python-unknown?:Bdict8
-6
-
-– –(G	new_disks"?python-unknown?:BdictJ
-H
-
-˜ ˜(6	s3_config"*
-handlers.vm_get_s3_config_from_project:Z
-X
-
-™ ™(Fcentral_s3_config"2
-handlers.vm#_get_central_s3_config_from_project:#
-!
-
-› ¦("#unknown-value#.
-,
-
-› ¦(	disk_pvcs"#unknown-value#>
-<
-
-§ §(V"$
-handlers.vm_delete_removed_disks:
-
-
-¨ ¨(*3/Users/prutledg/troshka/src/operator/handlers/vm.py

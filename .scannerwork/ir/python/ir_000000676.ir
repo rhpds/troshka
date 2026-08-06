@@ -1,11 +1,0 @@
-
-PG"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"str
-project_id
-¶ ¶(
-vm_node_id
-¶ ¶($disk_node_id
-¶& ¶(7fmt
-¶9 ¶(Apool
-¶C ¶(L"
-
-¸ ¸(S*B/Users/prutledg/troshka/src/backend/app/services/deploy_service.py

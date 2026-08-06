@@ -1,19 +1,0 @@
-
-"tenant_id"str
-"client_id"str
-"client_secret"str
-@7"Build ClientSecretCredential from stored credentials."str
-creds_dictS S("à:
-8
-U U(5ClientSecretCredential"?python-unknown?"
- 
-X X()"#array-read#:"
- 
-Y Y()"#array-read#:"
- 
-Z Z(1	"#array-read#:&
-$
-W [(
-"#unknown-value#:	
-W [(
-*C/Users/prutledg/troshka/src/backend/app/services/providers/azure.py

@@ -1,143 +1,0 @@
-
--kubevirt_driver.KubeVirtDriver.get_total_cpusN
-B/Users/prutledg/troshka/src/operator/images/bmc/kubevirt_driver.py™ ™("2*®
-
-2
-š š(#§
-¤
-
-š š(#
-%1"&kubevirt_driver.KubeVirtDriver._get_vm*>
-
-__unknown_file (" 
-kubevirt_driver.KubeVirtDriver*(
-
-__unknown_file (
-
-
-identity>
-<
-
-š š(#
-vm"__id*"
-
-__unknown_file (
-
-%1
-
-œ œ(
-%2"dict
-Š
-
-œ œ(
-%3"dict.get*"
-
-__unknown_file (
-
-vm*$
-
-__unknown_file (
-spec*"
-
-__unknown_file (
-
-%2
-
- (
-%4"dictŒ‰
-
-œ ( 
-%5*"
-
-__unknown_file (
-
-%3*(
-
-__unknown_file (
-
-template*"
-
-__unknown_file (
-
-%42get
-
-ž ž(
-%6"dictˆ…
-
-œ ž(
-%7*"
-
-__unknown_file (
-
-%5*$
-
-__unknown_file (
-spec*"
-
-__unknown_file (
-
-%62get
-
-Ÿ Ÿ(
-%8"dictŠ‡
-
-œ Ÿ(
-%9*"
-
-__unknown_file (
-
-%7*&
-
-__unknown_file (
-
-domain*"
-
-__unknown_file (
-
-%82get
-
-   (
-%10"dict‰†
-
-œ  (
-%11*"
-
-__unknown_file (
-
-%9*#
-
-__unknown_file (
-cpu*#
-
-__unknown_file (
-
-%102get@
->
-
-› ¡(	
-cpu"__id*#
-
-__unknown_file (
-
-%11‰†
-
-¢ ¢("
-%12*#
-
-__unknown_file (
-
-cpu*%
-
-__unknown_file (	
-cores* 
-
-__unknown_file (22get"
-
-¢ ¢("
-
-%12:
-
-™ ™(%
-
-identityB" 
-kubevirt_driver.KubeVirtDriverH

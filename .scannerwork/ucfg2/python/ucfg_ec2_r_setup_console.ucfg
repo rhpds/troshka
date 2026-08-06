@@ -1,13 +1,0 @@
-
-2app.services.providers.ec2.EC2Driver.setup_consoleK
-A/Users/prutledg/troshka/src/backend/app/services/providers/ec2.py; ;("3*,
-3
-ec2.py"
-> >(
-implicit return:
-; ;($
-
-provider:
-;& ;(1
-base_domainB(&
-$app.services.providers.ec2.EC2DriverH

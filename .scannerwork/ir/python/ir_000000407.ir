@@ -1,15 +1,0 @@
-
-YP"Find VM node IDs with any data change between current and deployed topologies."strcurrent
-ê ê(,deployed
-ê. ê(<"∏8
-6
-
-í î(	cur_nodes"?python-unknown?:Bdict8
-6
-
-ï ó(	dep_nodes"?python-unknown?:Bdict0
-.
-
-ò ú("?python-unknown?:Blist
-
-ò ú(*7/Users/prutledg/troshka/src/backend/app/api/projects.py

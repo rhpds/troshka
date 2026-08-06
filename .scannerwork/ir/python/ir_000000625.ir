@@ -1,93 +1,0 @@
-
-"reboot"str
-"domain"str
-"virsh"str
-60int
-"status"str
-"domain_name"str
-
-"rebooted"str
-truebool
-
-0intjob
-ž
- ž
-(params
-ž
- ž
-(!	list"Æ$
-"
-
-Ÿ
-# Ÿ
-(8"#array-read#:>
-<
-
-Ÿ
- Ÿ
-(9domain"!
-troshkad_validate_domain_name:)
-'
-
- 
-  
-(-"#unknown-value#Blist(
-&
-
- 
-  
-(-
-"
-#is-exact#:	Bbool
-
-
- 
-  
-(-"
-#assume#:
-:
-8
-
- 
-  
-(-"#set-field# __collection_size:Bint(
-&
-
- 
-  
-(-"#array-add-last#:(
-&
-
- 
-  
-(-"#array-add-last#:(
-&
-
- 
-  
-(-"#array-add-last#:,
-*
-
- 
-  
-(:"
-troshkad_run_cmd:&
-$
-
-¡
- ¡
-(3"#new-object#Bdict"
- 
-
-¡
- ¡
-("	#map-set#:"
- 
-
-¡
- ¡
-(2"	#map-set#:
-
-¡
- ¡
-(3*0/Users/prutledg/troshka/src/troshkad/troshkad.py

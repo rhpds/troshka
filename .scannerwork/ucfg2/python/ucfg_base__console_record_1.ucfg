@@ -1,19 +1,0 @@
-
-@app.services.providers.base.ProviderDriver.delete_console_recordL
-B/Users/prutledg/troshka/src/backend/app/services/providers/base.py- -("3*-
-3	
-base.py"
-1 1(
-implicit return:
--$ -(,
-
-provider:
--. -(2
-host:
--4 -(<
-
-hostname:
--> -(H
-
-ip_addressB.,
-*app.services.providers.base.ProviderDriverH

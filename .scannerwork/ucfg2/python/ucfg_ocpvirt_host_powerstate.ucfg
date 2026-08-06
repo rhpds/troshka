@@ -1,77 +1,0 @@
-
-@app.services.providers.ocpvirt.OCPVirtDriver.get_host_powerstateQ
-E/Users/prutledg/troshka/src/backend/app/services/providers/ocpvirt.py¥ ¥("2*Ö
-2
-¦ ¦(<ø
-õ
-
-¦ ¦(<
-%1"<app.services.providers.ocpvirt.OCPVirtDriver.get_host_status*L
-
-__unknown_file (0.
-,app.services.providers.ocpvirt.OCPVirtDriver*(
-
-__unknown_file (
-
-
-provider*+
-
-__unknown_file (
-
-instance_idB
-@
-
-¦ ¦(<
-status"__id*"
-
-__unknown_file (
-
-%1*
-4
-5*Ð
-4
-§ §(zx
-
-§ §(
-%3"__mapGet*&
-
-__unknown_file (
-
-
-status*%
-
-__unknown_file (	
-state2__getitem__>
-<
-
-§ §(
-%2"__id*"
-
-__unknown_file (
-
-%3*
-6*Y
-5
-§. §(7C
-A
-
-§. §(7
-%2"__id*'
-
-__unknown_file (	
-unknown*
-6*%
-6
-§. §(7"
-
-§ §(7
-
-%2:
-
-¥" ¥(*
-
-provider:
-
-¥, ¥(7
-instance_idB0.
-,app.services.providers.ocpvirt.OCPVirtDriverH
